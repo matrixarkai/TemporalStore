@@ -394,6 +394,41 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
     # and let the parser chunk that file (parse_text=None). Parallel to the
     # matrixobject:// branch above; the OSS-safe (no object store) counterpart.
     if is_temporalstore_uri(raw_uri):
+        # Engine-tier URI (two 16-hex segments): the bytes live in the embedded engine's blob
+        # store, reachable only through a rust proxy client -- the HTTP tier can never serve
+        # this shape, so falling through would be a guaranteed miss dressed as a 404.
+        try:  # top-level path
+            from matrixark_temporalstore_blob import (
+                engine_blob_get as _engine_get,
+                engine_blob_supported as _engine_ok,
+                parse_engine_blob_uri as _engine_parse,
+            )
+        except ImportError:  # package path
+            from tools.matrixark_temporalstore_blob import (  # type: ignore
+                engine_blob_get as _engine_get,
+                engine_blob_supported as _engine_ok,
+                parse_engine_blob_uri as _engine_parse,
+            )
+        if _engine_parse(raw_uri) is not None:
+            engine_client = args.get("_engine_blob_client") if isinstance(args, dict) else None
+            if not _engine_ok(engine_client):
+                raise MatrixArkError(
+                    f"resource uri {raw_uri} names the engine blob tier, but this adapter has "
+                    "no rust proxy client to fetch it through"
+                )
+            data = _engine_get(engine_client, raw_uri)
+            suffix = infer_resource_suffix(resource_type, raw_uri)
+            temp_file = Path(tempfile.mkdtemp(prefix="matrixark-engineblob-resource-")) / f"downloaded.{suffix}"
+            temp_file.write_bytes(data)
+            result["temp_paths"].append(str(temp_file.parent))
+            result["parse_uri"] = str(temp_file)
+            result["parse_text"] = None
+            result["storage_mode"] = "temporalstore"
+            result["stored_raw_uri"] = raw_uri
+            result["raw_storage_policy"] = "temporalstore_engine_blob"
+            result["raw_bytes_stored"] = True
+            result["cloud_key"] = raw_uri.split("://", 1)[-1]
+            return result
         ts_key = parse_temporalstore_uri(raw_uri)
         try:  # top-level path (matches the object-download branch's import style)
             from matrixark_temporalstore_blob import TemporalStoreBlobClient as _TsBlobClient
@@ -456,12 +491,27 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
 
         obj_ok = _obj_backend is not None and _obj_backend() != "inline"
         ts_ok = _ts_backend is not None and _ts_backend() != "inline"
+        # The engine tier is the fallback when neither an object backend nor the HTTP blob
+        # endpoint is configured but the adapter rides a rust proxy client: the embedded
+        # engine stores the attachment itself, so one TemporalStore still holds everything.
+        engine_client = args.get("_engine_blob_client") if isinstance(args, dict) else None
+        engine_ok = False
+        if engine_client is not None and _ts_backend is not None:
+            try:  # top-level path
+                from matrixark_temporalstore_blob import engine_blob_supported as _engine_ok_fn
+            except ImportError:  # package path
+                from tools.matrixark_temporalstore_blob import engine_blob_supported as _engine_ok_fn  # type: ignore
+            engine_ok = _engine_ok_fn(engine_client)
         if backend_choice == "matrixobject":
             chosen = "matrixobject" if obj_ok else None
         elif backend_choice == "temporalstore":
-            chosen = "temporalstore" if ts_ok else None
-        else:  # auto: object store first (dedup/serving), then TemporalStore blob
-            chosen = "matrixobject" if obj_ok else ("temporalstore" if ts_ok else None)
+            chosen = "temporalstore" if ts_ok else ("temporalstore_engine" if engine_ok else None)
+        else:  # auto: object store first (dedup/serving), then TemporalStore blob, then engine
+            chosen = (
+                "matrixobject"
+                if obj_ok
+                else ("temporalstore" if ts_ok else ("temporalstore_engine" if engine_ok else None))
+            )
 
         if chosen is not None:
             # Build the blob (same local-file / dir-archive / inline-text logic
@@ -493,6 +543,17 @@ def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, re
                     scope=envelope.get("scope"), kind=str(envelope.get("kind") or resource_type or "resource"),
                     name=str(envelope.get("metadata", {}).get("name") or ""), bucket=obj_bucket,
                 )
+            elif chosen == "temporalstore_engine":
+                try:  # top-level path
+                    from matrixark_temporalstore_blob import engine_blob_put as _engine_put
+                except ImportError:  # package path
+                    from tools.matrixark_temporalstore_blob import engine_blob_put as _engine_put  # type: ignore
+                scope = envelope.get("scope") or {}
+                tenant_hash = stable_hash(
+                    f"{scope.get('account_id') or ''}:{scope.get('tenant_id') or ''}"
+                )
+                blob_res = {"storage_mode": "temporalstore", "cloud_bucket": ""}
+                blob_res.update(_engine_put(engine_client, tenant_hash, blob))
             else:  # temporalstore blob tier
                 blob_res = _ts_resolution(
                     _TsBlobClient(), blob, source_uri=raw_uri, content_type=content_type,

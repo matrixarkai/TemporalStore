@@ -3440,6 +3440,24 @@ class MatrixArkRustProxyClient:
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
 
+    def resource_blob_put(self, tenant_hash: int, payload_base64: str) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_put", key=str(int(tenant_hash)), value=payload_base64
+        )
+
+    def resource_blob_fetch(self, uri: str, *, offset: int = 0, length: int = 0) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_fetch", key=str(uri), blob_offset=int(offset), blob_length=int(length)
+        )
+
+    def resource_blob_sweep(self, tenant_hash: int, referenced_hashes: list[str], min_age_ms: int) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_sweep",
+            key=str(int(tenant_hash)),
+            blob_referenced_hashes=[str(item) for item in referenced_hashes],
+            blob_min_age_ms=int(min_age_ms),
+        )
+
     def batch_hset(self, entries: list[Json]) -> None:
         if not entries:
             return

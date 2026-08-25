@@ -95,6 +95,19 @@ struct RecordLogRequest {
     visibility_keys: Vec<String>,
     #[serde(default)]
     top_level_response: bool,
+    /// Byte offset for `matrixark_resource_blob_fetch` (0 = start).
+    #[serde(default)]
+    blob_offset: Option<u64>,
+    /// Byte count for `matrixark_resource_blob_fetch` (0/absent = to the end).
+    #[serde(default)]
+    blob_length: Option<u64>,
+    /// Content hashes (16-digit hex) the caller's resource records still name, for
+    /// `matrixark_resource_blob_sweep` -- everything else older than the age floor goes.
+    #[serde(default)]
+    blob_referenced_hashes: Option<Vec<String>>,
+    /// Minimum age before an unreferenced blob is eligible for the sweep.
+    #[serde(default)]
+    blob_min_age_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2511,6 +2524,91 @@ fn execute_record_log_request(
             cached_clients: None,
             extra: BTreeMap::new(),
         },
+        // Attachment blob tier, engine command side: the python surface reaches the
+        // embedded engine's content-addressed blob store through these ops, mirroring the
+        // datanode's HTTP /blob tier for deployments that run no HTTP server. Payloads ride
+        // base64 in `value`; structured results ride the flattened extra map.
+        "matrixark_resource_blob_put" => {
+            let tenant_hash: u64 = request
+                .key
+                .trim()
+                .parse()
+                .map_err(|_| format!("blob put needs a decimal tenant hash in key, got {:?}", request.key))?;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobPut {
+                    tenant_hash,
+                    payload_base64: request.value.clone(),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobCommitted { uri, size_bytes, content_hash } = response.response {
+                output.status = "committed".to_string();
+                output.extra.insert("matrixark_blob_uri".to_string(), json!(uri));
+                output.extra.insert("matrixark_blob_size_bytes".to_string(), json!(size_bytes));
+                output.extra.insert(
+                    "matrixark_blob_content_hash".to_string(),
+                    json!(format!("{content_hash:016x}")),
+                );
+            }
+            output
+        }
+        "matrixark_resource_blob_fetch" => {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobFetch {
+                    uri: request.key.clone(),
+                    offset: request.blob_offset.unwrap_or(0),
+                    length: request.blob_length.unwrap_or(0),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobChunk { payload_base64, total_size, eof } = response.response {
+                output.status = "served".to_string();
+                output.value = payload_base64;
+                output.extra.insert("matrixark_blob_total_size".to_string(), json!(total_size));
+                output.extra.insert("matrixark_blob_eof".to_string(), json!(eof));
+            }
+            output
+        }
+        "matrixark_resource_blob_sweep" => {
+            let tenant_hash: u64 = request
+                .key
+                .trim()
+                .parse()
+                .map_err(|_| format!("blob sweep needs a decimal tenant hash in key, got {:?}", request.key))?;
+            let referenced: Vec<u64> = request
+                .blob_referenced_hashes
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+                .collect();
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobSweep {
+                    tenant_hash,
+                    referenced_content_hashes: referenced,
+                    min_age_ms: request.blob_min_age_ms.unwrap_or(3_600_000),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobSwept { scanned, deleted } = response.response {
+                output.status = "swept".to_string();
+                output.extra.insert("matrixark_blob_scanned".to_string(), json!(scanned));
+                output.extra.insert("matrixark_blob_deleted".to_string(), json!(deleted));
+            }
+            output
+        }
         "matrixark_publish_visibility" => {
             let visibility_key_count = request.visibility_keys.len();
             let index_bytes = engine
@@ -2870,7 +2968,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         | "metrics_prometheus"
         | "shutdown"
         | "matrixark_publish_visibility" => Ok(()),
-        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
+        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash"
+        | "matrixark_resource_blob_put"
+        | "matrixark_resource_blob_fetch"
+        | "matrixark_resource_blob_sweep" => {
             require_non_empty("key", &request.key)
         }
         "matrixark_scan_candidates"
@@ -4261,6 +4362,10 @@ mod tests {
             record: None,
             visibility_keys: Vec::new(),
             top_level_response: false,
+            blob_offset: None,
+            blob_length: None,
+            blob_referenced_hashes: None,
+            blob_min_age_ms: None,
         }
     }
 
@@ -4342,6 +4447,90 @@ mod tests {
         format!(
             r#"{{"record_type":"context_event","event_id_hash":{event_id},"text":"{text}","scope_key":"t={tenant}|u={user}|s=1|","access_scope":{{"tenant_hash":{tenant},"user_hash":{user},"scope_key":"t={tenant}|u={user}|s=1|"}}}}"#
         )
+    }
+
+    /// The blob ops are the python surface's road to the embedded engine's attachment tier:
+    /// put publishes a content-addressed blob and answers with its URI, fetch range-reads it
+    /// back byte-identical through the same op surface, and sweep leaves a still-referenced
+    /// blob alone while collecting the orphan.
+    #[test]
+    fn blob_ops_roundtrip_the_attachment_through_the_op_surface() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+
+        let payload = b"the original attachment bytes, fetched back whole".repeat(64);
+        let mut put = request("matrixark_resource_blob_put");
+        put.key = "42".to_string();
+        put.value = base64_encode_bytes(&payload);
+        let committed = execute_record_log_request(&engine, put, root.clone()).expect("blob put");
+        let uri = committed
+            .extra
+            .get("matrixark_blob_uri")
+            .and_then(Value::as_str)
+            .expect("blob uri")
+            .to_string();
+        assert!(uri.starts_with("temporalstore://resources/"), "unexpected uri {uri}");
+        let kept_hash = committed
+            .extra
+            .get("matrixark_blob_content_hash")
+            .and_then(Value::as_str)
+            .expect("content hash")
+            .to_string();
+
+        let mut fetch = request("matrixark_resource_blob_fetch");
+        fetch.key = uri.clone();
+        let served = execute_record_log_request(&engine, fetch, root.clone()).expect("blob fetch");
+        assert_eq!(
+            Some(payload.len() as u64),
+            served.extra.get("matrixark_blob_total_size").and_then(Value::as_u64)
+        );
+        assert_eq!(Some(true), served.extra.get("matrixark_blob_eof").and_then(Value::as_bool));
+        assert_eq!(payload, base64_decode_str(&served.value), "fetched bytes differ");
+
+        let mut range = request("matrixark_resource_blob_fetch");
+        range.key = uri.clone();
+        range.blob_offset = Some(3);
+        range.blob_length = Some(11);
+        let window = execute_record_log_request(&engine, range, root.clone()).expect("range fetch");
+        assert_eq!(payload[3..14].to_vec(), base64_decode_str(&window.value));
+        assert_eq!(Some(false), window.extra.get("matrixark_blob_eof").and_then(Value::as_bool));
+
+        let mut orphan = request("matrixark_resource_blob_put");
+        orphan.key = "42".to_string();
+        orphan.value = base64_encode_bytes(b"orphaned attachment");
+        execute_record_log_request(&engine, orphan, root.clone()).expect("orphan put");
+
+        let mut sweep = request("matrixark_resource_blob_sweep");
+        sweep.key = "42".to_string();
+        sweep.blob_referenced_hashes = Some(vec![kept_hash]);
+        sweep.blob_min_age_ms = Some(0);
+        let swept = execute_record_log_request(&engine, sweep, root.clone()).expect("sweep");
+        assert_eq!(Some(2), swept.extra.get("matrixark_blob_scanned").and_then(Value::as_u64));
+        assert_eq!(Some(1), swept.extra.get("matrixark_blob_deleted").and_then(Value::as_u64));
+
+        let mut refetch = request("matrixark_resource_blob_fetch");
+        refetch.key = uri;
+        let still_there = execute_record_log_request(&engine, refetch, root).expect("kept blob");
+        assert_eq!(payload, base64_decode_str(&still_there.value), "the referenced blob must survive the sweep");
+    }
+
+    fn base64_encode_bytes(bytes: &[u8]) -> String {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        STANDARD.encode(bytes)
+    }
+
+    fn base64_decode_str(encoded: &str) -> Vec<u8> {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        STANDARD.decode(encoded).expect("valid base64")
     }
 
     /// The core property: walk + backfill on the first pinned scan, scope index on the second,
