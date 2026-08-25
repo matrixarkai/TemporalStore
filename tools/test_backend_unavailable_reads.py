@@ -84,5 +84,51 @@ class LoadWindowRetryClassificationTests(unittest.TestCase):
         self.assertFalse(is_retryable_temporalstore_error("stored value is not UTF-8"))
 
 
+class _StreamProc:
+    """A lane process whose stdout already holds the given response lines."""
+
+    def __init__(self, lines):
+        import os
+        read_fd, write_fd = os.pipe()
+        self.stdout = os.fdopen(read_fd, "r")
+        with os.fdopen(write_fd, "w") as writer:
+            for line in lines:
+                writer.write(line + "\n")
+
+    def poll(self):
+        return None
+
+
+def _lane_reader():
+    reader = object.__new__(adapters.MatrixArkRustProxyClient)
+    reader.request_timeout_ms = 2000
+    reader.cli_path = "matrixark_rust_proxy"
+    return reader
+
+
+class LaneResponseCorrelationTests(unittest.TestCase):
+    """The proxy answers strictly in order on one stdout, so the late response of a request an
+    earlier caller abandoned (its own timeout) sits first in the stream. Without correlation the
+    next caller reads it as ITS answer and every later reply shifts one back -- observed live as
+    one scope's scan answered with another scope's records. The reader must discard responses
+    tagged for a different request and accept untagged ones (older proxy binaries)."""
+
+    def test_a_stale_tagged_response_is_discarded(self):
+        import json as _json
+        stale = _json.dumps({"ok": True, "value": "stale", "client_request_id": "abandoned-1"})
+        mine = _json.dumps({"ok": True, "value": "mine", "client_request_id": "current-2"})
+        proc = _StreamProc([stale, mine])
+        response = _lane_reader()._read_json_line(proc, "get_string", None,
+                                                  expected_request_id="current-2")
+        self.assertEqual("mine", response.get("value"))
+
+    def test_an_untagged_response_still_answers(self):
+        import json as _json
+        proc = _StreamProc([_json.dumps({"ok": True, "value": "legacy"})])
+        response = _lane_reader()._read_json_line(proc, "get_string", None,
+                                                  expected_request_id="current-9")
+        self.assertEqual("legacy", response.get("value"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3141,7 +3141,13 @@ class MatrixArkRustProxyClient:
             self._lane_cursors[group] = index + 1
         return group, lanes[index]
 
-    def _read_json_line(self, proc: subprocess.Popen[str], op: str, lane: Json | None = None) -> Json:
+    def _read_json_line(
+        self,
+        proc: subprocess.Popen[str],
+        op: str,
+        lane: Json | None = None,
+        expected_request_id: str | None = None,
+    ) -> Json:
         assert proc.stdout is not None
         deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
         while time.monotonic() < deadline:
@@ -3160,9 +3166,21 @@ class MatrixArkRustProxyClient:
             if not line.strip().startswith("{"):
                 continue
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
+            # The proxy answers strictly in order on one stdout. A request abandoned by ITS OWN
+            # timeout still gets its response line later -- and without correlation the next
+            # caller on this lane would read that stale line as its answer, shifting every
+            # later reply one back and serving the wrong data (one scope's scan was observed
+            # answered with another scope's records). Discard any response tagged for a
+            # different request; a response with no tag (older proxy binary) is accepted
+            # unchanged.
+            if expected_request_id is not None:
+                stale_id = parsed.get("client_request_id")
+                if stale_id is not None and stale_id != expected_request_id:
+                    continue
+            return parsed
         raise MatrixArkError(
             f"Rust TemporalStore {op} timed out waiting for response from {self.cli_path} "
             f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
@@ -3213,6 +3231,14 @@ class MatrixArkRustProxyClient:
             with lock:
                 proc = self._ensure_lane_proc(lane)
                 assert proc.stdin is not None
+                # Tag the request so the reader can discard the late responses of requests a
+                # previous caller abandoned on this lane (see _read_json_line). Tagged into the
+                # LANE payload only: the daemon-socket path opens a connection per request and
+                # cannot desync.
+                request_id = f"{id(lane)}-{time.monotonic_ns()}"
+                lane_command = dict(command)
+                lane_command["client_request_id"] = request_id
+                payload = json.dumps(lane_command, separators=(",", ":")) + "\n"
                 try:
                     proc.stdin.write(payload)
                     proc.stdin.flush()
@@ -3227,7 +3253,7 @@ class MatrixArkRustProxyClient:
                     if stderr:
                         detail += f": {stderr[-1000:]}"
                     raise MatrixArkError(detail) from exc
-                response = self._read_json_line(proc, op, lane)
+                response = self._read_json_line(proc, op, lane, expected_request_id=request_id)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)

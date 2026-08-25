@@ -108,6 +108,15 @@ struct RecordLogRequest {
     /// Minimum age before an unreferenced blob is eligible for the sweep.
     #[serde(default)]
     blob_min_age_ms: Option<u64>,
+    /// Client-chosen correlation id, echoed verbatim on the response. The serve loop answers
+    /// requests strictly in order on one stdout, so a client that abandons a slow request (its
+    /// own timeout) and keeps the process alive would otherwise read the ABANDONED request's
+    /// late response as the answer to its next request -- every later reply shifted one back,
+    /// silently serving the wrong data (observed as one scope's scan answered with another
+    /// scope's records). The echo lets the client discard late responses instead of
+    /// mis-attributing them.
+    #[serde(default)]
+    client_request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -359,6 +368,9 @@ struct RecordLogResponse {
     error_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
+    /// The request's correlation id, echoed verbatim (see RecordLogRequest::client_request_id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_request_id: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -436,6 +448,7 @@ fn response_from_result(
             error: String::new(),
             error_code: String::new(),
             retryable: None,
+            client_request_id: None,
             extra: output.extra,
         },
         Err((op, error)) => {
@@ -460,6 +473,7 @@ fn response_from_result(
                 error,
                 error_code,
                 retryable: Some(retryable),
+                client_request_id: None,
                 extra: BTreeMap::new(),
             }
         }
@@ -554,6 +568,13 @@ fn serve() -> i32 {
         }
         let started = Instant::now();
         let request: Result<RecordLogRequest, _> = serde_json::from_str(&line);
+        // Captured before the request moves into its handler; echoed on EVERY response line
+        // (including shutdown), so the client can match responses to requests and discard the
+        // late answer of a request it abandoned instead of shifting every later reply back one.
+        let client_request_id = request
+            .as_ref()
+            .ok()
+            .and_then(|request| request.client_request_id.clone());
         let result = match request {
             Ok(request) if request.op == "shutdown" => {
                 let cached_clients = cached_engine_count();
@@ -568,6 +589,7 @@ fn serve() -> i32 {
                     Ok(("shutdown".to_string(), output)),
                     started.elapsed().as_millis(),
                 );
+                response.client_request_id = client_request_id;
                 let _ = writeln!(stdout, "{}", serialize_response_with_metrics(&mut response));
                 let _ = stdout.flush();
                 return 0;
@@ -599,6 +621,7 @@ fn serve() -> i32 {
         };
         let elapsed_ms = started.elapsed().as_millis();
         let mut response = response_from_result(result, elapsed_ms);
+        response.client_request_id = client_request_id;
         let response_json = serialize_response_with_metrics(&mut response);
         command_count += 1;
         let observed_elapsed_ms = response.elapsed_ms.unwrap_or(elapsed_ms);
@@ -4453,6 +4476,7 @@ mod tests {
             blob_length: None,
             blob_referenced_hashes: None,
             blob_min_age_ms: None,
+            client_request_id: None,
         }
     }
 
