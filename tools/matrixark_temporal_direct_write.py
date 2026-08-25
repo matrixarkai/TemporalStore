@@ -8,6 +8,11 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:
+    from tools.matrixark_mcp_local_adapter import fold_embedding_records
+except ImportError:
+    from matrixark_mcp_local_adapter import fold_embedding_records
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     TEMPORAL_COMPRESSED_OLD_RECORD_TYPES,
@@ -243,6 +248,17 @@ class _TemporalDirectWriteMixin:
             pass
 
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
+        if not records:
+            return
+        # Embeddings fold onto their owners at this single backend append call site, exactly as
+        # the pure-local JSONL adapter folds at its own append -- the fast direct-ingest path
+        # never goes through append_many, so folding there alone let separate embedding rows
+        # reach the engine. A drain re-entry (allow_queue=False on already-folded records) is a
+        # no-op: nothing left to partition. The resolver is consulted only for an embedding with
+        # no same-batch owner.
+        records = fold_embedding_records(
+            records, resolve_owner=getattr(self, "_resolve_embedding_owner", None)
+        )
         if not records:
             return
         self._ensure_backend_metric_fields()

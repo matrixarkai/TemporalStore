@@ -1217,6 +1217,7 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
                     },
                 }],
                 state_image: None,
+                state_image_externalized: false,
             },
         )
         .unwrap();

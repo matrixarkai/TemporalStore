@@ -62,6 +62,9 @@ impl ProxyService {
             options.control_http_options(),
         ) {
             Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
+                // The metaserver is reachable and answering, so this is the cheapest moment to
+                // learn how many shards the cluster has.
+                self.refresh_cluster_shard_count();
                 self.record_service_discovery_heartbeat(&response.status);
                 self.apply_heartbeat_config(&response);
                 response

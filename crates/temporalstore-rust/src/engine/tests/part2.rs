@@ -1043,7 +1043,13 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
     // Simulate the lost commit marker: drop the last WAL line (batch_index == batch_size).
     let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
     let contents = std::fs::read_to_string(&wal_path).expect("wal file should exist");
-    let mut lines: Vec<&str> = contents.lines().collect();
+    // Under preallocation the file ends in a zeros reservation; the records are the non-zero
+    // lines, and the commit marker is the last of THOSE -- popping blindly would drop the
+    // reservation and leave the marker standing.
+    let mut lines: Vec<&str> = contents
+        .lines()
+        .filter(|line| !line.bytes().all(|byte| byte == 0))
+        .collect();
     assert!(lines.len() >= 4, "expected keep + 3 batch records, got {}", lines.len());
     lines.pop(); // drop the batch commit-marker record
     let mut truncated = lines.join("\n");

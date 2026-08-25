@@ -33,6 +33,8 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+pub mod resource_blobs;
+pub mod quota;
 pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
 // which previously kept a drifted subset that mis-classified context/control-state writes
@@ -83,8 +85,8 @@ use crate::index_log::LocalIndexLogStore;
 use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
-    ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryVector,
     ContextDirtyNode, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
@@ -103,9 +105,15 @@ pub struct TemporalEngine {
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
+    // Set only when the engine minted its own index_dir (no caller-supplied one): the
+    // engine owns that scratch directory, and the last clone's drop removes it.
+    index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
+    /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
+    /// environment carries a default.
+    quotas: Arc<RwLock<quota::QuotaTable>>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
     /// TS_PHASE1_FLAT this fires once per command (O(writes)); with the gate on the
@@ -115,6 +123,47 @@ pub struct TemporalEngine {
 }
 
 impl TemporalEngine {
+    /// Set a shard's read and write rate limits, on a running engine.
+    ///
+    /// A rate of zero leaves that direction unlimited. Replacing a limit rebuilds the bucket, so
+    /// credit accumulated under the previous rate is dropped -- credit earned at one rate does not
+    /// mean anything at another.
+    pub fn set_shard_quota(&self, shard_id: ShardId, config: quota::ShardQuotaConfig) {
+        self.quotas
+            .write()
+            .expect("quota lock poisoned")
+            .set(shard_id, config);
+    }
+
+    /// What a shard's limits currently are, if any were set.
+    pub fn shard_quota(&self, shard_id: ShardId) -> Option<quota::ShardQuotaConfig> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .config_of(shard_id)
+    }
+
+    /// Take one token for `kind`. True when the command may proceed.
+    ///
+    /// The overwhelmingly common case is a shard with no limit, and that case must not pay for
+    /// this. The environment default is read once for the process rather than per command, and a
+    /// shard that is not limited settles under a READ lock -- taking the write lock on every
+    /// command would serialise the engine on a feature almost nobody has turned on.
+    fn charge_quota(&self, shard_id: ShardId, kind: quota::QuotaKind) -> bool {
+        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
+        let default = *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env);
+        if default.is_unlimited() {
+            let table = self.quotas.read().expect("quota lock poisoned");
+            if !table.limits(shard_id) {
+                return true;
+            }
+        }
+        self.quotas
+            .write()
+            .expect("quota lock poisoned")
+            .try_consume(shard_id, kind, default)
+    }
+
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, None)
     }
@@ -230,6 +279,41 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
     ) -> ExecuteResponse {
+        // Charged before anything else, including the read-only fast path -- a read served without
+        // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
+        // not a limit.
+        //
+        // Not charged while applying a replicated entry or replaying the log. Refusing either is
+        // not shedding load: a follower that rejects what the leader committed diverges from it,
+        // and a replay that rejects a record already in the log cannot rebuild the shard.
+        if !raft_applying() && !replaying_wal() {
+            let kind = if command_validation::is_write_command(&request.command) {
+                quota::QuotaKind::Write
+            } else {
+                quota::QuotaKind::Read
+            };
+            if !self.charge_quota(request.shard_id, kind) {
+                return ExecuteResponse {
+                    status: Status::error(
+                        "quota_exhausted",
+                        format!(
+                            "shard {} is over its {} rate limit",
+                            request.shard_id,
+                            match kind {
+                                quota::QuotaKind::Write => "write",
+                                quota::QuotaKind::Read => "read",
+                            }
+                        ),
+                    ),
+                    response: CommandResponse::Empty,
+                };
+            }
+        }
+        // Blob commands run before the shard lock: blobs live beside the engine, not inside
+        // any shard's record state, and a large upload must never hold the shard write lock.
+        if let Some(response) = self.execute_resource_blob_command(&request) {
+            return response;
+        }
         if async_storage_override.is_some() {
             if let Some(response) = self.execute_read_only_fast_path(&request) {
                 return response;
@@ -1503,7 +1587,6 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 "context_summaries": shard.context_summaries.get(key),
                 "context_compressions": shard.context_compressions.get(key),
                 "context_entities": shard.context_entities.get(key),
-                "context_embeddings": shard.context_embeddings.get(key),
             })
         })
         .collect()
@@ -1547,11 +1630,6 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_compressions"),
         );
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
-        apply_key_state_field(
-            &mut shard.context_embeddings,
-            key,
-            blob.get("context_embeddings"),
-        );
     }
 }
 
@@ -2004,16 +2082,9 @@ fn next_temp_counter() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[cfg(test)]
 fn unique_temp_path(kind: &str) -> PathBuf {
-    let counter = next_temp_counter();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
+    crate::scratch::unique_temp_path(kind)
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
@@ -2237,7 +2308,6 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
     removed |= shard.context_children.remove(key).is_some();
-    removed |= shard.context_embeddings.remove(key).is_some();
     removed |= shard.context_summaries.remove(key).is_some();
     removed |= shard.context_compressions.remove(key).is_some();
     removed
@@ -2407,9 +2477,6 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.context_children.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
-    for series in shard.context_embeddings.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
-    }
     for series in shard.context_summaries.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
@@ -2575,7 +2642,6 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_audits.contains_key(key)
         || shard.context_entities.contains_key(key)
         || shard.context_children.contains_key(key)
-        || shard.context_embeddings.contains_key(key)
         || shard.context_summaries.contains_key(key)
         || shard.context_compressions.contains_key(key)
 }
@@ -2755,7 +2821,6 @@ fn object_manager_stats(
             + shard.context_audits.len()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_children.len()
-            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_summaries.len()
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
@@ -2786,7 +2851,6 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>()
-            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard
                 .context_summaries
                 .values()
@@ -2841,7 +2905,6 @@ fn object_manager_stats(
         + shard.context_audits.len()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_children.len()
-        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
     let page_ref_count = shard.strings.len()
@@ -2870,7 +2933,6 @@ fn object_manager_stats(
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()
-        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard
             .context_summaries
             .values()

@@ -301,7 +301,7 @@ pub struct ContextEvent {
     // Deprecated hot-schema field: use ContextCompressionEvent/debug sidecars instead.
     #[serde(default, skip_serializing)]
     pub compact_attrs: Vec<u8>,
-    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    // The record's embedding vector, carried inline -- its only home.
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
@@ -311,8 +311,7 @@ pub struct ContextEvent {
     // ~1536 for the vector, about 3% of a fetch already paid for.
     //
     // Default-empty and skipped when empty: a record written before the fold decodes with no
-    // vector and readers fall back to the ContextEmbedding record, so this can be populated
-    // before any reader migrates off ref_hash addressing.
+    // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
 }
@@ -442,7 +441,7 @@ pub struct ContextEntity {
     pub confidence: f32,
     #[serde(default)]
     pub source_event_hashes: Vec<u64>,
-    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    // The record's embedding vector, carried inline -- its only home.
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
@@ -452,8 +451,7 @@ pub struct ContextEntity {
     // ~1536 for the vector, about 3% of a fetch already paid for.
     //
     // Default-empty and skipped when empty: a record written before the fold decodes with no
-    // vector and readers fall back to the ContextEmbedding record, so this can be populated
-    // before any reader migrates off ref_hash addressing.
+    // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
 }
@@ -466,14 +464,9 @@ pub struct ContextChildRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ContextEmbedding {
-    pub ref_hash: u64,
-    pub level: u32,
-    #[serde(default)]
-    pub model_hash: u64,
-    #[serde(default)]
+pub struct ContextSummaryVector {
+    pub node_hash: u64,
     pub vector: Vec<f32>,
-    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -483,7 +476,7 @@ pub struct ContextSummary {
     #[serde(default)]
     pub text: String,
     pub valid_from_ms: u64,
-    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    // The record's embedding vector, carried inline -- its only home.
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
@@ -493,8 +486,7 @@ pub struct ContextSummary {
     // ~1536 for the vector, about 3% of a fetch already paid for.
     //
     // Default-empty and skipped when empty: a record written before the fold decodes with no
-    // vector and readers fall back to the ContextEmbedding record, so this can be populated
-    // before any reader migrates off ref_hash addressing.
+    // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
 }
@@ -523,7 +515,6 @@ pub type ContextSlab = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextChildModel = ContextChildRef;
-pub type ContextEmbeddingModel = ContextEmbedding;
 pub type ContextSummaryModel = ContextSummary;
 pub type ContextCompressionModel = ContextCompressionEvent;
 
@@ -599,13 +590,6 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             "ctx:child",
             "FeatureOrSet",
             &["ContextChild", "ContextChildRef"],
-        ),
-        context_model_descriptor_entry(
-            CONTEXT_EMBEDDING_MODEL_ID,
-            "ContextEmbeddingModel",
-            "ctx:embedding",
-            "HashOrSet<std::string,std::string>",
-            &["ContextEmbedding"],
         ),
         context_model_descriptor_entry(
             CONTEXT_SUMMARY_MODEL_ID,
@@ -1052,54 +1036,6 @@ impl ContextWire for ContextChildRef {
     }
 }
 
-impl ContextWire for ContextEmbedding {
-    fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_varint_field(&mut out, 1, self.ref_hash);
-        encode_varint_field(&mut out, 2, u64::from(self.level));
-        encode_varint_field(&mut out, 3, self.model_hash);
-        for value in &self.vector {
-            encode_fixed32_field(&mut out, 4, value.to_bits());
-        }
-        encode_varint_field(&mut out, 5, self.updated_at_ms);
-        out
-    }
-
-    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
-        let mut cursor = 0;
-        let mut value = Self {
-            ref_hash: 0,
-            level: 0,
-            model_hash: 99,
-            vector: Vec::new(),
-            updated_at_ms: 0,
-        };
-        while cursor < bytes.len() {
-            let tag = decode_varint(bytes, &mut cursor)?;
-            match (tag >> 3, tag & 0x7) {
-                (1, 0) => value.ref_hash = decode_varint(bytes, &mut cursor)?,
-                (2, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
-                (3, 0) => value.model_hash = decode_varint(bytes, &mut cursor)?,
-                (4, 5) => value
-                    .vector
-                    .push(f32::from_bits(decode_fixed32(bytes, &mut cursor)?)),
-                (4, 2) => {
-                    let packed = decode_bytes(bytes, &mut cursor)?;
-                    let mut packed_cursor = 0;
-                    while packed_cursor < packed.len() {
-                        value
-                            .vector
-                            .push(f32::from_bits(decode_fixed32(&packed, &mut packed_cursor)?));
-                    }
-                }
-                (5, 0) => value.updated_at_ms = decode_varint(bytes, &mut cursor)?,
-                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
-            }
-        }
-        Some(value)
-    }
-}
-
 impl ContextWire for ContextSummary {
     fn encode_context_proto_value(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1460,13 +1396,51 @@ pub enum Command {
     /// the vector live on the record it belongs to.
     /// Vectors for these nodes, read from the nodes themselves.
     ///
-    /// The counterpart of ContextSetNodeEmbedding: asking by owner is only possible because the
-    /// vector lives on the owner now. ContextQueryEmbeddings cannot answer this -- it is keyed
-    /// by a hash of (tenant, owner, level), so the caller must already know each owner in order
-    /// to rebuild the key, and the reply cannot say which owner it came from.
+    /// The counterpart of ContextSetNodeEmbedding: asking by owner is possible because the
+    /// vector lives on the owner. The retired separate rows could never answer this -- they
+    /// were keyed by a hash of (tenant, owner, level), so the caller had to already know each
+    /// owner to rebuild the key, and the reply could not say which owner it came from.
     ContextQueryNodeEmbeddings {
         tenant_hash: u64,
         node_hashes: Vec<u64>,
+    },
+    /// Attachment blob store: start a multi-part upload into the engine-owned blob directory.
+    /// The full original payload of an oversized resource lives here so one TemporalStore holds
+    /// everything -- chunks stay searchable in records while the attachment itself is fetchable
+    /// again by its `temporalstore://resources/{tenant}/{content-hash}` URI.
+    ContextResourceBlobBegin {
+        tenant_hash: u64,
+    },
+    /// Append one part to a staged upload. Parts are sequential against one node.
+    ContextResourceBlobAppend {
+        tenant_hash: u64,
+        upload_token: String,
+        payload_base64: String,
+    },
+    /// Publish a staged upload: content-hash, fsync, rename into place. The resource record
+    /// that carries the returned URI is the commit point; a blob with no record is garbage the
+    /// sweep collects.
+    ContextResourceBlobCommit {
+        tenant_hash: u64,
+        upload_token: String,
+    },
+    /// Single-shot begin+append+commit for payloads that fit one request.
+    ContextResourceBlobPut {
+        tenant_hash: u64,
+        payload_base64: String,
+    },
+    /// Range-read a published blob. `length == 0` means to the end.
+    ContextResourceBlobFetch {
+        uri: String,
+        offset: u64,
+        length: u64,
+    },
+    /// Delete unreferenced blobs older than  for one tenant, plus stale staging
+    /// files. The caller supplies the referenced set from the resource records it holds.
+    ContextResourceBlobSweep {
+        tenant_hash: u64,
+        referenced_content_hashes: Vec<u64>,
+        min_age_ms: u64,
     },
     ContextSetNodeEmbedding {
         tenant_hash: u64,
@@ -1639,16 +1613,6 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
-    ContextUpsertEmbedding {
-        tenant_hash: u64,
-        embedding: ContextEmbedding,
-    },
-    ContextQueryEmbeddings {
-        tenant_hash: u64,
-        ref_hashes: Vec<u64>,
-        #[serde(default)]
-        limit: Option<usize>,
-    },
     ContextTraverseTree {
         tenant_hash: u64,
         start_node_hash: u64,
@@ -1675,6 +1639,17 @@ pub enum Command {
         as_of_ms: u64,
         #[serde(default)]
         limit: Option<usize>,
+    },
+    /// The newest summary VECTOR at `level` for each node, in one command.
+    ///
+    /// Retrieval scores every candidate node's summaries; per-node ContextQuerySummaries would
+    /// turn that into a command per candidate, and the whole summary payload when only the
+    /// vector is wanted. This returns exactly the scoring input, batched like ContextGetNodes.
+    ContextQuerySummaryVectors {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+        level: u32,
+        as_of_ms: u64,
     },
     ContextWriteCompressionEvent {
         tenant_hash: u64,
@@ -1935,15 +1910,15 @@ pub enum CommandResponse {
     ContextNodeEmbeddings {
         embeddings: Vec<(u64, Vec<f32>)>,
     },
-    ContextEmbeddings {
-        embeddings: Vec<ContextEmbedding>,
-    },
     ContextTraversedNodes {
         nodes: Vec<ContextTraversedNode>,
     },
     ContextSummaries {
         object_key: String,
         summaries: Vec<ContextSummary>,
+    },
+    ContextSummaryVectors {
+        vectors: Vec<ContextSummaryVector>,
     },
     ContextCompressionEvents {
         object_key: String,
@@ -1952,6 +1927,24 @@ pub enum CommandResponse {
         source_event_count: Option<u32>,
         #[serde(default)]
         truncated_source_events: Option<bool>,
+    },
+    ContextResourceBlobUpload {
+        upload_token: String,
+        bytes_total: u64,
+    },
+    ContextResourceBlobCommitted {
+        uri: String,
+        size_bytes: u64,
+        content_hash: u64,
+    },
+    ContextResourceBlobChunk {
+        payload_base64: String,
+        total_size: u64,
+        eof: bool,
+    },
+    ContextResourceBlobSwept {
+        scanned: u64,
+        deleted: u64,
     },
     ContextNodeContext {
         node_exists: bool,
@@ -2337,7 +2330,6 @@ mod tests {
                 ("ContextIndexModel", 11, "ctxidx"),
                 ("ContextAuditModel", 12, "ctx:audit"),
                 ("ContextChildModel", 14, "ctx:child"),
-                ("ContextEmbeddingModel", 15, "ctx:embedding"),
                 ("ContextSummaryModel", 16, "ctx:summary"),
                 ("ContextCompressionModel", 17, "ctx:compress"),
                 ("ContextEntityModel", 18, "ctx:entity"),
@@ -2422,17 +2414,6 @@ mod tests {
         assert_eq!(
             ContextChildRef::decode_context_proto_value(&child.encode_context_proto_value()),
             Some(child)
-        );
-        let embedding = ContextEmbedding {
-            ref_hash: 20,
-            level: 1,
-            model_hash: 0,
-            vector: vec![1.0, 0.0],
-            updated_at_ms: 1_000,
-        };
-        assert_eq!(
-            ContextEmbedding::decode_context_proto_value(&embedding.encode_context_proto_value()),
-            Some(embedding)
         );
         let summary = ContextSummary {
             node_hash: 20,

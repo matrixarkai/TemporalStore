@@ -1206,7 +1206,7 @@ class _LocalAdapterSummariesMixin:
         } if isinstance(args.get("skip_dirty_reasons"), list) else set()
         # One read for the pass. The embedding step below reuses it only when nothing was
         # written -- see there.
-        pass_records = self.read_all()
+        pass_records = self.records_for_summary_refresh()
         result = self.refresh_dirty_node_summaries(
             records=pass_records,
             scope=scope,

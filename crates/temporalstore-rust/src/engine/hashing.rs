@@ -33,6 +33,11 @@ pub(super) fn stable_object_hash_bytes(bytes: &[u8]) -> u64 {
     hash
 }
 
+/// Initial value for a streaming stable_object_hash_update sequence.
+pub(super) fn stable_object_hash_begin() -> u64 {
+    FNV1A64_OFFSET_BASIS
+}
+
 pub(super) fn stable_object_hash_update(hash: &mut u64, bytes: &[u8]) {
     for byte in bytes {
         *hash ^= *byte as u64;
