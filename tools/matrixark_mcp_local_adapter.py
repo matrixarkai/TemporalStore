@@ -5045,6 +5045,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             result["purge"] = purge
         return result
 
+    def records_for_delete(self, memory_id: str) -> list[Json]:
+        """The live records a delete reasons over: the event and everything pointing at it.
+
+        Base implementation: the whole store. delete's own predicates run over whatever this
+        returns, so an override only has to produce a SUPERSET of the id's live records --
+        missing one would leave a derivative pointing at a deleted source.
+        """
+        return self.read_all()
+
     def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
         """Delete a single memory by id/hash (mem0 ``delete``), with provenance-closure cascade.
 
@@ -5064,7 +5073,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
             raise MatrixArkError("delete requires a memory_id")
-        records = self.read_all()
+        records = self.records_for_delete(memory_id)
         try:
             memory_id_int: int | None = int(memory_id)
         except (TypeError, ValueError):
