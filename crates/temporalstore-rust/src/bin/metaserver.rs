@@ -2797,6 +2797,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
                 group: "front".to_string(),
                 namespace: "tenant".to_string(),
                 location: String::new(),
@@ -2927,6 +2928,7 @@ mod tests {
         // This pins the fact those messages now assert, so a future change that
         // gives raft one of these capabilities has to update the text as well.
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,

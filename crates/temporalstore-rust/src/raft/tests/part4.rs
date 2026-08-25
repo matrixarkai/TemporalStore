@@ -18,6 +18,7 @@ fn a_proxy_group_needs_a_name_on_the_raft_path_too() {
     // Judged before proposing, never while applying: replay has to reapply what
     // was already accepted.
     let empty = || PutProxyGroupRequest {
+        drop_percent: 0,
         group: String::new(),
         namespace: String::new(),
         location: "rack-1".to_string(),
@@ -42,6 +43,7 @@ fn a_proxy_group_needs_a_name_on_the_raft_path_too() {
 
     // A named group still goes through, so the guard is not simply refusing.
     let good = meta.put_proxy_group(PutProxyGroupRequest {
+        drop_percent: 0,
         group: "orders".to_string(),
         namespace: "ns".to_string(),
         location: "rack-1".to_string(),
