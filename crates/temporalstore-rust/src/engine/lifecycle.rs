@@ -15,7 +15,11 @@ impl TemporalEngine {
     }
 
     pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: LocalBlockStore) -> Self {
-        Self::with_cache_block_store_and_index_dir(cache, block_store, unique_temp_path("indexes"))
+        let scratch = crate::scratch::owned_scratch_dir("indexes");
+        let mut engine =
+            Self::with_cache_block_store_and_index_dir(cache, block_store, scratch.path());
+        engine.index_scratch = Some(scratch);
+        engine
     }
 
     pub fn with_cache_block_store_and_index_dir(
@@ -37,6 +41,7 @@ impl TemporalEngine {
             wal_store,
             index_log_store,
             index_dir,
+            index_scratch: None,
             configs: Arc::default(),
             infos: Arc::default(),
             admissions: Arc::default(),

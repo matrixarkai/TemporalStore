@@ -508,6 +508,9 @@ pub type LocalWalStore = LocalWriteAheadLogStore;
 #[derive(Debug)]
 struct WriteAheadLogInner {
     root: PathBuf,
+    // Set only by Default: the store owns its minted scratch directory, and the last
+    // clone's drop removes it. Never set for a caller-supplied root.
+    scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
     // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
@@ -549,6 +552,7 @@ impl LocalWriteAheadLogStore {
         Self {
             inner: Arc::new(Mutex::new(WriteAheadLogInner {
                 root,
+                scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
@@ -1447,7 +1451,14 @@ impl LocalWriteAheadLogStore {
 
 impl Default for LocalWriteAheadLogStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("wals"))
+        let scratch = crate::scratch::owned_scratch_dir("wals");
+        let store = Self::new(scratch.path());
+        store
+            .inner
+            .lock()
+            .expect("write-ahead log lock poisoned")
+            .scratch = Some(scratch);
+        store
     }
 }
 
@@ -2457,23 +2468,22 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unique_temp_path(kind: &str) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Command;
+
+    #[test]
+    fn default_store_scratch_dir_dies_with_the_last_clone() {
+        let store = LocalWriteAheadLogStore::default();
+        let root = store.inner.lock().unwrap().root.clone();
+        assert!(root.exists(), "Default must create its scratch dir");
+        let clone = store.clone();
+        drop(store);
+        assert!(root.exists(), "a live clone must keep the scratch dir");
+        drop(clone);
+        assert!(!root.exists(), "the last clone's drop must remove the scratch dir");
+    }
 
     #[test]
     fn wal_interleaved_processes_refresh_sequence_from_disk() {

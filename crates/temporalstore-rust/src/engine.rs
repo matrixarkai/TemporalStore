@@ -105,6 +105,9 @@ pub struct TemporalEngine {
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
+    // Set only when the engine minted its own index_dir (no caller-supplied one): the
+    // engine owns that scratch directory, and the last clone's drop removes it.
+    index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
@@ -2079,16 +2082,9 @@ fn next_temp_counter() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[cfg(test)]
 fn unique_temp_path(kind: &str) -> PathBuf {
-    let counter = next_temp_counter();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
+    crate::scratch::unique_temp_path(kind)
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
