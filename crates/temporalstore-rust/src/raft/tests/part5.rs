@@ -1548,3 +1548,60 @@ fn lagging_follower_beyond_the_window_still_catches_up() {
         "the probed follower must converge to the leader commit ({leader_commit})"
     );
 }
+
+/// The compaction threshold bounds the log ON DISK, so it must be judged by the disk footprint.
+///
+/// Judging it by the logical size of the commands understates the footprint by the whole
+/// encoding overhead: on a 30,000-write corpus the commands were 5 MB while the segments held
+/// 36 MB, so an 8 MB bound never fired and the log grew without limit. This test writes a
+/// corpus whose ON-DISK size passes a threshold its COMMAND bytes do not, and requires the
+/// trigger to fire.
+#[test]
+fn compaction_threshold_is_judged_on_the_logs_disk_footprint() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            // Never hold compaction for a lagging peer in this test: it is the byte accounting
+            // under test, not the retention policy.
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..120u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("disk-{i:04}"),
+                    value: vec![(i % 251) as u8; 96],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+
+    let logical: u64 = 120 * 96;
+    let report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        report.applied_log_bytes > logical,
+        "the trigger must judge the on-disk footprint ({}), not just the command bytes ({logical})",
+        report.applied_log_bytes
+    );
+
+    // A threshold ABOVE the command bytes but BELOW the disk footprint must fire: that band is
+    // exactly where an unbounded log used to live.
+    let between = (logical + report.applied_log_bytes) / 2;
+    cluster.set_max_applied_log_bytes_for_test(between);
+    let fired = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        fired.triggered,
+        "a threshold inside the encoding overhead must compact (reason: {}, bytes: {}, limit: {between})",
+        fired.reason, fired.applied_log_bytes
+    );
+}

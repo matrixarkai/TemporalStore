@@ -1085,6 +1085,39 @@ impl LocalRaftWal {
     // Retained for the legacy on-disk prune path; the segmented append hot path now
     // prunes in-memory via the cursor to stay O(1).
     #[allow(dead_code)]
+    /// Bytes this node's log actually occupies on disk: every segment plus any externalized
+    /// state image. Metadata only -- no segment is opened or scanned, so this is cheap enough
+    /// for the periodic compaction check to consult on every tick.
+    ///
+    /// The compaction threshold exists to bound THIS number. Judging it by the logical size of
+    /// the commands instead understates it by the log's whole encoding overhead: on a 30k-write
+    /// corpus the commands were 5 MB while the segments held 36 MB, so an 8 MB bound did not
+    /// fire until the disk was already past 50 MB.
+    pub fn node_disk_bytes(&self, shard_id: ShardId, node_id: RaftNodeId) -> u64 {
+        let dir = self.node_segment_dir(shard_id, node_id);
+        let mut total = 0u64;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let is_log = matches!(
+                    path.extension().and_then(|ext| ext.to_str()),
+                    Some("wal") | Some("bin")
+                );
+                if !is_log {
+                    continue;
+                }
+                if let Ok(metadata) = entry.metadata() {
+                    total = total.saturating_add(metadata.len());
+                }
+            }
+        }
+        // The pre-segment single-file layout, for a node that has not rolled yet.
+        if let Ok(metadata) = fs::metadata(self.node_path(shard_id, node_id)) {
+            total = total.saturating_add(metadata.len());
+        }
+        total
+    }
+
     pub(super) fn prune_node_segments(
         &self,
         shard_id: ShardId,
