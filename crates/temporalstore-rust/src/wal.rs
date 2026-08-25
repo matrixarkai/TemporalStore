@@ -40,7 +40,7 @@
 //! would need none of that, was measured and made no difference: the cost is persisting the size,
 //! not allocating the blocks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -508,6 +508,9 @@ pub type LocalWalStore = LocalWriteAheadLogStore;
 #[derive(Debug)]
 struct WriteAheadLogInner {
     root: PathBuf,
+    // Set only by Default: the store owns its minted scratch directory, and the last
+    // clone's drop removes it. Never set for a caller-supplied root.
+    scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
     // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
@@ -534,6 +537,12 @@ struct WriteAheadLogInner {
     // compares the on-disk length against THIS (not the record end) to detect another writer,
     // because under preallocation those two are allowed to differ.
     prealloc_physical_by_shard: HashMap<ShardId, u64>,
+    // Shards whose piece being written was created without its directory entry being made durable.
+    // A roll creates a new file under the same name, so the entry has to reach disk again before
+    // any record in that piece is acked -- otherwise the file can vanish and take an acked record
+    // with it. The roll does not pay for that barrier itself: it records the debt here and the next
+    // durable barrier, which was going to run anyway, settles it.
+    dir_sync_owed_by_shard: HashSet<ShardId>,
 }
 
 impl LocalWriteAheadLogStore {
@@ -543,12 +552,14 @@ impl LocalWriteAheadLogStore {
         Self {
             inner: Arc::new(Mutex::new(WriteAheadLogInner {
                 root,
+                scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
                 prealloc_physical_by_shard: HashMap::new(),
+                dir_sync_owed_by_shard: HashSet::new(),
             })),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -835,11 +846,21 @@ impl LocalWriteAheadLogStore {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         crate::durability_metrics::record_barrier("engine_wal_group_commit");
         file.sync_data()?;
-        if !entry.dir_synced {
-            // First durable append for this shard this process lifetime: make the
-            // directory entry durable once. Subsequent appends never touch it.
+        let owed = {
+            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.dir_sync_owed_by_shard.contains(&shard_id)
+        };
+        if !entry.dir_synced || owed {
+            // The first durable append for this shard this process lifetime makes the directory
+            // entry durable once, and afterwards nothing touches it -- until a roll creates a new
+            // file under the same name, which is what `owed` reports.
             sync_parent_dir(&path)?;
             entry.dir_synced = true;
+            self.inner
+                .lock()
+                .expect("write-ahead log lock poisoned")
+                .dir_sync_owed_by_shard
+                .remove(&shard_id);
         }
         entry.durable_seq = entry.durable_seq.max(snapshot);
         {
@@ -903,6 +924,12 @@ impl LocalWriteAheadLogStore {
         let Some((path, physical)) = locate_log_id(&inner.root, shard_id, offset)? else {
             return Ok(Vec::new());
         };
+        // The records may stop before the file does: under preallocation the active piece ends
+        // in a zeros reservation, which is room, not log content, and must not be served to a
+        // caller reading the stream. Sealed pieces end exactly at their records, so the clamp
+        // is a no-op there.
+        let (_, record_end) = last_wal_sequence_in(&path)?;
+        let size = size.min(record_end.saturating_sub(physical));
         let bytes = read_at(&path, physical, size)?;
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes.len() as u64;
@@ -941,6 +968,9 @@ impl LocalWriteAheadLogStore {
             // start plus its length says where it ends, so skipping it costs a stat rather than a
             // read of every line in it. This is what makes a windowed scan cost the window: without
             // it the loop below still reads the whole log and merely declines to return most of it.
+            // Also what skips a piece reclaimed since the listing above: an absent piece reads
+            // as base zero with no length, so this says it ends before any window and the loop
+            // moves on rather than opening a file that is gone. See `read_wal_base`.
             let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
             if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
                 continue;
@@ -1193,11 +1223,17 @@ impl LocalWriteAheadLogStore {
         // That is what makes the whole reclaim expressible as one number: every survivor moves
         // down by exactly the length of the removed prefix.
         let (base_offset, header_len) = read_wal_base(&path)?;
+        // Where the records stop. Under preallocation the file continues past them as a zeros
+        // reservation, which this pass must neither decode as a record nor copy into the
+        // rewritten file; the tail scan also repairs any torn non-zero tail first, exactly as
+        // an append would.
+        let (_, record_end) = last_wal_sequence_in(&path)?;
         // One line at a time. A log is not bounded by memory, so neither this search nor the
         // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
         // the size of the whole file.
-        let mut reader = BufReader::new(File::open(&path)?);
-        reader.seek(SeekFrom::Start(header_len))?;
+        let mut source = File::open(&path)?;
+        source.seek(SeekFrom::Start(header_len))?;
+        let mut reader = BufReader::new(source.take(record_end.saturating_sub(header_len)));
         let mut records_before = 0usize;
         let mut records_after = 0usize;
         let mut split = None;
@@ -1277,7 +1313,10 @@ impl LocalWriteAheadLogStore {
             // arithmetic this whole scheme rests on, and it costs a parse per record.
             let mut source = File::open(&path)?;
             source.seek(SeekFrom::Start(split))?;
-            std::io::copy(&mut BufReader::new(source), &mut temp)?;
+            std::io::copy(
+                &mut BufReader::new(source.take(record_end.saturating_sub(split))),
+                &mut temp,
+            )?;
             temp.flush()?;
             temp.sync_all()?;
         }
@@ -1290,6 +1329,11 @@ impl LocalWriteAheadLogStore {
             .base_by_shard
             .insert(shard_id, (new_base, new_header_len));
         let bytes_after = path.metadata()?.len();
+        // The rewritten file ends exactly at its records: no reservation survives the rename,
+        // and the record end IS the file length again. Leaving the old entries in place would
+        // make the next append place its bytes against the pre-rewrite file.
+        inner.verified_len_by_shard.insert(shard_id, bytes_after);
+        inner.prealloc_physical_by_shard.remove(&shard_id);
         Ok(WriteAheadLogGcReport {
             shard_id,
             retain_from_sequence,
@@ -1378,6 +1422,11 @@ impl LocalWriteAheadLogStore {
             if line.trim().is_empty() {
                 continue;
             }
+            // The records may end before the file does: a trailing zeros run is preallocated
+            // room, not a record, and it always comes last.
+            if line.bytes().all(|byte| byte == 0) {
+                break;
+            }
             let record = decode_wal_line(line.as_bytes())?;
             if start_sequence == 0 {
                 start_sequence = record.sequence;
@@ -1402,7 +1451,14 @@ impl LocalWriteAheadLogStore {
 
 impl Default for LocalWriteAheadLogStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("wals"))
+        let scratch = crate::scratch::owned_scratch_dir("wals");
+        let store = Self::new(scratch.path());
+        store
+            .inner
+            .lock()
+            .expect("write-ahead log lock poisoned")
+            .scratch = Some(scratch);
+        store
     }
 }
 
@@ -1422,7 +1478,14 @@ fn drop_covered_wal_segments(
     let active = write_ahead_log_path(root, shard_id);
     let mut dropped = 0usize;
     let mut freed = 0u64;
+    // Stop after this many, so the lock every append needs is not held for the whole backlog.
+    // Whatever is left is dropped by the next pass: pieces go from the front in order, so stopping
+    // early leaves the rest exactly where the next pass would have looked anyway.
+    let limit = wal_reclaim_max_segments_per_pass();
     for path in wal_segment_paths(root, shard_id) {
+        if limit > 0 && dropped >= limit {
+            break;
+        }
         if path == active || !path.exists() {
             continue;
         }
@@ -1440,6 +1503,17 @@ fn drop_covered_wal_segments(
         sync_parent_dir(&active)?;
     }
     Ok((dropped, freed))
+}
+
+/// One byte at `offset`, or None at/past the end of the file.
+fn byte_at(path: &Path, offset: u64) -> Result<Option<u8>, WriteAheadLogError> {
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut byte = [0u8; 1];
+    match std::io::Read::read(&mut file, &mut byte)? {
+        0 => Ok(None),
+        _ => Ok(Some(byte[0])),
+    }
 }
 
 fn read_at(path: &Path, physical: u64, size: u64) -> Result<Vec<u8>, WriteAheadLogError> {
@@ -1515,7 +1589,15 @@ fn ensure_active_wal_segment(
     shard_id: ShardId,
 ) -> Result<(), WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, shard_id);
-    if path.exists() {
+    // A piece of zero length is one that was created and never got its header, which a crash
+    // between the two leaves behind. It has to be treated as absent: `read_wal_base` reads an
+    // empty file as starting at log id ZERO, and if there are sealed pieces then zero is an
+    // address they already own, so leaving it alone hands the same address out twice.
+    let empty = path
+        .metadata()
+        .map(|metadata| metadata.len() == 0)
+        .unwrap_or(false);
+    if path.exists() && !empty {
         return Ok(());
     }
     let start = log_id_after_sealed(&inner.root, shard_id)?;
@@ -1573,15 +1655,25 @@ fn roll_wal_segment_if_due(
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
     fs::rename(&path, &sealed)?;
     sync_parent_dir(&sealed)?;
+    // Sealed, and nothing to append to yet. A crash here leaves a log whose pieces are all sealed,
+    // and an absent piece reads as starting at log id zero -- which those pieces already own.
+    crate::fault::point("wal/roll/after_rename");
 
     // Start the next piece where this one ended. If a crash lands before this, the next append
     // derives the same starting point from the sealed pieces.
     let next_base = base.saturating_add(holds);
     let mut file = File::create(&path)?;
+    // Created, no header yet. A crash here leaves a piece of zero length, which reads as starting
+    // at log id zero for the same reason.
+    crate::fault::point("wal/roll/after_create");
     file.write_all(&crate::log_framing::encode_base_header(next_base))?;
     file.flush()?;
-    file.sync_all()?;
-    sync_parent_dir(&path)?;
+    // No barrier for the header, and none for the directory entry. The header rides the barrier
+    // that makes the first record in this piece durable -- same file, and fsync covers the inode
+    // rather than the handle -- and if no record ever lands here the header was worth nothing. The
+    // directory entry is owed until the next durable barrier, which is before any record in this
+    // piece can be acked.
+    inner.dir_sync_owed_by_shard.insert(shard_id);
 
     let new_header_len = crate::log_framing::encode_base_header(next_base).len() as u64;
     inner
@@ -1806,7 +1898,17 @@ fn resolve_last_sequence_for_append(
                 verified_len
             };
             if on_disk_len == expected_physical {
-                return Ok((cached_last_sequence, verified_len));
+                // An unchanged length is not enough under preallocation: another process
+                // appending INSIDE the reservation leaves the file the same size. Its write
+                // starts with a frame byte, never NUL, so one byte read at our record end tells
+                // the two apart -- zero (or reading at the very end) means the reservation is
+                // still ours from here on.
+                let interloper = wal_preallocate_enabled()
+                    && verified_len < on_disk_len
+                    && byte_at(&path, verified_len)?.is_some_and(|byte| byte != 0);
+                if !interloper {
+                    return Ok((cached_last_sequence, verified_len));
+                }
             }
         }
     }
@@ -1855,13 +1957,32 @@ fn wal_env_flag_default_on(name: &str) -> bool {
     )
 }
 
-/// TS_WAL_PREALLOCATE (default OFF): write records inside a file that has already been grown
+/// TS_WAL_PREALLOCATE (default ON): write records inside a file that has already been grown
 /// to size instead of growing it on every append. fdatasync on a growing file must persist the
 /// new length -- the bytes are unreadable without it -- so every barrier pays a metadata write.
-/// Growing the file in chunks moves that cost to once per chunk. Measured only worthwhile at
-/// small group sizes (issue #188); ships dark until confirmed on the storage the cluster runs on.
+/// Growing the file in chunks moves that cost to once per chunk: measured 42-55% cheaper at a
+/// barrier per record (issue #188). Live by default now that the full suite runs green with it
+/// forced on; the env var remains the escape hatch (=0 restores growing appends, and a log
+/// written either way reads back under the other, since the tail scan treats a zeros run as
+/// room and a plain file simply ends at its records).
+/// TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS: how many sealed pieces one reclaim pass may unlink.
+///
+/// The unlinking happens while the log's lock is held, and every append takes that lock, so an
+/// unbounded pass stops every writer for as long as it takes -- about 45 microseconds per piece,
+/// measured. Zero means unbounded, which is what this did before.
+///
+/// A bound does not reduce total work; it increases it, because every extra pass pays the
+/// directory barrier again. It bounds how long the lock is held in one pass, which is the thing
+/// writers actually feel.
+fn wal_reclaim_max_segments_per_pass() -> usize {
+    std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(64)
+}
+
 fn wal_preallocate_enabled() -> bool {
-    wal_env_flag_on("TS_WAL_PREALLOCATE")
+    wal_env_flag_default_on("TS_WAL_PREALLOCATE")
 }
 
 /// TS_WAL_PREALLOCATE_CHUNK: how far past the write the file is grown when it runs out of room.
@@ -1922,10 +2043,26 @@ fn append_record_locked(
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
     // The caller has usually just measured this under the same append lock, so taking its answer
-    // costs nothing and asking again costs a stat.
+    // costs nothing and asking again costs a stat. With no answer in hand, the record end comes
+    // from the cache this function itself maintains -- under preallocation the file's length is
+    // the RESERVATION, so the metadata fallback would put the record after the zeros; and a
+    // caller looping appends (the atomic batch) needs each write to advance the next one's
+    // offset, which only holds if the cache is updated here, where the write happens.
     let offset = match known_offset {
         Some(offset) => offset,
-        None => path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+        None => match inner.verified_len_by_shard.get(&record.shard_id) {
+            Some(&record_end) if wal_preallocate_enabled() => record_end,
+            _ => {
+                if wal_preallocate_enabled() && path.exists() {
+                    // Cold under the gate: the file may end in a reservation another process
+                    // left, so ask the tail scan where the records stop.
+                    let (_, record_end) = last_wal_sequence_in(&path)?;
+                    record_end
+                } else {
+                    path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
+                }
+            }
+        },
     };
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
@@ -1969,8 +2106,13 @@ fn append_record_locked(
         // the file is first created; appends grow the file (inode) without changing the
         // directory. Under relaxed-sync (single-barrier default / TS_GROUP_COMMIT) skip the
         // redundant per-append dir fsync once the file already has content (offset > 0).
-        if offset == 0 || !wal_relaxed_dir_sync() {
+        // `offset == 0` is the file's first write, which is the usual reason the directory entry
+        // is not yet durable. After a roll it is not zero -- the header is already there -- so the
+        // debt the roll recorded is what says the entry still has to reach disk.
+        let owed = inner.dir_sync_owed_by_shard.contains(&record.shard_id);
+        if offset == 0 || owed || !wal_relaxed_dir_sync() {
             sync_parent_dir(&path)?;
+            inner.dir_sync_owed_by_shard.remove(&record.shard_id);
         }
         inner.stats.flushes += 1;
         inner.stats.syncs += 1;
@@ -1985,6 +2127,11 @@ fn append_record_locked(
     } else {
         file.metadata()?.len()
     };
+    // The record-end cache advances with the write itself, so a caller that appends in a loop
+    // without re-measuring (the atomic batch) still places every record after the previous one.
+    inner
+        .verified_len_by_shard
+        .insert(record.shard_id, persistent_bytes);
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
@@ -2054,6 +2201,15 @@ fn reclaim_min_freed_percent() -> u32 {
 }
 
 fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    // An absent piece answers (0, 0) rather than failing, and `scan` DEPENDS on that. A piece can
+    // be reclaimed between being listed and being read -- reclaim removes whole pieces from the
+    // front -- and answering zero here makes the length check in `scan` treat it as ending before
+    // any window, so the loop skips it instead of opening a file that is gone.
+    //
+    // Turning this into an error would surface as shards refusing to load: recovery treats ANY
+    // scan failure as data loss, so a piece legitimately reclaimed mid-scan would stop a shard
+    // coming up. If this ever has to report absence distinctly, `scan` needs to skip on it
+    // explicitly at the same time.
     if !path.exists() {
         return Ok((0, 0));
     }
@@ -2312,23 +2468,22 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unique_temp_path(kind: &str) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Command;
+
+    #[test]
+    fn default_store_scratch_dir_dies_with_the_last_clone() {
+        let store = LocalWriteAheadLogStore::default();
+        let root = store.inner.lock().unwrap().root.clone();
+        assert!(root.exists(), "Default must create its scratch dir");
+        let clone = store.clone();
+        drop(store);
+        assert!(root.exists(), "a live clone must keep the scratch dir");
+        drop(clone);
+        assert!(!root.exists(), "the last clone's drop must remove the scratch dir");
+    }
 
     #[test]
     fn wal_interleaved_processes_refresh_sequence_from_disk() {
@@ -2429,7 +2584,11 @@ mod tests {
         // corruption, not a torn tail.
         let path = write_ahead_log_path(dir.path(), 1);
         let contents = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = contents.lines().collect();
+        // Preallocated room trails the records; the record lines are the non-zero ones.
+        let lines: Vec<&str> = contents
+            .lines()
+            .filter(|line| !line.bytes().all(|byte| byte == 0))
+            .collect();
         assert_eq!(lines.len(), 4);
         let corrupted = format!(
             "{}\ncorrupt-not-json\n{}\n{}\n",
@@ -2763,12 +2922,23 @@ mod tests {
         }
     }
 
+    /// The file bytes with any trailing preallocated-zeros reservation stripped:
+    /// exactly the records (a record line always ends in a newline, never a NUL).
+    fn strip_reservation(mut bytes: Vec<u8>) -> Vec<u8> {
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        bytes
+    }
+
     /// Decode the shard's WAL the way GC does, so a test can assert on what survived.
     fn sequences_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<u64> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
         bytes[data_start(&bytes)..]
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
+            // A trailing zeros run is preallocated room, not a record.
+            .filter(|line| !line.iter().all(|byte| *byte == 0))
             .map(|line| decode_wal_line(line).unwrap().sequence)
             .collect()
     }
@@ -2777,9 +2947,15 @@ mod tests {
     fn record_offsets_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<usize> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
         let start = data_start(&bytes);
+        // Preallocated room ends the records early: nothing starts inside the zeros.
+        let end = bytes[start..]
+            .windows(1)
+            .rposition(|window| window[0] == b'\n')
+            .map(|index| start + index + 1)
+            .unwrap_or(bytes.len());
         let mut offsets = vec![start];
-        for (index, byte) in bytes.iter().enumerate().skip(start) {
-            if *byte == b'\n' && index + 1 < bytes.len() {
+        for (index, byte) in bytes.iter().enumerate().take(end).skip(start) {
+            if *byte == b'\n' && index + 1 < end {
                 offsets.push(index + 1);
             }
         }
@@ -2960,7 +3136,8 @@ mod tests {
         let store = LocalWriteAheadLogStore::new(dir.path());
         append_n(&store, 1, 6);
 
-        let raw_before = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
+        let raw_before =
+            strip_reservation(std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap());
         let offsets = record_offsets_on_disk(dir.path(), 1);
         // Reclaiming from sequence 4 keeps records from index 3 onward.
         let split = offsets[3];
@@ -3314,9 +3491,10 @@ mod tests {
                     .unwrap();
             }
             let micros = started.elapsed().as_secs_f64() * 1e6 / records as f64;
-            let bytes = std::fs::metadata(write_ahead_log_path(dir.path(), 1))
-                .unwrap()
-                .len();
+            let bytes = strip_reservation(
+                std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap(),
+            )
+            .len() as u64;
             (bytes, micros)
         }
 
@@ -3662,7 +3840,7 @@ mod tests {
 
         // A write that stopped partway: bytes with no newline after them.
         let path = write_ahead_log_path(dir.path(), 1);
-        let whole = std::fs::read(&path).unwrap();
+        let whole = strip_reservation(std::fs::read(&path).unwrap());
         let mut torn = whole.clone();
         torn.extend_from_slice(b"#tsf2 99 deadbeef {\"s\":1,\"q\":4,\"c\"");
         std::fs::write(&path, &torn).unwrap();
@@ -3708,7 +3886,7 @@ mod tests {
         }
         drop(store);
         let path = write_ahead_log_path(dir.path(), 1);
-        let mut padded = std::fs::read(&path).unwrap();
+        let mut padded = strip_reservation(std::fs::read(&path).unwrap());
         padded.extend_from_slice(b"\n\n   \n");
         std::fs::write(&path, padded).unwrap();
 
@@ -4498,6 +4676,30 @@ mod tests {
         }
     }
 
+    /// The escape hatch, pinned: =0 must restore growing appends exactly.
+    #[test]
+    fn the_preallocate_escape_hatch_restores_growing_appends() {
+        std::env::set_var("TS_WAL_PREALLOCATE", "0");
+        let outcome = std::panic::catch_unwind(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            append_n(&store, 1, 10);
+            let path = dir.path().join("shard-1.wal.jsonl");
+            let physical = path.metadata().unwrap().len();
+            let records = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(10, records.len());
+            let record_bytes: u64 = records.iter().map(|(_, line)| line.len() as u64).sum();
+            assert_eq!(
+                physical, record_bytes,
+                "with the hatch pulled, the file must end exactly at its records"
+            );
+        });
+        std::env::remove_var("TS_WAL_PREALLOCATE");
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     #[test]
     fn preallocated_appends_grow_the_file_in_chunks_not_per_record() {
         with_preallocate(|| {
@@ -4663,5 +4865,344 @@ mod tests {
             "prealloc={gate:?} {count} synced appends: {:.1} us/append",
             elapsed.as_micros() as f64 / count as f64
         );
+    }
+
+    /// A crash before the new piece's header reaches disk does not reuse addresses.
+    ///
+    /// The roll no longer barriers the header -- it rides the barrier that makes the first record
+    /// durable. That leaves a window where the piece exists and the header does not, and an empty
+    /// piece reads as starting at log id zero, which the sealed pieces already own. An empty piece
+    /// therefore has to be treated as one that was never started.
+    ///
+    /// Entered by stopping in it, so the state on disk is what a crash at that line leaves rather
+    /// than what this test guessed it would leave.
+    #[test]
+    fn a_crash_before_the_header_reaches_disk_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        // Stop inside the roll, between creating the piece and writing its header. Reproducing
+        // this window by hand instead -- appending until the piece happens to hold no records, then
+        // truncating it -- would encode two unchecked assumptions: that such a piece is where the
+        // roll left off, and that truncating to zero is what a crash before the header leaves.
+        // Stopping AT the line needs neither: what is on disk afterwards is what that line leaves.
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_create",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    stopped = true;
+                    break;
+                }
+            }
+            index += 1;
+        }
+        assert!(stopped, "never reached a roll, so this tested nothing");
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "the log should be in more than one piece"
+        );
+        drop(store);
+
+        // And this is what that line left: the piece exists and has nothing in it.
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert_eq!(
+            active.metadata().unwrap().len(),
+            0,
+            "the piece should exist and be empty -- that is the window"
+        );
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let (_, log_id) = reopened
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            written.iter().all(|(_, earlier)| *earlier < log_id),
+            "a record written after the crash took an address an earlier one already owns"
+        );
+        // And every earlier address still resolves to the record it was handed out for.
+        for (sequence, earlier) in &written {
+            if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |at| at + 1);
+                assert_eq!(
+                    decode_wal_line(&bytes[..end]).unwrap().sequence,
+                    *sequence,
+                    "log id {earlier} resolved to the wrong record"
+                );
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// What a roll costs the append that triggers it.
+    #[test]
+    fn what_a_roll_costs_the_append_that_triggers_it() {
+        set_wal_segment_bytes_for_test(Some(64 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut plain = Vec::new();
+        let mut rolled = Vec::new();
+        let mut pieces_before = 1usize;
+        for index in 0..4_000u64 {
+            let started = std::time::Instant::now();
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 128],
+                    },
+                    false,
+                )
+                .unwrap();
+            let micros = started.elapsed().as_secs_f64() * 1e6;
+            let pieces = wal_segment_paths(dir.path(), 1).len();
+            if pieces > pieces_before {
+                pieces_before = pieces;
+                rolled.push(micros);
+            } else {
+                plain.push(micros);
+            }
+        }
+        let at = |values: &mut Vec<f64>, q: f64| -> f64 {
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            values[((values.len() as f64 - 1.0) * q) as usize]
+        };
+        let mut p = plain.clone();
+        let mut r = rolled.clone();
+        println!(
+            "  {} ordinary appends: p50 {:.0} us  p99 {:.0} us",
+            plain.len(),
+            at(&mut p, 0.50),
+            at(&mut p, 0.99),
+        );
+        println!(
+            "  {} appends that rolled: p50 {:.0} us  p99 {:.0} us  max {:.0} us",
+            rolled.len(),
+            at(&mut r, 0.50),
+            at(&mut r, 0.99),
+            at(&mut r, 1.0),
+        );
+        assert!(!rolled.is_empty(), "nothing rolled, so this measured nothing");
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// The window between sealing a piece and starting the next one, entered by stopping there.
+    ///
+    /// There is already a test for this window that builds its state by hand -- it removes the
+    /// piece being written and reopens. That is only a test of this window if removing that file is
+    /// what a crash there leaves behind, and nothing checks the claim. Applying the same reasoning
+    /// one window over produced a test that failed for the wrong reason, so the reasoning is worth
+    /// removing rather than repeating: here the roll is stopped AT the line, and whatever is on
+    /// disk afterwards is what a crash at that line leaves, by construction.
+    #[test]
+    fn stopping_a_roll_after_the_rename_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        // Write until a roll is about to happen, with the point disarmed.
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_rename",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    // The roll stopped after the rename. The store's lock is poisoned by that
+                    // unwind, which is exactly what a crash would cost us: this handle is done.
+                    stopped = true;
+                    break;
+                }
+            }
+            index += 1;
+        }
+        assert!(stopped, "never reached a roll, so this tested nothing");
+        drop(store);
+
+        // Everything is sealed and there is nothing to append to -- the state a crash there leaves.
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert!(!active.exists(), "the piece being written should be gone");
+        assert!(
+            wal_segment_paths(dir.path(), 1).iter().any(|p| p != &active),
+            "the sealed pieces should still be there"
+        );
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let (_, log_id) = reopened
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            written.iter().all(|(_, earlier)| *earlier < log_id),
+            "a record written after the crash took an address an earlier one already owns"
+        );
+        // And every address handed out before the crash still resolves to its own record.
+        for (sequence, earlier) in &written {
+            if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |at| at + 1);
+                assert_eq!(
+                    decode_wal_line(&bytes[..end]).unwrap().sequence,
+                    *sequence,
+                    "log id {earlier} resolved to the wrong record"
+                );
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// One reclaim pass unlinks at most its bound, and later passes take the rest.
+    ///
+    /// The unlinking runs while the log's lock is held and every append needs that lock, so an
+    /// unbounded pass over a large backlog stops every writer for as long as it takes. Bounding it
+    /// does not make the total cheaper -- each pass pays the directory barrier again -- it bounds
+    /// how long any one pass holds the lock.
+    #[test]
+    fn one_reclaim_pass_unlinks_at_most_its_bound() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        std::env::set_var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS", "4");
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut last = 0u64;
+        for index in 0..400u64 {
+            last = store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence;
+        }
+        let sealed_before = wal_segment_paths(dir.path(), 1).len();
+        assert!(sealed_before > 8, "need a backlog worth bounding, saw {sealed_before}");
+
+        // One pass drops no more than the bound.
+        let first = store.gc_before_sequence(1, last).unwrap();
+        assert!(
+            first.dropped_segments <= 4,
+            "one pass dropped {} pieces, past its bound",
+            first.dropped_segments
+        );
+        assert!(first.dropped_segments > 0, "the pass should have dropped something");
+
+        // Later passes take the rest, without recomputing anything.
+        let mut passes = 1;
+        loop {
+            let report = store.gc_before_sequence(1, last).unwrap();
+            if report.dropped_segments == 0 {
+                break;
+            }
+            assert!(
+                report.dropped_segments <= 4,
+                "a later pass dropped {} pieces, past its bound",
+                report.dropped_segments
+            );
+            passes += 1;
+            assert!(passes < 500, "reclaim never drained");
+        }
+        assert!(passes > 1, "the backlog should have taken more than one pass");
+
+        // And the records that had to survive still do.
+        let survivors = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!survivors.is_empty(), "the retained tail should still be there");
+        for (_, line) in &survivors {
+            decode_wal_line(line).expect("every surviving record should decode");
+        }
+        std::env::remove_var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS");
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Not an assertion, a measurement -- how long one reclaim pass holds the log's lock.
+    ///   cargo test --lib -- --ignored --exact wal::tests::measure_reclaim_pass --nocapture
+    #[test]
+    #[ignore]
+    fn measure_reclaim_pass() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut last = 0u64;
+        for index in 0..3_000u64 {
+            last = store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence;
+        }
+        let pieces = wal_segment_paths(dir.path(), 1).len();
+        let started = std::time::Instant::now();
+        let report = store.gc_before_sequence(1, last).unwrap();
+        let micros = started.elapsed().as_secs_f64() * 1e6;
+        println!(
+            "bound={:?} backlog {pieces} pieces: one pass {micros:.0} us, dropped {}",
+            std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS").unwrap_or_default(),
+            report.dropped_segments
+        );
+        set_wal_segment_bytes_for_test(None);
     }
 }

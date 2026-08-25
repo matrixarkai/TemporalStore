@@ -111,11 +111,9 @@ class _LocalAdapterSessionCommitMixin:
         # so on a log with none the raw read below is pure cost, once per commit, over the whole
         # store. A backend that can answer the question cheaply says so; the default answers it
         # by doing the read, exactly as before.
-        _surviving_event_ids = (
-            surviving_source_event_ids(self._read_raw_records())
-            if self.memory_tombstones_may_exist()
-            else None
-        )
+        # The backend answers from its tombstones alone when it can; the base implementation
+        # is the probe-then-full-read this block used to inline.
+        _surviving_event_ids = self.surviving_ids_for_pending_events(pending_all_unfiltered)
         if _surviving_event_ids is not None:
             pending_all_unfiltered = [
                 record

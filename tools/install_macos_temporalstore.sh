@@ -207,7 +207,7 @@ need_cmd python3 "brew install python"
 if [[ ! -f "$repo/Cargo.toml" ]]; then
   echo "repo does not look like a TemporalStore checkout: $repo" >&2
   echo "clone it first, then run this script from the repo root:" >&2
-  echo "  git clone https://github.com/bjmeetsfo/TemporalStore.git" >&2
+  echo "  git clone https://github.com/matrixarkai/TemporalStore.git" >&2
   echo "  cd TemporalStore" >&2
   exit 1
 fi

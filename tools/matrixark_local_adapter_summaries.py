@@ -610,7 +610,27 @@ class _LocalAdapterSummariesMixin:
             skipped_dirty_reasons=skipped_dirty_reasons,
         )
         refreshed = []
-        for dirty in sorted(pending_by_node.values(), key=lambda item: int(item.get("updated_at_ms") or 0))[:limit]:
+        # A pass is bounded by TIME as well as node count: each node costs source-record scans and
+        # appends on the lanes foreground requests use, so an unbounded pass over a deep backlog
+        # IS the foreground latency (measured: add p50 158s with the refresher churning vs 27.7s
+        # without, same store). Leftover nodes are the next pass's work, not lost work.
+        import os as _os
+        import time as _time
+        try:
+            pass_budget_ms = int(_os.environ.get("MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS", "30000"))
+        except (TypeError, ValueError):
+            pass_budget_ms = 30000
+        pass_deadline = (_time.monotonic() + pass_budget_ms / 1000.0) if pass_budget_ms > 0 else None
+        pass_budget_exhausted = False
+        selected_dirty = sorted(pending_by_node.values(), key=lambda item: int(item.get("updated_at_ms") or 0))[:limit]
+        for dirty_index, dirty in enumerate(selected_dirty):
+            if pass_deadline is not None and _time.monotonic() > pass_deadline:
+                pass_budget_exhausted = True
+                skipped_dirty_reasons["pass_budget_exhausted"] = (
+                    int(skipped_dirty_reasons.get("pass_budget_exhausted") or 0)
+                    + (len(selected_dirty) - dirty_index)
+                )
+                break
             node_path = [str(part) for part in dirty.get("node_path", [])]
             if not node_path:
                 continue
@@ -1137,6 +1157,7 @@ class _LocalAdapterSummariesMixin:
             )
         return {
             "status": "ok",
+            "pass_budget_exhausted": pass_budget_exhausted,
             "refreshed_count": len(refreshed),
             "compression_created_count": sum(int(item.get("time_compression", {}).get("created_count", 0)) for item in refreshed),
             "skipped_dirty_count": sum(int(count or 0) for count in skipped_dirty_reasons.values()),
@@ -1185,7 +1206,7 @@ class _LocalAdapterSummariesMixin:
         } if isinstance(args.get("skip_dirty_reasons"), list) else set()
         # One read for the pass. The embedding step below reuses it only when nothing was
         # written -- see there.
-        pass_records = self.read_all()
+        pass_records = self.records_for_summary_refresh()
         result = self.refresh_dirty_node_summaries(
             records=pass_records,
             scope=scope,

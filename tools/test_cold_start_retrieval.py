@@ -61,9 +61,10 @@ class ColdStartRetrievalCase(unittest.TestCase):
         records = adapter.read_all()
         nodes = {r.get("node_hash") for r in records
                  if r.get("record_type") == "context_node"}
-        embedded = {r.get("ref_hash") for r in records
-                    if r.get("record_type") == "context_embedding"
-                    and str(r.get("embedding_type")) == "context_node"}
+        # Folded: a node's path vector rides on the context_node record itself; the
+        # separate rows are retired from new logs.
+        embedded = {r.get("node_hash") for r in records
+                    if r.get("record_type") == "context_node" and r.get("vector")}
         summary_nodes = {r.get("node_hash") for r in records
                          if r.get("record_type") == "context_summary"}
         unreachable = {n for n in nodes if n not in embedded and n not in summary_nodes}

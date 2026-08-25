@@ -172,13 +172,6 @@ pub(super) struct ShardState {
     // an older binary.
     #[serde(default)]
     pub(super) context_children: HashMap<String, BTreeMap<u64, BlockAddress>>,
-    // Grouped like context_entities, but by TENANT rather than node: a ContextEmbedding carries
-    // only ref_hash (itself hash(tenant, node, label)), so the node it belongs to cannot be
-    // recovered from the record and cannot be the group key without a schema change. The inner
-    // u64 is the ref hash, so upsert overwrites one slot -- an embedding has one current vector.
-    // Key: `ctx:embedding:{tenant}` (context_embedding_collection_key).
-    #[serde(default)]
-    pub(super) context_embeddings: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]
     pub(super) context_summaries: HashMap<String, BTreeMap<u64, BlockAddress>>,
     #[serde(default)]

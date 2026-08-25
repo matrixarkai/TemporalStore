@@ -490,7 +490,7 @@ class _LocalAdapterIngestMixin:
                 "auto_batch_extract_result": auto_batch_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
-        prior_records = [] if args.get("skip_prior_context") else self.read_all()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")
@@ -660,7 +660,9 @@ class _LocalAdapterIngestMixin:
             resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
             try:
                 storage_resolution = resolve_raw_resource_for_ingest(
-                    args,
+                    # The engine blob tier rides the adapter's rust proxy client when there is
+                    # one; the pure-local adapter has none and the key stays absent.
+                    {**args, "_engine_blob_client": getattr(self, "_client", None)},
                     envelope,
                     requested_raw_uri,
                     resource_type,
@@ -1834,7 +1836,7 @@ class _LocalAdapterIngestMixin:
                 "reason": "logical batch below extraction threshold",
             }
 
-        prior_records = [] if args.get("skip_prior_context") else self.read_all()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")

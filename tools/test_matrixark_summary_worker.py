@@ -264,12 +264,16 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         while time.time() < deadline:
             records = adapter.read_all()
             summary_types = {r.get("summary_type") for r in records if r.get("record_type") == "context_summary"}
-            embedding_types = {r.get("embedding_type") for r in records if r.get("record_type") == "context_embedding"}
+            embedding_types = {(r.get("embedding_meta") or {}).get("embedding_type")
+                               for r in records if r.get("vector")}
             if {"node_l0", "node_l1"}.issubset(summary_types) and {"node_l0", "node_l1"}.issubset(embedding_types):
                 break
             time.sleep(0.05)
         summary_types = {r.get("summary_type") for r in records if r.get("record_type") == "context_summary"}
-        embedding_types = {r.get("embedding_type") for r in records if r.get("record_type") == "context_embedding"}
+        # Folded: refreshed vectors ride on their owners; the retired rows' embedding_type
+        # survives under embedding_meta.
+        embedding_types = {(r.get("embedding_meta") or {}).get("embedding_type")
+                           for r in records if r.get("vector")}
         self.assertIn("node_l0", summary_types)
         self.assertIn("node_l1", summary_types)
         self.assertIn("node_l0", embedding_types)

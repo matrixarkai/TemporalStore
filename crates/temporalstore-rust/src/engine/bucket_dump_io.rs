@@ -226,6 +226,25 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
             manifest.wal_sequence <= cursor.wal_sequence
                 && manifest.index_log_sequence <= cursor.index_log_sequence
         }) else {
+            // Behind every manifest: nothing kept can serve this follower. Pruning here throws
+            // away its last chance of catching up from a dump and says nothing about it, so keep
+            // the oldest -- the only one that could ever help -- and report it. Unconditionally:
+            // the point is that the follower is unservable, not that anything extra was kept.
+            if let Some(oldest) = manifests
+                .iter()
+                .min_by_key(|manifest| (manifest.wal_sequence, manifest.index_log_sequence))
+            {
+                retained.insert(oldest.manifest_id.clone());
+                follower_blocks.push(BucketDumpFollowerRetentionBlock {
+                    follower_id: cursor.follower_id.clone(),
+                    manifest_id: oldest.manifest_id.clone(),
+                    manifest_wal_sequence: oldest.wal_sequence,
+                    manifest_index_log_sequence: oldest.index_log_sequence,
+                    cursor_wal_sequence: cursor.wal_sequence,
+                    cursor_index_log_sequence: cursor.index_log_sequence,
+                    reason: "follower_cursor_precedes_every_manifest".to_string(),
+                });
+            }
             continue;
         };
         if retained.insert(anchor.manifest_id.clone()) {
@@ -248,6 +267,25 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
             manifest.wal_sequence <= snapshot.wal_sequence
                 && manifest.index_log_sequence <= snapshot.index_log_sequence
         }) else {
+            // As above: a snapshot reference older than every manifest cannot be served by any of
+            // them, and the operator needs to know that rather than have it pruned in silence.
+            if let Some(oldest) = manifests
+                .iter()
+                .min_by_key(|manifest| (manifest.wal_sequence, manifest.index_log_sequence))
+            {
+                retained.insert(oldest.manifest_id.clone());
+                raft_snapshot_blocks.push(BucketDumpRaftSnapshotRetentionBlock {
+                    snapshot_id: snapshot.snapshot_id.clone(),
+                    manifest_id: oldest.manifest_id.clone(),
+                    manifest_wal_sequence: oldest.wal_sequence,
+                    manifest_index_log_sequence: oldest.index_log_sequence,
+                    snapshot_wal_sequence: snapshot.wal_sequence,
+                    snapshot_index_log_sequence: snapshot.index_log_sequence,
+                    last_included_index: snapshot.last_included_index,
+                    last_included_term: snapshot.last_included_term,
+                    reason: "raft_snapshot_precedes_every_manifest".to_string(),
+                });
+            }
             continue;
         };
         if retained.insert(anchor.manifest_id.clone()) {
