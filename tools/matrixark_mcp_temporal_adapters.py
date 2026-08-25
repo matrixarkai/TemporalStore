@@ -1069,19 +1069,37 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             if not name_by_user:
                 return {}
             counts: dict[str, int] = {name: 0 for name in names}
-            for record in self.read_all():
-                if not isinstance(record, dict):
-                    continue
-                if str(record.get("record_type") or "") != "context_event":
-                    continue
-                record_tenant, record_user = _record_scope_hashes(record)
-                name = name_by_user.get(record_user)
-                if name is None:
-                    continue
-                subject_tenant = tenant_by_user.get(record_user) or 0
-                if subject_tenant and record_tenant != subject_tenant:
-                    continue
-                counts[name] += 1
+
+            def count_in(records: list[Json], only_name: str | None = None) -> None:
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    if str(record.get("record_type") or "") != "context_event":
+                        continue
+                    record_tenant, record_user = _record_scope_hashes(record)
+                    name = name_by_user.get(record_user)
+                    if name is None or (only_name is not None and name != only_name):
+                        continue
+                    subject_tenant = tenant_by_user.get(record_user) or 0
+                    if subject_tenant and record_tenant != subject_tenant:
+                        continue
+                    counts[name] += 1
+
+            # Every subject resolved to a non-zero tenant AND user hash, which is exactly the
+            # condition a pinned subject view needs, so each subject is counted from its own
+            # records instead of from one pass over the whole store.
+            pinned = all(
+                tenant_by_user.get(user_hash) and user_hash
+                for user_hash in name_by_user
+            )
+            if pinned:
+                for name in names:
+                    count_in(
+                        self.records_for_get_all(self._subject_scope(base_scope, name)),
+                        only_name=name,
+                    )
+                return counts
+            count_in(self.read_all())
             return counts
         except Exception:  # noqa: BLE001 - fall back to the per-subject reads rather than answer wrong.
             return None
