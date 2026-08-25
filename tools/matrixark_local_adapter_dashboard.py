@@ -5,8 +5,10 @@ from __future__ import annotations
 
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
+    from tools.matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
+    from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
