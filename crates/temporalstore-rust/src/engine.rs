@@ -23,6 +23,7 @@ mod object_manager;
 mod packed_pages;
 mod product_model;
 mod set_index_serde;
+mod zset_index_serde;
 mod bucket_dump_manifest_methods;
 mod storage_lifecycle_methods;
 mod storage_manager_cycle;
@@ -2488,6 +2489,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.hashes.remove(key).is_some();
     removed |= shard.sets.remove(key).is_some();
     removed |= shard.lists.remove(key).is_some();
+    removed |= shard.zsets.remove(key).is_some();
     if shard.features.remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
@@ -2653,6 +2655,9 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     }
     for elements in shard.lists.values() {
         ids.extend(elements.values().map(|address| address.page_slab_id));
+    }
+    for members in shard.zsets.values() {
+        ids.extend(members.values().map(|(_, address)| address.page_slab_id));
     }
     for series in shard.features.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
@@ -2833,6 +2838,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.lists.contains_key(key)
+        || shard.zsets.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)
@@ -2854,6 +2860,7 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "hash",
         "set",
         "list",
+        "zset",
         "feature",
         "sequence",
         "control_state",
@@ -3016,6 +3023,7 @@ fn object_manager_stats(
             + shard.hashes.len()
             + shard.sets.len()
             + shard.lists.len()
+            + shard.zsets.len()
             + shard.features.len()
             + shard.control_state.len()
             + shard.control_state_changes.len()
@@ -3033,6 +3041,7 @@ fn object_manager_stats(
             + shard.hashes.values().map(HashMap::len).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
+            + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_nodes.len()
             + shard
@@ -3103,6 +3112,7 @@ fn object_manager_stats(
         + shard.hashes.len()
         + shard.sets.len()
         + shard.lists.len()
+        + shard.zsets.len()
         + shard.features.len()
         + shard.control_state.len()
         + shard.context_nodes.len()
@@ -3117,6 +3127,7 @@ fn object_manager_stats(
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()
+        + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_nodes.len()
         + shard

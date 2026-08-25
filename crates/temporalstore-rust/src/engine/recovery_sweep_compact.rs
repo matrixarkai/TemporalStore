@@ -426,6 +426,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
+        for members in shard.zsets.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                "zset",
+                members.values_mut().map(|entry| &mut entry.1),
+                &mut rewrite_stats,
+            )?;
+        }
         for elements in shard.lists.values_mut() {
             compact_page_addresses(
                 &self.page_store,

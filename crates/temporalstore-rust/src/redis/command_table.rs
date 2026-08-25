@@ -425,5 +425,45 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             arity: -2,
             flags: WRITE,
         },
-    ]
+
+        RedisCommandDescriptor {
+            name: "ZADD",
+            arity: -4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZCARD",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZRANGE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZRANGEBYSCORE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREM",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZREVRANGE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREVRANGEBYSCORE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZSCORE",
+            arity: 3,
+            flags: READ,
+        },    ]
 }

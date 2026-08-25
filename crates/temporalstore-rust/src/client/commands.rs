@@ -53,6 +53,12 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ListPop { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
+        | Command::ZSetAdd { key, .. }
+        | Command::ZSetScore { key, .. }
+        | Command::ZSetRemove { key, .. }
+        | Command::ZSetCard { key }
+        | Command::ZSetRange { key, .. }
+        | Command::ZSetRangeByScore { key, .. }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }

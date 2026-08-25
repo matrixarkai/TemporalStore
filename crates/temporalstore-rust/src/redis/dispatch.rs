@@ -686,6 +686,136 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(removed)
         }
+        "ZADD" if args.len() >= 4 && args.len() % 2 == 0 => {
+            let key = string_arg(&args[1]);
+            let mut pairs = Vec::new();
+            for chunk in args[2..].chunks(2) {
+                match parse_score_arg(&chunk[0]) {
+                    Ok((score, false, false)) => pairs.push((score, chunk[1].clone())),
+                    Ok(_) => {
+                        return RespValue::Error(
+                            "ERR min and max cannot be exclusive here".to_string(),
+                        )
+                    }
+                    Err(err) => return RespValue::Error(err),
+                }
+            }
+            let mut added = 0;
+            for (score, member) in pairs {
+                match execute(Command::ZSetAdd {
+                    key: key.clone(),
+                    member,
+                    score,
+                }) {
+                    Ok(CommandResponse::Integer { value }) => added += value,
+                    Ok(_) => return RespValue::Error("ERR invalid zadd response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            state.keyspace.insert(key);
+            RespValue::Integer(added)
+        }
+        "ZSCORE" if args.len() == 3 => match execute(Command::ZSetScore {
+            key: string_arg(&args[1]),
+            member: args[2].clone(),
+        }) {
+            Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(value),
+            Ok(_) => RespValue::Error("ERR invalid zscore response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "ZREM" if args.len() >= 3 => {
+            let key = string_arg(&args[1]);
+            let mut removed = 0;
+            for member in args.iter().skip(2) {
+                match execute(Command::ZSetRemove {
+                    key: key.clone(),
+                    member: member.clone(),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => removed += value,
+                    Ok(_) => return RespValue::Error("ERR invalid zrem response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(removed)
+        }
+        "ZCARD" if args.len() == 2 => match execute(Command::ZSetCard {
+            key: string_arg(&args[1]),
+        }) {
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid zcard response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "ZRANGE" | "ZREVRANGE" if args.len() == 4 || args.len() == 5 || args.len() == 6 => {
+            let mut rev = command == "ZREVRANGE";
+            let mut withscores = false;
+            for flag in args.iter().skip(4) {
+                match string_arg(flag).to_ascii_uppercase().as_str() {
+                    "WITHSCORES" => withscores = true,
+                    "REV" if command == "ZRANGE" => rev = true,
+                    other => {
+                        return RespValue::Error(format!("ERR syntax error near {other}"))
+                    }
+                }
+            }
+            match (
+                parse_i64_arg(&args[2], "start"),
+                parse_i64_arg(&args[3], "stop"),
+            ) {
+                (Ok(start), Ok(stop)) => match execute(Command::ZSetRange {
+                    key: string_arg(&args[1]),
+                    start,
+                    stop,
+                    rev,
+                }) {
+                    Ok(CommandResponse::Members { members }) => {
+                        interleaved_members_response(members, withscores)
+                    }
+                    Ok(_) => RespValue::Error("ERR invalid zrange response".to_string()),
+                    Err(err) => RespValue::Error(format!("ERR {err}")),
+                },
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "ZRANGEBYSCORE" | "ZREVRANGEBYSCORE" if args.len() == 4 || args.len() == 5 => {
+            let rev = command == "ZREVRANGEBYSCORE";
+            let withscores = match args.get(4) {
+                None => false,
+                Some(flag) if string_arg(flag).eq_ignore_ascii_case("WITHSCORES") => true,
+                Some(other) => {
+                    return RespValue::Error(format!(
+                        "ERR syntax error near {}",
+                        string_arg(other)
+                    ))
+                }
+            };
+            // ZREVRANGEBYSCORE takes (max, min); the engine always takes (min, max).
+            let (low_raw, high_raw) = if rev {
+                (&args[3], &args[2])
+            } else {
+                (&args[2], &args[3])
+            };
+            match (parse_score_arg(low_raw), parse_score_arg(high_raw)) {
+                (Ok((min, min_exclusive, _)), Ok((max, max_exclusive, _))) => {
+                    match execute(Command::ZSetRangeByScore {
+                        key: string_arg(&args[1]),
+                        min,
+                        max,
+                        min_exclusive,
+                        max_exclusive,
+                        rev,
+                    }) {
+                        Ok(CommandResponse::Members { members }) => {
+                            interleaved_members_response(members, withscores)
+                        }
+                        Ok(_) => {
+                            RespValue::Error("ERR invalid zrangebyscore response".to_string())
+                        }
+                        Err(err) => RespValue::Error(format!("ERR {err}")),
+                    }
+                }
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
         "LPUSH" | "RPUSH" if args.len() >= 3 => {
             let key = string_arg(&args[1]);
             let left = command == "LPUSH";
@@ -1521,4 +1651,39 @@ pub fn execute_redis_command_with_state(
         }
         _ => RespValue::Error(format!("ERR unsupported command or arity: {command}")),
     }
+}
+
+/// Score syntax: plain float, -inf/+inf/inf, or a leading paren for an exclusive bound.
+/// Answers (score, exclusive, was_infinite).
+fn parse_score_arg(raw: &[u8]) -> Result<(f64, bool, bool), String> {
+    let text = String::from_utf8_lossy(raw);
+    let (body, exclusive) = match text.strip_prefix('(') {
+        Some(rest) => (rest, true),
+        None => (text.as_ref(), false),
+    };
+    match body.to_ascii_lowercase().as_str() {
+        "-inf" => return Ok((f64::NEG_INFINITY, exclusive, true)),
+        "inf" | "+inf" => return Ok((f64::INFINITY, exclusive, true)),
+        _ => {}
+    }
+    body.parse::<f64>()
+        .map(|score| (score, exclusive, false))
+        .map_err(|_| "ERR min or max is not a float".to_string())
+}
+
+/// Engine z-range answers ride interleaved [member, score, member, score, ...]; the verb
+/// decides whether the scores stay in the reply.
+fn interleaved_members_response(members: Vec<Vec<u8>>, withscores: bool) -> RespValue {
+    let values = members
+        .chunks(2)
+        .flat_map(|pair| {
+            if withscores {
+                pair.to_vec()
+            } else {
+                pair.first().cloned().into_iter().collect()
+            }
+        })
+        .map(|value| RespValue::Bulk(Some(value)))
+        .collect();
+    RespValue::Array(values)
 }
