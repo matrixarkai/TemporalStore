@@ -231,6 +231,11 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "PERSIST",
+            arity: 2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "PEXPIRETIME",
             arity: 2,
             flags: READ,

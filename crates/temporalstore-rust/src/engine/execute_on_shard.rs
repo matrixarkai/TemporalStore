@@ -51,6 +51,31 @@ pub(crate) fn execute_on_shard(
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
         }
+        Command::CommonPersist { key } => {
+            // Expired-but-unswept is "missing" here, exactly as reads treat it: removing the
+            // sweep's pending work must not resurrect a value whose deadline already passed.
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                invalidate_record_all(cache, shard_id, &key);
+                CommandResponse::Integer { value: 0 }
+            } else {
+                let mut removed = false;
+                for record_key in associated_record_keys(&key) {
+                    if shard.expires_at_ms.remove(&record_key).is_some()
+                        && record_exists_exact(shard, &record_key)
+                    {
+                        removed = true;
+                    }
+                }
+                if removed {
+                    mutated = true;
+                    invalidate_record_all(cache, shard_id, &key);
+                }
+                CommandResponse::Integer {
+                    value: i64::from(removed),
+                }
+            }
+        }
         Command::CommonTtl { key } => {
             let expired = shard
                 .expires_at_ms

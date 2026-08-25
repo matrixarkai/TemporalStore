@@ -53,6 +53,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         Command::CommonDelete { key }
         | Command::CommonExpire { key, .. }
         | Command::CommonTtl { key }
+        | Command::CommonPersist { key }
         | Command::CommonExists { key }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }

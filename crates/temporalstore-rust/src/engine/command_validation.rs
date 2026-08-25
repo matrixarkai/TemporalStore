@@ -38,6 +38,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         // Touches no object, so it holds no object keys.
         Command::LeaderEstablish => Vec::new(),
         Command::CommonDelete { key } => associated_record_keys(key),
+        Command::CommonPersist { key } => associated_record_keys(key),
         Command::CommonExpire { key, .. }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
@@ -273,6 +274,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
         command,
         Command::CommonDelete { .. }
             | Command::CommonExpire { .. }
+            | Command::CommonPersist { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }

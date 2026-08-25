@@ -466,6 +466,26 @@ mod tests {
             "EXPIRE on a missing key must return 0"
         );
         assert_eq!(run(&mut state, vec!["EXPIRE", "k", "100"]), RespValue::Integer(1));
+
+        // PERSIST removes the timeout without touching the value: 1 when a timeout came off,
+        // 0 for a key with none, 0 for a missing key -- and TTL reads -1 afterwards.
+        assert_eq!(run(&mut state, vec!["PERSIST", "k"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["TTL", "k"]), RespValue::Integer(-1));
+        assert_eq!(
+            run(&mut state, vec!["GET", "k"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+            "PERSIST must not disturb the value"
+        );
+        assert_eq!(
+            run(&mut state, vec!["PERSIST", "k"]),
+            RespValue::Integer(0),
+            "a key with no timeout answers 0"
+        );
+        assert_eq!(
+            run(&mut state, vec!["PERSIST", "missing"]),
+            RespValue::Integer(0),
+            "a missing key answers 0"
+        );
     }
 
     #[test]
@@ -865,6 +885,7 @@ mod tests {
             "MSET" => vec!["MSET", "advertised:mset", "v"],
             "MSETNX" => vec!["MSETNX", "advertised:msetnx", "v"],
             "PARTITION" => vec!["PARTITION", "INFO"],
+            "PERSIST" => vec!["PERSIST", "advertised:missing"],
             "PEXPIRE" => vec!["PEXPIRE", "advertised:missing", "10"],
             "PEXPIREAT" => vec!["PEXPIREAT", "advertised:missing", "4102444800000"],
             "PEXPIRETIME" => vec!["PEXPIRETIME", "advertised:missing"],
