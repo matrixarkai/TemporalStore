@@ -534,6 +534,220 @@ fn a_topology_missing_a_primary_keeps_the_route_it_cannot_replace() {
 }
 
 #[test]
+fn a_tables_timeouts_reach_the_wire_after_they_change() {
+    // The table handle keeps a copy of the options it was opened with, and the client
+    // keeps the live ones, refreshed on every sync. Routing already reads the live
+    // copy; the request timeouts did not. So a table whose timeouts changed reported
+    // the new ones through `options()` while still putting the old ones on the wire,
+    // for the whole life of the handle.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let io_ms = std::sync::Arc::new(AtomicU64::new(1111));
+    let connect_ms = std::sync::Arc::new(AtomicU64::new(2222));
+    let meta_addr = free_local_addr();
+    let meta_addr_for_listener = meta_addr.clone();
+    let io_for_server = io_ms.clone();
+    let connect_for_server = connect_ms.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => json_response(
+                    200,
+                    &TableTopologyResponse {
+                        status: Status::ok(),
+                        table: Some(crate::meta::TableMetaInfo {
+                            table_id: 1,
+                            namespace: "ns".to_string(),
+                            table_name: "tbl".to_string(),
+                            state: crate::meta::MetaEntityState::Normal,
+                            topology_version: 7,
+                            first_shard_id: 10,
+                            shard_count: 1,
+                            replica_count: 1,
+                            partition_version: 0,
+                            serving_options: crate::meta::TableServingOptions {
+                                io_timeout_ms: io_for_server.load(Ordering::Relaxed),
+                                connect_timeout_ms: connect_for_server.load(Ordering::Relaxed),
+                                ..crate::meta::TableServingOptions::default()
+                            },
+                        }),
+                        shards: Vec::new(),
+                        unchanged: false,
+                    },
+                ),
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        meta_addr: Some(meta_addr),
+        ..ClientOptions::default()
+    });
+    let table = client.open_table_from_meta("ns", "tbl").unwrap();
+    assert_eq!(table.http_options_for_test().io_timeout_ms, 1111);
+    assert_eq!(table.http_options_for_test().connect_timeout_ms, 2222);
+
+    io_ms.store(3333, Ordering::Relaxed);
+    connect_ms.store(4444, Ordering::Relaxed);
+    client.sync_table_topology("ns", "tbl").unwrap();
+
+    assert_eq!(
+        table.options().io_timeout_ms,
+        3333,
+        "the handle reports the refreshed timeout"
+    );
+    assert_eq!(
+        table.http_options_for_test().io_timeout_ms,
+        3333,
+        "and must actually send it: reporting one timeout while using another is the bug"
+    );
+    assert_eq!(table.http_options_for_test().connect_timeout_ms, 4444);
+}
+
+#[test]
+fn a_batch_is_split_across_shards_the_table_gained_after_it_was_opened() {
+    // Whether a batch is grouped by shard was decided from the shard count the handle
+    // was opened with. A table that gains shards afterwards kept sending every command
+    // to the one shard the handle started on -- while `shard_id_for_key`, on the same
+    // handle, already knew the right shard for each key. The handle worked out the
+    // correct answer and then declined to use it.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+    let shard_count = std::sync::Arc::new(AtomicU64::new(1));
+    let seen: std::sync::Arc<Mutex<Vec<ShardId>>> = std::sync::Arc::new(Mutex::new(Vec::new()));
+
+    let backend_addr = free_local_addr();
+    let backend_for_listener = backend_addr.clone();
+    let seen_for_server = seen.clone();
+    std::thread::spawn(move || {
+        serve(&backend_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/batch_execute") => {
+                    let req = parse_json::<BatchExecuteRequest>(&request.body).unwrap();
+                    seen_for_server.lock().unwrap().push(req.shard_id);
+                    json_response(
+                        200,
+                        &BatchExecuteResponse {
+                            status: Status::ok(),
+                            responses: req
+                                .commands
+                                .iter()
+                                .map(|_| ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                })
+                                .collect(),
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&backend_addr);
+
+    let meta_addr = free_local_addr();
+    let meta_addr_for_listener = meta_addr.clone();
+    let count_for_server = shard_count.clone();
+    let backend_for_meta = backend_addr.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => {
+                    let count = count_for_server.load(Ordering::Relaxed);
+                    let shards = (0..count)
+                        .map(|offset| crate::meta::TableShard {
+                            shard_id: 10 + offset,
+                            start_bucket: offset * 4096,
+                            end_bucket: (offset + 1) * 4096 - 1,
+                            primary: Some(backend_for_meta.clone()),
+                            replicas: Vec::new(),
+                            primary_endpoint: None,
+                            replica_endpoints: Vec::new(),
+                        })
+                        .collect();
+                    json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(crate::meta::TableMetaInfo {
+                                table_id: 1,
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 7 + count,
+                                first_shard_id: 10,
+                                shard_count: count,
+                                replica_count: 1,
+                                partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
+                            }),
+                            shards,
+                            unchanged: false,
+                        },
+                    )
+                }
+                ("GET", path) if path.starts_with("/shards/") => {
+                    let shard_id: ShardId = path.trim_start_matches("/shards/").parse().unwrap();
+                    json_response(
+                        200,
+                        &GetShardResponse {
+                            status: Status::ok(),
+                            location: Some(ShardLocation {
+                                state: crate::meta::MetaEntityState::Normal,
+                                shard_id,
+                                server_addr: backend_for_meta.clone(),
+                                latest_snapshot: None,
+                            }),
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        meta_addr: Some(meta_addr),
+        ..ClientOptions::default()
+    });
+    let table = client.open_table_from_meta("ns", "tbl").unwrap();
+    assert_eq!(table.options().shard_count, 1);
+
+    shard_count.store(4, Ordering::Relaxed);
+    client.sync_table_topology("ns", "tbl").unwrap();
+    assert_eq!(table.options().shard_count, 4);
+
+    let keys: Vec<String> = (0..40).map(|n| format!("key-{n}")).collect();
+    let want: std::collections::BTreeSet<ShardId> =
+        keys.iter().map(|key| table.shard_id_for_key(key)).collect();
+    assert!(
+        want.len() > 1,
+        "the test needs keys that land on different shards; got {want:?}"
+    );
+
+    seen.lock().unwrap().clear();
+    table
+        .batch_execute(
+            keys.iter()
+                .map(|key| Command::StringGet { key: key.clone() })
+                .collect(),
+        )
+        .unwrap();
+
+    let got: std::collections::BTreeSet<ShardId> = seen.lock().unwrap().iter().copied().collect();
+    assert_eq!(
+        got, want,
+        "each command must go to the shard its key routes to, not to the shard the handle was opened on"
+    );
+}
+
+#[test]
 fn a_table_that_asks_for_a_default_value_still_decides_it() {
     // A table set to shed nothing and to retry no writes, opened by a client that
     // sheds half its traffic and retries writes twice.
