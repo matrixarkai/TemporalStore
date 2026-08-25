@@ -2229,23 +2229,66 @@ pub(super) struct EnvFlagGuard {
     name: &'static str,
 }
 
+/// Environment variables are process-global, and the tests that pin one run in parallel. A bare
+/// set-on-create / remove-on-drop guard races destructively: two tests pin the same variable, the
+/// first to finish removes it, and the second silently runs the rest of its body on the DEFAULT
+/// path -- which is how the pipeline invariant test ended up watching fan-out appends. Pins are
+/// therefore refcounted per variable: agreeing pins share the variable, a conflicting pin WAITS
+/// until the holders drop, and only the last holder clears it. Tests that pin several variables
+/// must acquire them in one fixed (alphabetical) order so two waiters cannot deadlock.
+type EnvPinTable = std::sync::Mutex<std::collections::HashMap<&'static str, (usize, &'static str)>>;
+
+fn env_pins() -> &'static (EnvPinTable, std::sync::Condvar) {
+    static PINS: std::sync::OnceLock<(EnvPinTable, std::sync::Condvar)> = std::sync::OnceLock::new();
+    PINS.get_or_init(|| (std::sync::Mutex::new(std::collections::HashMap::new()), std::sync::Condvar::new()))
+}
+
 impl EnvFlagGuard {
-    pub(super) fn set(name: &'static str) -> Self {
-        std::env::set_var(name, "1");
+    fn pin(name: &'static str, value: &'static str) -> Self {
+        let (table, released) = env_pins();
+        let mut pins = table.lock().unwrap();
+        loop {
+            match pins.get_mut(name) {
+                None => {
+                    pins.insert(name, (1, value));
+                    break;
+                }
+                Some((holders, held)) if *held == value => {
+                    *holders += 1;
+                    break;
+                }
+                // Someone holds the opposite value; wait for every holder to drop.
+                Some(_) => pins = released.wait(pins).unwrap(),
+            }
+        }
+        // Set while still holding the table lock, so a var never disagrees with its pin entry.
+        std::env::set_var(name, value);
         Self { name }
+    }
+
+    pub(super) fn set(name: &'static str) -> Self {
+        Self::pin(name, "1")
     }
 
     /// Explicitly DISABLES a gate for the test's lifetime. Needed because the shipped fixes are
     /// default-ON: leaving the variable unset now selects the fixed path, not the legacy one.
     pub(super) fn off(name: &'static str) -> Self {
-        std::env::set_var(name, "0");
-        Self { name }
+        Self::pin(name, "0")
     }
 }
 
 impl Drop for EnvFlagGuard {
     fn drop(&mut self) {
-        std::env::remove_var(self.name);
+        let (table, released) = env_pins();
+        let mut pins = table.lock().unwrap();
+        if let Some((holders, _)) = pins.get_mut(self.name) {
+            *holders -= 1;
+            if *holders == 0 {
+                pins.remove(self.name);
+                std::env::remove_var(self.name);
+                released.notify_all();
+            }
+        }
     }
 }
 

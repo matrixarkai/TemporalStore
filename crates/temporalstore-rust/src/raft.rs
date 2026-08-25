@@ -4537,8 +4537,16 @@ impl RaftCluster {
                 .begin_deferred_persist();
         }
         let mut entry_barrier = None;
-        let outcome =
-            self.propose_distributed_one_locked(command, transport, &mut entry_barrier);
+        // The senders replicate when the pipeline is on; this thread then appends, rings them,
+        // and waits on the quorum-commit signal instead of sending to any peer itself. Branching
+        // here keeps both paths inside the same deferral bookkeeping: the caller-side staging
+        // and barrier-join below are what propose_pipelined leaves for its caller, exactly as
+        // the fan-out body does.
+        let outcome = if follower_pipeline::follower_pipeline_enabled() {
+            self.propose_pipelined(command, transport, &mut entry_barrier)
+        } else {
+            self.propose_distributed_one_locked(command, transport, &mut entry_barrier)
+        };
         if !deferring {
             // An overlapped barrier is still joined before the ack, whatever path leaves here.
             if let Some(handle) = entry_barrier {
