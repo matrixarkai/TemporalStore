@@ -766,10 +766,16 @@ impl LocalWriteAheadLogStore {
         let batch_size = commands.len() as u32;
         let mut records = Vec::with_capacity(commands.len());
         let last_sequence;
+        let mut batch_end: Option<u64> = None;
         {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
             let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            // Start a piece if a crash left none. Without this the first record of the batch
+            // creates the file with no base header, so it reads as starting at log id zero -- an
+            // address the sealed pieces already own. The single-record path has always done this;
+            // the batch path did not, and nothing about a batch makes it safe to skip.
+            ensure_active_wal_segment(&mut inner, shard_id)?;
             let (disk_last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
             let cached_last_sequence = inner
                 .last_sequence_by_shard
@@ -795,10 +801,18 @@ impl LocalWriteAheadLogStore {
                 // only advances on an actual fsync, which happens once, after the loop.
                 let report = append_record_locked(&mut inner, &rec, false, None)?;
                 inner.stats.last_sequence = report.current_sequence;
+                batch_end = Some(report.persistent_bytes);
                 records.push(rec);
             }
             inner.last_sequence_by_shard.insert(shard_id, seq);
             last_sequence = seq;
+            // Roll AFTER the batch, never inside it: rolling mid-batch would split one
+            // crash-atomic group across two pieces for nothing, and taken here the batch stays
+            // contiguous while the next one starts in the new piece. Without this a batch appends
+            // into the piece being written without ever asking whether it is full, so segmentation
+            // stops applying to the path that writes the most -- and reclaim cannot unlink the
+            // piece being written, so the unlinking stops working with it.
+            roll_wal_segment_if_due(&mut inner, shard_id, batch_end)?;
         }
         if sync {
             // One coalesced fdatasync makes the entire buffered batch durable. Reusing the
@@ -5203,6 +5217,118 @@ mod tests {
             std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS").unwrap_or_default(),
             report.dropped_segments
         );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A batch append rolls when the piece it is writing fills up.
+    ///
+    /// Without this, batch ingest appends into one piece forever: segmentation stops applying to
+    /// the path that writes the most, and reclaim -- which cannot unlink the piece being written --
+    /// loses the unlinking it exists for.
+    #[test]
+    fn a_batch_append_rolls_when_the_piece_fills() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        for round in 0..12u64 {
+            let commands: Vec<Command> = (0..20u64)
+                .map(|index| Command::StringSet {
+                    key: format!("k{round:03}_{index:03}"),
+                    value: vec![118u8; 64],
+                })
+                .collect();
+            store.append_batch_atomic(1, commands, false).unwrap();
+        }
+
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "batch ingest should have rolled the log, not grown one piece"
+        );
+        // And the log still reads as one log, in order, with everything present.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 240, "every record should still be there");
+        let mut expected = 1u64;
+        for (_, line) in &scanned {
+            assert_eq!(
+                decode_wal_line(line).unwrap().sequence,
+                expected,
+                "the records should read back in order across pieces"
+            );
+            expected += 1;
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A batch append after a crash between sealing and starting the next piece does not reuse
+    /// addresses.
+    ///
+    /// The single-record path rebuilds the missing piece from what is on disk; the batch path did
+    /// not, and instead let the first record create the file with no base header -- so it read as
+    /// starting at log id zero, an address the sealed pieces already own.
+    ///
+    /// Entered by stopping inside the roll rather than by building the state by hand, so what is on
+    /// disk is what a crash at that line leaves.
+    #[test]
+    fn a_batch_append_after_a_crash_mid_roll_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_rename",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    stopped = true;
+                    break;
+                }
+            }
+            index += 1;
+        }
+        assert!(stopped, "never reached a roll, so this tested nothing");
+        drop(store);
+
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert!(!active.exists(), "the piece being written should be gone");
+
+        // The batch path is what has to recover here.
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let commands: Vec<Command> = (0..4u64)
+            .map(|index| Command::StringSet {
+                key: format!("after{index}"),
+                value: b"v".to_vec(),
+            })
+            .collect();
+        let records = reopened.append_batch_atomic(1, commands, false).unwrap();
+        assert_eq!(records.len(), 4);
+
+        // Every address the batch took must be past everything handed out before the crash.
+        for record in &records {
+            let log_id = reopened.log_id_at(1, record.sequence).unwrap();
+            assert!(
+                written.iter().all(|(_, earlier)| *earlier < log_id),
+                "a batch record took an address an earlier record already owns"
+            );
+        }
         set_wal_segment_bytes_for_test(None);
     }
 }
