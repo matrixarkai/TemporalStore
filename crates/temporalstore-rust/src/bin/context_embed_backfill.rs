@@ -15,7 +15,7 @@
 //! real OpenAI-compatible embedding provider (e.g. a local MiniLM
 //! `/v1/embeddings` server), and persists the `ctx:embedding:{tenant}:{ref}`
 //! entries under the exact `node_l0` ref-hash the retrieve path reads
-//! (`context_embedding_ref_hash`). It reuses the engine's own provider path
+//! It reuses the engine's own provider path
 //! (`context_backfill_embeddings`) so batching, `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS`
 //! enforcement, and response validation are identical to live extraction.
 //!
@@ -36,8 +36,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::json;
 use temporalstore_rust::{
-    context_backfill_embeddings, context_embedding_ref_hash, BatchExecuteRequest, Command,
-    CommandResponse, ContextEmbedding, ContextModelProviderConfig, ContextProviderKind,
+    context_backfill_embeddings, BatchExecuteRequest, Command,
+    CommandResponse, ContextModelProviderConfig, ContextProviderKind,
     ExecuteRequest, TemporalEngine,
 };
 
@@ -81,16 +81,14 @@ fn load_fully_covered_sessions(path: &str) -> HashMap<String, usize> {
         .unwrap_or_default()
 }
 
-fn load_existing_embedding_refs(
+fn load_embedded_nodes(
     engine: &TemporalEngine,
     tenant_hash: u64,
     node_hashes: &[u64],
 ) -> HashSet<u64> {
-    // "Already embedded" is answered from the node record first: since the fold, the write path
-    // carries the vector on the node itself, and the separate node_l0 rows are on their way out.
-    // A node with an empty vector may still have a row from before the fold, so those (and nodes
-    // the engine does not return) are checked against the rows as before. The result is keyed by
-    // ref hash either way, because that is what every caller compares against.
+    // "Already embedded" is a property of the node record: the vector lives on the node and
+    // nowhere else. A node the engine does not return, or returns without a vector, needs
+    // embedding.
     let mut out = HashSet::new();
     for chunk in node_hashes.chunks(512) {
         let response = engine.execute(ExecuteRequest {
@@ -100,45 +98,35 @@ fn load_existing_embedding_refs(
                 node_hashes: chunk.to_vec(),
             },
         });
-        let mut row_check: Vec<u64> = Vec::new();
-        let mut returned = HashSet::new();
         if let CommandResponse::ContextNodes { nodes } = response.response {
             for node in nodes {
-                returned.insert(node.node_hash);
-                if node.vector.is_empty() {
-                    row_check.push(node.node_hash);
-                } else {
-                    out.insert(context_embedding_ref_hash(tenant_hash, node.node_hash, "node_l0"));
+                if !node.vector.is_empty() {
+                    out.insert(node.node_hash);
                 }
-            }
-        }
-        for node_hash in chunk {
-            if !returned.contains(node_hash) {
-                row_check.push(*node_hash);
-            }
-        }
-        if row_check.is_empty() {
-            continue;
-        }
-        let ref_hashes: Vec<u64> = row_check
-            .iter()
-            .map(|node_hash| context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0"))
-            .collect();
-        let resp = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes,
-                limit: Some(row_check.len().max(1)),
-            },
-        });
-        if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
-            for embedding in embeddings {
-                out.insert(embedding.ref_hash);
             }
         }
     }
     out
+}
+
+fn embedded_node_vector_dim(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    node_hash: u64,
+) -> usize {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash,
+            node_hash,
+        },
+    });
+    match response.response {
+        CommandResponse::ContextNode {
+            node: Some(node), ..
+        } => node.vector.len(),
+        _ => 0,
+    }
 }
 
 fn load_node_l0_texts(
@@ -291,30 +279,12 @@ fn main() {
             let tenant_hash =
                 stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
             let probe: Vec<u64> = node_hashes.iter().take(n_probe).copied().collect();
-            let ref_hashes: Vec<u64> = probe
-                .iter()
-                .map(|nh| context_embedding_ref_hash(tenant_hash, *nh, "node_l0"))
-                .collect();
-            let existing_refs = load_existing_embedding_refs(&engine, tenant_hash, &probe);
-            let found = existing_refs.len();
-            let dim = existing_refs
+            let embedded = load_embedded_nodes(&engine, tenant_hash, &probe);
+            let found = embedded.len();
+            let dim = embedded
                 .iter()
                 .next()
-                .and_then(|ref_hash| {
-                    let resp = engine.execute(ExecuteRequest {
-                        shard_id: 1,
-                        command: Command::ContextQueryEmbeddings {
-                            tenant_hash,
-                            ref_hashes: vec![*ref_hash],
-                            limit: Some(1),
-                        },
-                    });
-                    if let CommandResponse::ContextEmbeddings { embeddings } = resp.response {
-                        embeddings.first().map(|e| e.vector.len())
-                    } else {
-                        None
-                    }
-                })
+                .map(|node_hash| embedded_node_vector_dim(&engine, tenant_hash, *node_hash))
                 .unwrap_or(0);
             let row = json!({
                 "verify": true,
@@ -330,7 +300,7 @@ fn main() {
                 "max_nodes": max_nodes,
                 "shard_load_seconds": shard_load_seconds,
                 "first_node_hash": probe.first().copied(),
-                "first_ref_hash": ref_hashes.first().copied(),
+                "first_embedded_node": embedded.iter().next().copied(),
             });
             println!("{row}");
             verify_reports.push(row);
@@ -439,7 +409,7 @@ fn main() {
         let tenant_hash = stable_hash64(&format!("{}:{}:{}:{}", account, tenant, user, session));
         let end_time_ms = u64::MAX;
         let existing_started = Instant::now();
-        let existing_embeddings = load_existing_embedding_refs(&engine, tenant_hash, &node_hashes);
+        let existing_embeddings = load_embedded_nodes(&engine, tenant_hash, &node_hashes);
         let existing_seconds = existing_started.elapsed().as_secs_f64();
         skipped_existing += existing_embeddings.len() as u64;
         if skip_covered_sessions && !existing_embeddings.is_empty() {
@@ -458,10 +428,7 @@ fn main() {
         let mut missing_nodes: Vec<u64> = node_hashes
             .iter()
             .copied()
-            .filter(|node_hash| {
-                let ref_hash = context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0");
-                !existing_embeddings.contains(&ref_hash)
-            })
+            .filter(|node_hash| !existing_embeddings.contains(node_hash))
             .collect();
         missing_embedding_candidates += missing_nodes.len() as u64;
         if max_new_embeddings > 0 {
@@ -550,23 +517,8 @@ fn main() {
                 failed += chunk.len() as u64;
                 continue;
             }
-            // Two commands per node, like the drainer and the live ingest: the separate row
-            // (still what node_l1-era readers and pre-fold data use) and the same vector on the
-            // node itself. A backfill that wrote only the row would leave node.vector empty and
-            // strand exactly the nodes it repaired on the fallback path forever.
-            let mut commands = Vec::with_capacity(chunk.len().saturating_mul(2));
+            let mut commands = Vec::with_capacity(chunk.len());
             for ((node_hash, _), vector) in chunk.iter().zip(vectors.into_iter()) {
-                let embedding = ContextEmbedding {
-                    ref_hash: context_embedding_ref_hash(tenant_hash, *node_hash, "node_l0"),
-                    level: 1,
-                    model_hash: stable_hash64(&format!("embedding_model:{}", embedding_model)),
-                    vector: vector.clone(),
-                    updated_at_ms,
-                };
-                commands.push(Command::ContextUpsertEmbedding {
-                    tenant_hash,
-                    embedding,
-                });
                 commands.push(Command::ContextSetNodeEmbedding {
                     tenant_hash,
                     node_hash: *node_hash,
@@ -579,14 +531,8 @@ fn main() {
                 shard_id: 1,
                 commands,
             });
-            // Responses pair up with the commands; judge each node by its ROW write so the
-            // ok/bad accounting means exactly what it meant before the node write existed.
-            let ok = response
-                .responses
-                .chunks(2)
-                .filter(|pair| pair.first().map(|r| r.status.ok).unwrap_or(false))
-                .count();
-            let bad = chunk.len().saturating_sub(ok);
+            let ok = response.responses.iter().filter(|r| r.status.ok).count();
+            let bad = response.responses.len().saturating_sub(ok);
             embedded += ok as u64;
             failed += bad as u64;
         }

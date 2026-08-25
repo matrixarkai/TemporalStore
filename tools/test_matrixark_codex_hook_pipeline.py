@@ -339,7 +339,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
                 "compiling temporalstore v0.1.0",
                 "warning: many unrelated build lines",
                 "test result: ok. 132 passed; 0 failed; 0 ignored; finished in 12.34s",
-                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "To https://github.com/matrixarkai/TemporalStore.git",
                 "   39f93050..e2f645c5  HEAD -> main",
             ]
         )
@@ -391,7 +391,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase, _CodexPipelinePart5, _Co
                 "build line " * 120,
                 "Exit code: 0",
                 "Ran 45 tests in 0.02s",
-                "To https://github.com/bjmeetsfo/TemporalStore.git",
+                "To https://github.com/matrixarkai/TemporalStore.git",
                 "   39f93050..bee1234  HEAD -> main",
             ]
         )

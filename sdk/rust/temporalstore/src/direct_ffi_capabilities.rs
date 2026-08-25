@@ -4,8 +4,8 @@
 use std::os::raw::{c_char, c_int};
 
 use crate::direct_ffi_types::{
-    CFeatureFilter, CFeaturePoint, CFeaturePointArray, CIpsFeatureArray, CIpsFeatureStat,
-    CSequenceFeatureRow, CSequenceFeatureRowArray, TemporalStoreClientOpaque,
+    CFeatureFilter, CFeaturePoint, CFeaturePointArray, CSequenceFeatureRow,
+    CSequenceFeatureRowArray, TemporalStoreClientOpaque,
 };
 
 extern "C" {
@@ -60,27 +60,6 @@ extern "C" {
     pub(crate) fn temporalstore_sequence_feature_row_array_free(
         rows: *mut CSequenceFeatureRowArray,
     );
-        client: *mut TemporalStoreClientOpaque,
-        table: *const c_char,
-        uid: i64,
-        timestamp_us: i64,
-        action_type: i32,
-        logical_table: i32,
-        features: *const CIpsFeatureStat,
-        feature_count: usize,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-        client: *mut TemporalStoreClientOpaque,
-        table: *const c_char,
-        uid: i64,
-        action_type: i32,
-        logical_table: i32,
-        slot: i32,
-        top_k: i32,
-        last_instances: i64,
-        features: *mut CIpsFeatureArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
     pub(crate) fn temporalstore_control_state_increment(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,

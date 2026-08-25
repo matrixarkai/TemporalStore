@@ -264,6 +264,53 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
 }
 
 #[test]
+fn failure_driven_topology_syncs_are_spaced_out() {
+    // A request that fails in a way suggesting the cached topology is wrong triggers a
+    // re-sync. The guard on that is per REQUEST, which says nothing about the other requests
+    // in flight -- and a shard moving fails many at once. Unthrottled, each one is its own
+    // metaserver round-trip: a sync storm aimed at the metaserver exactly while it is working
+    // through the topology change that caused the failures. One failure is enough to learn
+    // what all of them need.
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some("127.0.0.1:1".to_string()),
+        topo_error_retry_interval_ms: 5_000,
+        ..ClientOptions::default()
+    });
+
+    assert!(
+        client.forced_sync_is_due("ns", "tbl"),
+        "the first failure should learn the topology"
+    );
+    for attempt in 0..8 {
+        assert!(
+            !client.forced_sync_is_due("ns", "tbl"),
+            "concurrent failure {attempt} must not each fire their own sync"
+        );
+    }
+
+    // Per table, not global: another table's failure is its own question.
+    assert!(
+        client.forced_sync_is_due("ns", "other"),
+        "a different table must not be throttled by this one"
+    );
+
+    // Zero disables the spacing, which is the older behaviour, kept reachable.
+    let eager = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some("127.0.0.1:1".to_string()),
+        topo_error_retry_interval_ms: 0,
+        ..ClientOptions::default()
+    });
+    for attempt in 0..4 {
+        assert!(
+            eager.forced_sync_is_due("ns", "tbl"),
+            "with spacing off, attempt {attempt} should still sync"
+        );
+    }
+}
+
+#[test]
 fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -277,10 +324,12 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
     // deleted them all. Both halves are needed, in that order.
     let seen_versions = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u64>::new()));
     let builds = std::sync::Arc::new(AtomicUsize::new(0));
+    let seen_version_calls = std::sync::Arc::new(AtomicUsize::new(0));
     let meta_addr = free_local_addr();
     let meta_addr_for_listener = meta_addr.clone();
     let versions = seen_versions.clone();
     let built = builds.clone();
+    let version_calls = seen_version_calls.clone();
     std::thread::spawn(move || {
         serve(&meta_addr_for_listener, move |request| {
             match (request.method.as_str(), request.path.as_str()) {
@@ -331,6 +380,13 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
                         },
                     )
                 }
+                // Only the CALL is interesting here. What comes back does not matter: an
+                // unparsed answer just falls back to the table's own version, and what this
+                // test measures is whether the call is made at all.
+                ("POST", "/meta/topology_version") => {
+                    version_calls.fetch_add(1, Ordering::SeqCst);
+                    json_response(503, &Status::error("unavailable", "not part of this test"))
+                }
                 _ => json_response(404, &Status::error("not_found", "no route")),
             }
         })
@@ -348,6 +404,7 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
         .sync_table_topology("ns".to_string(), "tbl".to_string())
         .expect("first sync succeeds");
     assert_eq!(client.topology_cache_report().route_count, 1);
+    let version_calls_after_first = seen_version_calls.load(Ordering::SeqCst);
 
     client
         .sync_table_topology("ns".to_string(), "tbl".to_string())
@@ -373,6 +430,11 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
         client.topology_cache_report().route_count,
         1,
         "an unchanged reply carries no shards and must not be read as having none"
+    );
+    assert_eq!(
+        seen_version_calls.load(Ordering::SeqCst),
+        version_calls_after_first,
+        "a sync that changed nothing should cost one round-trip, not two -- the cluster          topology version is only needed to stamp routes, and an unchanged reply installs none"
     );
 }
 

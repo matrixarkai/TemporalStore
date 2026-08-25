@@ -252,7 +252,7 @@ pub struct ClientMigrationCompatibilityReport {
     pub compatibility_mode: ClientCompatibilityMode,
     pub rust_native_http_ready: bool,
     pub rust_native_tonic_ready: bool,
-    pub legacy_cplusplus_wire_in_scope: bool,
+    pub legacy_wire_in_scope: bool,
     pub native_wire_compatible_ready: bool,
     pub migration_layer_ready: bool,
     #[serde(default)]
@@ -276,7 +276,7 @@ impl Default for ClientMigrationCompatibilityReport {
             compatibility_mode: ClientCompatibilityMode::WireMigrationOutOfScope,
             rust_native_http_ready: true,
             rust_native_tonic_ready: true,
-            legacy_cplusplus_wire_in_scope: false,
+            legacy_wire_in_scope: false,
             native_wire_compatible_ready: false,
             migration_layer_ready: false,
             typed_table_client_ready: true,
@@ -298,7 +298,7 @@ impl Default for ClientMigrationCompatibilityReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientProductionReplacementContract {
     pub compatibility_decision: String,
-    pub legacy_cplusplus_wire_protocols_in_scope: Vec<String>,
+    pub legacy_wire_protocols_in_scope: Vec<String>,
     pub production_protocols: Vec<String>,
     pub supported_command_families: Vec<String>,
     pub typed_table_client_preserved: bool,
@@ -329,7 +329,7 @@ impl Default for ClientProductionReplacementContract {
             compatibility_decision:
                 "legacy wire migration shims are out of scope; use Rust-native migration contract"
                     .to_string(),
-            legacy_cplusplus_wire_protocols_in_scope: Vec::new(),
+            legacy_wire_protocols_in_scope: Vec::new(),
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
                 "RESP".to_string(),
@@ -660,6 +660,9 @@ struct ClientMetaSyncTableState {
     consecutive_errors: u64,
     last_error: String,
     shards_without_primary: u64,
+    /// When a request failure last forced a topology sync for this table, out of band from
+    /// the scheduled one. Used to space those out; see `refresh_table_topology_after_status`.
+    last_forced_sync_unix_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -891,7 +894,7 @@ impl TemporalStoreClient {
             && replacement.http_json_contract_tested
             && replacement.resp_contract_tested
             && replacement.tonic_contract_tested
-            && !migration.legacy_cplusplus_wire_in_scope;
+            && !migration.legacy_wire_in_scope;
         let typed_table_client_ready =
             migration.typed_table_client_ready && replacement.typed_table_client_tested;
 
@@ -1482,8 +1485,20 @@ impl TemporalStoreTable {
         self.http_options()
     }
 
+    /// Re-sync this table's topology because a request failed in a way that suggests the
+    /// cached one is wrong.
+    ///
+    /// Spaced by `topo_error_retry_interval_ms`. The per-request guard above stops one command
+    /// doing this twice, but says nothing about the other requests in flight: a shard moving
+    /// makes MANY requests fail at once, and each one arriving here unthrottled is a separate
+    /// metaserver round-trip -- a sync storm aimed at the metaserver at the moment it is
+    /// working through a topology change. One request's failure is enough to learn what all of
+    /// them need.
     fn refresh_table_topology_after_status(&self) {
         if self.client.inner.options.meta_addr.is_none() {
+            return;
+        }
+        if !self.client.forced_sync_is_due(&self.namespace, &self.table_name) {
             return;
         }
         let _ = self

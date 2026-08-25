@@ -92,7 +92,7 @@ fn client_exposes_neptune_placement_hooks_and_migration_scope() {
     );
     assert!(migration.rust_native_http_ready);
     assert!(migration.rust_native_tonic_ready);
-    assert!(!migration.legacy_cplusplus_wire_in_scope);
+    assert!(!migration.legacy_wire_in_scope);
     assert!(!migration.native_wire_compatible_ready);
     assert!(!migration.migration_layer_ready);
     assert!(migration.typed_table_client_ready);
