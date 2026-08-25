@@ -488,6 +488,79 @@ mod tests {
         );
     }
 
+    /// Lists behave like the native ones: push answers the growing length, order is
+    /// head-to-tail with LPUSH walking the head, pops drain the chosen end, negative LRANGE
+    /// indices count from the tail, and TYPE says "list".
+    #[test]
+    fn list_commands_match_native() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        assert_eq!(run(&mut state, vec!["RPUSH", "l", "b"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["RPUSH", "l", "c", "d"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["LPUSH", "l", "a"]), RespValue::Integer(4));
+        assert_eq!(run(&mut state, vec!["LLEN", "l"]), RespValue::Integer(4));
+        assert_eq!(run(&mut state, vec!["TYPE", "l"]), RespValue::SimpleString("list".to_string()));
+
+        let full = RespValue::Array(vec![
+            RespValue::Bulk(Some(b"a".to_vec())),
+            RespValue::Bulk(Some(b"b".to_vec())),
+            RespValue::Bulk(Some(b"c".to_vec())),
+            RespValue::Bulk(Some(b"d".to_vec())),
+        ]);
+        assert_eq!(run(&mut state, vec!["LRANGE", "l", "0", "-1"]), full);
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "l", "-2", "-1"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"c".to_vec())),
+                RespValue::Bulk(Some(b"d".to_vec())),
+            ]),
+            "negative indices count from the tail"
+        );
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "l", "5", "9"]),
+            RespValue::Array(Vec::new()),
+            "an out-of-window range answers empty, never an error"
+        );
+
+        assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"a".to_vec())));
+        assert_eq!(run(&mut state, vec!["RPOP", "l"]), RespValue::Bulk(Some(b"d".to_vec())));
+        assert_eq!(
+            run(&mut state, vec!["LPOP", "l", "5"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"b".to_vec())),
+                RespValue::Bulk(Some(b"c".to_vec())),
+            ]),
+            "a COUNT larger than the list drains it and answers what there was"
+        );
+        assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(None));
+        assert_eq!(run(&mut state, vec!["LLEN", "l"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["LLEN", "missing"]), RespValue::Integer(0));
+
+        // Interleaved pushes after a drain keep working -- the sequence space is not consumed.
+        assert_eq!(run(&mut state, vec!["LPUSH", "l", "z"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"z".to_vec())));
+    }
+
     #[test]
     fn set_zero_expiry_match_native() {
         let engine = TemporalEngine::default();
@@ -881,6 +954,12 @@ mod tests {
             "INFO" => vec!["INFO"],
             "INCRBYFLOAT" => vec!["INCRBYFLOAT", "advertised:float", "1.5"],
             "KEYS" => vec!["KEYS", "*"],
+            "LLEN" => vec!["LLEN", "advertised:list"],
+            "LPOP" => vec!["LPOP", "advertised:list"],
+            "LPUSH" => vec!["LPUSH", "advertised:list", "v"],
+            "LRANGE" => vec!["LRANGE", "advertised:list", "0", "-1"],
+            "RPOP" => vec!["RPOP", "advertised:list"],
+            "RPUSH" => vec!["RPUSH", "advertised:list", "v"],
             "MGET" => vec!["MGET", "advertised:missing"],
             "MSET" => vec!["MSET", "advertised:mset", "v"],
             "MSETNX" => vec!["MSETNX", "advertised:msetnx", "v"],

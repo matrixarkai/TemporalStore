@@ -2290,6 +2290,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
     removed |= shard.sets.remove(key).is_some();
+    removed |= shard.lists.remove(key).is_some();
     if shard.features.remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
@@ -2452,6 +2453,9 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     }
     for members in shard.sets.values() {
         ids.extend(members.values().map(|address| address.page_slab_id));
+    }
+    for elements in shard.lists.values() {
+        ids.extend(elements.values().map(|address| address.page_slab_id));
     }
     for series in shard.features.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
@@ -2631,6 +2635,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
+        || shard.lists.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)
@@ -2651,6 +2656,7 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "string",
         "hash",
         "set",
+        "list",
         "feature",
         "sequence",
         "control_state",
@@ -2812,6 +2818,7 @@ fn object_manager_stats(
         let secondary_object_count = shard.strings.len()
             + shard.hashes.len()
             + shard.sets.len()
+            + shard.lists.len()
             + shard.features.len()
             + shard.control_state.len()
             + shard.control_state_changes.len()
@@ -2828,6 +2835,7 @@ fn object_manager_stats(
         let secondary_page_ref_count = shard.strings.len()
             + shard.hashes.values().map(HashMap::len).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.lists.values().map(BTreeMap::len).sum::<usize>()
             + shard.features.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_nodes.len()
             + shard
@@ -2897,6 +2905,7 @@ fn object_manager_stats(
     let object_count = shard.strings.len()
         + shard.hashes.len()
         + shard.sets.len()
+        + shard.lists.len()
         + shard.features.len()
         + shard.control_state.len()
         + shard.context_nodes.len()
@@ -2910,6 +2919,7 @@ fn object_manager_stats(
     let page_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.lists.values().map(BTreeMap::len).sum::<usize>()
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_nodes.len()
         + shard

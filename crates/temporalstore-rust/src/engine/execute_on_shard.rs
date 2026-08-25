@@ -491,6 +491,134 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate_record(shard_id, "set", &key);
             CommandResponse::Empty
         }
+        Command::ListPush { key, member, left } => {
+            remove_if_expired(shard, &key);
+            let seq = {
+                let list = shard.lists.entry(key.clone()).or_default();
+                if left {
+                    list.keys().next().copied().map_or(0, |first| first - 1)
+                } else {
+                    list.keys().next_back().copied().map_or(0, |last| last + 1)
+                }
+            };
+            // Two's-complement bias makes the hex component sort lexically in list order,
+            // which is what lets recovery and range reads walk the bucket index directly.
+            let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+            let object_id = stable_page_object_id(shard_id, "list", &key, Some(&component));
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &member,
+                Some(object_id),
+                Some(routing_bucket),
+                async_storage,
+            ) {
+                upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "list",
+                    &key,
+                    Some(component.clone()),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .lists
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(seq, address);
+                mutated = true;
+            }
+            let _ = cache.invalidate_record(shard_id, "list", &key);
+            let length = shard.lists.get(&key).map_or(0, BTreeMap::len) as i64;
+            CommandResponse::Integer { value: length }
+        }
+        Command::ListPop { key, left } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "list", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            let popped = shard.lists.get_mut(&key).and_then(|list| {
+                let seq = if left {
+                    list.keys().next().copied()
+                } else {
+                    list.keys().next_back().copied()
+                }?;
+                list.remove(&seq).map(|address| (seq, address))
+            });
+            match popped {
+                None => CommandResponse::Bytes { value: None },
+                Some((seq, address)) => {
+                    let component =
+                        format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    mutated = true;
+                    mark_bucket_index_page_deleted(shard, "list", &key, Some(&component));
+                    if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
+                        shard.lists.remove(&key);
+                    }
+                    let _ = cache.invalidate_record(shard_id, "list", &key);
+                    CommandResponse::Bytes {
+                        value: read_page_bytes(cache, page_store, shard_id, &address),
+                    }
+                }
+            }
+        }
+        Command::ListRange { key, start, stop } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "list", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Members {
+                        members: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let addresses: Vec<BlockAddress> = shard
+                .lists
+                .get(&key)
+                .map(|list| list.values().cloned().collect())
+                .unwrap_or_default();
+            let length = addresses.len() as i64;
+            let resolve = |index: i64| -> i64 {
+                if index < 0 {
+                    length + index
+                } else {
+                    index
+                }
+            };
+            let from = resolve(start).max(0);
+            let to = resolve(stop).min(length - 1);
+            let members = if from > to || length == 0 {
+                Vec::new()
+            } else {
+                addresses[from as usize..=to as usize]
+                    .iter()
+                    .filter_map(|address| read_page_bytes(cache, page_store, shard_id, address))
+                    .collect()
+            };
+            CommandResponse::Members { members }
+        }
+        Command::ListLen { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "list", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            CommandResponse::Integer {
+                value: shard.lists.get(&key).map_or(0, BTreeMap::len) as i64,
+            }
+        }
         Command::SetMembers { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;

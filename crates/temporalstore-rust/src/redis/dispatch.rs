@@ -686,6 +686,93 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(removed)
         }
+        "LPUSH" | "RPUSH" if args.len() >= 3 => {
+            let key = string_arg(&args[1]);
+            let left = command == "LPUSH";
+            let mut length = 0;
+            for member in args.iter().skip(2) {
+                match execute(Command::ListPush {
+                    key: key.clone(),
+                    member: member.clone(),
+                    left,
+                }) {
+                    Ok(CommandResponse::Integer { value }) => length = value,
+                    Ok(_) => return RespValue::Error("ERR invalid lpush response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            state.keyspace.insert(key);
+            RespValue::Integer(length)
+        }
+        "LPOP" | "RPOP" if args.len() == 2 || args.len() == 3 => {
+            let key = string_arg(&args[1]);
+            let left = command == "LPOP";
+            // Optional COUNT arg: answers an array (possibly empty) instead of a bulk/nil.
+            let count = if args.len() == 3 {
+                match parse_i64_arg(&args[2], "count") {
+                    Ok(count) if count >= 0 => Some(count),
+                    Ok(_) => return RespValue::Error("ERR value is out of range, must be positive".to_string()),
+                    Err(err) => return RespValue::Error(err),
+                }
+            } else {
+                None
+            };
+            let mut popped = Vec::new();
+            let want = count.unwrap_or(1);
+            for _ in 0..want {
+                match execute(Command::ListPop {
+                    key: key.clone(),
+                    left,
+                }) {
+                    Ok(CommandResponse::Bytes { value: Some(value) }) => popped.push(value),
+                    Ok(CommandResponse::Bytes { value: None }) => break,
+                    Ok(_) => return RespValue::Error("ERR invalid lpop response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            match count {
+                None => match popped.pop() {
+                    Some(value) => RespValue::Bulk(Some(value)),
+                    None => RespValue::Bulk(None),
+                },
+                Some(_) if popped.is_empty() => RespValue::Bulk(None),
+                Some(_) => RespValue::Array(
+                    popped
+                        .into_iter()
+                        .map(|value| RespValue::Bulk(Some(value)))
+                        .collect(),
+                ),
+            }
+        }
+        "LRANGE" if args.len() == 4 => {
+            match (
+                parse_i64_arg(&args[2], "start"),
+                parse_i64_arg(&args[3], "stop"),
+            ) {
+                (Ok(start), Ok(stop)) => match execute(Command::ListRange {
+                    key: string_arg(&args[1]),
+                    start,
+                    stop,
+                }) {
+                    Ok(CommandResponse::Members { members }) => RespValue::Array(
+                        members
+                            .into_iter()
+                            .map(|member| RespValue::Bulk(Some(member)))
+                            .collect(),
+                    ),
+                    Ok(_) => return RespValue::Error("ERR invalid lrange response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                },
+                (Err(err), _) | (_, Err(err)) => RespValue::Error(err),
+            }
+        }
+        "LLEN" if args.len() == 2 => match execute(Command::ListLen {
+            key: string_arg(&args[1]),
+        }) {
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid llen response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
         "SADD" if args.len() >= 3 => {
             let key = string_arg(&args[1]);
             let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
