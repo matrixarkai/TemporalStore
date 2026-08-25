@@ -4380,7 +4380,8 @@ mod tests {
         );
         assert!(
             surviving.iter().all(|survivor| *survivor < log_id),
-            "a record written after the crash took an address that still resolves to an earlier              one: new {log_id}, highest surviving {:?}",
+            "a record written after the crash took an address that still resolves to an \
+             earlier one: new {log_id}, highest surviving {:?}",
             surviving.iter().max()
         );
         set_wal_segment_bytes_for_test(None);
