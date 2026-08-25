@@ -143,6 +143,49 @@ impl TemporalEngine {
             .config_of(shard_id)
     }
 
+    /// How far behind the log each loaded shard's durable index is, in records.
+    ///
+    /// Records land in the log first and the index accounts for them afterwards; this is the
+    /// distance between. It explains two symptoms that otherwise look unrelated to each other: a
+    /// restart that takes much longer than usual, because everything past the index anchor is
+    /// replayed, and reclaim that frees nothing, because it will not pass that anchor.
+    ///
+    /// Every shard in one pass. Callers that already hold a read lock on the shard table must not
+    /// ask per shard: a second read on the same lock, with a writer queued between them, deadlocks.
+    pub fn shard_index_lags(&self) -> Vec<(ShardId, u64)> {
+        let applied: Vec<(ShardId, u64)> = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            shards
+                .iter()
+                .map(|(shard_id, shard)| (*shard_id, shard.applied_wal_sequence.unwrap_or(0)))
+                .collect()
+        };
+        applied
+            .into_iter()
+            .map(|(shard_id, applied)| {
+                let appended = self.wal_store.cached_last_sequence(shard_id);
+                (shard_id, appended.saturating_sub(applied))
+            })
+            .collect()
+    }
+
+    /// How many keys each loaded shard is holding an expiry deadline for.
+    ///
+    /// The sweep's own report says what it REMOVED, which looks equally healthy whether the backlog
+    /// behind it is draining or growing. This says which. The engine already decides how hard to
+    /// work from this number -- it becomes the expiry component of the storage cycle's pressure
+    /// signal -- so publishing it only makes visible what is already being acted on.
+    ///
+    /// Every shard in one pass, for the same reason as the trailing distance: a caller inside the
+    /// metrics loop already holds a read lock on the shard table.
+    pub fn shard_expiry_backlogs(&self) -> Vec<(ShardId, u64)> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .iter()
+            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms.len() as u64))
+            .collect()
+    }
+
     /// What a shard's rate limit has allowed and refused, if it has one.
     ///
     /// Absent means the shard is not limited, which is different from a limit that has refused
