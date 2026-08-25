@@ -1085,10 +1085,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                         continue
                     counts[name] += 1
 
-            # Every subject resolved to a non-zero tenant AND user hash, which is exactly the
-            # condition a pinned subject view needs, so each subject is counted from its own
-            # records instead of from one pass over the whole store.
-            pinned = all(
+            # Two conditions, and both matter. Every subject must resolve to a non-zero tenant
+            # AND user hash, which is what a pinned view needs to engage; and this adapter must
+            # actually have the engine scan API, because without it a "pinned" view degrades to a
+            # full read and per-subject counting becomes one full read PER SUBJECT -- strictly
+            # worse than the single pass it replaced.
+            scanner_available = callable(
+                getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None)
+            )
+            pinned = scanner_available and all(
                 tenant_by_user.get(user_hash) and user_hash
                 for user_hash in name_by_user
             )
@@ -1546,6 +1551,120 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                         log.write("CLEAN %d records\n" % len(got))
                 except OSError:
                     pass
+            return full
+        return live_subset
+
+    def records_for_delete(self, memory_id: str) -> list[Json]:
+        """The id's live records from the same two-round id-scoped fetch get(id) uses.
+
+        Wider type set than get(id): index postings are included because the closure must see
+        multi-source derivatives to demote them rather than remove them. Gated on the locator
+        coverage marker; without it the full read stands, since a derivative the locator never
+        saw would silently keep pointing at a deleted source.
+        """
+        import os as _os
+
+        if not self._locator_covers_pointed_ids():
+            return self.read_all()
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        kept_types = [
+            "context_event",
+            "context_entity",
+            "context_summary",
+            "context_summary_dirty",
+            "context_segment",
+            "context_index",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ]
+        linked = self._scan_records_of_types(kept_types, record_ids=[str(memory_id)])
+        if linked is None:
+            return self.read_all()
+        identity_ids = {str(memory_id)}
+        for record in linked:
+            for field in ("entity_hash", "summary_hash", "segment_hash", "event_id_hash"):
+                value = record.get(field)
+                if value not in (None, "", 0):
+                    identity_ids.add(str(value))
+        subset = (
+            linked
+            if len(identity_ids) <= 1
+            else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
+        )
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        shadow = _os.environ.get("MATRIXARK_DELETE_SHADOW_COMPARE", "").strip()
+        if shadow not in {"", "0", "false", "no", "off"}:
+            full = self.read_all()
+            log_path = _os.environ.get("MATRIXARK_DELETE_SHADOW_LOG",
+                                       "/tmp/matrixark_delete_shadow.log")
+
+            def decisions(records: list[Json]) -> tuple:
+                """What delete actually decides from these records: is this a source event, and
+                which derivatives are single-source (removed) versus multi-source (demoted)."""
+                try:
+                    from tools.matrixark_mcp_local_adapter import (
+                        _record_derivative_identity_ids,
+                        _record_provenance_source_ids,
+                        _safe_int,
+                    )
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import (
+                        _record_derivative_identity_ids,
+                        _record_provenance_source_ids,
+                        _safe_int,
+                    )
+                mid_int = _safe_int(str(memory_id))
+                is_source = any(
+                    str(r.get("record_type") or "") == "context_event"
+                    and str(r.get("event_id_hash")) == str(memory_id)
+                    for r in records
+                )
+                single, multi = set(), set()
+                for record in records:
+                    provenance = _record_provenance_source_ids(record)
+                    if provenance is None or mid_int not in provenance:
+                        continue
+                    ids = _record_derivative_identity_ids(record)
+                    if provenance == {mid_int}:
+                        single |= set(ids)
+                    else:
+                        multi |= set(ids)
+                return (is_source, tuple(sorted(map(str, single))), tuple(sorted(map(str, multi))))
+
+            expected, got = decisions(full), decisions(live_subset)
+            try:
+                with open(log_path, "a", encoding="utf-8") as log:
+                    if expected != got:
+                        log.write("MISMATCH id=%s full=%r subset=%r\n" % (memory_id, expected, got))
+                    else:
+                        log.write("CLEAN id=%s source=%s single=%d multi=%d\n"
+                                  % (memory_id, expected[0], len(expected[1]), len(expected[2])))
+            except OSError:
+                pass
             return full
         return live_subset
 

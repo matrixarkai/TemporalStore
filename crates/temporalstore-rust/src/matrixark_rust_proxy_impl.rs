@@ -2285,6 +2285,70 @@ fn record_addressable_ids(record: &Value) -> Vec<String> {
 /// Mirrors `forget_scope_records` -- same shard walk, same survivor rewrite, same single durable
 /// batch that also clears the scan/hgetall caches so a later retrieve cannot re-serve a removed
 /// record from cache. Only the predicate differs: identity ids instead of a scope.
+/// The `(shard, field)` locations the ref locator holds for `ids`, or `None` when the locator
+/// cannot be trusted to be complete for this store.
+///
+/// Completeness is the whole question: visiting only located fields is correct exactly when the
+/// locator saw every record this store ever wrote, which is what the `provenance_from_start`
+/// marker attests (it is stamped by the batch that writes the store's first record). Without it
+/// the caller must walk, because a missed field would leave a deleted record physically present.
+fn located_fields_for_ids(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    ids: &[String],
+) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
+    let Some(prefix) = record_hash_key.strip_suffix(":records") else {
+        return Ok(None);
+    };
+    let locator_key = format!("{prefix}:context_ref_locator");
+    let covered = hgetall_map(engine, format!("{locator_key}_meta"))?
+        .get("provenance_from_start")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false);
+    if !covered {
+        return Ok(None);
+    }
+    let mut by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in ids {
+        let raw = read_bytes(
+            engine,
+            Command::HashGet {
+                key: locator_key.clone(),
+                field: id.clone(),
+            },
+        )?;
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(decoded) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        for location in decoded
+            .get("locations")
+            .and_then(Value::as_array)
+            .map(|items| items.as_slice())
+            .unwrap_or(&[])
+        {
+            let key = location.get("key").and_then(Value::as_str).unwrap_or("");
+            let field = location.get("field").and_then(Value::as_str).unwrap_or("");
+            if key.is_empty() || field.is_empty() {
+                continue;
+            }
+            let Some((base, shard)) = record_shard_key_parts(key) else {
+                continue;
+            };
+            if base != record_hash_key {
+                continue;
+            }
+            let fields = by_shard.entry(shard.to_string()).or_default();
+            if !fields.iter().any(|existing| existing == field) {
+                fields.push(field.to_string());
+            }
+        }
+    }
+    Ok(Some(by_shard))
+}
+
 fn delete_records_by_ids(
     engine: &TemporalEngine,
     record_hash_key: &str,
@@ -2309,10 +2373,31 @@ fn delete_records_by_ids(
     }
     let max_shard = (count - 1) / shard_size;
     let mut commands = Vec::new();
-    for shard in 0..=max_shard {
+    // Which fields could hold these ids? The locator answers directly on a store it covers
+    // completely; otherwise every shard has to be read.
+    let located = located_fields_for_ids(engine, record_hash_key, ids)?;
+    let visit: Vec<(String, Vec<String>)> = match &located {
+        Some(by_shard) => by_shard
+            .iter()
+            .map(|(shard, fields)| (shard.clone(), fields.clone()))
+            .collect(),
+        None => (0..=max_shard)
+            .map(|shard| (format!("{shard:06}"), Vec::new()))
+            .collect(),
+    };
+    for (shard, only_fields) in visit {
         stats.shards_scanned += 1;
-        let key = format!("{}:{:06}", record_hash_key, shard);
-        for (field, value) in hgetall_map(engine, key.clone())? {
+        let key = format!("{}:{}", record_hash_key, shard);
+        let shard_map = hgetall_map(engine, key.clone())?;
+        let entries: Vec<(String, String)> = if only_fields.is_empty() {
+            shard_map.into_iter().collect()
+        } else {
+            only_fields
+                .into_iter()
+                .filter_map(|field| shard_map.get(&field).map(|value| (field, value.clone())))
+                .collect()
+        };
+        for (field, value) in entries {
             let records = decode_matrixark_payload(&value);
             if records.is_empty() {
                 // Undecodable / non-record field (e.g. a counter): never touch it.
@@ -2342,14 +2427,14 @@ fn delete_records_by_ids(
                 for record_type in payload_record_types(&value) {
                     commands.push(Command::HashDelete {
                         key: type_index_key(record_hash_key, &record_type),
-                        field: format!("{shard:06}:{field}"),
+                        field: format!("{shard}:{field}"),
                     });
                 }
                 for record in decode_matrixark_payload(&value) {
                     for bucket in record_scope_buckets(&record) {
                         commands.push(Command::HashDelete {
                             key: scope_index_key(record_hash_key, &bucket),
-                            field: format!("{shard:06}:{field}"),
+                            field: format!("{shard}:{field}"),
                         });
                     }
                 }
