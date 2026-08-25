@@ -50,6 +50,10 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::ListPush { key, .. }
+        | Command::ListPop { key, .. }
+        | Command::ListRange { key, .. }
+        | Command::ListLen { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
@@ -261,6 +265,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::ListPush { .. }
+            | Command::ListPop { .. }
             | Command::ControlStateIncrement { .. }
             | Command::ControlStateIncrementWithOptions { .. }
             | Command::ControlStateSet { .. }
@@ -285,6 +291,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::ListPush { .. }
+            | Command::ListPop { .. }
             | Command::FeatureAppend { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }

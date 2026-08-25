@@ -936,6 +936,7 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
     !shard.strings.is_empty()
         || !shard.hashes.is_empty()
         || !shard.sets.is_empty()
+        || !shard.lists.is_empty()
         || !shard.features.is_empty()
         || !shard.control_state_pages.is_empty()
         || !shard.context_nodes.is_empty()
@@ -959,6 +960,16 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
     for (key, fields) in &shard.hashes {
         entries.extend(fields.iter().map(|(field, address)| {
             live_page_entry(key.clone(), "hash", Some(field.clone()), address.clone())
+        }));
+    }
+    for (key, elements) in &shard.lists {
+        entries.extend(elements.iter().map(|(seq, address)| {
+            live_page_entry(
+                key.clone(),
+                "list",
+                Some(format!("{:016x}", (*seq as u64).wrapping_sub(i64::MIN as u64))),
+                address.clone(),
+            )
         }));
     }
     for (key, members) in &shard.sets {
@@ -1582,6 +1593,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut saw_strings = false;
     let mut saw_hashes = false;
     let mut saw_sets = false;
+    let mut saw_lists = false;
     let mut saw_features = false;
     let mut saw_control_state = false;
     let mut saw_context_events = false;
@@ -1595,6 +1607,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut strings = HashMap::new();
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
     let mut sets = HashMap::<String, BTreeMap<Vec<u8>, BlockAddress>>::new();
+    let mut lists = HashMap::<String, BTreeMap<i64, BlockAddress>>::new();
     let mut features = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
     let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
     let mut control_state_pages = HashMap::new();
@@ -1630,6 +1643,19 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 sets.entry(entry.object_key)
                     .or_default()
                     .insert(member, entry.address);
+            }
+            "list" => {
+                saw_lists = true;
+                let seq = entry
+                    .component
+                    .as_deref()
+                    .and_then(|component| u64::from_str_radix(component, 16).ok())
+                    .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+                    .unwrap_or_default();
+                lists
+                    .entry(entry.object_key)
+                    .or_default()
+                    .insert(seq, entry.address);
             }
             "feature" => {
                 saw_features = true;
@@ -1761,6 +1787,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
     if saw_hashes {
         shard.hashes = hashes;
+    }
+    if saw_lists {
+        shard.lists = lists;
     }
     if saw_sets {
         shard.sets = sets;

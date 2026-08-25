@@ -56,6 +56,11 @@ pub(super) struct ShardState {
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    /// Redis-style lists: element pages keyed by a signed sequence -- left pushes walk the
+    /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
+    /// BTree's order IS the list's order.
+    #[serde(default)]
+    pub(super) lists: HashMap<String, BTreeMap<i64, BlockAddress>>,
     pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
     // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
     // with a typed row codec over identical timestamped-KV storage). This field is

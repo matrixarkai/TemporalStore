@@ -49,6 +49,10 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::SetAdd { key, .. }
         | Command::SetMembers { key }
         | Command::SetRemove { key, .. }
+        | Command::ListPush { key, .. }
+        | Command::ListPop { key, .. }
+        | Command::ListRange { key, .. }
+        | Command::ListLen { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }

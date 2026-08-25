@@ -1204,6 +1204,27 @@ pub enum Command {
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
     },
+    /// Push one element onto a list end (left = head). Answers the new length.
+    ListPush {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        left: bool,
+    },
+    /// Pop one element off a list end. Answers the element, or nil for an empty/missing list.
+    ListPop {
+        key: String,
+        left: bool,
+    },
+    /// Inclusive range with Redis index semantics (negatives count from the tail).
+    ListRange {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
+    ListLen {
+        key: String,
+    },
     SetMembers {
         key: String,
     },

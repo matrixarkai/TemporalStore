@@ -196,6 +196,26 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "LLEN",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "LPOP",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LPUSH",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LRANGE",
+            arity: 4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "MGET",
             arity: -2,
             flags: READ,
@@ -268,6 +288,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "RENAMENX",
             arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPOP",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPUSH",
+            arity: -3,
             flags: WRITE,
         },
         RedisCommandDescriptor {

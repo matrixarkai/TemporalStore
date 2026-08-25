@@ -81,6 +81,8 @@ pub(super) fn model_compaction_policy_reports(
             "hash"
         } else if shard.sets.contains_key(key) {
             "set"
+        } else if shard.lists.contains_key(key) {
+            "list"
         } else if shard.features.contains_key(key) {
             "feature"
         } else if shard.control_state_pages.contains_key(key) {
@@ -296,6 +298,16 @@ pub(super) fn compaction_model_layout_reports(
             .hashes
             .values()
             .flat_map(|fields| fields.values().cloned()),
+        &slab_page_counts,
+        None,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "list",
+        shard.lists.len(),
+        shard
+            .lists
+            .values()
+            .flat_map(|elements| elements.values().cloned()),
         &slab_page_counts,
         None,
     ));
