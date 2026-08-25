@@ -658,7 +658,119 @@ impl RaftCluster {
         inner.config.max_applied_log_bytes = bytes;
     }
 
+    /// Entries this node is holding IN MEMORY. The log is trimmed only when a snapshot is
+    /// installed, so this is what a node's residency actually costs.
+    pub fn in_memory_log_entries(&self, node_id: RaftNodeId) -> usize {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .nodes
+            .get(&node_id)
+            .map(|node| node.log.len())
+            .unwrap_or(0)
+    }
+
+    /// Compact the log THIS process's own node is holding, when that node is a follower.
+    ///
+    /// The leader's compaction trims the leader. In-process that trims everyone, because one
+    /// process owns every node -- but a deployed follower is a separate process that learns
+    /// only by RPC, and a follower that stays CAUGHT UP never falls behind the leader's
+    /// retained range, so it is never sent a snapshot and nothing ever trims it. Its log then
+    /// grows with the corpus instead of with the state, in memory and in its own WAL record
+    /// alike. Measured: a caught-up follower held every one of 400 entries.
+    ///
+    /// A follower compacts to its APPLIED index and no further: those entries are committed and
+    /// already in its state machine, so nothing that could still be truncated by a conflict is
+    /// discarded. The snapshot it installs carries the marker that keeps `prev_log_index` /
+    /// `prev_log_term` answerable across the trim, exactly as a leader-sent snapshot would.
+    fn maybe_compact_local_follower(&self) -> Result<Option<RaftSnapshotTriggerReport>, RaftError> {
+        let (node_id, shard_id, watermark, engine, applied_log_bytes, limit, report_base) = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let Some(node_id) = inner.local_node_id else {
+                // The in-process model: the leader's compaction already trims every node.
+                return Ok(None);
+            };
+            if node_id == inner.leader_id {
+                return Ok(None);
+            }
+            if !inner.config.can_trigger_snapshot {
+                return Ok(None);
+            }
+            let Some(node) = inner.nodes.get(&node_id) else {
+                return Ok(None);
+            };
+            let last_snapshot_index = node
+                .installed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.last_included_index)
+                .unwrap_or_default();
+            if node.applied_index <= last_snapshot_index {
+                return Ok(None);
+            }
+            let logical = raft_log_bytes_after(&node.log, last_snapshot_index);
+            let applied_log_bytes = inner
+                .wal
+                .as_ref()
+                .map(|wal| wal.node_disk_bytes(inner.shard_id, node_id))
+                .unwrap_or(0)
+                .max(logical);
+            let limit = inner.config.max_applied_log_bytes;
+            if applied_log_bytes < limit {
+                return Ok(None);
+            }
+            (
+                node_id,
+                inner.shard_id,
+                node.applied_index,
+                node.engine.clone(),
+                applied_log_bytes,
+                limit,
+                (inner.leader_id, node.applied_index, last_snapshot_index),
+            )
+        };
+
+        // Built off the cluster lock, then confirmed by watermark -- the same discipline the
+        // leader's image build uses.
+        let Some(image) = build_state_image(&engine, shard_id) else {
+            return Ok(None);
+        };
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let Some(node) = inner.nodes.get_mut(&node_id) else {
+            return Ok(None);
+        };
+        if node.applied_index != watermark {
+            // Something applied while the image was building; the next tick tries again.
+            return Ok(None);
+        }
+        let last_included_term = node_term_at_log_or_snapshot_index(node, watermark)
+            .unwrap_or(node.current_term);
+        let snapshot = RaftSnapshot {
+            shard_id,
+            last_included_term,
+            last_included_index: watermark,
+            external_snapshot_ref: None,
+            entries: Vec::new(),
+            state_image: Some(image),
+            state_image_externalized: false,
+        };
+        install_snapshot_state(node, snapshot);
+        inner.persist_configured_wal()?;
+        Ok(Some(RaftSnapshotTriggerReport {
+            triggered: true,
+            reason: "follower_applied_log_bytes_threshold".to_string(),
+            leader_id: report_base.0,
+            applied_index: report_base.1,
+            last_snapshot_index: report_base.2,
+            applied_log_bytes,
+            max_applied_log_bytes: limit,
+        }))
+    }
+
     pub fn maybe_trigger_snapshot(&self) -> Result<RaftSnapshotTriggerReport, RaftError> {
+        // A deployed follower compacts its own log; only the leader runs the check below.
+        if let Some(report) = self.maybe_compact_local_follower()? {
+            return Ok(report);
+        }
         let (should_trigger, report) = {
             let inner = self.inner.read().expect("raft cluster lock poisoned");
             let leader = inner

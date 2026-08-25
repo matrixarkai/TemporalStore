@@ -322,7 +322,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
             }
-            let index_bytes = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard))
+            let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
             self.persist_index_bytes(request.shard_id, &index_bytes)
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
@@ -581,7 +581,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ),
                 )
             })?;
-            let partial_index_bytes = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard))
+            let partial_index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
                 .map_err(|serialize| Status::error("page_compaction_failed", serialize.to_string()))?;
             self.persist_index_bytes(shard_id, &partial_index_bytes)
                 .map_err(|persist| Status::error("page_compaction_failed", persist.to_string()))?;
@@ -637,7 +637,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ),
             )
         })?;
-        let index_bytes = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard))
+        let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;

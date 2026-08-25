@@ -1204,7 +1204,7 @@ impl TemporalEngine {
                         shard.applied_wal_sequence =
                             Some(self.wal_store.stats(shard_id).last_sequence);
                     }
-                    if let Ok(index_bytes) = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard)) {
+                    if let Ok(index_bytes) = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard)) {
                         let _ = self.persist_index_bytes(shard_id, &index_bytes);
                         let _ = self.index_log_store.append_json(shard_id, &index_bytes);
                     }
