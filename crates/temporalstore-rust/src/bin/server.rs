@@ -1758,25 +1758,34 @@ fn wire_matrixobject_durability(
     };
 
     if !local_state_present && latest > 0 {
-        // TODO(S1 / checkpoint-recovery): this NODE-LOCAL matrixobject durability path still
-        // recovers via full WAL replay from seq 0 (O(all history)) and never publishes a
-        // checkpoint. The lazy checkpoint substrate now exists generically:
-        //   * `SharedStoreReplicator<O>::publish_checkpoint` / `restore_index_and_page_addresses`
-        //     are generic over `O: ObjectStore` (see shared_store.rs), and
-        //   * the NETWORKED path `wire_matrixobject_networked_durability` already does exactly the
-        //     target flow: restore index + lazy slab address map, replay only the WAL tail, and
-        //     publish a checkpoint on start.
-        // To close S1 for this backend: (a) publish a checkpoint on start when `local_state_present`
-        // (mirror wire_matrixobject_networked_durability's publish block), and (b) here, replace
-        // `replay_wal(shard_id, 0, ..)` with
-        //     `replicator.restore_index_and_page_addresses(shard_id, engine, &engine.block_store())`
-        // then `replay_wal(shard_id, manifest.checkpoint_wal_index, ..)`, falling back to a
-        // full replay only on `CheckpointNotFound`. `MatrixObjectObjectStore` implements
-        // `ObjectStore`, so a `SharedSlabSource` over it (analogous to `MatrixObjectSlabSource`)
-        // is all that the generic `restore_index_and_page_addresses_with` needs. Requires the
-        // `matrixobject` feature build (private crate) to land + test end-to-end, so it is
-        // deferred to a dedicated pass; recovery stays correct here today, just O(history).
-        match rt.block_on(replicator.replay_wal(shard_id, 0, engine)) {
+        // S1 checkpoint recovery: restore the served index plus a lazy slab address map from
+        // the latest checkpoint, then replay ONLY the WAL tail after it -- old pages are read
+        // out of the store on demand. A store with no checkpoint yet (or a failed restore)
+        // falls back to the full replay from 0: the old behavior, correct but O(history).
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+            shard_id,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => {
+                println!(
+                    "restored shard {shard_id} index and lazy page addresses from matrixobject checkpoint {} (WAL tail from {})",
+                    manifest.checkpoint_id, manifest.checkpoint_wal_index
+                );
+                // Read the restored on-disk index into memory before the tail replay, which
+                // applies through the engine and needs a loaded shard.
+                engine.load_shard(shard_id);
+                manifest.checkpoint_wal_index
+            }
+            Err(temporalstore_rust::SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            Err(err) => {
+                eprintln!(
+                    "matrixobject checkpoint restore failed for shard {shard_id} ({err}); replaying full WAL"
+                );
+                0
+            }
+        };
+        match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
             Ok(report) => println!(
                 "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",
                 report.applied, report.last_wal_index
@@ -1795,6 +1804,25 @@ fn wire_matrixobject_durability(
         println!(
             "matrixobject durability active for shard {shard_id} at {store_dir}; no shared WAL yet (fresh cluster)"
         );
+    }
+
+    // Publish this node's authoritative state as a checkpoint (index + slabs) at start, so a
+    // future fresh recovery replays only the tail instead of all history. Opt-out via env.
+    if local_state_present && env_bool("TS_MATRIXOBJECT_CHECKPOINT_ON_START", true) {
+        match rt.block_on(replicator.publish_checkpoint(
+            shard_id,
+            latest,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => println!(
+                "published matrixobject start checkpoint {} for shard {shard_id} at WAL index {}",
+                manifest.checkpoint_id, manifest.checkpoint_wal_index
+            ),
+            Err(err) => eprintln!(
+                "matrixobject start checkpoint publish failed for shard {shard_id}: {err}"
+            ),
+        }
     }
 
     let mode = SharedStoreStorageMode::from_sync_flag(sync_flush);
