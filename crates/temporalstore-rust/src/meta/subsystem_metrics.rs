@@ -216,16 +216,24 @@ impl SubsystemMetrics {
     }
 
     /// Record one freeze-aging round.
-    pub fn record_freeze_aging(&self, plan: &FreezeAgingPlan) {
+    /// Record one aging round: `plan` is what it set out to do, `applied` is
+    /// what it actually dropped.
+    ///
+    /// They are the same only when the round ran to the end. A drop that is
+    /// refused returns from the round with the rest of the plan untouched, and
+    /// counting the plan there reports resources as aged into the dropped state
+    /// while they are still sitting in the metadata, frozen. The cap still comes
+    /// from the plan: what a round held back is a fact about planning it.
+    pub fn record_freeze_aging(&self, plan: &FreezeAgingPlan, applied: &FreezeAgingPlan) {
         self.with(|state| {
             *state
                 .rounds_total
                 .entry("freeze_aging".to_string())
                 .or_default() += 1;
             for (kind, count) in [
-                ("server", plan.servers.len()),
-                ("proxy", plan.proxies.len()),
-                ("table", plan.tables.len()),
+                ("server", applied.servers.len()),
+                ("proxy", applied.proxies.len()),
+                ("table", applied.tables.len()),
             ] {
                 *state.aged_total.entry(kind.to_string()).or_default() += count as u64;
             }
@@ -719,12 +727,14 @@ mod tests {
             blocked_servers: vec!["s2".to_string()],
             capped: 3,
         });
-        metrics.record_freeze_aging(&FreezeAgingPlan {
+        let aged = FreezeAgingPlan {
             servers: vec!["s3".to_string()],
             proxies: Vec::new(),
             tables: Vec::new(),
             capped: 0,
-        });
+        };
+        // A round that ran to the end: what it applied is what it planned.
+        metrics.record_freeze_aging(&aged, &aged);
 
         let rendered = metrics.prometheus();
         assert_eq!(
