@@ -611,7 +611,7 @@ impl TemporalEngine {
         for summary in &bucket_summaries {
             let matching_manifest = manifests.iter().rev().find(|manifest| {
                 let Ok(manifest_state) =
-                    serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+                    crate::engine::decode_index_bytes(&manifest.index_bytes)
                 else {
                     return false;
                 };

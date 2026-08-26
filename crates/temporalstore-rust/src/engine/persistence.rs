@@ -181,7 +181,7 @@ impl TemporalEngine {
         // first compaction leaves no base -- start empty and rebuild from the index-log
         // deltas below.
         let mut shard = match read {
-            Ok(bytes) => match serde_json::from_slice::<ShardState>(&bytes) {
+            Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
                 Ok(shard) => {
                     // Refuse an index written in an older on-disk shape. A stale index decodes
                     // CLEANLY -- the types are unchanged -- while a field's meaning has moved
