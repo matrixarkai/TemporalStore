@@ -15,6 +15,47 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, compact_latest_context_state_records, stable_hash
 
 
+# Keys of `storage_route` that are NOT recoverable from `storage_options`: where this record was
+# placed. Everything else `canonical_storage_route` produces is a pure function of the options,
+# which are stored on the record already.
+_ROUTE_KEYS_WORTH_STORING = (
+    "placement_key",
+    "placement_hash",
+    "routing_key",
+    "partition_key",
+    "colocation_group",
+)
+
+
+def slim_persisted_storage_route(record: Json) -> Json:
+    """Persist the placement half of `storage_route`, not the derived half.
+
+    `canonical_storage_route(storage_options)` is a pure function producing ~25 fields, and a copy
+    of its output was written onto every record. Measured on one add of a 62-byte message: 51
+    copies, 41 477 bytes, and only THREE distinct values -- one ~1 KB blob repeated onto 29 index
+    postings. That was 35% of everything the record payload carried.
+
+    What survives here is what nothing can recompute: the placement fields, which readers do use
+    (index enrichment falls back to `storage_route.placement_key` when the top-level one is
+    missing). The derived fields are dropped because they are already implied by the record's own
+    `storage_options`; a consumer that wants them calls `canonical_storage_route` on those.
+    """
+    if not isinstance(record, dict):
+        return record
+    route = record.get("storage_route")
+    if not isinstance(route, dict) or not route:
+        return record
+    kept = {key: route[key] for key in _ROUTE_KEYS_WORTH_STORING if key in route}
+    if len(kept) == len(route):
+        return record
+    slim = dict(record)
+    if kept:
+        slim["storage_route"] = kept
+    else:
+        slim.pop("storage_route", None)
+    return slim
+
+
 def materialize_appended_records_locked(
     target: Any,
     *,
@@ -113,7 +154,8 @@ def append_many_materialized(target: Any, records: list[Json], *, allow_queue: b
         for bundle in target._record_bundles(records):
             record_key, record_id = target._record_location(sequence)
             payload_value: Json
-            payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
+            slim = [slim_persisted_storage_route(record) for record in bundle]
+            payload_value = slim[0] if len(slim) == 1 else {"record_bundle": slim}
             payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
             entries.append(
                 {

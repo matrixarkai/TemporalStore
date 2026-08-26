@@ -13,6 +13,11 @@ try:
 except ImportError:
     from matrixark_mcp_local_adapter import fold_embedding_records
 
+try:
+    from tools.matrixark_mcp_temporal_append import slim_persisted_storage_route
+except ImportError:
+    from matrixark_mcp_temporal_append import slim_persisted_storage_route
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     TEMPORAL_COMPRESSED_OLD_RECORD_TYPES,
@@ -323,7 +328,8 @@ class _TemporalDirectWriteMixin:
             for bundle in self._record_bundles(records):
                 record_key, record_id = self._record_location(sequence)
                 payload_value: Json
-                payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
+                slim = [slim_persisted_storage_route(record) for record in bundle]
+                payload_value = slim[0] if len(slim) == 1 else {"record_bundle": slim}
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
                 located_bundles.append((bundle, record_key, record_id))
