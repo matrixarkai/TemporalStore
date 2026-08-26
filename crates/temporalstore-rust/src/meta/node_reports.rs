@@ -138,6 +138,14 @@ impl SingleNodeMeta {
         if normal_servers == 0 && !state.shards.is_empty() {
             degraded_reasons.push("no_normal_servers_for_registered_shards".to_string());
         }
+        // The same question asked of the routing tier. `frozen_proxies` covers a
+        // tier that was frozen; a tier that was dropped instead leaves both
+        // counts at zero, so the report came back ok with nothing left to route
+        // through. Guarded on the tier existing at all, because a
+        // direct-to-datanode deployment has no proxies and is not degraded.
+        if normal_proxies == 0 && !state.proxies.is_empty() {
+            degraded_reasons.push("no_normal_proxies_for_registered_proxies".to_string());
+        }
         let status = if degraded_reasons.is_empty() {
             Status::ok()
         } else {
@@ -162,5 +170,74 @@ impl SingleNodeMeta {
     ) -> TopologyVersionReport {
         let state = self.inner.read().expect("meta lock poisoned");
         topology_version_report_from_state(&state, request.old_topology_version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proxy(addr: &str) -> RegisterProxyRequest {
+        RegisterProxyRequest {
+            proxy_addr: addr.to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_routing_tier_with_nothing_serving_is_degraded() {
+        // frozen_proxies catches a tier that was frozen. A tier that was
+        // dropped instead left both counts at zero and the report came back ok
+        // with nothing to route through.
+        let meta = SingleNodeMeta::default();
+        assert!(meta.register_proxy(proxy("p1")).status.ok);
+        assert!(meta
+            .drop_proxy(StateChangeRequest {
+                endpoint: "p1".to_string(),
+                reason: FreezeReason::Operator,
+                freeze_cooldown_ms: 0,
+            })
+            .status
+            .ok);
+
+        let report = meta.preflight_report();
+        assert_eq!(report.normal_proxies, 0);
+        assert_eq!(report.frozen_proxies, 0, "dropped, not frozen: {report:?}");
+        assert!(
+            report
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason == "no_normal_proxies_for_registered_proxies"),
+            "a routing tier with nothing serving reported healthy: {report:?}"
+        );
+        assert!(!report.status.ok);
+    }
+
+    #[test]
+    fn a_deployment_with_no_proxies_at_all_is_not_degraded() {
+        // The guard. A direct-to-datanode deployment has no routing tier by
+        // design, and calling that degraded would make the report cry wolf.
+        let meta = SingleNodeMeta::default();
+        let report = meta.preflight_report();
+        assert_eq!(report.normal_proxies, 0);
+        assert!(
+            !report
+                .degraded_reasons
+                .iter()
+                .any(|reason| reason == "no_normal_proxies_for_registered_proxies"),
+            "a deployment that never had proxies was called degraded: {report:?}"
+        );
+    }
+
+    #[test]
+    fn a_serving_proxy_is_not_degraded() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta.register_proxy(proxy("p1")).status.ok);
+        let report = meta.preflight_report();
+        assert_eq!(report.normal_proxies, 1);
+        assert!(report.degraded_reasons.is_empty(), "{report:?}");
     }
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Convert OpenViking/VikingMem CSV results into MatrixArk benchmark artifacts.
+"""Convert ExternalBaseline/ExternalBaseline CSV results into MatrixArk benchmark artifacts.
 
-The OpenViking benchmark scripts write CSV files, while MatrixArk summaries use
+The ExternalBaseline benchmark scripts write CSV files, while MatrixArk summaries use
 JSON artifacts with explicit model and budget contracts. This converter keeps the
 baseline honest: missing judge, token, or full-scale evidence is preserved as a
 blocker instead of being silently upgraded into a comparable claim.
@@ -18,6 +18,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+import os
 
 
 WORD_RE = re.compile(r"[a-z0-9]+")
@@ -25,10 +26,10 @@ WORD_RE = re.compile(r"[a-z0-9]+")
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--csv", required=True, help="OpenViking benchmark CSV output.")
+    parser.add_argument("--csv", required=True, help="ExternalBaseline benchmark CSV output.")
     parser.add_argument("--dataset", choices=("locomo", "longmemeval_s"), required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--provider-name", default="openviking")
+    parser.add_argument("--provider-name", default="external_baseline")
     parser.add_argument("--reader-model", required=True)
     parser.add_argument("--embedding-model", required=True)
     parser.add_argument("--max-events", type=int, required=True)
@@ -47,7 +48,7 @@ def main() -> int:
     parser.add_argument(
         "--import-error-log",
         default="",
-        help="Optional OpenViking import error log; timeout/auth blockers are copied into the report.",
+        help="Optional ExternalBaseline import error log; timeout/auth blockers are copied into the report.",
     )
     args = parser.parse_args()
 
@@ -69,26 +70,26 @@ def main() -> int:
     archive_fallback_used = any("session_archive_fallback" in str(row.get("tools_used_names") or "") for row in rows)
     blockers = []
     if case_count == 0:
-        blockers.append("empty_openviking_csv")
+        blockers.append("empty_external_baseline_csv")
     if judged_rows < case_count:
-        blockers.append("openviking_judge_results_missing")
+        blockers.append("external_baseline_judge_results_missing")
     if total_tokens <= 0:
-        blockers.append("openviking_token_usage_missing")
+        blockers.append("external_baseline_token_usage_missing")
     if case_count and max(retrieved_uri_counts, default=0) <= 0:
-        blockers.append("openviking_retrieved_uris_empty")
+        blockers.append("external_baseline_retrieved_uris_empty")
     if case_count and sum(1 for hit in answer_in_context if hit) < case_count:
-        blockers.append("openviking_context_missing_expected_answer")
+        blockers.append("external_baseline_context_missing_expected_answer")
     if archive_fallback_used:
-        blockers.append("openviking_session_archive_fallback_used")
+        blockers.append("external_baseline_session_archive_fallback_used")
     import_error_summary = summarize_import_errors(Path(args.import_error_log)) if args.import_error_log else {}
     blockers.extend(import_error_summary.get("blockers", []))
     if args.paper_min_cases and case_count < args.paper_min_cases:
         blockers.append(f"case_count_below_paper_min_{args.paper_min_cases}")
 
     report: dict[str, Any] = {
-        "schema": "matrixark_vikingmem_context_benchmark_report_v1",
-        "benchmark_family": "vikingmem_long_memory",
-        "baseline": "openviking_csv",
+        "schema": "matrixark_external_baseline_context_benchmark_report_v1",
+        "benchmark_family": "external_baseline_long_memory",
+        "baseline": "external_baseline_csv",
         "dataset": args.dataset,
         "input_csv": args.csv,
         "case_count": case_count,
@@ -99,19 +100,19 @@ def main() -> int:
         "reader_hit_rate": safe_div(sum(1 for hit in reader_hits if hit), case_count),
         "benchmark_reader_p50_ms": percentile(elapsed_ms, 50),
         "benchmark_reader_p95_ms": percentile(elapsed_ms, 95),
-        "openviking_judged_rows": judged_rows,
-        "openviking_prompt_tokens": prompt_tokens,
-        "openviking_completion_tokens": completion_tokens,
-        "openviking_total_tokens": total_tokens,
-        "openviking_source_tokens": source_tokens,
-        "openviking_memory_prompt_tokens": memory_prompt_tokens,
-        "openviking_memory_chars": memory_chars,
-        "openviking_retrieved_uri_count_avg": safe_div(sum(retrieved_uri_counts), case_count),
-        "openviking_retrieved_uri_count_max": max(retrieved_uri_counts, default=0),
+        "external_baseline_judged_rows": judged_rows,
+        "external_baseline_prompt_tokens": prompt_tokens,
+        "external_baseline_completion_tokens": completion_tokens,
+        "external_baseline_total_tokens": total_tokens,
+        "external_baseline_source_tokens": source_tokens,
+        "external_baseline_memory_prompt_tokens": memory_prompt_tokens,
+        "external_baseline_memory_chars": memory_chars,
+        "external_baseline_retrieved_uri_count_avg": safe_div(sum(retrieved_uri_counts), case_count),
+        "external_baseline_retrieved_uri_count_max": max(retrieved_uri_counts, default=0),
         "benchmark_context_answer_coverage": safe_div(sum(1 for hit in answer_in_context if hit), case_count),
-        "openviking_context_missing_expected_answer_count": sum(1 for hit in answer_in_context if not hit),
-        "openviking_session_archive_fallback_used": archive_fallback_used,
-        "openviking_import_error_summary": import_error_summary,
+        "external_baseline_context_missing_expected_answer_count": sum(1 for hit in answer_in_context if not hit),
+        "external_baseline_session_archive_fallback_used": archive_fallback_used,
+        "external_baseline_import_error_summary": import_error_summary,
         "benchmark_model_contract": model_contract(args),
         "paper_comparable_claim_ready": False,
         "diagnostic_only": True,
@@ -137,16 +138,16 @@ def main() -> int:
 
 def summarize_import_errors(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"path": str(path), "exists": False, "line_count": 0, "blockers": ["openviking_import_error_log_missing"]}
+        return {"path": str(path), "exists": False, "line_count": 0, "blockers": ["external_baseline_import_error_log_missing"]}
     lines = [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
     blockers: list[str] = []
     lower = "\n".join(lines).lower()
     if lines:
-        blockers.append("openviking_import_errors_present")
+        blockers.append("external_baseline_import_errors_present")
     if "request timed out" in lower or "timeout" in lower:
-        blockers.append("openviking_session_commit_timeout")
+        blockers.append("external_baseline_session_commit_timeout")
     if "permissiondenied" in lower or "root api keys cannot access" in lower:
-        blockers.append("openviking_import_auth_failed")
+        blockers.append("external_baseline_import_auth_failed")
     return {
         "path": str(path),
         "exists": True,
@@ -298,7 +299,8 @@ def retrieved_uri_count(row: dict[str, str]) -> int:
 
 def count_uris(value: Any) -> int:
     if isinstance(value, str):
-        return 1 if value.startswith("viking://") else 0
+        scheme = os.environ.get("EXTERNAL_BASELINE_URI_SCHEME", "")
+        return 1 if scheme and value.startswith(scheme + "://") else 0
     if isinstance(value, list):
         return sum(count_uris(item) for item in value)
     if isinstance(value, dict):
@@ -343,7 +345,7 @@ def model_contract(args: argparse.Namespace) -> dict[str, Any]:
             and reader_budget_matches
         ),
         "comparison_rule": (
-            "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
+            "MatrixArk and ExternalBaseline/ExternalBaseline rows must use the same OSS reader model, "
             "embedding/encoding model, retrieval block budget, and reader context budget."
         ),
     }

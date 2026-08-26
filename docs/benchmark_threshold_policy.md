@@ -15,7 +15,7 @@ Benchmark result docs must stay strict:
   configured runner, but not live OSS-reader conformance.
 - OSS/open-model claims require at least one successful real local reader call and
   `require_open_source_reader=true`.
-- MatrixArk vs OpenViking/VikingMem OSS comparisons must pass the shared OSS model contract:
+- MatrixArk vs the external OSS baseline OSS comparisons must pass the shared OSS model contract:
   same reader model, same embedding/encoding model, same retrieved-event budget, same reader
   context budget, same reader prompt policy, and declared provider identities for both sides.
   Mismatched model, budget, or reader-policy runs are diagnostic-only even when their individual
@@ -33,7 +33,7 @@ Benchmark result docs must stay strict:
 
 `tools/validate_benchmark_claims.py` enforces this wording guard for benchmark result docs.
 `tools/validate_oss_model_contract.py` enforces the shared OSS model contract across MatrixArk and
-OpenViking/VikingMem JSON artifacts before token-savings or reader-quality claims are comparable.
+the external OSS baseline JSON artifacts before token-savings or reader-quality claims are comparable.
 It fails closed by default on diagnostic-only rows, reader fallback/errors, and prompt-policy drift;
 exceptions must be explicitly marked with the diagnostic flags.
 
@@ -42,18 +42,18 @@ baseline provider, baseline reader model, baseline embedding model, retrieved-ev
 reader context budget, `tools/run_locomo_ingest_once.py` automatically treats
 `require_shared_oss_models=true`. The only escape hatch is
 `--allow-shared-oss-model-drift`, which is diagnostic-only and must not be used for MatrixArk vs
-OpenViking/VikingMem quality or token-savings claims.
+the external OSS baseline quality or token-savings claims.
 
 ## Readiness Levels
 
-Context benchmark readiness and VikingMem paper-comparable claims are separate gates:
+Context benchmark readiness and the external baseline paper-comparable claims are separate gates:
 
 - **Context benchmark readiness** requires Rust TemporalStore backend evidence: the report must show
   `all_pipelines_use_rust_temporalstore=true`, `python_only_diagnostic=false`,
   `rust_temporalstore_backend_ready=true`, and no direct-source scoring shortcut. Raw benchmark
   reports should also carry Context-event ingest evidence and positive ingested/retrieved source-set
   counts.
-- **VikingMem paper-comparable evidence** additionally requires a real full dataset artifact, live
+- **the external baseline paper-comparable evidence** additionally requires a real full dataset artifact, live
   open-source/GPT-4o-mini compatible reader calls, full Rust TemporalStore replay, passing full
   dataset thresholds, and archived report fields for dataset hash, model/provider, prompt,
   latencies, token reduction, and category breakdown.
@@ -126,7 +126,7 @@ python3 tools/run_longmemeval_s_full_path.py \
   --misses /tmp/temporalstore_longmemeval_full_threshold_policy_misses.jsonl
 ```
 
-Fair MatrixArk vs OpenViking/VikingMem OSS comparison example:
+Fair MatrixArk vs the external OSS baseline OSS comparison example:
 
 ```bash
 python3 tools/run_longmemeval_s_full_path.py \
@@ -138,7 +138,7 @@ python3 tools/run_longmemeval_s_full_path.py \
   --embedding-model matrixark-hash-embedding-32 \
   --max-events 64 \
   --reader-max-context-chars 4000 \
-  --baseline-provider-name openviking-qwen-local \
+  --baseline-provider-name openexternal-baseline-qwen-local \
   --baseline-reader-model qwen2.5:1.5b \
   --baseline-embedding-model matrixark-hash-embedding-32 \
   --baseline-max-events 64 \
@@ -147,7 +147,7 @@ python3 tools/run_longmemeval_s_full_path.py \
 
 python3 tools/validate_oss_model_contract.py \
   --report /tmp/matrixark_longmemeval_report.json --label matrixark \
-  --report /tmp/openviking_longmemeval_report.json --label openviking
+  --report /tmp/openexternal-baseline.json --label openexternal-baseline
 ```
 
 LOCOMO and LongMemEval_s wrappers require the Rust TemporalStore backend by default. That path
@@ -220,6 +220,6 @@ and report path.
 The Docker/open-model runner for `oss_reader_full` is documented in
 [context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).
 Use `tools/run_context_benchmarks_oss_reader_endpoint.sh` when validating the
-VikingMem conformance reader profile against an existing OpenAI-compatible endpoint.
-That path defaults to `vikingmem-gpt-4o-mini-reader` and `gpt-4o-mini`, and must
+the external baseline conformance reader profile against an existing OpenAI-compatible endpoint.
+That path defaults to `external-baseline-gpt-4o-mini-reader` and `gpt-4o-mini`, and must
 report `reader_open_source_calls > 0`.

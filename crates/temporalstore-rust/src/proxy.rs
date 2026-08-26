@@ -39,7 +39,10 @@ use crate::client::{
     ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
-use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
+use crate::http::{
+    get_json_with_options_and_headers, post_json_with_options_and_headers, HttpRequest,
+    HttpRequestOptions,
+};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -1237,9 +1240,10 @@ impl ProxyService {
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
-        get_json_with_options::<GetShardResponse>(
+        get_json_with_options_and_headers::<GetShardResponse>(
             &options.meta_addr,
             &format!("/shards/{shard_id}"),
+            &crate::meta::admin_auth_header(),
             options.http_options(),
         )
         .map_err(|err| {
@@ -1568,9 +1572,10 @@ impl ProxyService {
         if options.context_shard_count != 0 {
             return;
         }
-        let Ok(listed) = get_json_with_options::<crate::meta::ListShardsResponse>(
+        let Ok(listed) = get_json_with_options_and_headers::<crate::meta::ListShardsResponse>(
             &options.meta_addr,
             "/shards",
+            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         ) else {
             return;
@@ -1773,7 +1778,7 @@ pub(super) fn proxy_metric_families_from(rendered: &str) -> Vec<String> {
 fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
     vec![
         proxy_metric_mapping(
-            "common::metrics::CounterHolder proxy command/admission counters",
+            "proxy command/admission counters",
             "temporalstore_proxy_requests_total",
             vec!["kind"],
             "Proxy Requests And Admission",
@@ -3491,6 +3496,94 @@ mod tests {
         assert!(proxy_on.client_options_snapshot().refresh_route_on_backend_error);
         assert!(!proxy_off.client_options_snapshot().refresh_route_on_backend_error);
     }
+
+    #[test]
+    fn every_option_a_config_push_can_change_is_noticed() {
+        // Whether a pushed config is applied is decided by comparing its version to the
+        // running one. That version was hashed from a hand-listed subset of the options,
+        // and the list had fallen behind: `context_shard_count`, `context_first_shard_id`,
+        // `context_io_timeout_ms`, `service_registry_ttl_ms` and `listen_addr` were all
+        // missing, so a push that changed only one of them produced the same version and
+        // was answered "unchanged" -- telling the operator, in the report, that their
+        // change was a no-op.
+        //
+        // Rather than list the fields again here -- which is the mistake being fixed --
+        // this walks the serialized options and changes each one in turn, so a field
+        // added later is covered without anyone editing this test.
+        //
+        // The proxy is built from exactly this baseline. An earlier version of this test
+        // built it with a helper that overrode meta_addr, so every push differed in a
+        // field that IS hashed, every assertion passed, and the test proved nothing. The
+        // guard below is what catches that: if pushing the baseline back is treated as a
+        // change, the comparison is not being exercised at all.
+        let baseline = ProxyOptions {
+            config_version: 0,
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        };
+        let unchanged =
+            ProxyService::new(baseline.clone()).update_options_report(baseline.clone());
+        assert!(
+            !unchanged.applied,
+            "pushing an identical config must be a no-op, or the assertions below pass \
+             without testing anything (reason: {})",
+            unchanged.reason
+        );
+
+        let serde_json::Value::Object(fields) = serde_json::to_value(&baseline).unwrap() else {
+            panic!("options serialize as an object");
+        };
+
+        let mut checked = 0;
+        for (name, value) in fields {
+            // config_version IS the version, so changing it is not a content change.
+            if name == "config_version" {
+                continue;
+            }
+            let candidates: Vec<serde_json::Value> = match &value {
+                serde_json::Value::Bool(flag) => vec![serde_json::Value::Bool(!flag)],
+                serde_json::Value::Number(number) => {
+                    vec![serde_json::Value::from(number.as_u64().unwrap_or(0) + 1)]
+                }
+                serde_json::Value::String(text) => vec![
+                    serde_json::Value::from(format!("{text}-changed")),
+                    // enum-valued fields reject arbitrary text; offer real alternatives
+                    serde_json::Value::from("not_serving"),
+                    serde_json::Value::from("draining"),
+                ],
+                other => panic!("teach this test how to change {name} (it is {other})"),
+            };
+
+            let changed = candidates
+                .into_iter()
+                .filter_map(|candidate| {
+                    let serde_json::Value::Object(mut document) =
+                        serde_json::to_value(&baseline).unwrap()
+                    else {
+                        return None;
+                    };
+                    document.insert(name.clone(), candidate);
+                    serde_json::from_value::<ProxyOptions>(serde_json::Value::Object(document)).ok()
+                })
+                .find(|candidate| candidate != &baseline)
+                .unwrap_or_else(|| {
+                    panic!("could not produce a changed value for {name}; teach this test about it")
+                });
+
+            let proxy = ProxyService::new(baseline.clone());
+            let report = proxy.update_options_report(changed);
+            assert!(
+                report.applied,
+                "a config push changing {name} must be applied, not answered \"{}\"",
+                report.reason
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "expected to exercise every option; only walked {checked}"
+        );
+    }
     #[test]
     fn proxy_location_reaches_replica_selection() {
         // The proxy has always accepted a location, reported it to the metaserver and shown
@@ -3706,7 +3799,8 @@ mod tests {
         });
         assert_eq!(
             status, 503,
-            "a drained proxy must fail its probe, or draining it does not take it out of              rotation"
+            "a drained proxy must fail its probe, or draining it does not take it \
+             out of rotation"
         );
         let parsed = parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
         assert!(!parsed.serving);
@@ -3856,7 +3950,8 @@ mod tests {
             });
             assert_eq!(
                 response.status.code, "proxy_traffic_dropped",
-                "attempt {attempt} on a refused key must be refused again -- the decision is                  per key, not per request"
+                "attempt {attempt} on a refused key must be refused again -- the decision \
+                 is per key, not per request"
             );
             assert!(
                 response.status.message.contains("will not succeed"),
@@ -5280,7 +5375,8 @@ mod tests {
         assert_eq!(
             hits.load(Ordering::SeqCst),
             1,
-            "a write that timed out must not be sent again -- the timeout says the datanode              stopped answering, not that it never received the write"
+            "a write that timed out must not be sent again -- the timeout says the datanode \
+             stopped answering, not that it never received the write"
         );
 
         // A read is a different matter: repeating it cannot change anything, so the

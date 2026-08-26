@@ -122,7 +122,7 @@ impl LocalRaftWal {
                     })
                     .collect(),
             };
-            let bytes = prost::Message::encode_to_vec(&message);
+            let bytes = compress_state_image(prost::Message::encode_to_vec(&message));
             let tmp = path.with_extension("tmp");
             {
                 let mut file = OpenOptions::new()
@@ -181,7 +181,8 @@ impl LocalRaftWal {
         })?;
         let payload = crate::log_framing::decode_line(raw.strip_suffix(b"\n").unwrap_or(&raw))
             .map_err(io::Error::other)?;
-        let message = <crate::sdk::v1::WalStateImage as prost::Message>::decode(payload)
+        let payload = decompress_state_image(payload)?;
+        let message = <crate::sdk::v1::WalStateImage as prost::Message>::decode(payload.as_ref())
             .map_err(io::Error::other)?;
         snapshot.state_image = Some(RaftSnapshotStateImage {
             index_bytes: message.index,
@@ -1085,6 +1086,84 @@ impl LocalRaftWal {
     // Retained for the legacy on-disk prune path; the segmented append hot path now
     // prunes in-memory via the cursor to stay O(1).
     #[allow(dead_code)]
+    /// Bytes of LOG this node holds on disk -- the segments, and nothing else.
+    ///
+    /// This is what the compaction threshold bounds, and it is deliberately not the directory's
+    /// total size. An externalized state image lives beside the segments, and compaction cannot
+    /// reclaim it: compaction is what WRITES it. Counting it made the threshold permanently
+    /// satisfied on any shard whose state outgrew the bound, so every check with a single new
+    /// entry rebuilt the entire image to reclaim a few kilobytes of log -- measured at 223 KB
+    /// weighed against a 4 KB bound, one small write after a compaction.
+    ///
+    /// Judging it by the logical size of the commands instead is the opposite error, and
+    /// understates it by the log's whole encoding overhead: on a 30k-write corpus the commands
+    /// were 5 MB while the segments held 36 MB. The segments are the honest measure.
+    ///
+    /// Metadata only -- no segment is opened or scanned, so the periodic check can consult it
+    /// on every tick.
+    /// Bytes of log a compaction at `snapshot_index` could still be carrying -- the segments
+    /// holding entries ABOVE that marker.
+    ///
+    /// This is what the compaction threshold should weigh, and neither of the simpler measures
+    /// is right. Total directory size counts the externalized state image, which compaction
+    /// writes rather than reclaims, so a shard whose state outgrew the bound compacted on every
+    /// check forever. Total SEGMENT size is closer but still counts the predecessor segment that
+    /// rotation deliberately keeps so a torn tail has somewhere to recover from -- a segment
+    /// entirely below the marker, which the next compaction supersedes rather than shrinks.
+    /// Weighing either one makes the trigger fire for bytes it cannot do anything about.
+    ///
+    /// Served from the cursor, which already carries each segment's index bounds, so this stays
+    /// a lock and some arithmetic. Without a cursor it falls back to the whole-segment total,
+    /// which is the conservative direction: it can only compact sooner, never later.
+    pub fn node_log_bytes_after(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        snapshot_index: u64,
+    ) -> u64 {
+        {
+            let cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+            if let Some(cursor) = cursors.get(&(shard_id, node_id)) {
+                return cursor
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        // `last_log_index == 0` means the segment carries no entry bounds
+                        // (an empty or read-index-only segment); count it, since nothing
+                        // proves it superseded.
+                        segment.last_log_index == 0 || segment.last_log_index > snapshot_index
+                    })
+                    .map(|segment| segment.bytes)
+                    .sum();
+            }
+        }
+        self.node_log_bytes(shard_id, node_id)
+    }
+
+    pub fn node_log_bytes(&self, shard_id: ShardId, node_id: RaftNodeId) -> u64 {
+        let dir = self.node_segment_dir(shard_id, node_id);
+        let mut total = 0u64;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Segments only. An `image-*.bin` in this directory is state, not log.
+                let is_segment =
+                    path.extension().and_then(|ext| ext.to_str()) == Some("wal");
+                if !is_segment {
+                    continue;
+                }
+                if let Ok(metadata) = entry.metadata() {
+                    total = total.saturating_add(metadata.len());
+                }
+            }
+        }
+        // The pre-segment single-file layout, for a node that has not rolled yet.
+        if let Ok(metadata) = fs::metadata(self.node_path(shard_id, node_id)) {
+            total = total.saturating_add(metadata.len());
+        }
+        total
+    }
+
     pub(super) fn prune_node_segments(
         &self,
         shard_id: ShardId,
@@ -1104,11 +1183,33 @@ impl LocalRaftWal {
         Ok(())
     }
 
+    /// Bytes and index bounds this node's segments hold.
+    ///
+    /// Served from the in-memory cursor when one is live. Deriving it from disk means READING
+    /// AND PARSING EVERY SEGMENT IN FULL -- `node_segments` calls `inspect_segment_sequences`,
+    /// which reads each file end to end to find its sequence bounds. That is fine as a cold
+    /// rebuild, and it is not fine on the admin status endpoint, which is a plain HTTP GET:
+    /// anything polling it made the node re-read its whole log every time, and one cheap
+    /// request forced megabytes of disk read and record parsing.
+    ///
+    /// The cursor already carries the per-segment info this report returns, kept current by
+    /// every append, so the live path costs a lock and a clone. The disk scan stays as the
+    /// fallback for a node whose cursor has not been seeded yet.
     pub fn segment_report(
         &self,
         shard_id: ShardId,
         node_id: RaftNodeId,
     ) -> io::Result<RaftWalSegmentReport> {
+        {
+            let cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+            if let Some(cursor) = cursors.get(&(shard_id, node_id)) {
+                let mut report = Self::segment_report_from_segments(&cursor.segments);
+                report.released_segment_count = cursor.released_segment_count;
+                report.last_fsync_elapsed_ms = cursor.last_fsync_elapsed_ms;
+                report.slow_fsync_backpressure_observed = cursor.slow_fsync_backpressure_observed;
+                return Ok(report);
+            }
+        }
         let segments = self.node_segments(shard_id, node_id)?;
         let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
         let first_retained_log_index = segments
@@ -1132,5 +1233,37 @@ impl LocalRaftWal {
             last_fsync_elapsed_ms: runtime_state.last_fsync_elapsed_ms,
             slow_fsync_backpressure_observed: runtime_state.slow_fsync_backpressure_observed,
         })
+    }
+}
+
+/// Marker for a compressed state image. An image written before compression existed carries a
+/// protobuf field tag here instead, so the reader can tell the two apart and keep reading old
+/// files -- this is a durable on-disk format and a node must not need a flag day to restart.
+const STATE_IMAGE_ZSTD_MAGIC: &[u8] = b"TSZ1";
+
+/// Compress an encoded state image. The image is dominated by the served index, which is JSON:
+/// on a scaled corpus 37% of the image's bytes were digits, commas and structural characters,
+/// and it opens with dozens of empty index families. That compresses away almost entirely, and
+/// the image is written once per compaction and read once per restore, so the cost lands
+/// nowhere near a write path. A payload that does not shrink is stored as-is.
+fn compress_state_image(bytes: Vec<u8>) -> Vec<u8> {
+    match zstd::stream::encode_all(std::io::Cursor::new(&bytes), 3) {
+        Ok(compressed) if compressed.len() + STATE_IMAGE_ZSTD_MAGIC.len() < bytes.len() => {
+            let mut out = Vec::with_capacity(STATE_IMAGE_ZSTD_MAGIC.len() + compressed.len());
+            out.extend_from_slice(STATE_IMAGE_ZSTD_MAGIC);
+            out.extend_from_slice(&compressed);
+            out
+        }
+        _ => bytes,
+    }
+}
+
+/// Undo [`compress_state_image`], passing an uncompressed (older) image through untouched.
+fn decompress_state_image(payload: &[u8]) -> io::Result<std::borrow::Cow<'_, [u8]>> {
+    match payload.strip_prefix(STATE_IMAGE_ZSTD_MAGIC) {
+        Some(compressed) => zstd::stream::decode_all(std::io::Cursor::new(compressed))
+            .map(std::borrow::Cow::Owned)
+            .map_err(|err| io::Error::other(format!("state image decompress failed: {err}"))),
+        None => Ok(std::borrow::Cow::Borrowed(payload)),
     }
 }

@@ -53,6 +53,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         Command::CommonDelete { key }
         | Command::CommonExpire { key, .. }
         | Command::CommonTtl { key }
+        | Command::CommonPersist { key }
         | Command::CommonExists { key }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
@@ -70,6 +71,21 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::SetAdd { key, .. }
         | Command::SetMembers { key }
         | Command::SetRemove { key, .. }
+        | Command::ListPush { key, .. }
+        | Command::ListPop { key, .. }
+        | Command::ListRange { key, .. }
+        | Command::ListLen { key }
+        | Command::ZSetAdd { key, .. }
+        | Command::ZSetScore { key, .. }
+        | Command::ZSetRemove { key, .. }
+        | Command::ZSetCard { key }
+        | Command::ZSetRange { key, .. }
+        | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetPop { key, .. }
+        | Command::ZSetRank { key, .. }
+        | Command::BucketTake { key, .. }
+        | Command::BucketPeek { key, .. }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }

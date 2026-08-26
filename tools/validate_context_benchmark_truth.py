@@ -69,7 +69,7 @@ def main() -> int:
     require_snippets(
         ROOT / "tools" / "archive_context_benchmark_report.py",
         (
-            "matrixark_vikingmem_context_benchmark_report_v1",
+            "matrixark_external_baseline_context_benchmark_report_v1",
             "archive_required_fields_ready",
             "benchmark_retrieval_p50_ms",
             "benchmark_retrieval_p95_ms",
@@ -80,7 +80,7 @@ def main() -> int:
     require_snippets(
         ROOT / "compat" / "native_context_benchmark_report_adapter.h",
         (
-            "matrixark_vikingmem_context_benchmark_report_v1",
+            "matrixark_external_baseline_context_benchmark_report_v1",
             "FinalizeReport",
             "FinalizedJson",
             "input_sha256",

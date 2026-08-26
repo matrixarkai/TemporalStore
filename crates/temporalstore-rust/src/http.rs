@@ -86,6 +86,11 @@ pub struct RequestHead {
     /// other forever. Parsed generically here so the streaming blob handler can
     /// enforce the guard without re-reading the socket headers.
     pub blob_peer_fetch_loop_guard: bool,
+    /// The `Authorization: Bearer <token>` credential, when the request carried
+    /// one. Parsed generically here so a serving layer that requires a token
+    /// (the metaserver's admin surface) can enforce it at the head stage,
+    /// before any body byte is read.
+    pub bearer_token: Option<String>,
 }
 
 /// What a streaming handler did with a request.
@@ -356,7 +361,16 @@ pub fn get_json_with_options<Res: DeserializeOwned>(
     path: &str,
     options: HttpRequestOptions,
 ) -> Result<Res, HttpError> {
-    let raw = request_raw_with_options(addr, "GET", path, &[], "", options)?;
+    get_json_with_options_and_headers(addr, path, "", options)
+}
+
+pub fn get_json_with_options_and_headers<Res: DeserializeOwned>(
+    addr: &str,
+    path: &str,
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
+    let raw = request_raw_with_options(addr, "GET", path, &[], extra_headers, options)?;
     Ok(serde_json::from_slice(&raw)?)
 }
 
@@ -484,6 +498,7 @@ fn parse_request_head(bytes: &[u8]) -> Result<RequestHead, HttpError> {
     let mut content_length = 0usize;
     let mut keep_alive = true;
     let mut blob_peer_fetch_loop_guard = false;
+    let mut bearer_token = None;
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
             if name.eq_ignore_ascii_case("content-length") {
@@ -494,6 +509,12 @@ fn parse_request_head(bytes: &[u8]) -> Result<RequestHead, HttpError> {
                 // A value of "0" marks the request as a peer-fetch hop: serve it
                 // local-only, never re-forward (loop guard).
                 blob_peer_fetch_loop_guard = value.trim() == "0";
+            } else if name.eq_ignore_ascii_case("authorization") {
+                let value = value.trim();
+                // The scheme name is case-insensitive; the token is not.
+                if value.len() > 7 && value[..7].eq_ignore_ascii_case("bearer ") {
+                    bearer_token = Some(value[7..].trim().to_string());
+                }
             }
         }
     }
@@ -503,6 +524,7 @@ fn parse_request_head(bytes: &[u8]) -> Result<RequestHead, HttpError> {
         content_length,
         keep_alive,
         blob_peer_fetch_loop_guard,
+        bearer_token,
     })
 }
 
@@ -810,6 +832,31 @@ mod tests {
     use serde_json::Value;
     use std::net::TcpListener;
     use std::time::Instant;
+
+    #[test]
+    fn request_head_parses_a_bearer_token() {
+        let head = parse_request_head(
+            b"POST /meta/mute HTTP/1.1\r\nContent-Length: 2\r\nAuthorization: Bearer s3cret\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(head.bearer_token.as_deref(), Some("s3cret"));
+
+        // Header name and scheme are case-insensitive; the token itself is not.
+        let head = parse_request_head(
+            b"GET /health HTTP/1.1\r\nauthorization: bearer MiXeD\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(head.bearer_token.as_deref(), Some("MiXeD"));
+
+        // No credential, or a non-bearer scheme, parses as none.
+        let head = parse_request_head(b"GET /health HTTP/1.1\r\n\r\n").unwrap();
+        assert_eq!(head.bearer_token, None);
+        let head = parse_request_head(
+            b"GET /health HTTP/1.1\r\nAuthorization: Basic dXNlcg==\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(head.bearer_token, None);
+    }
 
     #[test]
     fn client_returns_after_content_length_without_waiting_for_close() {

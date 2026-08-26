@@ -4259,7 +4259,49 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
         return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
 
+    @property
+    def _append_coalesce_tls(self) -> threading.local:
+        tls = getattr(self, "_append_coalesce_tls_obj", None)
+        if tls is None:
+            tls = threading.local()
+            self._append_coalesce_tls_obj = tls
+        return tls
+
+    def _begin_append_coalescing(self) -> None:
+        """Buffer this THREAD's subsequent append() calls until flush.
+
+        For a run of consecutive appends with no interleaved read, one append_many is
+        semantically identical (same records, same order, same batch pipeline) and costs one
+        durable engine batch instead of one per record. Thread-local on purpose: the adapter is
+        shared across request threads, and one request's buffer must never receive another's
+        records. The caller owns the flush point (before its first read) and the abort on
+        failure (so a reused pool thread cannot inherit an active buffer).
+        """
+        tls = self._append_coalesce_tls
+        tls.buffer = []
+        tls.active = True
+
+    def _flush_append_coalescing(self) -> None:
+        tls = self._append_coalesce_tls
+        if not getattr(tls, "active", False):
+            return
+        tls.active = False
+        buffered = tls.buffer
+        tls.buffer = []
+        if buffered:
+            self.append_many(buffered)
+
+    def _abort_append_coalescing(self) -> None:
+        """Drop this thread's buffered records without writing (failed-request cleanup)."""
+        tls = self._append_coalesce_tls
+        tls.active = False
+        tls.buffer = []
+
     def append(self, record: Json) -> None:
+        tls = getattr(self, "_append_coalesce_tls_obj", None)
+        if tls is not None and getattr(tls, "active", False):
+            tls.buffer.append(record)
+            return
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
@@ -4803,7 +4845,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
     # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
     # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
-    def prior_context_records(self) -> list[Json]:
+    def prior_context_records(self, scope: Json | None = None) -> list[Json]:
         """The live records prior-context collection reads. Base implementation: the whole store.
 
         `collect_prior_context` and the caller-supplied-fields carry-over consume only three
@@ -5003,6 +5045,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             result["purge"] = purge
         return result
 
+    def records_for_delete(self, memory_id: str) -> list[Json]:
+        """The live records a delete reasons over: the event and everything pointing at it.
+
+        Base implementation: the whole store. delete's own predicates run over whatever this
+        returns, so an override only has to produce a SUPERSET of the id's live records --
+        missing one would leave a derivative pointing at a deleted source.
+        """
+        return self.read_all()
+
     def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
         """Delete a single memory by id/hash (mem0 ``delete``), with provenance-closure cascade.
 
@@ -5022,7 +5073,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
             raise MatrixArkError("delete requires a memory_id")
-        records = self.read_all()
+        records = self.records_for_delete(memory_id)
         try:
             memory_id_int: int | None = int(memory_id)
         except (TypeError, ValueError):
@@ -5484,6 +5535,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         purge = self.purge_tombstones(force=True)
         return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed, "purge": purge}
 
+    def records_for_get_memory(self, memory_id: str) -> list[Json]:
+        """The live records get_memory filters for one id. Base implementation: the whole store.
+
+        get_memory's own matching (id equality and the provenance check) runs over whatever this
+        returns, so an override only has to produce a SUPERSET of the id's live records -- being
+        slow is recoverable, answering {found: false} for a live memory is not.
+        """
+        return self.read_all()
+
     def get_memory(self, args: Json) -> Json:
         """Fetch a single memory by id (mem0 ``get``). Returns the live ``context_event`` for
         ``memory_id`` projected to ``{id, memory, text, metadata, ...}`` plus the derived records
@@ -5495,7 +5555,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memory_id_int = _safe_int(memory_id)
         event: Json | None = None
         derived: list[Json] = []
-        for record in self.read_all():
+        for record in self.records_for_get_memory(memory_id):
             record_type = str(record.get("record_type") or "")
             if record_type == "context_event" and str(record.get("event_id_hash")) == memory_id:
                 event = record
@@ -5553,8 +5613,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             new_text = args.get("content")
         if not isinstance(new_text, str) or not new_text.strip():
             raise MatrixArkError("update requires new content (data / text)")
+        # The id's own records, not the store's. An update reasons over exactly what a delete
+        # does -- the addressed event plus everything pointing at it -- and the same subset serves
+        # both the lookup here and the supersede closure below, so one id-scoped fetch replaces
+        # two full-store reads. The seam's contract is a SUPERSET of the id's live records, which
+        # is what both uses need; on an adapter without the index it still returns the whole store.
+        update_records = self.records_for_delete(memory_id)
         old: Json | None = None
-        for record in self.read_all():
+        for record in update_records:
             if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == memory_id:
                 old = record
                 break
@@ -5601,7 +5667,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if memory_id_int is not None:
             # Sweep the superseded version's own embeddings / index postings so the old text can't leak
             # via retrieval after the update (same closure identity set as delete).
-            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(self.read_all(), memory_id, memory_id_int)
+            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(update_records, memory_id, memory_id_int)
             self._forget_persisted_event_members(memory_id)
             self._invalidate_event_member_index()
         self.append(tombstone)
