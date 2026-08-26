@@ -2816,7 +2816,25 @@ fn mark_bucket_index_page_deleted(
         }
     }
     if removed {
-        shard.bucket_index.rebuild_object_page_lookup();
+        // Removes exactly the entry it deleted, instead of rebuilding the whole lookup.
+        //
+        // `rebuild_object_page_lookup` clears `object_page_lookup` and `object_component_lookup`
+        // and re-inserts one entry per page in the shard -- 58 696 of them on a 250 MB store --
+        // and this ran once per deleted page. A purge deleting five fields paid it five times.
+        // That is why deleting an identical, freshly created memory cost 41.7 ms against a 20 MB
+        // store and 385.7 ms against a 249 MB one, for provably the same closure: same four ids,
+        // same 96 records scanned, same five fields rewritten. Identical work, nine times the
+        // time, all of it spent rebuilding a lookup to the same shape it already had minus one
+        // entry.
+        //
+        // This is the exact inverse of the `insert_object_page_lookup` the page went in through,
+        // keyed on the same (model_id, object_key, component) -- which is how the upsert path
+        // has always maintained the lookup. The whole-object deleter above still rebuilds; it
+        // drops every component of a key at once, so the entry-at-a-time inverse does not apply
+        // to it unchanged.
+        shard
+            .bucket_index
+            .remove_object_page_lookup_entry(model_id, key, component);
     }
     removed
 }
