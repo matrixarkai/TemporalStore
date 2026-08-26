@@ -24,6 +24,7 @@ mod packed_pages;
 mod product_model;
 mod set_index_serde;
 mod zset_index_serde;
+mod seen_index_serde;
 mod bucket_dump_manifest_methods;
 mod storage_lifecycle_methods;
 mod storage_manager_cycle;
@@ -2591,6 +2592,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.lists.remove(key).is_some();
     removed |= shard.zsets.remove(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
+    removed |= shard.seen.remove(key).is_some();
     if shard.features.remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
@@ -2940,6 +2942,8 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.sets.contains_key(key)
         || shard.lists.contains_key(key)
         || shard.zsets.contains_key(key)
+        || shard.buckets.contains_key(key)
+        || shard.seen.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)

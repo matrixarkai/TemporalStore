@@ -658,6 +658,49 @@ pub(crate) fn execute_on_shard(
                 .collect();
             CommandResponse::Members { members }
         }
+        Command::SeenCheck {
+            key,
+            member,
+            window_ms,
+        } => {
+            let now = resolve_now_ms();
+            let floor = now.saturating_sub(window_ms);
+            let seen = shard.seen.entry(key).or_default();
+            // Bounded sweep from the time-ordered front: enough to keep pace with any
+            // sustained rate, never enough to stall a hot call on a huge backlog.
+            for _ in 0..128 {
+                match seen.by_time.first_key_value() {
+                    Some(((seen_at, _), ())) if *seen_at < floor => {
+                        let ((seen_at, expired), ()) =
+                            seen.by_time.pop_first().expect("front exists");
+                        if seen.by_member.get(&expired) == Some(&seen_at) {
+                            seen.by_member.remove(&expired);
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            let duplicate = seen
+                .by_member
+                .get(&member)
+                .is_some_and(|seen_at| *seen_at >= floor);
+            if !duplicate {
+                if let Some(previous) = seen.by_member.insert(member.clone(), now) {
+                    seen.by_time.remove(&(previous, member.clone()));
+                }
+                seen.by_time.insert((now, member), ());
+            }
+            mutated = true;
+            CommandResponse::Integer {
+                value: i64::from(duplicate),
+            }
+        }
+        Command::SeenCard { key } => CommandResponse::Integer {
+            value: shard
+                .seen
+                .get(&key)
+                .map_or(0, |seen| seen.by_member.len()) as i64,
+        },
         Command::BucketTake {
             key,
             tokens,
