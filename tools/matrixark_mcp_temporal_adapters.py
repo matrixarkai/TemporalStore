@@ -1193,9 +1193,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 **({"newest_by_type": dict(newest_by_type)} if newest_by_type else {}),
             )
         except TypeError:
-            # A client whose signature lacks one of the newer parameters. The full-read fallback
-            # is always correct; retrying with fewer kwargs is not -- a scan without
-            # return_index_records silently eats the embedding rows a caller asked for.
+            # A client whose signature lacks one of the newer parameters. Retrying with fewer
+            # kwargs is generally WRONG -- a scan without return_index_records silently eats the
+            # embedding rows a caller asked for -- so the full read is the fallback.
+            #
+            # Except for one: the cap is the ONE kwarg safe to drop, because dropping it widens
+            # the answer rather than narrowing it. Without it the scan returns every record of
+            # these types, which is exactly what this call did before the cap existed, and the
+            # consumer filters the same way either way. Falling all the way back to a full-store
+            # read would be the opposite of what asking for a cap was for.
+            if newest_by_type:
+                try:
+                    return self._scan_records_of_types(
+                        record_types, record_ids=record_ids, scope=scope, newest_by_type=None
+                    )
+                except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+                    return None
             return None
         except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
             return None
