@@ -4718,6 +4718,7 @@ mod tests {
             record_hash_key: None,
             shard_size: None,
             record_types: None,
+            newest_by_type: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,
