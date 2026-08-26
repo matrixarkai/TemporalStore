@@ -3689,6 +3689,63 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
 }
 
 
+/// A write handed its pages must log THOSE pages, not the ones it would have derived.
+///
+/// This is what lets a replayed write reproduce the bytes that were acked somewhere else
+/// rather than this node's reconstruction of them.
+#[test]
+fn a_carried_page_is_what_reaches_the_log_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+
+    let carried = vec![crate::wal::StagedPage {
+        object_id: 4242,
+        bytes: b"pages-from-somewhere-else".to_vec(),
+    }];
+    let write = engine.execute_with_carried_pages(
+        ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "carried".to_string(),
+                field: "f".to_string(),
+                value: b"local-derivation".to_vec(),
+            },
+        },
+        carried.clone(),
+    );
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    assert!(write.status.ok, "the write must be acked: {write:?}");
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    let logged = records
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .find(|record| !record.staged_pages.is_empty())
+        .expect("the record must carry pages");
+    assert_eq!(
+        logged.staged_pages, carried,
+        "the carried pages belong on the record, not this node's re-derivation"
+    );
+}
+
 /// What waiting before a dump saves, and what the wait costs.
 ///
 /// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log

@@ -91,6 +91,19 @@ pub struct SharedStoreWalEntry {
     #[serde(rename = "wal_index")]
     pub wal_index: u64,
     pub command: Command,
+    /// The pages this write produced, carried beside the command that produced them.
+    ///
+    /// A command is not always enough to rebuild what it wrote. A page can be DERIVED state --
+    /// a serialized counter series, a hash map -- and re-executing the command that bumped it
+    /// reconstructs it only if every earlier write is also replayed, in order, from a state
+    /// that still exists. Locally that is what the engine WAL record carries, for exactly this
+    /// reason; a shared log that carried commands alone could hand a successor a shard it could
+    /// not finish rebuilding.
+    ///
+    /// Empty for the overwhelming majority of writes, and `serde(default)` so an entry written
+    /// before this field existed still loads.
+    #[serde(default)]
+    pub staged_pages: Vec<crate::wal::StagedPage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -358,6 +371,14 @@ impl<O> Clone for SharedStoreReplicator<O> {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct SharedStoreStagedPageProto {
+    #[prost(uint64, tag = "1")]
+    object_id: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct SharedStoreWalFrameProto {
     #[prost(uint64, tag = "1")]
     shard_id: u64,
@@ -371,6 +392,10 @@ struct SharedStoreWalFrameProto {
     command_sha256: String,
     #[prost(uint32, tag = "6")]
     command_encoding: u32,
+    /// Tag 7, added after the fact: an older reader ignores it and an older writer leaves it
+    /// empty, so both directions stay readable across the change.
+    #[prost(message, repeated, tag = "7")]
+    staged_pages: Vec<SharedStoreStagedPageProto>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1190,10 +1215,17 @@ where
             if wal_index <= after_wal_index {
                 continue;
             }
-            let response = engine.execute(ExecuteRequest {
-                shard_id,
-                command: entry.command,
-            });
+            // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
+            // command would otherwise substitute this node's reconstruction for the bytes that
+            // were actually acked -- identical for a plain value, and not necessarily so for
+            // derived state.
+            let response = engine.execute_with_carried_pages(
+                ExecuteRequest {
+                    shard_id,
+                    command: entry.command,
+                },
+                entry.staged_pages,
+            );
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
                     wal_index,
@@ -1242,10 +1274,17 @@ where
                     actual: wal_index,
                 });
             }
-            let response = engine.execute(ExecuteRequest {
-                shard_id,
-                command: entry.command,
-            });
+            // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
+            // command would otherwise substitute this node's reconstruction for the bytes that
+            // were actually acked -- identical for a plain value, and not necessarily so for
+            // derived state.
+            let response = engine.execute_with_carried_pages(
+                ExecuteRequest {
+                    shard_id,
+                    command: entry.command,
+                },
+                entry.staged_pages,
+            );
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
                     wal_index,
@@ -2110,7 +2149,9 @@ where
             shard_id,
             wal_index,
             command,
-        };
+        
+                        staged_pages: Vec::new(),
+                    };
         match self.mode {
             SharedStoreStorageMode::Sync if self.group_commit => {
                 self.group_commit_write(entry).await
@@ -2390,6 +2431,14 @@ fn encode_wal_proto_frame(
         command_sha256: sha256_hex(&command_payload),
         command_payload,
         command_encoding,
+        staged_pages: entry
+            .staged_pages
+            .iter()
+            .map(|page| SharedStoreStagedPageProto {
+                object_id: page.object_id,
+                bytes: page.bytes.clone(),
+            })
+            .collect(),
     };
     let mut encoded = frame.encode_to_vec();
     let mut out = Vec::with_capacity(4 + encoded.len());
@@ -2470,6 +2519,14 @@ fn decode_wal_proto_frame_exact(
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
         command,
+        staged_pages: frame
+            .staged_pages
+            .into_iter()
+            .map(|page| crate::wal::StagedPage {
+                object_id: page.object_id,
+                bytes: page.bytes,
+            })
+            .collect(),
     })
 }
 
@@ -2767,7 +2824,9 @@ mod tests {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -2987,7 +3046,9 @@ mod tests {
                 command: Command::CommonDelete {
                     key: "gone".to_string(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -3076,7 +3137,9 @@ mod tests {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -3160,7 +3223,9 @@ mod tests {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -3427,7 +3492,9 @@ mod tests {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -3530,7 +3597,9 @@ mod tests {
                         key: key.to_string(),
                         value: key.as_bytes().to_vec(),
                     },
-                })
+                
+                                       staged_pages: Vec::new(),
+                                   })
                 .await
                 .unwrap();
         }
@@ -3585,7 +3654,9 @@ mod tests {
                         key: key.to_string(),
                         value,
                     },
-                })
+                
+                                       staged_pages: Vec::new(),
+                                   })
                 .await
                 .unwrap();
         }
@@ -3833,7 +3904,9 @@ mod tests {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -3949,7 +4022,9 @@ mod tests {
                         key: key.to_string(),
                         value: key.as_bytes().to_vec(),
                     },
-                })
+                
+                                       staged_pages: Vec::new(),
+                                   })
                 .await
                 .unwrap();
         }
@@ -4004,7 +4079,9 @@ mod tests {
                         key: key.to_string(),
                         value,
                     },
-                })
+                
+                                       staged_pages: Vec::new(),
+                                   })
                 .await
                 .unwrap();
         }
@@ -4034,6 +4111,70 @@ mod tests {
                 value: Some(b"1".to_vec())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_published_entry_keeps_the_pages_its_write_produced() {
+        // A command is not always enough to rebuild what it wrote. If the shared log drops the
+        // pages, a successor replays the command and reconstructs derived state from whatever
+        // it happens to have -- which is not necessarily the bytes that were acked.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+            staged_pages: vec![crate::wal::StagedPage {
+                object_id: 77,
+                bytes: b"derived-page-bytes".to_vec(),
+            }],
+        };
+        replicator.publish_wal_entry(entry.clone()).await.unwrap();
+
+        let loaded = replicator.load_wal_entries(1).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        let round_tripped = loaded.values().next().expect("one entry");
+        assert_eq!(
+            round_tripped.staged_pages, entry.staged_pages,
+            "the pages must survive the trip, not just the command"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_written_before_pages_existed_still_loads() {
+        // `staged_pages` is serde(default), so a WAL object published by an older writer -- one
+        // that never had the field -- must still deserialize rather than failing the whole
+        // replay of a shard's history.
+        // Build the legacy shape from a real entry rather than by hand, so this tests the
+        // actual serialized form instead of a guess at it: serialize, drop the field an older
+        // writer never emitted, and load what remains.
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+            staged_pages: Vec::new(),
+        };
+        let mut legacy = serde_json::to_value(&entry).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("entry serializes to an object")
+            .remove("staged_pages");
+        assert!(
+            legacy.get("staged_pages").is_none(),
+            "the field must actually be gone for this to test anything"
+        );
+
+        let loaded: SharedStoreWalEntry = serde_json::from_value(legacy)
+            .expect("an entry without the field must still load");
+        assert!(loaded.staged_pages.is_empty());
+        assert_eq!(loaded.command, entry.command);
     }
 
     #[tokio::test]
@@ -4240,7 +4381,9 @@ mod tests {
                     key: "gap".to_string(),
                     value: b"v".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -4627,7 +4770,9 @@ mod tests {
                     key: "k".to_string(),
                     value: b"v".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
 
@@ -4677,7 +4822,9 @@ mod tests {
                     key: "retry".to_string(),
                     value: b"ok".to_vec(),
                 },
-            })
+            
+                                   staged_pages: Vec::new(),
+                               })
             .await
             .unwrap();
     }
@@ -4733,7 +4880,9 @@ mod tests {
                         key: format!("k{wal_index}"),
                         value: vec![wal_index as u8],
                     },
-                })
+                
+                                       staged_pages: Vec::new(),
+                                   })
                 .await
                 .unwrap();
         }
@@ -4800,7 +4949,9 @@ mod tests {
                         key: key.to_string(),
                         value,
                     },
-                })
+                
+                                       staged_pages: Vec::new(),
+                                   })
                 .await
                 .unwrap();
             append_receipts.push(receipt.expect("protobuf append blob should return offsets"));
