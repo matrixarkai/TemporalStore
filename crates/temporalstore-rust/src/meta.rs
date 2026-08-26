@@ -1697,11 +1697,39 @@ impl SingleNodeMeta {
                 Self::reserved_name_refusal_in(state, &request.namespace, Some(&request.table_name))
             }
             MetaMutation::SetNamespaceState(request, MetaEntityState::Dropped) => {
-                Self::namespace_not_empty_in(state, &request.namespace)
+                Self::namespace_not_empty_in(state, &request.namespace).or_else(|| {
+                    Self::namespace_still_routed_in(state, &request.namespace)
+                })
             }
             MetaMutation::PutProxyGroup(request) => Self::proxy_group_name_refusal(request),
             _ => None,
         }
+    }
+
+    /// Refuses dropping a namespace a proxy group still routes to.
+    ///
+    /// A proxy group is the routing tier's standing promise to serve the
+    /// namespace, so it is a live dependent exactly as a table is. Dropping the
+    /// namespace under one used to succeed and leave the contradiction in
+    /// place: the group stayed Normal, its proxies stayed attached, and the
+    /// next heartbeat still handed them the dropped namespace to serve.
+    /// Calibration does not clean that up -- it keys off the group's own state,
+    /// which nothing changed -- and no report flags it. Refusing keeps the
+    /// order of operations the code already implies: drop the group, then drop
+    /// the namespace, and `drop_proxy_group` releases the proxies as it goes.
+    fn namespace_still_routed_in(state: &MetaState, namespace: &str) -> Option<Status> {
+        state
+            .proxy_groups
+            .values()
+            .any(|group| {
+                group.namespace == namespace && group.state != MetaEntityState::Dropped
+            })
+            .then(|| {
+                Status::error(
+                    "namespace_still_routed",
+                    "namespace still has a proxy group routing to it",
+                )
+            })
     }
 
     /// Refuses a proxy group that names neither itself nor a namespace.
