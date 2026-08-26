@@ -2988,55 +2988,62 @@ class _CodexPipelinePart5:
             event_log = Path(tmp_dir) / "matrixark-resource-queue.jsonl"
             adapter = MatrixArkLocalAdapter(event_log)
             server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = server.call_tool(
-                "matrixark_ingest",
-                {
-                    "kind": "resource",
-                    "raw_uri": "inline://resource-queue.md",
-                    "resource_type": "md",
-                    "wait": False,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "# GPU Runbook\n\nAlice owns the GPU approval checklist. Finance review is required before purchase.",
-                        }
-                    ],
-                    "scope": {
-                        "account_id": "acct_queue",
-                        "tenant_id": "tenant_queue",
-                        "user_id": "user_queue",
-                        "session_id": "session_queue",
+            try:
+                result = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "kind": "resource",
+                        "raw_uri": "inline://resource-queue.md",
+                        "resource_type": "md",
+                        "wait": False,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": "# GPU Runbook\n\nAlice owns the GPU approval checklist. Finance review is required before purchase.",
+                            }
+                        ],
+                        "scope": {
+                            "account_id": "acct_queue",
+                            "tenant_id": "tenant_queue",
+                            "user_id": "user_queue",
+                            "session_id": "session_queue",
+                        },
+                        "metadata": {"node_path": ["users", "user_queue", "resources", "runbooks"]},
                     },
-                    "metadata": {"node_path": ["users", "user_queue", "resources", "runbooks"]},
-                },
-            )
-            self.assertEqual("queued", result["status"])
-            task = result["resource_import_task"]
-            self.assertFalse(task["wait"])
-            self.assertTrue(task["worker_pool"]["bounded"])
-            self.assertEqual(1, task["worker_pool"]["worker_count"])
-            self.assertEqual(2, task["worker_pool"]["queue_max"])
+                )
+                self.assertEqual("queued", result["status"])
+                task = result["resource_import_task"]
+                self.assertFalse(task["wait"])
+                self.assertTrue(task["worker_pool"]["bounded"])
+                self.assertEqual(1, task["worker_pool"]["worker_count"])
+                self.assertEqual(2, task["worker_pool"]["queue_max"])
 
-            task_hash = task["task_hash"]
-            deadline = time.time() + 5.0
-            records: list[dict] = []
-            while time.time() < deadline:
-                records = adapter.read_all()
-                if any(
-                    record.get("record_type") == "resource_import_task"
-                    and record.get("task_hash") == task_hash
-                    and record.get("status") == "completed"
-                    for record in records
-                ):
-                    break
-                time.sleep(0.05)
-            else:
-                self.fail("background resource import did not complete")
+                task_hash = task["task_hash"]
+                deadline = time.time() + 5.0
+                records: list[dict] = []
+                while time.time() < deadline:
+                    records = adapter.read_all()
+                    if any(
+                        record.get("record_type") == "resource_import_task"
+                        and record.get("task_hash") == task_hash
+                        and record.get("status") == "completed"
+                        for record in records
+                    ):
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("background resource import did not complete")
 
-            self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
-            # Folded: the vectors live on the owners (chunks and summaries carry them).
-            self.assertTrue(any(record.get("vector") for record in records))
-            self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
+                self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
+                # Folded: the vectors live on the owners (chunks and summaries carry them).
+                self.assertTrue(any(record.get("vector") for record in records))
+                self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
+            finally:
+                # The import runs on a worker thread that keeps writing into this directory --
+                # the event log and the read-cache sidecars each append maintains -- until the
+                # task is drained. Without this the temp dir is torn down underneath the worker,
+                # which re-creates the log it just deleted and fails cleanup with ENOTEMPTY.
+                server.close(timeout_s=10.0)
 
     def test_tenant_shared_resource_and_skill_live_outside_session_and_retrieve_with_quota(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -1882,6 +1882,73 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
     }
 }
 
+/// Lazy read-through source for the NODE-LOCAL matrixobject backend
+/// ([`crate::matrixobject_store::MatrixObjectObjectStore`]): the same contract as
+/// [`MatrixObjectSlabSource`], resolved against the in-process store under its mutex
+/// instead of a networked GET, verifying the checkpoint checksum before the block
+/// store caches it.
+#[cfg(feature = "matrixobject")]
+#[derive(Debug)]
+pub struct MatrixObjectLocalSlabSource {
+    object_store: Arc<crate::matrixobject_store::MatrixObjectObjectStore>,
+    slabs: BTreeMap<u64, SharedSlabAddress>,
+}
+
+#[cfg(feature = "matrixobject")]
+impl SharedSlabSource for MatrixObjectLocalSlabSource {
+    fn fetch_slab(&self, page_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(address) = self.slabs.get(&page_slab_id) else {
+            return Ok(None);
+        };
+        let bytes = self
+            .object_store
+            .get_blocking(&address.key)
+            .map_err(|err| {
+                BlockStoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    err.to_string(),
+                ))
+            })?
+            .to_vec();
+        // Conformance with restore_checkpoint: reject a corrupt shared slab before caching it.
+        let actual = sha256_hex(&bytes);
+        if bytes.len() as u64 != address.byte_size || actual != address.sha256 {
+            return Err(BlockStoreError::ChecksumMismatch {
+                page_slab_id,
+                offset: 0,
+                length: address.byte_size,
+                expected: address.sha256.clone(),
+                actual,
+            });
+        }
+        Ok(Some(bytes))
+    }
+}
+
+#[cfg(feature = "matrixobject")]
+impl SharedStoreReplicator<crate::matrixobject_store::MatrixObjectObjectStore> {
+    /// Conformance LAZY restore for the node-local matrixobject backend: install the
+    /// served INDEX and a per-slab shared address map WITHOUT installing any slab
+    /// bytes; old (pre-checkpoint) pages are read lazily out of the local store on the
+    /// first read that needs them. The same flow the shared-filesystem and networked
+    /// backends already run -- it is what lets this backend's recovery replay only the
+    /// WAL tail after a checkpoint instead of all history.
+    pub async fn restore_index_and_page_addresses(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &LocalBlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        self.restore_index_and_page_addresses_with(shard_id, engine, block_store, |store, slabs| {
+            Arc::new(MatrixObjectLocalSlabSource {
+                object_store: store,
+                slabs,
+            }) as Arc<dyn SharedSlabSource>
+        })
+        .await
+    }
+}
+
 /// Build a per-entry [`SharedStoreWriteReport`] from an optional append receipt (JsonPerKey mode
 /// has no receipt; append-blob mode carries the byte range).
 fn write_report_from_receipt(
@@ -2832,6 +2899,90 @@ mod tests {
             CommandResponse::Bytes {
                 value: Some(b"keep-value".to_vec())
             }
+        );
+    }
+
+    #[cfg(feature = "matrixobject")]
+    #[tokio::test]
+    async fn matrixobject_local_lazy_restore_replays_only_wal_tail() {
+        // The node-local matrixobject backend recovers like every other shared backend:
+        // checkpoint index + lazy addresses, then ONLY the WAL tail -- not all history.
+        use crate::matrixobject_store::MatrixObjectObjectStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "before".to_string(),
+                value: b"snapshot-value".to_vec(),
+            },
+        });
+        let store = Arc::new(
+            MatrixObjectObjectStore::with_default_options("temporalstore-shared").unwrap(),
+        );
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        assert!(!manifest.page_slabs.is_empty());
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 2,
+                command: Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"wal-value".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let follower = test_engine(dir.path(), "follower");
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        assert_eq!(restored.checkpoint_wal_index, 1);
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+        follower.load_shard(1);
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        assert_eq!(report.applied, 1, "only the tail entry replays");
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "after".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"wal-value".to_vec())
+            }
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            }
+        );
+        assert_eq!(
+            follower.block_store().stats().shared_slab_fetches,
+            1,
+            "the old key is served by exactly one on-demand slab fetch"
         );
     }
 

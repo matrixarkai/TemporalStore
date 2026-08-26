@@ -522,13 +522,17 @@ impl SingleNodeMeta {
     /// every exported snapshot - forever.
     pub fn age_frozen_meta(&self, options: FreezeAgingOptions) -> FreezeAgingReport {
         let plan = self.plan_freeze_aging_now(options);
-        self.metrics.record_freeze_aging(&plan);
         if plan.is_empty() {
+            self.metrics.record_freeze_aging(&plan, &plan);
             return FreezeAgingReport {
                 status: Status::ok(),
                 plan,
             };
         }
+        // What the round actually got done, which stops matching the plan the
+        // moment a drop is refused: the round returns there and leaves the rest
+        // of the plan standing.
+        let mut applied = FreezeAgingPlan::default();
         // Routed through the ordinary state setters so the drop is recorded in
         // the mutation log, stamps `dropped_since_ms`, and emits the same
         // topology event an operator-driven drop would.
@@ -539,11 +543,13 @@ impl SingleNodeMeta {
                 reason: FreezeReason::Unspecified,
             });
             if !response.status.ok {
+                self.metrics.record_freeze_aging(&plan, &applied);
                 return FreezeAgingReport {
                     status: response.status,
                     plan,
                 };
             }
+            applied.proxies.push(addr.clone());
         }
         for key in &plan.tables {
             // `table_key` joins on '/', so the key must be split on the same
@@ -557,11 +563,13 @@ impl SingleNodeMeta {
                 table_name: table_name.to_string(),
             });
             if !response.status.ok {
+                self.metrics.record_freeze_aging(&plan, &applied);
                 return FreezeAgingReport {
                     status: response.status,
                     plan,
                 };
             }
+            applied.tables.push(key.clone());
         }
         for addr in &plan.servers {
             let response = self.drop_server(StateChangeRequest {
@@ -570,12 +578,15 @@ impl SingleNodeMeta {
                 reason: FreezeReason::Unspecified,
             });
             if !response.status.ok {
+                self.metrics.record_freeze_aging(&plan, &applied);
                 return FreezeAgingReport {
                     status: response.status,
                     plan,
                 };
             }
+            applied.servers.push(addr.clone());
         }
+        self.metrics.record_freeze_aging(&plan, &applied);
         FreezeAgingReport {
             status: Status::ok(),
             plan,
@@ -973,6 +984,72 @@ mod tests {
         assert_eq!(purged.plan.servers, vec!["node-a"]);
         assert!(meta.list_servers().servers.is_empty());
         assert!(meta.export_snapshot().servers.is_empty());
+    }
+
+    #[test]
+    fn a_round_that_stops_early_does_not_count_what_it_did_not_drop() {
+        // `temporalstore_meta_freeze_aged_total` is documented as "Frozen
+        // resources aged into the dropped state", but it was incremented from
+        // the plan before the round ran. A round returns on the first drop that
+        // fails and leaves the rest of the plan untouched, so the counter
+        // claimed resources had reached Dropped that are still sitting there
+        // frozen -- and a counter is exactly what an operator would trust to
+        // tell them aging is keeping up.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "p1".to_string(),
+            namespace: String::new(),
+            location: "rack-1".to_string(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let frozen = meta.freeze_stale_resources(0);
+        assert_eq!(frozen.frozen_servers, vec!["node-a"]);
+        assert_eq!(frozen.frozen_proxies, vec!["p1"]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // Muting metadata change refuses every drop the round attempts, so it
+        // stops on the first one. The background loop checks the mute before a
+        // round, but a round is many drops and the mute can land inside one.
+        assert!(meta.set_meta_change_muted(true).status.ok);
+
+        let report = meta.age_frozen_meta(aging(FreezeAgingOptions {
+            server_freeze_ms: 1,
+            proxy_freeze_ms: 1,
+            ..FreezeAgingOptions::default()
+        }));
+        assert!(
+            !report.status.ok,
+            "the round should have been refused: {report:?}"
+        );
+        assert_eq!(
+            meta.list_servers().servers[0].state,
+            MetaEntityState::Frozen,
+            "nothing was dropped, so the server is still frozen"
+        );
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_freeze_aged_total{kind=\"proxy\"} 0"),
+            "counted a proxy the round never dropped:\n{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_freeze_aged_total{kind=\"server\"} 0"),
+            "counted a server the round never dropped:\n{exported}"
+        );
+        // The round still happened, and the cap it hit is still the plan's.
+        assert!(
+            exported.contains("temporalstore_meta_detector_rounds_total{subsystem=\"freeze_aging\"} 1"),
+            "the round itself stopped being counted:\n{exported}"
+        );
     }
 
     #[test]

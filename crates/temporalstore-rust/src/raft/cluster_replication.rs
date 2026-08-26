@@ -112,6 +112,7 @@ impl RaftCluster {
         let byte_limit = inner.config.max_memory_replicate_log_bytes.max(1);
         let mut current_inflight_entries = 0;
         let mut current_inflight_bytes = 0;
+        let mut probe_only = false;
         let leader_commit_for_drain = inner
             .nodes
             .get(&inner.leader_id)
@@ -144,6 +145,18 @@ impl RaftCluster {
                 && (target.pipeline_state.inflight_entries >= entry_limit
                     || target.pipeline_state.inflight_bytes >= byte_limit)
             {
+                // A charged-up window used to REFUSE the append outright. For a peer that is
+                // behind, that is a deadlock, not backpressure: the refusal blocks the very
+                // entries whose acknowledgements would drain the window, the lag-derived
+                // refresh keeps re-charging it while the leader commits with the remaining
+                // quorum, and the peer is cut off for good. Measured on a 30k-write corpus:
+                // one election put a follower past the 128-entry window, it was never sent
+                // another entry, the second follower followed at the next election, writes
+                // froze on NoMajority, and the log grew unbounded because compaction held for
+                // a "catching up" follower that was never allowed to catch up. Degrade to a
+                // PROBE instead -- one entry, whatever its size. Its acknowledgement moves the
+                // match forward, the refresh re-derives a smaller charge, and the window
+                // reopens by itself. The rejection counters still record the pressure.
                 target.pipeline_state.append_rejected =
                     target.pipeline_state.append_rejected.saturating_add(1);
                 target.pipeline_state.memory_backpressure_rejections = target
@@ -152,26 +165,24 @@ impl RaftCluster {
                     .saturating_add(u64::from(
                         target.pipeline_state.inflight_bytes >= byte_limit,
                     ));
-                let inflight_entries = target.pipeline_state.inflight_entries;
-                let inflight_bytes = target.pipeline_state.inflight_bytes;
-                inner.persist_configured_wal()?;
-                return Err(RaftError::AppendBackpressure {
-                    node_id: target_id,
-                    inflight_entries,
-                    inflight_bytes,
-                    entry_limit,
-                    byte_limit,
-                });
+                probe_only = true;
             }
         }
         // Never build a batch larger than a receiver will accept in one request: a follower
         // refuses anything over its apply limit, so a bigger batch is not throughput, it is a
         // request that can only be rejected.
         let apply_limit = inner.config.max_inflights_apply_task.max(1);
-        let available_entries = entry_limit
-            .saturating_sub(current_inflight_entries)
-            .min(apply_limit);
-        let available_bytes = byte_limit.saturating_sub(current_inflight_bytes);
+        let (available_entries, available_bytes) = if probe_only {
+            // One entry regardless of the charge: the probe is what drains the window.
+            (1, byte_limit)
+        } else {
+            (
+                entry_limit
+                    .saturating_sub(current_inflight_entries)
+                    .min(apply_limit),
+                byte_limit.saturating_sub(current_inflight_bytes),
+            )
+        };
         let leader = inner
             .nodes
             .get(&inner.leader_id)
@@ -220,7 +231,11 @@ impl RaftCluster {
             if !entries.is_empty() && inflight_bytes.saturating_add(entry_bytes) > available_bytes {
                 break;
             }
-            if entries.is_empty() && entry_bytes > available_bytes {
+            if entries.is_empty()
+                && entry_bytes > available_bytes
+                && current_inflight_bytes > 0
+                && !probe_only
+            {
                 if let Some(target) = inner.nodes.get_mut(&target_id) {
                     target.pipeline_state.append_rejected =
                         target.pipeline_state.append_rejected.saturating_add(1);

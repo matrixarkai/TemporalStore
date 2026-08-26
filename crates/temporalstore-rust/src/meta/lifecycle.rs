@@ -5,6 +5,29 @@
 
 use super::*;
 
+/// One round of the simple failure detector, in the shape the metrics recorder
+/// takes.
+///
+/// The fields left empty belong to the adaptive detector: safe-mode holds,
+/// per-location damage, reboot detection, the orphan guard. This detector has
+/// none of them, so empty is what actually happened rather than a placeholder.
+fn simple_conviction_round(
+    frozen_servers: Vec<String>,
+    frozen_proxies: Vec<String>,
+) -> AdaptiveConvictionReport {
+    AdaptiveConvictionReport {
+        status: Status::ok(),
+        frozen_servers,
+        frozen_proxies,
+        held_by_safe_mode: Vec::new(),
+        damage: Vec::new(),
+        rebooted: Vec::new(),
+        detector_paused: false,
+        held_by_orphan_guard: Vec::new(),
+        orphaned_shards: Vec::new(),
+    }
+}
+
 impl SingleNodeMeta {
     pub fn get_table_topology(&self, request: GetTableTopologyRequest) -> TableTopologyResponse {
         self.counters.topology_query_total.fetch_add(1, Ordering::Relaxed);
@@ -247,6 +270,25 @@ impl SingleNodeMeta {
         }
 
         let proxy_report = self.freeze_stale_proxies(stale_after_ms, policy);
+        // Recorded per tier, the way the adaptive detector records its own
+        // rounds. `record_conviction` counts both lists, so one call carrying
+        // both would double every freeze; the adaptive path calls it once per
+        // tier with the other list empty, and this matches it.
+        //
+        // Without this the counter is exported unconditionally and sits at zero
+        // while this detector -- the default one, since
+        // TS_META_ADAPTIVE_FAILURE_DETECTOR is off unless asked for -- freezes
+        // servers and proxies. A confident wrong number reads worse than an
+        // absent series: `absent()` catches a missing one, nothing catches a
+        // zero.
+        self.metrics.record_conviction(
+            TIER_SERVER,
+            &simple_conviction_round(frozen_servers.clone(), Vec::new()),
+        );
+        self.metrics.record_conviction(
+            TIER_PROXY,
+            &simple_conviction_round(Vec::new(), proxy_report.frozen_proxies.clone()),
+        );
         StaleResourceReport {
             status: proxy_report.status,
             frozen_servers,

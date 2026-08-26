@@ -195,19 +195,45 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
-        if promote_model_maps_to_bucket_index_authority(
-            request.shard_id,
-            shard,
-            start_routing_bucket,
-            end_routing_bucket,
-        ) {
-            reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+        // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
+        // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
+        // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
+        // that `bucket_index` -- which each mutating command already upserts before returning --
+        // is in sync. Measured on a 290 MB store, that made an ingest 1.65 s of pure proxy CPU
+        // against 0.15 s on a 26 MB one, and it was the single hottest frame in a stack profile
+        // of the write path. Every mem0 write arrives here, so the guarded path was the one that
+        // mattered and the unguarded one was the one being used.
+        //
+        // `promote_scan_done` is `#[serde(skip)]`, so a freshly loaded shard still pays exactly
+        // one full reconcile before the skip engages, and with the gate off the scan runs on
+        // every batch precisely as before.
+        if !(phase1_flat_enabled() && shard.promote_scan_done) {
+            self.promote_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if promote_model_maps_to_bucket_index_authority(
+                request.shard_id,
+                shard,
+                start_routing_bucket,
+                end_routing_bucket,
+            ) {
+                reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+            }
+            // Latch only once the shard actually holds model-map state: `promote` returns false
+            // without establishing anything on an empty shard, so guarding on non-emptiness
+            // avoids latching before the first real write.
+            if phase1_flat_enabled() && shard_has_model_entries(shard) {
+                shard.promote_scan_done = true;
+            }
         }
         let mut mutated_any = false;
         let mut wal_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
+        // Some(components) while every mutating command in the batch is a pure page-upsert;
+        // one non-upsert write downgrades the whole record to snapshot semantics.
+        let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
+            Some(Vec::new());
         for command in request.commands {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -285,6 +311,13 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
+                match (
+                    &mut batch_upsert_components,
+                    command_upsert_components(&command_for_post_write),
+                ) {
+                    (Some(collected), Some(components)) => collected.extend(components),
+                    (state, _) => *state = None,
+                }
                 if object_keys.is_empty() {
                     rebuild_bucket_page_ownership(
                         request.shard_id,
@@ -374,12 +407,30 @@ impl TemporalEngine {
                 // Append the pages this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let items = collect_command_index_items(
-                    shard,
-                    &delta_command_keys,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let (items, upsert_record) = match batch_upsert_components
+                    .as_ref()
+                    .filter(|_| upsert_deltas_enabled())
+                {
+                    Some(components) => (
+                        collect_upsert_index_items(
+                            shard,
+                            request.shard_id,
+                            components,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        true,
+                    ),
+                    None => (
+                        collect_command_index_items(
+                            shard,
+                            &delta_command_keys,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        false,
+                    ),
+                };
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 let _ = self.index_log_store.append_delta(
                     request.shard_id,
@@ -387,6 +438,7 @@ impl TemporalEngine {
                     key_states,
                     shard.applied_wal_sequence,
                     None,
+                    upsert_record,
                     // Non-blocking on the raft apply path (raft log is the durability source).
                     !raft_applying(),
                 );

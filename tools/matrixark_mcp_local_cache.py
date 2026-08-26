@@ -213,7 +213,8 @@ def pending_session_events(adapter: object, scope: Json, *, limit: int | None = 
             events = [adapter._context_event_by_hash[event_hash] for event_hash in pending_ids if event_hash in adapter._context_event_by_hash]
             return events[:limit] if limit is not None else events
     committed: set[int] = set()
-    records = adapter.read_all()
+    reader = getattr(adapter, "records_for_session_buffer", None)
+    records = reader(scope) if callable(reader) else adapter.read_all()
     for record in records:
         if record.get("record_type") == "context_batch_commit" and session_buffer_key_from_scope(record.get("scope", {})) == key:
             for ref in record.get("source_event_ids", []):

@@ -1131,6 +1131,11 @@ pub enum Command {
     CommonTtl {
         key: String,
     },
+    /// Remove a key's expiry without touching its value: Redis PERSIST. Answers 1 when a
+    /// timeout was actually removed, 0 when the key is missing or already had none.
+    CommonPersist {
+        key: String,
+    },
     CommonExists {
         key: String,
     },
@@ -1198,6 +1203,105 @@ pub enum Command {
         key: String,
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
+    },
+    /// Upsert one member with a score. Answers 1 for a new member, 0 for a re-score.
+    ZSetAdd {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        score: f64,
+    },
+    /// The member's score as its shortest string form, or nil when absent.
+    ZSetScore {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    ZSetRemove {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    ZSetCard {
+        key: String,
+    },
+    /// Index range in (score, member) order, Redis semantics (negatives from the tail).
+    /// Answers interleaved member/score-string pairs.
+    ZSetRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        rev: bool,
+    },
+    /// Score-window range; exclusive flags implement the leading-paren syntax. Answers
+    /// interleaved member/score-string pairs.
+    ZSetRangeByScore {
+        key: String,
+        min: f64,
+        max: f64,
+        min_exclusive: bool,
+        max_exclusive: bool,
+        rev: bool,
+    },
+    /// Atomic take-with-refill on a token bucket: refill by elapsed time (capped at
+    /// capacity), then take `tokens` if they fit. Answers three strings -- allowed ("1"/"0"),
+    /// tokens remaining, and retry-after ms (0 when allowed).
+    BucketTake {
+        key: String,
+        tokens: f64,
+        capacity: f64,
+        refill_per_sec: f64,
+    },
+    /// The same arithmetic without taking: what a take of `tokens` WOULD answer.
+    BucketPeek {
+        key: String,
+        tokens: f64,
+        capacity: f64,
+        refill_per_sec: f64,
+    },
+    /// Add to a member's score (0 when absent), atomically under the shard lock.
+    /// Answers the new score as its shortest string form.
+    ZSetIncrBy {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        increment: f64,
+    },
+    /// Pop up to `count` members off the low (min) or high end, in order.
+    /// Answers interleaved member/score-string pairs.
+    ZSetPop {
+        key: String,
+        min: bool,
+        count: u64,
+    },
+    /// The member's 0-based position in (score, member) order, tail-based when rev.
+    /// Answers the rank as a decimal string, or nil for a missing member.
+    ZSetRank {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        rev: bool,
+    },
+    /// Push one element onto a list end (left = head). Answers the new length.
+    ListPush {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        left: bool,
+    },
+    /// Pop one element off a list end. Answers the element, or nil for an empty/missing list.
+    ListPop {
+        key: String,
+        left: bool,
+    },
+    /// Inclusive range with Redis index semantics (negatives count from the tail).
+    ListRange {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
+    ListLen {
+        key: String,
     },
     SetMembers {
         key: String,

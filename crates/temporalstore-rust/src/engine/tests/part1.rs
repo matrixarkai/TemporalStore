@@ -3065,3 +3065,52 @@ fn scratch_engine_index_dir_dies_with_the_last_engine_clone() {
         "the last engine clone must remove the scratch index dir on drop"
     );
 }
+
+#[test]
+fn served_index_container_round_trips_and_still_reads_plain_json() {
+    use crate::engine::{decode_index_bytes, encode_index_bytes};
+
+    let mut shard = ShardState::default();
+    shard.strings.insert(
+        "container-probe".to_string(),
+        BlockAddress {
+            page_slab_id: 7,
+            offset: 11,
+            length: 13,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            band_id: None,
+            generation: None,
+            sha256: None,
+        },
+    );
+
+    // Container OFF: raw JSON, and JSON is what an older binary would have written.
+    std::env::remove_var("TS_INDEX_BINARY");
+    let plain = encode_index_bytes(&shard);
+    assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
+    let decoded = decode_index_bytes(&plain).expect("json index decodes");
+    assert!(decoded.strings.contains_key("container-probe"));
+
+    // Container ON: a magic-prefixed payload that decodes back to the same state...
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    let wrapped = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    assert!(wrapped.starts_with(b"TSIDX\x01"), "container on must write the container");
+    assert_ne!(wrapped.first(), Some(&b'{'));
+    let decoded = decode_index_bytes(&wrapped).expect("container index decodes");
+    assert!(decoded.strings.contains_key("container-probe"));
+
+    // ...and reading is unconditional: a container decodes with the flag off, which is what
+    // makes the write flag safe to turn on and off independently of any reader.
+    let decoded_again = decode_index_bytes(&wrapped).expect("container decodes with flag off");
+    assert!(decoded_again.strings.contains_key("container-probe"));
+
+    // An unknown payload codec must be refused, never guessed at: a mis-parsed index serves
+    // wrong data with no error anywhere, which is the failure mode this container exists to stop.
+    let mut future = wrapped.clone();
+    future[6] = 0xEE;
+    let refused = decode_index_bytes(&future).expect_err("unknown codec must refuse");
+    assert!(refused.contains("cannot read"), "unhelpful refusal: {refused}");
+}

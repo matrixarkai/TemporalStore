@@ -1464,3 +1464,422 @@ fn serialized_pipeline_fallback_holds_the_invariant() {
     );
     assert_eq!(accepted, 16, "every propose should commit through the serialized fallback");
 }
+
+/// An idle leader's lease decays between proposes; the timer's quorum-contact renewal is
+/// what keeps the NEXT propose from bouncing off `leader_lease_valid`. Without the renewal
+/// this test fails with NoMajority/LeaderUnavailable on the post-idle propose.
+#[test]
+fn idle_leader_lease_renews_on_quorum_contact() {
+    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        lease_duration_ms: 50,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    let transport = cluster.clone();
+    cluster
+        .propose_distributed(
+            Command::StringSet {
+                key: "warm".to_string(),
+                value: b"v".to_vec(),
+            },
+            &transport,
+        )
+        .unwrap();
+    // Idle past the lease: the propose gate would now reject on leader_lease_valid.
+    cluster.advance_time_ms(200);
+    // The timer loop's quorum-contact renewal (senders answered within the window).
+    cluster.renew_leader_lease_after_quorum_contact();
+    cluster
+        .propose_distributed(
+            Command::StringSet {
+                key: "after-idle".to_string(),
+                value: b"v2".to_vec(),
+            },
+            &transport,
+        )
+        .expect("a renewed lease must admit the post-idle propose");
+}
+
+/// A follower whose lag exceeds the in-flight window must still be probed forward. The old
+/// refusal cut it off for good: no append, no acknowledgement, no drain -- and compaction then
+/// held the log for a follower that could never catch up, while writes froze once a second
+/// follower reached the same state.
+#[test]
+fn lagging_follower_beyond_the_window_still_catches_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        max_inflights_replicate: 2,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    let transport = cluster.clone();
+    cluster.set_alive(3, false).unwrap();
+    for i in 0..10u8 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("lag-{i}"),
+                    value: vec![i; 64],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+    let leader_commit = cluster.commit_index(1).unwrap();
+    cluster.set_alive(3, true).unwrap();
+    // Drive catch-up rounds the way the timer does. Every round must yield a request --
+    // a refusal here is the deadlock this test exists to prevent.
+    let mut caught_up = false;
+    for _ in 0..64 {
+        let request = cluster
+            .build_append_entries_request(3)
+            .expect("catch-up must never be refused, however charged the window reads");
+        let response = cluster.receive_append_entries(request).unwrap();
+        let _ = cluster.record_append_entries_response(3, &response);
+        if cluster.commit_index(3).unwrap() >= leader_commit {
+            caught_up = true;
+            break;
+        }
+    }
+    assert!(
+        caught_up,
+        "the probed follower must converge to the leader commit ({leader_commit})"
+    );
+}
+
+/// The compaction threshold bounds the log ON DISK, so it must be judged by the disk footprint.
+///
+/// Judging it by the logical size of the commands understates the footprint by the whole
+/// encoding overhead: on a 30,000-write corpus the commands were 5 MB while the segments held
+/// 36 MB, so an 8 MB bound never fired and the log grew without limit. This test writes a
+/// corpus whose ON-DISK size passes a threshold its COMMAND bytes do not, and requires the
+/// trigger to fire.
+#[test]
+fn compaction_threshold_is_judged_on_the_logs_disk_footprint() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            // Never hold compaction for a lagging peer in this test: it is the byte accounting
+            // under test, not the retention policy.
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..120u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("disk-{i:04}"),
+                    value: vec![(i % 251) as u8; 96],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+
+    let logical: u64 = 120 * 96;
+    let report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        report.applied_log_bytes > logical,
+        "the trigger must judge the on-disk footprint ({}), not just the command bytes ({logical})",
+        report.applied_log_bytes
+    );
+
+    // A threshold ABOVE the command bytes but BELOW the disk footprint must fire: that band is
+    // exactly where an unbounded log used to live.
+    let between = (logical + report.applied_log_bytes) / 2;
+    cluster.set_max_applied_log_bytes_for_test(between);
+    let fired = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        fired.triggered,
+        "a threshold inside the encoding overhead must compact (reason: {}, bytes: {}, limit: {between})",
+        fired.reason, fired.applied_log_bytes
+    );
+}
+
+/// The state image is dominated by the served index, which is JSON -- on a scaled corpus 37%
+/// of the image's bytes were digits, commas and structural characters, and it opened with
+/// dozens of empty index families. The image FILE is therefore compressed. This pins both
+/// halves: the file must be materially smaller than the state it carries, and a restore from
+/// it must still serve every value.
+#[test]
+fn the_state_image_file_is_compressed_and_still_restores() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_applied_log_bytes: 1,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..60u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("zstd-{i:04}"),
+                    value: vec![(i % 7) as u8; 256],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+    let report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(report.triggered, "compaction should fire: {}", report.reason);
+
+    // Find the image the compaction externalized.
+    let mut image_path = None;
+    for entry in walkdir_images(dir.path()) {
+        image_path = Some(entry);
+    }
+    let image_path = image_path.expect("compaction must externalize an image file");
+    let image_bytes = std::fs::metadata(&image_path).unwrap().len();
+    let raw = std::fs::read(&image_path).unwrap();
+    assert!(
+        raw.windows(4).any(|window| window == b"TSZ1"),
+        "the image file must carry the compression marker"
+    );
+    // The served index alone repeats every key name and family label; a compressed image is
+    // far below the state it describes.
+    assert!(
+        image_bytes < 60 * 256,
+        "a compressed image ({image_bytes} bytes) should be well under the raw value bytes"
+    );
+
+    // And it still restores: reattach through recovery and read every value back.
+    let restored = RaftCluster::restore_single_shard_from_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    for i in 0..60u32 {
+        let response = restored
+            .propose(Command::StringGet {
+                key: format!("zstd-{i:04}"),
+            })
+            .unwrap();
+        assert_eq!(
+            response,
+            CommandResponse::Bytes {
+                value: Some(vec![(i % 7) as u8; 256])
+            },
+            "value {i} must survive a restore from the compressed image"
+        );
+    }
+}
+
+fn walkdir_images(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("image-") && name.ends_with(".bin"))
+                .unwrap_or(false)
+            {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A DEPLOYED follower's in-memory log must be bounded as the corpus grows.
+///
+/// The log is trimmed only when a snapshot is installed, and the compaction check refuses to
+/// run on anything but the leader. In-process that is harmless -- one process owns every node,
+/// so the leader's compaction trims the peers' state too. A deployed follower is a separate
+/// process that learns only by RPC, and a follower that stays CAUGHT UP never falls behind the
+/// leader's retained range, so it is never sent a snapshot and nothing ever trims it. Its
+/// residency then grows with the corpus instead of with the state.
+#[test]
+fn a_deployed_followers_in_memory_log_is_bounded_as_the_corpus_grows() {
+    let dir = tempfile::tempdir().unwrap();
+    let follower = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_applied_log_bytes: 4096,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    // This process owns node 2, and node 2 is a follower: the deployed shape.
+    follower.set_local_node_id(2);
+
+    let total = 400u64;
+    for index in 1..=total {
+        let entry = RaftLogEntry {
+            term: 1,
+            index,
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("mem-{index:04}"),
+                value: vec![(index % 251) as u8; 128],
+            },
+        };
+        let response = follower
+            .receive_append_entries(AppendEntriesRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 1,
+                leader_id: 1,
+                target_id: 2,
+                prev_log_index: index - 1,
+                prev_log_term: if index == 1 { 0 } else { 1 },
+                entries: vec![entry],
+                // The leader commits as it goes, so everything here is applied.
+                leader_commit: index,
+            })
+            .unwrap();
+        assert!(response.success, "append {index} should be accepted");
+        // The periodic check the timer loop runs on every node, follower included.
+        if index % 50 == 0 {
+            let _ = follower.maybe_trigger_snapshot();
+        }
+    }
+
+    let held = follower.in_memory_log_entries(2);
+    assert!(
+        held < (total / 2) as usize,
+        "a caught-up deployed follower held {held} of {total} entries in memory -- its log is \
+         growing with the corpus, not with the state"
+    );
+}
+
+/// The WAL status report must be identical whether it is served from the live cursor or
+/// rebuilt from disk.
+///
+/// Rebuilding it reads and parses EVERY segment end to end, and it is reachable over a plain
+/// HTTP GET (`/raft/control/matrixraft_runtime_admin`), so anything polling that endpoint made
+/// the node re-read its whole log each time. The cursor already carries the same per-segment
+/// info, so the live path serves it -- and this test fails if the two ever disagree.
+#[test]
+fn the_segment_report_matches_whether_it_is_cached_or_scanned() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..30u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("seg-{i:03}"),
+                    value: vec![(i % 251) as u8; 128],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+
+    let wal = LocalRaftWal::new(dir.path());
+    // A freshly built handle has no cursor, so this is the disk-scanning path.
+    let scanned = wal.segment_report(1, 1).unwrap();
+    // Seeding a cursor makes the next call take the cached path.
+    let _ = wal.recover_node_segmented(1, 1);
+    let cached = wal.segment_report(1, 1).unwrap();
+
+    assert_eq!(
+        cached.segments, scanned.segments,
+        "the cached report must describe exactly the segments the scan finds"
+    );
+    assert_eq!(cached.active_segment_id, scanned.active_segment_id);
+    assert_eq!(cached.first_retained_log_index, scanned.first_retained_log_index);
+    assert_eq!(cached.last_retained_log_index, scanned.last_retained_log_index);
+    assert!(!cached.segments.is_empty(), "the node should have segments");
+}
+
+/// Compaction must be driven by how much LOG there is, not by how big the state is.
+///
+/// The threshold measures what the log occupies on disk so the bound means something. But the
+/// externalized state image sits in that same directory, and it is not log -- compaction cannot
+/// reclaim it, it REPLACES it. Counting it means that once a shard's state grows past the
+/// threshold, the trigger is permanently satisfied: every check with any new entry rebuilds the
+/// whole image to reclaim a few kilobytes of log. On a large shard that is a full state rebuild
+/// every check, forever.
+#[test]
+fn compaction_does_not_rebuild_the_image_for_a_log_that_is_already_small() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            // Chosen so the STATE image exceeds it while the post-compaction log does not:
+            // that is the exact band where counting the image made the trigger fire forever.
+            // (Below one base record the threshold is degenerate -- a single base always
+            // exceeds it -- so this is deliberately a realistic size, not the smallest one.)
+            max_applied_log_bytes: 64 * 1024,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..150u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("thrash-{i:04}"),
+                    value: vec![(i % 251) as u8; 256],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+
+    // First compaction: legitimate, the log really has outgrown the bound.
+    let first = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(first.triggered, "the log should compact once: {}", first.reason);
+
+    // The image now exceeds the threshold on its own. One more small write must NOT be enough
+    // to justify rebuilding the entire state again.
+    cluster
+        .propose_distributed(
+            Command::StringSet {
+                key: "one-more".to_string(),
+                value: b"small".to_vec(),
+            },
+            &transport,
+        )
+        .unwrap();
+    let second = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        !second.triggered,
+        "a single small write must not rebuild the whole state image \
+         (reason: {}, measured {} bytes against a {} byte bound)",
+        second.reason, second.applied_log_bytes, second.max_applied_log_bytes
+    );
+}

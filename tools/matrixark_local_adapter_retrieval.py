@@ -598,7 +598,8 @@ class _LocalAdapterRetrievalMixin:
                 events = [self._context_event_by_hash[event_hash] for event_hash in pending_ids if event_hash in self._context_event_by_hash]
                 return events[:limit] if limit is not None else events
         committed: set[int] = set()
-        records = self.read_all()
+        reader = getattr(self, "records_for_session_buffer", None)
+        records = reader(scope) if callable(reader) else self.read_all()
         for record in records:
             if record.get("record_type") == "context_batch_commit" and session_buffer_key_from_scope(record.get("scope", {})) == key:
                 for ref in record.get("source_event_ids", []):

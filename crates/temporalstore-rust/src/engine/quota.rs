@@ -140,11 +140,26 @@ impl ShardQuotaConfig {
     }
 }
 
+/// What a shard's limit has allowed and refused.
+///
+/// Both halves, not just refusals: a refusal count with no denominator says nothing about whether
+/// the limit is close or miles away. Only shards that HAVE a limit carry these -- an unlimited
+/// shard has nothing to count, and keeping it that way is what lets the fast path stay on a read
+/// lock.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuotaCounters {
+    pub read_allowed: u64,
+    pub read_refused: u64,
+    pub write_allowed: u64,
+    pub write_refused: u64,
+}
+
 /// The buckets for one shard.
 #[derive(Debug)]
 pub(crate) struct ShardQuota {
     read: Option<TokenBucket>,
     write: Option<TokenBucket>,
+    counters: QuotaCounters,
 }
 
 impl ShardQuota {
@@ -154,7 +169,12 @@ impl ShardQuota {
                 .then(|| TokenBucket::new(config.read_qps, config.read_burst)),
             write: (config.write_qps > 0)
                 .then(|| TokenBucket::new(config.write_qps, config.write_burst)),
+            counters: QuotaCounters::default(),
         }
+    }
+
+    pub(crate) fn counters(&self) -> QuotaCounters {
+        self.counters
     }
 
     /// Take one token for `kind`. An unlimited direction always succeeds.
@@ -163,10 +183,17 @@ impl ShardQuota {
             QuotaKind::Read => self.read.as_mut(),
             QuotaKind::Write => self.write.as_mut(),
         };
-        match bucket {
+        let allowed = match bucket {
             Some(bucket) => bucket.try_consume(1),
             None => true,
+        };
+        match (kind, allowed) {
+            (QuotaKind::Read, true) => self.counters.read_allowed += 1,
+            (QuotaKind::Read, false) => self.counters.read_refused += 1,
+            (QuotaKind::Write, true) => self.counters.write_allowed += 1,
+            (QuotaKind::Write, false) => self.counters.write_refused += 1,
         }
+        allowed
     }
 
     pub(crate) fn limit_of(&self, kind: QuotaKind) -> Option<(u64, u64)> {
@@ -191,7 +218,17 @@ impl QuotaTable {
     /// new one.
     pub(crate) fn set(&mut self, shard_id: ShardId, config: ShardQuotaConfig) {
         self.configured.insert(shard_id, config);
-        self.by_shard.insert(shard_id, ShardQuota::new(config));
+        // The bucket is rebuilt, but the counters are carried across: they record what this shard
+        // has done, not what this bucket has done, and resetting them on every reconfiguration
+        // would erase the history right when someone is watching it to decide the new number.
+        let carried = self
+            .by_shard
+            .get(&shard_id)
+            .map(|quota| quota.counters())
+            .unwrap_or_default();
+        let mut quota = ShardQuota::new(config);
+        quota.counters = carried;
+        self.by_shard.insert(shard_id, quota);
     }
 
     pub(crate) fn config_of(&self, shard_id: ShardId) -> Option<ShardQuotaConfig> {
@@ -225,6 +262,18 @@ impl QuotaTable {
         self.by_shard.contains_key(&shard_id)
     }
 
+    /// What this shard's limit has allowed and refused, if it has one.
+    pub(crate) fn counters_of(&self, shard_id: ShardId) -> Option<QuotaCounters> {
+        self.by_shard.get(&shard_id).map(|quota| quota.counters())
+    }
+
+    /// Every shard that carries a limit, for reporting.
+    pub(crate) fn limited_shards(&self) -> Vec<ShardId> {
+        let mut shards: Vec<ShardId> = self.by_shard.keys().copied().collect();
+        shards.sort_unstable();
+        shards
+    }
+
     pub(crate) fn limit_of(&self, shard_id: ShardId, kind: QuotaKind) -> Option<(u64, u64)> {
         self.by_shard
             .get(&shard_id)
@@ -235,6 +284,74 @@ impl QuotaTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_the_limit_allowed_and_refused_is_counted() {
+        let mut quota = ShardQuota::new(ShardQuotaConfig {
+            write_qps: 10,
+            write_burst: 3,
+            ..Default::default()
+        });
+        let mut allowed = 0;
+        for _ in 0..20 {
+            if quota.try_consume(QuotaKind::Write) {
+                allowed += 1;
+            }
+        }
+        let counters = quota.counters();
+        assert_eq!(counters.write_allowed, allowed);
+        assert_eq!(counters.write_refused, 20 - allowed);
+        assert!(counters.write_refused > 0, "the limit should have refused some");
+        assert_eq!(counters.read_allowed, 0, "reads were never asked for");
+    }
+
+    #[test]
+    fn an_unlimited_direction_still_counts_what_it_allowed() {
+        // The denominator matters: without it a refusal count says nothing about how close the
+        // limit is.
+        let mut quota = ShardQuota::new(ShardQuotaConfig {
+            write_qps: 1,
+            write_burst: 1,
+            ..Default::default()
+        });
+        for _ in 0..5 {
+            quota.try_consume(QuotaKind::Read);
+        }
+        assert_eq!(quota.counters().read_allowed, 5);
+        assert_eq!(quota.counters().read_refused, 0);
+    }
+
+    #[test]
+    fn changing_a_limit_keeps_what_the_shard_has_already_done() {
+        let mut table = QuotaTable::default();
+        table.set(
+            1,
+            ShardQuotaConfig {
+                write_qps: 1,
+                write_burst: 1,
+                ..Default::default()
+            },
+        );
+        for _ in 0..10 {
+            table.try_consume(1, QuotaKind::Write, ShardQuotaConfig::default());
+        }
+        let before = table.counters_of(1).unwrap();
+        assert!(before.write_refused > 0);
+
+        table.set(
+            1,
+            ShardQuotaConfig {
+                write_qps: 1_000,
+                write_burst: 1_000,
+                ..Default::default()
+            },
+        );
+        let after = table.counters_of(1).unwrap();
+        assert_eq!(
+            after.write_refused, before.write_refused,
+            "reconfiguring erased the history someone would be watching to pick the new number"
+        );
+    }
 
     #[test]
     fn a_rate_of_zero_never_refuses() {

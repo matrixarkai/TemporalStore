@@ -238,7 +238,9 @@ impl SingleNodeMeta {
                 return AckResponse {
                     status: Status::error(
                         "shards_registered",
-                        "shard_count cannot change once the table's shards are registered:                          the key range of every existing shard would move, and nothing                          redistributes the data that moved with it",
+                        "shard_count cannot change once the table's shards are registered: \
+                         the key range of every existing shard would move, and \
+                         nothing redistributes the data that moved with it",
                     ),
                 };
             }
