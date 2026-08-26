@@ -14,6 +14,7 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -3291,6 +3292,64 @@ fn clear_engine_cache() {
     }
 }
 
+/// Page-cache capacity already handed out across every engine this process has opened.
+static ENGINE_CACHE_GRANTED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// MemTotal in bytes, or None where /proc is not available.
+fn system_memory_bytes() -> Option<usize> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        let rest = match line.strip_prefix("MemTotal:") {
+            Some(rest) => rest,
+            None => continue,
+        };
+        let kilobytes: usize = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+        return kilobytes.checked_mul(1024);
+    }
+    None
+}
+
+/// Page-cache capacity for a newly opened engine.
+///
+/// The old fixed 128 MiB default is smaller than the working set of any store past a few hundred
+/// megabytes, and every page read that misses it pays a second-layer read AND a cache fill. That
+/// is what made writes look linear in corpus size. Measured on one 260 MB store, the same ingest
+/// took 3 291 ms at 128 MiB, 1 157 ms at 384 MiB and 902 ms at 1 GiB, while that ingest against a
+/// 20 MB store took 173 ms -- so the "linear growth" was mostly the working set crossing a fixed
+/// cache, not the corpus. A 24 GiB machine now lands each engine at the 512 MiB per-engine
+/// ceiling.
+///
+/// This is a CAPACITY, not an allocation: a cache that may hold a gigabyte still holds only what
+/// has actually been read, so a small store costs no more than it did before. What the capacity
+/// does set is a ceiling, so the number is derived from the machine and bounded twice -- per
+/// engine, and across every engine this process opens, since one proxy can serve many namespaces
+/// and N independent caches at the per-engine size would be N times the intended footprint.
+/// `MATRIXARK_RUST_PROXY_CACHE_BYTES` still overrides this absolutely, per engine, for
+/// deployments that know their own working set.
+fn default_engine_cache_bytes() -> usize {
+    const FLOOR: usize = 128 * 1024 * 1024;
+    const PER_ENGINE_CEILING: usize = 512 * 1024 * 1024;
+    const PROCESS_FLOOR: usize = 512 * 1024 * 1024;
+    const PROCESS_CEILING: usize = 4096 * 1024 * 1024;
+
+    let memory = match system_memory_bytes() {
+        Some(memory) => memory,
+        None => return FLOOR,
+    };
+    // Per engine, not per process: one proxy opens a separate engine per record-log prefix, so a
+    // generous per-engine number spent entirely on the first one starves the rest. A share each
+    // beats everything for one.
+    let want = (memory / 16).clamp(FLOOR, PER_ENGINE_CEILING);
+    let process_ceiling = (memory / 4).clamp(PROCESS_FLOOR, PROCESS_CEILING);
+    // First come, first served against the process budget: an engine opened once the budget is
+    // spent falls back to the floor rather than pushing the process past its ceiling.
+    let granted = ENGINE_CACHE_GRANTED_BYTES.load(Ordering::Relaxed);
+    let remaining = process_ceiling.saturating_sub(granted);
+    let grant = if remaining >= want { want } else { FLOOR };
+    ENGINE_CACHE_GRANTED_BYTES.fetch_add(grant, Ordering::Relaxed);
+    grant
+}
+
 fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
     let root = record_log_root(request);
     {
@@ -3311,7 +3370,17 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(128 * 1024 * 1024);
+        .unwrap_or_else(default_engine_cache_bytes);
+    eprintln!(
+        "engine page cache: {} MiB for {} ({})",
+        cache_bytes / (1024 * 1024),
+        root.display(),
+        if env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES").is_ok() {
+            "MATRIXARK_RUST_PROXY_CACHE_BYTES"
+        } else {
+            "default, derived from system memory"
+        }
+    );
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_bytes,
         root.join("cache"),
