@@ -1157,7 +1157,21 @@ class _TemporalDirectBackendMixin:
     # Chunked, an append rewrites only the tail. The head field keeps its original name and shape,
     # so a reader that knows nothing about chunks still finds locations there; overflow lives in
     # sibling fields "{node}#1", "{node}#2", ... and the head records how many exist.
-    REF_HASH_CHUNK = 256
+    # An append rewrites its TAIL chunk, so this number is what one add pays to touch a posting,
+    # and 256 was a first guess. Measured at three sizes -- 150 adds into ONE subject, so the
+    # posting lists actually grow, which is the case that matters for a large corpus:
+    #
+    #     chunk 256   236.3 KB per add    add median 241.2 ms
+    #     chunk  64   207.5 KB per add    add median 266.2 ms
+    #     chunk  16   174.7 KB per add    add median 253.8 ms
+    #
+    # 26% less disk per add at 16, with add latency flat inside the noise and retrieval returning
+    # the same items at every size. The cost of going smaller is more chunk fields to fetch, but
+    # the reader collects them in ONE batch call whatever the count, so it buys back little below
+    # this. Shrinking the placement chunk alongside it changed nothing measurable (174.6 vs 174.7),
+    # because a node's location list is far shorter than a term's posting list -- so that one
+    # stays where it is rather than being tuned on a number that did not move.
+    REF_HASH_CHUNK = 16
 
     def _ref_hash_chunk_entries(self, key, field, new_refs, existing_value, existing_for,
                                 storage_route):
