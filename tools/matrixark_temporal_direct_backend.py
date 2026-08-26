@@ -1353,9 +1353,22 @@ class _TemporalDirectBackendMixin:
             if record.get("event_id_hash") is None:
                 continue
             enriched = attach_context_event_time_key(record)
+            # Slim unless explicitly asked for the whole record. The `or parent_segment_hash`
+            # that used to be here made the common case the expensive one: a segment-parented
+            # event stored the ENTIRE event a second time, measured at 6 329 bytes of one add
+            # against 252 for the slim form. That is exactly what the payload helper's own
+            # docstring warns against -- "the full ContextEvent is already written to the serving
+            # record log ... avoids doubling hot write bytes for every event" -- and the other
+            # writer of this same index never had the exception, so the two disagreed about what
+            # the index is for.
+            #
+            # It is an ORDERING structure: the field is {timestamp:020d}:{event_hash}, so lexical
+            # order is chronological, and the slim payload carries what a reader needs to reach the
+            # canonical record (ref_hash, node_hash, scope_key, timestamp).
+            # MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD still restores the full copy.
             payload = (
                 json.dumps(enriched, sort_keys=True, separators=(",", ":"))
-                if full_payload or enriched.get("parent_segment_hash")
+                if full_payload
                 else self._context_event_time_index_payload(enriched)
             )
             entries.append(
