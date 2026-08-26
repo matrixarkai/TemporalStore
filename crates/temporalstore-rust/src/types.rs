@@ -1243,6 +1243,19 @@ pub enum Command {
         max_exclusive: bool,
         rev: bool,
     },
+    /// Atomic seen-within-window check-and-mark: answers 1 when the member was already seen
+    /// inside the window (a duplicate), else marks it and answers 0. Expired entries are
+    /// swept from the front in bounded steps on every call.
+    SeenCheck {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        window_ms: u64,
+    },
+    /// How many members the set currently holds (expired-but-unswept included).
+    SeenCard {
+        key: String,
+    },
     /// Atomic take-with-refill on a token bucket: refill by elapsed time (capped at
     /// capacity), then take `tokens` if they fit. Answers three strings -- allowed ("1"/"0"),
     /// tokens remaining, and retry-after ms (0 when allowed).

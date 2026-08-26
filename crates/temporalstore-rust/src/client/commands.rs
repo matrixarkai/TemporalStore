@@ -64,6 +64,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }
         | Command::BucketPeek { key, .. }
+        | Command::SeenCheck { key, .. }
+        | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }

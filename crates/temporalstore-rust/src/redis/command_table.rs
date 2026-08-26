@@ -311,6 +311,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "SEENCARD",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "SEENCHECK",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "SADD",
             arity: -3,
             flags: WRITE,

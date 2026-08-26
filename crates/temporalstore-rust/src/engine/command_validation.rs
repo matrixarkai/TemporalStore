@@ -65,6 +65,8 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }
         | Command::BucketPeek { key, .. }
+        | Command::SeenCheck { key, .. }
+        | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
@@ -313,6 +315,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ZSetIncrBy { .. }
             | Command::ZSetPop { .. }
             | Command::BucketTake { .. }
+            | Command::SeenCheck { .. }
             | Command::FeatureAppend { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }

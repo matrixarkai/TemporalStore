@@ -56,6 +56,13 @@ pub(super) struct ShardState {
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus
+    /// the same entries time-ordered so expiry pops from the front in bounded steps. Like the
+    /// buckets, no pages back this state -- it persists with the shard index snapshot, and a
+    /// crash forgetting a window's worth of members re-admits a duplicate rather than
+    /// dropping a legitimate first ingest.
+    #[serde(default, with = "super::seen_index_serde")]
+    pub(super) seen: HashMap<String, SeenSet>,
     /// Token buckets: key -> (tokens remaining, last refill ms). Config rides each command,
     /// never the store -- the caller owns policy, which is exactly what a quota layer wants.
     /// No pages back this state: it persists only with the shard index snapshot, so a crash
@@ -507,4 +514,11 @@ pub(super) enum PackedFeaturePageDecode {
     Legacy,
     Packed(Vec<FeaturePoint>),
     Corrupt(String),
+}
+
+/// One windowed seen-set: both views hold exactly the same entries.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SeenSet {
+    pub(super) by_member: BTreeMap<Vec<u8>, u64>,
+    pub(super) by_time: BTreeMap<(u64, Vec<u8>), ()>,
 }
