@@ -3035,6 +3035,7 @@ mod tests {
             election_tick_ms: 50,
             failure_detector_interval_ms: 1_000,
             stale_server_after_ms: 30_000,
+            forbid_self_clearing_conviction: false,
         })
         .unwrap();
         let backend = MetaBackend::Raft(runtime);
