@@ -3114,3 +3114,98 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let refused = decode_index_bytes(&future).expect_err("unknown codec must refuse");
     assert!(refused.contains("cannot read"), "unhelpful refusal: {refused}");
 }
+
+#[test]
+fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
+    use crate::engine::{decode_index_bytes, encode_index_bytes};
+
+    let mut shard = ShardState::default();
+    shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+    for i in 0..64u64 {
+        shard.strings.insert(
+            format!("object-{i}"),
+            BlockAddress {
+                page_slab_id: i,
+                offset: i * 7,
+                length: i + 1,
+                page_id: Some(i),
+                object_id: Some(i * 3),
+                routing_bucket: Some((i % 8) as u32),
+                band_id: None,
+                generation: Some(i),
+                sha256: None,
+            },
+        );
+    }
+    shard.hashes.entry("hash-object".to_string()).or_default().insert(
+        "component".to_string(),
+        BlockAddress {
+            page_slab_id: 9,
+            offset: 1,
+            length: 2,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            band_id: None,
+            generation: None,
+            sha256: None,
+        },
+    );
+    shard.applied_wal_sequence = Some(4242);
+
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    std::env::set_var("TS_INDEX_CODEC", "msgpack");
+    let binary = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    std::env::remove_var("TS_INDEX_CODEC");
+
+    assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
+    assert_eq!(binary[6], 2, "payload codec id");
+
+    // Exact round-trip: the durable image has to come back as the same state, not merely a
+    // plausible one -- so compare the maps, not just that it decoded.
+    let decoded = decode_index_bytes(&binary).expect("binary index decodes");
+    assert_eq!(decoded.strings.len(), shard.strings.len());
+    for (key, address) in &shard.strings {
+        assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
+    }
+    assert_eq!(decoded.hashes, shard.hashes);
+    assert_eq!(decoded.applied_wal_sequence, shard.applied_wal_sequence);
+    assert_eq!(decoded.index_format_version, shard.index_format_version);
+
+    // The payload is addressed by field ORDER, so a struct of a different shape must be refused
+    // rather than decoded into something plausible and wrong. The version stamp sits outside the
+    // payload precisely so it can be checked before any of it is parsed.
+    let mut wrong_version = binary.clone();
+    wrong_version[7..11].copy_from_slice(&99u32.to_be_bytes());
+    let refused = decode_index_bytes(&wrong_version).expect_err("a foreign struct version refuses");
+    assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
+
+    // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
+    std::env::remove_var("TS_INDEX_BINARY");
+    let plain = encode_index_bytes(&shard);
+    assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
+    assert_eq!(
+        decode_index_bytes(&plain).expect("json decodes").strings.len(),
+        shard.strings.len()
+    );
+
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    std::env::set_var("TS_INDEX_CODEC", "zstd-json");
+    let compressed_json = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    std::env::remove_var("TS_INDEX_CODEC");
+    assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
+    assert_eq!(
+        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings.len(),
+        shard.strings.len()
+    );
+
+    // The binary payload is the smaller one -- that is the whole point of adding it.
+    assert!(
+        binary.len() < plain.len(),
+        "binary {} not smaller than json {}",
+        binary.len(),
+        plain.len()
+    );
+}

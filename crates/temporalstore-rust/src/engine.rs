@@ -1616,9 +1616,35 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
 const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
 
 /// Payload codec ids inside the container. The whole point of the container is that this is an
-/// enumeration rather than a decision: a future protobuf or bincode payload is a new id whose
-/// decoder lands beside the existing ones, and every index written before it keeps loading.
+/// enumeration rather than a decision: each payload is an id whose decoder lands beside the
+/// others, and every index written before it keeps loading.
 const INDEX_CODEC_ZSTD_JSON: u8 = 1;
+/// The struct's own serde model in a binary encoding, then compressed.
+///
+/// Two decisions are baked in here, and measurement forced both.
+///
+/// NOT a hand-written protobuf schema. The served index IS a `ShardState` and has to round-trip
+/// one exactly. A schema mirroring its ~26 fields and their nested maps is a second definition of
+/// the same type, and the two drifting apart fails SILENTLY -- a field added here and forgotten
+/// there simply disappears from the durable image, and the loss surfaces as missing data after a
+/// reload. Riding the existing derives means a new field participates because it exists, not
+/// because someone remembered to add it in two places.
+///
+/// NOT a field-ORDER encoding either, which is what an earlier attempt at this used. These structs
+/// lean on `#[serde(skip_serializing_if)]` and `#[serde(default)]` -- `BlockAddress` alone skips
+/// six optional fields -- so the writer omits fields that a positional decoder still expects and
+/// the stream slides out of alignment. Tried directly here: the round-trip fails with "tag for
+/// enum is not valid, found 9". A self-describing encoding (field names, struct-as-map) keeps
+/// exactly the semantics JSON had, which is the only way those attributes stay honest.
+const INDEX_CODEC_ZSTD_MSGPACK: u8 = 2;
+
+/// Binary payloads carry the struct version they were written from, big-endian, right after the
+/// codec id. A name-free encoding read against a different struct does not fail, it MIS-READS --
+/// so the version is checked before a byte is decoded, and a mismatch is refused. This is also the
+/// trap that sank the previous attempt from the other end: the struct's own
+/// `index_format_version` field lives INSIDE the payload, so it cannot be consulted until after
+/// the decode it is supposed to guard, and a fresh shard carries 0 there regardless.
+const INDEX_BINARY_VERSION_BYTES: usize = 4;
 
 /// Compression level for the container payload. The served index is written whole, in the
 /// background, and read whole -- so this trades a little CPU on a path that is not the request
@@ -1632,6 +1658,40 @@ fn index_binary_container_enabled() -> bool {
     env_flag_on("TS_INDEX_BINARY")
 }
 
+/// TS_INDEX_CODEC: which payload to write when the container is on. `msgpack` (the default when
+/// the container is enabled) encodes the struct itself; `zstd-json` keeps the compressed-JSON
+/// payload, which any reader can still inspect with a decompressor and a JSON parser.
+fn index_container_codec() -> u8 {
+    match std::env::var("TS_INDEX_CODEC")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "zstd-json" | "json" => INDEX_CODEC_ZSTD_JSON,
+        _ => INDEX_CODEC_ZSTD_MSGPACK,
+    }
+}
+
+/// Encode a shard with the container's binary payload: the serde model as a binary map,
+/// compressed, behind the magic, the codec id and the struct version.
+fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
+    // struct-as-MAP, not struct-as-array: the array form is positional, and positional is what
+    // mis-reads a struct that skipped an absent optional.
+    let mut encoded = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut encoded).with_struct_map();
+    serde::Serialize::serialize(shard, &mut serializer).ok()?;
+    let payload = zstd::stream::encode_all(encoded.as_slice(), INDEX_ZSTD_LEVEL).ok()?;
+    let mut out = Vec::with_capacity(
+        payload.len() + INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES,
+    );
+    out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+    out.push(INDEX_CODEC_ZSTD_MSGPACK);
+    out.extend_from_slice(&SHARD_INDEX_FORMAT_VERSION.to_be_bytes());
+    out.extend_from_slice(&payload);
+    Some(out)
+}
+
 /// The single place the served index becomes bytes.
 ///
 /// The measured cost of raw JSON here is real: a 1 000-memory store carries a 74 MB index, and a
@@ -1639,6 +1699,13 @@ fn index_binary_container_enabled() -> bool {
 /// no schema mirrored by hand, no second definition to drift -- while cutting what is written and
 /// what must be read back at load.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
+    if index_binary_container_enabled() && index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
+        // A binary payload only works from the struct itself, so the version-stamping path (which
+        // patches a `Value`) keeps to JSON; both still land inside the same container.
+        if let Some(encoded) = encode_index_msgpack(shard) {
+            return encoded;
+        }
+    }
     wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
 }
 
@@ -1681,6 +1748,30 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
             let json = zstd::stream::decode_all(payload)
                 .map_err(|error| format!("served index payload did not decompress: {error}"))?;
             serde_json::from_slice::<ShardState>(&json).map_err(|error| error.to_string())
+        }
+        INDEX_CODEC_ZSTD_MSGPACK => {
+            if payload.len() < INDEX_BINARY_VERSION_BYTES {
+                return Err("served index binary payload is truncated".to_string());
+            }
+            let (version_bytes, body) = payload.split_at(INDEX_BINARY_VERSION_BYTES);
+            let version = u32::from_be_bytes(
+                version_bytes
+                    .try_into()
+                    .map_err(|_| "served index version stamp is malformed".to_string())?,
+            );
+            // Checked BEFORE decoding, deliberately. This payload is addressed by field order, so
+            // decoding it against a different struct shape does not error, it produces a plausible
+            // and wrong `ShardState`. Refusing is treated like an absent index: the caller replays
+            // the WAL and the index-log deltas, which is slower and correct.
+            if version != SHARD_INDEX_FORMAT_VERSION {
+                return Err(format!(
+                    "served index was written from struct version {version}, this binary is {}",
+                    SHARD_INDEX_FORMAT_VERSION
+                ));
+            }
+            let decoded = zstd::stream::decode_all(body)
+                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
+            rmp_serde::from_slice::<ShardState>(&decoded).map_err(|error| error.to_string())
         }
         other => Err(format!(
             "served index uses payload codec {other}, which this binary cannot read"
