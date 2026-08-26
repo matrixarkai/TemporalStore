@@ -404,12 +404,29 @@ class _TemporalDirectReadMixin:
         records = result.get("records")
         if not isinstance(records, list):
             return []
-        return [
+        found = [
             record
             for record in records
             if isinstance(record, dict)
             and record.get("record_type") == "matrixark_async_pipeline_task"
         ]
+        # Tasks written since they gained a latest-state identity live in that hash, NOT the append
+        # log the scan walks -- so the scan alone would stop seeing new tasks and the drain would
+        # quietly never fire. Tasks written before it are still in the log. Both are returned, and
+        # the drain's own last-write-wins fold over task_hash reconciles a task that appears in
+        # both. A store that predates the change keeps working; a fresh one stops paying for the
+        # log side entirely, because nothing writes there any more.
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - a missing latest-state view is not a reason to drop
+            latest_state = []                     # the tasks the scan did find.
+        found.extend(
+            record
+            for record in latest_state
+            if isinstance(record, dict)
+            and record.get("record_type") == "matrixark_async_pipeline_task"
+        )
+        return found
 
     def _direct_record_load_lock(self) -> threading.RLock:
         with _DIRECT_RECORD_CACHE_LOCK:
