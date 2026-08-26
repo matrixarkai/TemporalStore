@@ -1086,25 +1086,70 @@ impl LocalRaftWal {
     // Retained for the legacy on-disk prune path; the segmented append hot path now
     // prunes in-memory via the cursor to stay O(1).
     #[allow(dead_code)]
-    /// Bytes this node's log actually occupies on disk: every segment plus any externalized
-    /// state image. Metadata only -- no segment is opened or scanned, so this is cheap enough
-    /// for the periodic compaction check to consult on every tick.
+    /// Bytes of LOG this node holds on disk -- the segments, and nothing else.
     ///
-    /// The compaction threshold exists to bound THIS number. Judging it by the logical size of
-    /// the commands instead understates it by the log's whole encoding overhead: on a 30k-write
-    /// corpus the commands were 5 MB while the segments held 36 MB, so an 8 MB bound did not
-    /// fire until the disk was already past 50 MB.
-    pub fn node_disk_bytes(&self, shard_id: ShardId, node_id: RaftNodeId) -> u64 {
+    /// This is what the compaction threshold bounds, and it is deliberately not the directory's
+    /// total size. An externalized state image lives beside the segments, and compaction cannot
+    /// reclaim it: compaction is what WRITES it. Counting it made the threshold permanently
+    /// satisfied on any shard whose state outgrew the bound, so every check with a single new
+    /// entry rebuilt the entire image to reclaim a few kilobytes of log -- measured at 223 KB
+    /// weighed against a 4 KB bound, one small write after a compaction.
+    ///
+    /// Judging it by the logical size of the commands instead is the opposite error, and
+    /// understates it by the log's whole encoding overhead: on a 30k-write corpus the commands
+    /// were 5 MB while the segments held 36 MB. The segments are the honest measure.
+    ///
+    /// Metadata only -- no segment is opened or scanned, so the periodic check can consult it
+    /// on every tick.
+    /// Bytes of log a compaction at `snapshot_index` could still be carrying -- the segments
+    /// holding entries ABOVE that marker.
+    ///
+    /// This is what the compaction threshold should weigh, and neither of the simpler measures
+    /// is right. Total directory size counts the externalized state image, which compaction
+    /// writes rather than reclaims, so a shard whose state outgrew the bound compacted on every
+    /// check forever. Total SEGMENT size is closer but still counts the predecessor segment that
+    /// rotation deliberately keeps so a torn tail has somewhere to recover from -- a segment
+    /// entirely below the marker, which the next compaction supersedes rather than shrinks.
+    /// Weighing either one makes the trigger fire for bytes it cannot do anything about.
+    ///
+    /// Served from the cursor, which already carries each segment's index bounds, so this stays
+    /// a lock and some arithmetic. Without a cursor it falls back to the whole-segment total,
+    /// which is the conservative direction: it can only compact sooner, never later.
+    pub fn node_log_bytes_after(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        snapshot_index: u64,
+    ) -> u64 {
+        {
+            let cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+            if let Some(cursor) = cursors.get(&(shard_id, node_id)) {
+                return cursor
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        // `last_log_index == 0` means the segment carries no entry bounds
+                        // (an empty or read-index-only segment); count it, since nothing
+                        // proves it superseded.
+                        segment.last_log_index == 0 || segment.last_log_index > snapshot_index
+                    })
+                    .map(|segment| segment.bytes)
+                    .sum();
+            }
+        }
+        self.node_log_bytes(shard_id, node_id)
+    }
+
+    pub fn node_log_bytes(&self, shard_id: ShardId, node_id: RaftNodeId) -> u64 {
         let dir = self.node_segment_dir(shard_id, node_id);
         let mut total = 0u64;
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                let is_log = matches!(
-                    path.extension().and_then(|ext| ext.to_str()),
-                    Some("wal") | Some("bin")
-                );
-                if !is_log {
+                // Segments only. An `image-*.bin` in this directory is state, not log.
+                let is_segment =
+                    path.extension().and_then(|ext| ext.to_str()) == Some("wal");
+                if !is_segment {
                     continue;
                 }
                 if let Ok(metadata) = entry.metadata() {

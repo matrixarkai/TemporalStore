@@ -1818,3 +1818,68 @@ fn the_segment_report_matches_whether_it_is_cached_or_scanned() {
     assert_eq!(cached.last_retained_log_index, scanned.last_retained_log_index);
     assert!(!cached.segments.is_empty(), "the node should have segments");
 }
+
+/// Compaction must be driven by how much LOG there is, not by how big the state is.
+///
+/// The threshold measures what the log occupies on disk so the bound means something. But the
+/// externalized state image sits in that same directory, and it is not log -- compaction cannot
+/// reclaim it, it REPLACES it. Counting it means that once a shard's state grows past the
+/// threshold, the trigger is permanently satisfied: every check with any new entry rebuilds the
+/// whole image to reclaim a few kilobytes of log. On a large shard that is a full state rebuild
+/// every check, forever.
+#[test]
+fn compaction_does_not_rebuild_the_image_for_a_log_that_is_already_small() {
+    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            // Chosen so the STATE image exceeds it while the post-compaction log does not:
+            // that is the exact band where counting the image made the trigger fire forever.
+            // (Below one base record the threshold is degenerate -- a single base always
+            // exceeds it -- so this is deliberately a realistic size, not the smallest one.)
+            max_applied_log_bytes: 64 * 1024,
+            max_retained_log_bytes: 0,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_local_node_id(1);
+    let transport = cluster.clone();
+    for i in 0..150u32 {
+        cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: format!("thrash-{i:04}"),
+                    value: vec![(i % 251) as u8; 256],
+                },
+                &transport,
+            )
+            .unwrap();
+    }
+
+    // First compaction: legitimate, the log really has outgrown the bound.
+    let first = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(first.triggered, "the log should compact once: {}", first.reason);
+
+    // The image now exceeds the threshold on its own. One more small write must NOT be enough
+    // to justify rebuilding the entire state again.
+    cluster
+        .propose_distributed(
+            Command::StringSet {
+                key: "one-more".to_string(),
+                value: b"small".to_vec(),
+            },
+            &transport,
+        )
+        .unwrap();
+    let second = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(
+        !second.triggered,
+        "a single small write must not rebuild the whole state image \
+         (reason: {}, measured {} bytes against a {} byte bound)",
+        second.reason, second.applied_log_bytes, second.max_applied_log_bytes
+    );
+}

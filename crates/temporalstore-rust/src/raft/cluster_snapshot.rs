@@ -711,7 +711,7 @@ impl RaftCluster {
             let applied_log_bytes = inner
                 .wal
                 .as_ref()
-                .map(|wal| wal.node_disk_bytes(inner.shard_id, node_id))
+                .map(|wal| wal.node_log_bytes_after(inner.shard_id, node_id, last_snapshot_index))
                 .unwrap_or(0)
                 .max(logical);
             let limit = inner.config.max_applied_log_bytes;
@@ -795,7 +795,7 @@ impl RaftCluster {
                     inner
                         .wal
                         .as_ref()
-                        .map(|wal| wal.node_disk_bytes(inner.shard_id, node_id))
+                        .map(|wal| wal.node_log_bytes_after(inner.shard_id, node_id, last_snapshot_index))
                 })
                 .unwrap_or(0)
                 .max(logical_log_bytes);
