@@ -22,26 +22,21 @@ impl SingleNodeMeta {
                 status: Status::error("not_found", "server not found"),
             };
         }
-        match next {
-            MetaEntityState::Frozen => {
-                self.record_mutation(MetaMutation::FreezeServer(request.clone()));
-            }
-            MetaEntityState::Dropped => {
-                self.record_mutation(MetaMutation::DropServer(request.clone()));
-            }
+        let at_ms = self.record_mutation(match next {
+            MetaEntityState::Frozen => MetaMutation::FreezeServer(request.clone()),
+            MetaEntityState::Dropped => MetaMutation::DropServer(request.clone()),
             // Recorded like any other state change: an unfreeze that is not
             // replayed would be silently undone by mutation-log recovery.
-            MetaEntityState::Normal => {
-                self.record_mutation(MetaMutation::UnfreezeServer(request.clone()));
-            }
-        }
-        self.apply_set_server_state(request, next)
+            MetaEntityState::Normal => MetaMutation::UnfreezeServer(request.clone()),
+        });
+        self.apply_set_server_state(request, next, at_ms)
     }
 
     pub(super) fn apply_set_server_state(
         &self,
         request: StateChangeRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         let Some(server) = state.servers.get_mut(&request.endpoint) else {
@@ -49,7 +44,7 @@ impl SingleNodeMeta {
                 status: Status::error("not_found", "server not found"),
             };
         };
-        let now = now_ms();
+        let now = at_ms;
         server.state = next;
         match next {
             MetaEntityState::Frozen => {
@@ -91,24 +86,19 @@ impl SingleNodeMeta {
                 status: Status::error("not_found", "proxy not found"),
             };
         }
-        match next {
-            MetaEntityState::Frozen => {
-                self.record_mutation(MetaMutation::FreezeProxy(request.clone()));
-            }
-            MetaEntityState::Dropped => {
-                self.record_mutation(MetaMutation::DropProxy(request.clone()));
-            }
-            MetaEntityState::Normal => {
-                self.record_mutation(MetaMutation::UnfreezeProxy(request.clone()));
-            }
-        }
-        self.apply_set_proxy_state(request, next)
+        let at_ms = self.record_mutation(match next {
+            MetaEntityState::Frozen => MetaMutation::FreezeProxy(request.clone()),
+            MetaEntityState::Dropped => MetaMutation::DropProxy(request.clone()),
+            MetaEntityState::Normal => MetaMutation::UnfreezeProxy(request.clone()),
+        });
+        self.apply_set_proxy_state(request, next, at_ms)
     }
 
     pub(super) fn apply_set_proxy_state(
         &self,
         request: StateChangeRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         let Some(proxy) = state.proxies.get_mut(&request.endpoint) else {
@@ -116,7 +106,7 @@ impl SingleNodeMeta {
                 status: Status::error("not_found", "proxy not found"),
             };
         };
-        let now = now_ms();
+        let now = at_ms;
         proxy.state = next;
         match next {
             MetaEntityState::Frozen => {
@@ -147,6 +137,7 @@ impl SingleNodeMeta {
         &self,
         request: DeleteTableRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         if request.namespace.is_empty() || request.table_name.is_empty() {
             return AckResponse {
@@ -182,7 +173,7 @@ impl SingleNodeMeta {
             .expect("table exists after state validation");
         table.info.state = next;
         table.info.topology_version = topology_version;
-        let now = now_ms();
+        let now = at_ms;
         stamp_dropped_since(&mut state, &dropped_key("table", &key), next, now);
         stamp_frozen_since(&mut state, &dropped_key("table", &key), next, now);
         AckResponse {

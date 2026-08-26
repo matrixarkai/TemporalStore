@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::http::{
-    get_json, get_json_with_options, post_json, post_json_with_options, HttpError,
+    get_json, get_json_with_options, post_json, post_json_with_options,
+    post_json_with_options_and_headers, HttpError,
     HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
@@ -660,6 +661,9 @@ struct ClientMetaSyncTableState {
     consecutive_errors: u64,
     last_error: String,
     shards_without_primary: u64,
+    /// When a request failure last forced a topology sync for this table, out of band from
+    /// the scheduled one. Used to space those out; see `refresh_table_topology_after_status`.
+    last_forced_sync_unix_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -957,6 +961,12 @@ pub struct TemporalStoreTable {
     namespace: String,
     table_name: String,
     shard_id: ShardId,
+    /// What this table looked like when the handle was opened.
+    ///
+    /// Only a fallback for `table_options()`, for the case where the client holds no
+    /// entry for this table. Everything else must go through `table_options()`, which
+    /// reads the copy the metaserver sync keeps current -- this one never changes, so
+    /// anything reading it directly is frozen at open time.
     options: TableOptions,
 }
 
@@ -1272,7 +1282,7 @@ impl TemporalStoreTable {
                     command: command.clone(),
                 },
                 force_primary,
-                self.http_options(),
+                self.http_options(&table_options),
                 Some(table_options.continuous_failed_time_ms),
                 table_options.replica_read_policy,
                 if table_options.preferred_location.is_empty() {
@@ -1334,7 +1344,12 @@ impl TemporalStoreTable {
                 responses: Vec::new(),
             });
         }
-        if self.options.shard_count > 1 {
+        // The LIVE shard count, not the one this handle was opened with. Read from the
+        // snapshot, a table that gained shards after the handle was created kept sending
+        // every command to the single shard the handle started on -- while
+        // `shard_id_for_command`, on this same handle, already knew which shard each key
+        // belonged to. The handle worked out the right answer and then declined to use it.
+        if table_options.shard_count > 1 {
             return self.batch_execute_grouped_by_shard(commands);
         }
         let request = BatchExecuteRequest {
@@ -1356,7 +1371,7 @@ impl TemporalStoreTable {
         let response = loop {
             let current = self.client.batch_execute_with_http(
                 request.clone(),
-                self.http_options(),
+                self.http_options(&table_options),
                 Some(table_options.continuous_failed_time_ms),
             )?;
             let decision = classify_retry_decision(
@@ -1469,21 +1484,38 @@ impl TemporalStoreTable {
         }
     }
 
-    fn http_options(&self) -> HttpRequestOptions {
+    /// Takes the table's options rather than reading them, so it cannot be called with
+    /// stale ones. It used to read `self.options` -- the copy this handle was opened
+    /// with -- and so kept sending the timeouts the table had when the handle was
+    /// created, for the whole life of the handle. `options()` meanwhile reported the
+    /// current ones, so the handle told you one timeout and used another.
+    fn http_options(&self, table_options: &TableOptions) -> HttpRequestOptions {
         HttpRequestOptions {
-            connect_timeout_ms: self.options.connect_timeout_ms,
-            io_timeout_ms: self.options.io_timeout_ms,
+            connect_timeout_ms: table_options.connect_timeout_ms,
+            io_timeout_ms: table_options.io_timeout_ms,
             max_retries: self.client.inner.options.max_retries,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn http_options_for_test(&self) -> HttpRequestOptions {
-        self.http_options()
+        self.http_options(&self.table_options())
     }
 
+    /// Re-sync this table's topology because a request failed in a way that suggests the
+    /// cached one is wrong.
+    ///
+    /// Spaced by `topo_error_retry_interval_ms`. The per-request guard above stops one command
+    /// doing this twice, but says nothing about the other requests in flight: a shard moving
+    /// makes MANY requests fail at once, and each one arriving here unthrottled is a separate
+    /// metaserver round-trip -- a sync storm aimed at the metaserver at the moment it is
+    /// working through a topology change. One request's failure is enough to learn what all of
+    /// them need.
     fn refresh_table_topology_after_status(&self) {
         if self.client.inner.options.meta_addr.is_none() {
+            return;
+        }
+        if !self.client.forced_sync_is_due(&self.namespace, &self.table_name) {
             return;
         }
         let _ = self

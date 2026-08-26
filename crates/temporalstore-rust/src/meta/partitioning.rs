@@ -109,7 +109,6 @@ pub(super) fn build_shards(
         let end_bucket = (bucket_count * (offset + 1) / table.shard_count).saturating_sub(1);
         let mut replicas = Vec::new();
         let mut seen_replicas = BTreeSet::new();
-        let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
         let mut placed_locations: Vec<Location> = Vec::new();
         // A shard that is not serving gets no placement at all. Skipping only
@@ -148,7 +147,6 @@ pub(super) fn build_shards(
                 state,
                 &mut replicas,
                 &mut seen_replicas,
-                &mut used_locations,
                 &mut used_hosts,
                 &location.server_addr,
             );
@@ -188,24 +186,40 @@ pub(super) fn build_shards(
                     state,
                     &mut replicas,
                     &mut seen_replicas,
-                    &mut used_locations,
                     &mut used_hosts,
                     candidate.server_addr,
                 );
             }
         }
-        for candidate in &normal_servers {
-            if replicas.len() >= table.replica_count as usize {
-                break;
+        // Whatever the ladder could not place is filled here. Two passes, not
+        // one: a host already holding a replica of this shard is taken only
+        // when nothing else is left.
+        //
+        // This used to be a single unconditional pass. `push_replica` records
+        // `used_hosts` but does not enforce it -- only the ladder above checked
+        // it -- so when every server shares a location the ladder rejects them
+        // all, every replica after the first came from here, and a shard could
+        // put two replicas on one host while another host sat idle. It reported
+        // the full replica count and lost all of them to one host failure.
+        for allow_used_host in [false, true] {
+            for candidate in &normal_servers {
+                if replicas.len() >= table.replica_count as usize {
+                    break;
+                }
+                if !allow_used_host {
+                    let host = server_host(candidate.server_addr);
+                    if !host.is_empty() && used_hosts.contains(&host) {
+                        continue;
+                    }
+                }
+                push_replica(
+                    state,
+                    &mut replicas,
+                    &mut seen_replicas,
+                    &mut used_hosts,
+                    candidate.server_addr,
+                );
             }
-            push_replica(
-                state,
-                &mut replicas,
-                &mut seen_replicas,
-                &mut used_locations,
-                &mut used_hosts,
-                candidate.server_addr,
-            );
         }
         let primary = match state.shards.get(&shard_id) {
             // A recorded owner that is not serving leaves the shard with no

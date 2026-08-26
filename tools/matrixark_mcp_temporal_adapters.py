@@ -389,6 +389,10 @@ _SUBJECT_RESCOPE_DROP = frozenset({
 
 
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
+    # The base class precedes the mixins in the MRO, so without this the buffered audit
+    # implementation the __init__ prepares for (MATRIXARK_DIRECT_AUDIT_MODE, buffer, flusher)
+    # is shadowed by the base's durable-append-per-record version.
+    append_audit = _TemporalDirectWriteMixin.append_audit
     """MatrixArk adapter backed by TemporalStore proxy or direct SDK.
 
     Python stays as API/auth/model orchestration. Production retrieval should
@@ -1065,19 +1069,42 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             if not name_by_user:
                 return {}
             counts: dict[str, int] = {name: 0 for name in names}
-            for record in self.read_all():
-                if not isinstance(record, dict):
-                    continue
-                if str(record.get("record_type") or "") != "context_event":
-                    continue
-                record_tenant, record_user = _record_scope_hashes(record)
-                name = name_by_user.get(record_user)
-                if name is None:
-                    continue
-                subject_tenant = tenant_by_user.get(record_user) or 0
-                if subject_tenant and record_tenant != subject_tenant:
-                    continue
-                counts[name] += 1
+
+            def count_in(records: list[Json], only_name: str | None = None) -> None:
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    if str(record.get("record_type") or "") != "context_event":
+                        continue
+                    record_tenant, record_user = _record_scope_hashes(record)
+                    name = name_by_user.get(record_user)
+                    if name is None or (only_name is not None and name != only_name):
+                        continue
+                    subject_tenant = tenant_by_user.get(record_user) or 0
+                    if subject_tenant and record_tenant != subject_tenant:
+                        continue
+                    counts[name] += 1
+
+            # Two conditions, and both matter. Every subject must resolve to a non-zero tenant
+            # AND user hash, which is what a pinned view needs to engage; and this adapter must
+            # actually have the engine scan API, because without it a "pinned" view degrades to a
+            # full read and per-subject counting becomes one full read PER SUBJECT -- strictly
+            # worse than the single pass it replaced.
+            scanner_available = callable(
+                getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None)
+            )
+            pinned = scanner_available and all(
+                tenant_by_user.get(user_hash) and user_hash
+                for user_hash in name_by_user
+            )
+            if pinned:
+                for name in names:
+                    count_in(
+                        self.records_for_get_all(self._subject_scope(base_scope, name)),
+                        only_name=name,
+                    )
+                return counts
+            count_in(self.read_all())
             return counts
         except Exception:  # noqa: BLE001 - fall back to the per-subject reads rather than answer wrong.
             return None
@@ -1266,8 +1293,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             if count_before is None or count_after is None or count_before != count_after:
                 try:
                     with open(log_path, "a", encoding="utf-8") as log:
-                        log.write("SKIPPED racy window count %r -> %r\n"
-                                  % (count_before, count_after))
+                        log.write("SKIPPED racy window count %r -> %r latest %r -> %r\n"
+                                  % (count_before, count_after, latest_before, latest_after))
                 except OSError:
                     pass
                 return full
@@ -1306,6 +1333,112 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                         log.write("CLEAN %d records\n" % len(got))
                 except OSError:
                     pass
+            return full
+        return live_subset
+
+    def records_for_session_buffer(self, scope: Json) -> list[Json]:
+        """The session-buffer cache-miss view from a pinned typed scan, not a full read.
+
+        The miss consumer filters by buffer key (tenant, user, session) and record type, so a
+        scope-pinned superset of the live view is sufficient. Engages only when the scope
+        resolves to non-zero tenant AND user hashes; anything broader serves the full read. The
+        subset runs the SAME serving chain as the full read (latest-state fold, tombstone sweep,
+        expiry filter), so committed/tombstoned/expired records drop out identically.
+        """
+        import os as _os
+
+        try:
+            tenant_hash, user_hash = self._resolve_subject_hashes(scope or {})
+        except Exception:  # noqa: BLE001
+            return self.read_all()
+        if not tenant_hash or not user_hash:
+            return self.read_all()
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        shadow = _os.environ.get("MATRIXARK_SESSBUF_SHADOW_COMPARE", "").strip()
+        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        engine_scope: Json = {
+            "tenant_hash": tenant_hash,
+            "user_hash": user_hash,
+            "_explicit_scope_keys": ["tenant_id", "user_id"],
+        }
+        if isinstance(scope, dict) and scope.get("user_id"):
+            engine_scope["user_id"] = str(scope.get("user_id"))
+        subset = self._scan_records_of_types(
+            [
+                "context_event",
+                "session_buffer_event",
+                "context_batch_commit",
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+            ],
+            scope=engine_scope,
+        )
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        if shadow_on:
+            full = self.read_all()
+            log_path = _os.environ.get("MATRIXARK_SESSBUF_SHADOW_LOG",
+                                       "/tmp/matrixark_sessbuf_shadow.log")
+
+            def project(records: list[Json]) -> tuple:
+                events, buffers, commits = [], [], []
+                for record in records:
+                    rtype = str(record.get("record_type") or "")
+                    if rtype == "context_event":
+                        events.append(str(record.get("event_id_hash")))
+                    elif rtype == "session_buffer_event":
+                        buffers.append(str(record.get("event_id_hash")))
+                    elif rtype == "context_batch_commit":
+                        commits.append(str(record.get("batch_id_hash") or record.get("commit_hash") or ""))
+                return (sorted(events), sorted(buffers), sorted(commits))
+
+            def scoped(records: list[Json]) -> list[Json]:
+                try:
+                    from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import _record_scope_hashes
+                keep = []
+                for record in records:
+                    rec_tenant, rec_user = _record_scope_hashes(record)
+                    if (not rec_tenant or rec_tenant == tenant_hash) and (not rec_user or rec_user == user_hash):
+                        keep.append(record)
+                return keep
+
+            expected, got = project(scoped(full)), project(scoped(live_subset))
+            try:
+                with open(log_path, "a", encoding="utf-8") as log:
+                    if expected != got:
+                        log.write("MISMATCH %r vs %r\n" % (
+                            tuple(len(part) for part in expected),
+                            tuple(len(part) for part in got)))
+                    else:
+                        log.write("CLEAN events=%d buffers=%d commits=%d\n"
+                                  % tuple(len(part) for part in expected))
+            except OSError:
+                pass
             return full
         return live_subset
 
@@ -1421,6 +1554,255 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return full
         return live_subset
 
+    def records_for_delete(self, memory_id: str) -> list[Json]:
+        """The id's live records from the same two-round id-scoped fetch get(id) uses.
+
+        Wider type set than get(id): index postings are included because the closure must see
+        multi-source derivatives to demote them rather than remove them. Gated on the locator
+        coverage marker; without it the full read stands, since a derivative the locator never
+        saw would silently keep pointing at a deleted source.
+        """
+        import os as _os
+
+        if not self._locator_covers_pointed_ids():
+            return self.read_all()
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        kept_types = [
+            "context_event",
+            "context_entity",
+            "context_summary",
+            "context_summary_dirty",
+            "context_segment",
+            "context_index",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ]
+        linked = self._scan_records_of_types(kept_types, record_ids=[str(memory_id)])
+        if linked is None:
+            return self.read_all()
+        identity_ids = {str(memory_id)}
+        for record in linked:
+            for field in ("entity_hash", "summary_hash", "segment_hash", "event_id_hash"):
+                value = record.get(field)
+                if value not in (None, "", 0):
+                    identity_ids.add(str(value))
+        subset = (
+            linked
+            if len(identity_ids) <= 1
+            else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
+        )
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        shadow = _os.environ.get("MATRIXARK_DELETE_SHADOW_COMPARE", "").strip()
+        if shadow not in {"", "0", "false", "no", "off"}:
+            full = self.read_all()
+            log_path = _os.environ.get("MATRIXARK_DELETE_SHADOW_LOG",
+                                       "/tmp/matrixark_delete_shadow.log")
+
+            def decisions(records: list[Json]) -> tuple:
+                """What delete actually decides from these records: is this a source event, and
+                which derivatives are single-source (removed) versus multi-source (demoted)."""
+                try:
+                    from tools.matrixark_mcp_local_adapter import (
+                        _record_derivative_identity_ids,
+                        _record_provenance_source_ids,
+                        _safe_int,
+                    )
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import (
+                        _record_derivative_identity_ids,
+                        _record_provenance_source_ids,
+                        _safe_int,
+                    )
+                mid_int = _safe_int(str(memory_id))
+                is_source = any(
+                    str(r.get("record_type") or "") == "context_event"
+                    and str(r.get("event_id_hash")) == str(memory_id)
+                    for r in records
+                )
+                single, multi = set(), set()
+                for record in records:
+                    provenance = _record_provenance_source_ids(record)
+                    if provenance is None or mid_int not in provenance:
+                        continue
+                    ids = _record_derivative_identity_ids(record)
+                    if provenance == {mid_int}:
+                        single |= set(ids)
+                    else:
+                        multi |= set(ids)
+                return (is_source, tuple(sorted(map(str, single))), tuple(sorted(map(str, multi))))
+
+            expected, got = decisions(full), decisions(live_subset)
+            try:
+                with open(log_path, "a", encoding="utf-8") as log:
+                    if expected != got:
+                        log.write("MISMATCH id=%s full=%r subset=%r\n" % (memory_id, expected, got))
+                    else:
+                        log.write("CLEAN id=%s source=%s single=%d multi=%d\n"
+                                  % (memory_id, expected[0], len(expected[1]), len(expected[2])))
+            except OSError:
+                pass
+            return full
+        return live_subset
+
+    def _locator_covers_pointed_ids(self) -> bool:
+        """True once the store's locator has indexed pointed ids since its FIRST append.
+
+        Sticky per process: the marker is stamped at store birth and never unset, so one positive
+        read is authoritative for the store's lifetime.
+        """
+        if getattr(self, "_locator_pointed_marker", False):
+            return True
+        try:
+            rows = self._client.scan_hash(
+                f"{self._storage_prefix}:context_ref_locator_meta").get("records") or []
+        except Exception:  # noqa: BLE001
+            return False
+        covered = any(
+            str(row.get("field")) == "provenance_from_start" and str(row.get("value")).strip() == "1"
+            for row in rows if isinstance(row, dict)
+        )
+        if covered:
+            self._locator_pointed_marker = True
+        return covered
+
+    def records_for_get_memory(self, memory_id: str) -> list[Json]:
+        """One id's live view from an id-scoped scan, on stores whose locator can answer it.
+
+        Engages ONLY when the provenance_from_start marker attests that pointed-id indexing was
+        active for every record this store ever held -- on any other store the locator cannot
+        enumerate the id's derivatives, and the id-scoped read would silently drop them (the
+        failure the shadow harness caught on the first attempt). The subset runs the SAME chain
+        as the full read -- latest-state fold, tombstone sweep, expiry filter -- so a deleted
+        memory still answers {found: false}.
+        """
+        import os as _os
+
+        if not self._locator_covers_pointed_ids():
+            return self.read_all()
+        try:
+            from tools.matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import (
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+
+        kept_types = [
+            "context_event",
+            "context_entity",
+            "context_summary",
+            "context_summary_dirty",
+            "context_segment",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ]
+        # Round 1 discovers WHICH derivative identities this memory is involved with.
+        linked = self._scan_records_of_types(kept_types, record_ids=[str(memory_id)])
+        if linked is None:
+            return self.read_all()
+        # Round 2 fetches every VERSION of those identities. Derivatives are last-writer-wins by
+        # identity, so a subset holding only the versions that still LINK to this id would let a
+        # superseded copy win compaction and resurface -- the shadow caught exactly that. One
+        # scan (not a union of two) so the records come back in append order, which is what
+        # last-writer-wins needs to pick the same winner the full read picks.
+        identity_ids = {str(memory_id)}
+        for record in linked:
+            for field in ("entity_hash", "summary_hash", "segment_hash", "event_id_hash"):
+                value = record.get(field)
+                if value not in (None, "", 0):
+                    identity_ids.add(str(value))
+        subset = (
+            linked
+            if len(identity_ids) <= 1
+            else self._scan_records_of_types(kept_types, record_ids=sorted(identity_ids))
+        )
+        if subset is None:
+            return self.read_all()
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+            return self.read_all()
+        folded = compact_latest_context_state_records(list(subset) + list(latest_state))
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
+
+        shadow = _os.environ.get("MATRIXARK_GETMEM_SHADOW_COMPARE", "").strip()
+        if shadow not in {"", "0", "false", "no", "off"}:
+            full = self.read_all()
+            log_path = _os.environ.get("MATRIXARK_GETMEM_SHADOW_LOG",
+                                       "/tmp/matrixark_getmem_shadow.log")
+
+            def project(records: list[Json]) -> tuple:
+                try:
+                    from tools.matrixark_mcp_local_adapter import (
+                        _record_provenance_source_ids,
+                        _safe_int,
+                    )
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import (
+                        _record_provenance_source_ids,
+                        _safe_int,
+                    )
+                mid_int = _safe_int(str(memory_id))
+                event_seen = None
+                derived = []
+                for record in records:
+                    rtype = str(record.get("record_type") or "")
+                    if rtype == "context_event" and str(record.get("event_id_hash")) == str(memory_id):
+                        event_seen = str(record.get("event_id_hash"))
+                        continue
+                    if mid_int is not None:
+                        prov = _record_provenance_source_ids(record)
+                        if prov is not None and mid_int in prov:
+                            derived.append((rtype, str(record.get("entity_hash")),
+                                            str(record.get("summary_hash"))))
+                return (event_seen, sorted(derived))
+
+            expected, got = project(full), project(live_subset)
+            try:
+                with open(log_path, "a", encoding="utf-8") as log:
+                    if expected != got:
+                        log.write("MISMATCH id=%s full=%r subset=%r\n"
+                                  % (memory_id, expected, got))
+                    else:
+                        log.write("CLEAN id=%s derived=%d\n" % (memory_id, len(expected[1])))
+            except OSError:
+                pass
+            return full
+        return live_subset
+
     def raw_records_for_history(self, memory_id: str | None = None) -> list[Json]:
         """History's records from a three-type scan instead of a raw read of the whole log.
 
@@ -1446,7 +1828,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return super().raw_records_for_history(memory_id)
         return subset
 
-    def prior_context_records(self) -> list[Json]:
+    def prior_context_records(self, scope: Json | None = None) -> list[Json]:
         """The prior-context view from a five-type scan instead of a full-store read.
 
         `collect_prior_context` and the caller-supplied-fields carry-over consume three record
@@ -1475,13 +1857,32 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 compact_and_apply_tombstones,
                 filter_live_memory_records,
             )
-        subset = self._scan_records_of_types([
-            "context_event",
-            "context_summary",
-            "context_pack_audit",
-            MEMORY_TOMBSTONE_RECORD_TYPE,
-            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
-        ])
+        pinned_hashes: tuple[int, int] | None = None
+        engine_scope: Json = {}
+        if isinstance(scope, dict) and scope:
+            try:
+                tenant_hash, user_hash = self._resolve_subject_hashes(scope)
+            except Exception:  # noqa: BLE001
+                tenant_hash, user_hash = 0, 0
+            if tenant_hash and user_hash:
+                pinned_hashes = (tenant_hash, user_hash)
+                engine_scope = {
+                    "tenant_hash": tenant_hash,
+                    "user_hash": user_hash,
+                    "_explicit_scope_keys": ["tenant_id", "user_id"],
+                }
+                if scope.get("user_id"):
+                    engine_scope["user_id"] = str(scope.get("user_id"))
+        subset = self._scan_records_of_types(
+            [
+                "context_event",
+                "context_summary",
+                "context_pack_audit",
+                MEMORY_TOMBSTONE_RECORD_TYPE,
+                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+            ],
+            scope=engine_scope if pinned_hashes else None,
+        )
         if subset is None:
             return self.read_all()
         # Summaries and other compact records can live in the latest-state HASH rather than the
@@ -1497,23 +1898,69 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             latest_state = self._load_latest_context_state_records()
         except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
             return self.read_all()
-        subset = subset + [
+        try:
+            from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_serving_records import compact_latest_context_state_records
+        # Fold latest-state the way the full read does rather than appending it after the log
+        # records: prior-context consumers are order-aware, and this is the assembly that already
+        # earned a clean shadow on get_all.
+        folded_prior = compact_latest_context_state_records(list(subset) + [
             record for record in latest_state
             if isinstance(record, dict) and str(record.get("record_type") or "") in kept_types
-        ]
-        live_subset = filter_live_memory_records(compact_and_apply_tombstones(subset))
+        ])
+        live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded_prior))
 
         shadow = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_COMPARE", "").strip()
         if shadow not in {"", "0", "false", "no", "off"}:
+            # prior-context shadow: skip a racy window. The two views are computed in sequence,
+            # so a write landing between them differs in length with every compared position
+            # equal -- a race, not a divergence. Read the count around the pair and skip when it
+            # moved; a skipped window is never counted as clean.
+            def _race_marks() -> tuple:
+                try:
+                    count = int(self._get_count())
+                except Exception:  # noqa: BLE001
+                    return (None, None)
+                try:
+                    latest = len(self._load_latest_context_state_records())
+                except Exception:  # noqa: BLE001
+                    return (count, None)
+                return (count, latest)
+
+            count_before, latest_before = _race_marks()
             full = self.read_all()
+            count_after, latest_after = _race_marks()
+            if (count_before is None or count_after is None
+                    or latest_before is None or latest_after is None
+                    or count_before != count_after or latest_before != latest_after):
+                try:
+                    path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
+                                           "/tmp/matrixark_prior_context_shadow.log")
+                    with open(path, "a", encoding="utf-8") as log:
+                        log.write("SKIPPED racy window count %r -> %r\n"
+                                  % (count_before, count_after))
+                except OSError:
+                    pass
+                return full
 
             def project(records: list[Json]) -> list[tuple]:
                 keep = {"context_event", "context_summary", "context_pack_audit"}
+                try:
+                    from tools.matrixark_mcp_local_adapter import _record_scope_hashes
+                except ModuleNotFoundError:
+                    from matrixark_mcp_local_adapter import _record_scope_hashes
                 out = []
                 for record in records:
                     record_type = str(record.get("record_type") or "")
                     if record_type not in keep:
                         continue
+                    if pinned_hashes is not None:
+                        rec_tenant, rec_user = _record_scope_hashes(record)
+                        if (rec_tenant and rec_tenant != pinned_hashes[0]) or (
+                            rec_user and rec_user != pinned_hashes[1]
+                        ):
+                            continue
                     out.append((
                         record_type,
                         str(record.get("event_id_hash") or record.get("summary_hash")
@@ -1528,10 +1975,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                     path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
                                            "/tmp/matrixark_prior_context_shadow.log")
                     with open(path, "a", encoding="utf-8") as log:
-                        log.write("MISMATCH full=%d subset=%d only_full=%r only_subset=%r\n" % (
-                            len(expected), len(got),
-                            [row for row in expected if row not in set(got)][:5],
-                            [row for row in got if row not in set(expected)][:5],
+                        first_div = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), -1)
+                        log.write("MISMATCH n=%d div@%d full=%r subset=%r ctx_full=%r ctx_sub=%r\n" % (
+                            len(expected), first_div,
+                            expected[first_div] if 0 <= first_div < len(expected) else None,
+                            got[first_div] if 0 <= first_div < len(got) else None,
+                            expected[max(0, first_div - 1):first_div + 2],
+                            got[max(0, first_div - 1):first_div + 2],
                         ))
                 except OSError:
                     pass
@@ -2878,7 +3328,13 @@ class MatrixArkRustProxyClient:
             self._lane_cursors[group] = index + 1
         return group, lanes[index]
 
-    def _read_json_line(self, proc: subprocess.Popen[str], op: str, lane: Json | None = None) -> Json:
+    def _read_json_line(
+        self,
+        proc: subprocess.Popen[str],
+        op: str,
+        lane: Json | None = None,
+        expected_request_id: str | None = None,
+    ) -> Json:
         assert proc.stdout is not None
         deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
         while time.monotonic() < deadline:
@@ -2897,9 +3353,21 @@ class MatrixArkRustProxyClient:
             if not line.strip().startswith("{"):
                 continue
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
+            # The proxy answers strictly in order on one stdout. A request abandoned by ITS OWN
+            # timeout still gets its response line later -- and without correlation the next
+            # caller on this lane would read that stale line as its answer, shifting every
+            # later reply one back and serving the wrong data (one scope's scan was observed
+            # answered with another scope's records). Discard any response tagged for a
+            # different request; a response with no tag (older proxy binary) is accepted
+            # unchanged.
+            if expected_request_id is not None:
+                stale_id = parsed.get("client_request_id")
+                if stale_id is not None and stale_id != expected_request_id:
+                    continue
+            return parsed
         raise MatrixArkError(
             f"Rust TemporalStore {op} timed out waiting for response from {self.cli_path} "
             f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
@@ -2950,6 +3418,14 @@ class MatrixArkRustProxyClient:
             with lock:
                 proc = self._ensure_lane_proc(lane)
                 assert proc.stdin is not None
+                # Tag the request so the reader can discard the late responses of requests a
+                # previous caller abandoned on this lane (see _read_json_line). Tagged into the
+                # LANE payload only: the daemon-socket path opens a connection per request and
+                # cannot desync.
+                request_id = f"{id(lane)}-{time.monotonic_ns()}"
+                lane_command = dict(command)
+                lane_command["client_request_id"] = request_id
+                payload = json.dumps(lane_command, separators=(",", ":")) + "\n"
                 try:
                     proc.stdin.write(payload)
                     proc.stdin.flush()
@@ -2964,7 +3440,7 @@ class MatrixArkRustProxyClient:
                     if stderr:
                         detail += f": {stderr[-1000:]}"
                     raise MatrixArkError(detail) from exc
-                response = self._read_json_line(proc, op, lane)
+                response = self._read_json_line(proc, op, lane, expected_request_id=request_id)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)
@@ -3435,6 +3911,24 @@ class MatrixArkRustProxyClient:
 
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
+
+    def resource_blob_put(self, tenant_hash: int, payload_base64: str) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_put", key=str(int(tenant_hash)), value=payload_base64
+        )
+
+    def resource_blob_fetch(self, uri: str, *, offset: int = 0, length: int = 0) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_fetch", key=str(uri), blob_offset=int(offset), blob_length=int(length)
+        )
+
+    def resource_blob_sweep(self, tenant_hash: int, referenced_hashes: list[str], min_age_ms: int) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_sweep",
+            key=str(int(tenant_hash)),
+            blob_referenced_hashes=[str(item) for item in referenced_hashes],
+            blob_min_age_ms=int(min_age_ms),
+        )
 
     def batch_hset(self, entries: list[Json]) -> None:
         if not entries:

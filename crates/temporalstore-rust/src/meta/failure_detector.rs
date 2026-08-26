@@ -934,6 +934,8 @@ mod tests {
 
     fn server(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ServerMetaInfo {
         ServerMetaInfo {
+            reported_record_count: 0,
+            reported_storage_bytes: 0,
             numa_nodes: Vec::new(),
             load_key_count: 0,
             load_memory_bytes: 0,

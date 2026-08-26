@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run an OpenViking direct-retrieval LoCoMo diagnostic baseline.
+"""Run an ExternalBaseline direct-retrieval LoCoMo diagnostic baseline.
 
-This intentionally bypasses the VikingBot tool loop and memory-extraction
-pipeline. It reads OpenViking's committed session archive, ranks archived
+This intentionally bypasses the external agent tool loop and memory-extraction
+pipeline. It reads ExternalBaseline's committed session archive, ranks archived
 messages for each LoCoMo question, calls the same OpenAI-compatible OSS reader
 used by MatrixArk benchmarks, and writes a fail-closed JSON report.
 """
@@ -41,14 +41,14 @@ def main() -> int:
     parser.add_argument(
         "--archive",
         default=(
-            "/tmp/openviking_matrixark_oss/qwen_memory_data/viking/default/user/conv-26/"
+            "/tmp/external_baseline_matrixark_oss/qwen_memory_data/EXTERNAL_BASELINE_WORKSPACE_SUBDIR/default/user/conv-26/"
             "sessions/20260726-011613-9112f803c45e4f13/history/archive_001/messages.jsonl"
         ),
     )
     parser.add_argument("--reader-base-url", default="http://127.0.0.1:18087/v1")
     parser.add_argument("--reader-model", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--embedding-model", default="matrixark-local-hash-embedding")
-    parser.add_argument("--provider-name", default="openviking-direct-archive")
+    parser.add_argument("--provider-name", default="external_baseline-direct-archive")
     parser.add_argument("--reader-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--reader-max-tokens", type=int, default=96)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
@@ -73,14 +73,14 @@ def main() -> int:
         action="store_false",
         help="Diagnostic-only escape hatch for intentionally unfair local model or budget experiments.",
     )
-    parser.add_argument("--report", default="/tmp/openviking_direct_retrieval_locomo_tiny_20260726.json")
+    parser.add_argument("--report", default="/tmp/external_baseline_direct_retrieval_locomo_tiny_20260726.json")
     parser.add_argument("--matrixark-report", default="/tmp/matrixark_qwen_locomo_tiny_postfix2_20260726.json")
     args = parser.parse_args()
 
     started = time.time()
     report: dict[str, Any] = {
         "benchmark_family": "locomo",
-        "baseline": "openviking_direct_archive_retrieval",
+        "baseline": "external_baseline_direct_archive_retrieval",
         "claim_status": "diagnostic_not_paper_comparable",
         "diagnostic_only": True,
         "reader_base_url": args.reader_base_url,
@@ -100,7 +100,7 @@ def main() -> int:
         "reader_max_tokens": args.reader_max_tokens,
         "blockers": [],
         "warnings": [
-            "OpenViking memory extraction produced zero recallable memories locally; this run uses archived messages as retrieval corpus.",
+            "ExternalBaseline memory extraction produced zero recallable memories locally; this run uses archived messages as retrieval corpus.",
             "If the archive covers fewer sessions than the benchmark questions require, this is a baseline blocker, not a MatrixArk quality win.",
             "Token counts are whitespace-token estimates because the local OSS endpoints do not return reliable usage counters.",
         ],
@@ -453,7 +453,7 @@ def benchmark_model_contract(args: argparse.Namespace, matrixark_reference: dict
             and matrixark_reader_fallback_allowed == baseline_reader_fallback_allowed
         ),
         "comparison_rule": (
-            "MatrixArk and OpenViking/VikingMem rows must use the same OSS reader model, "
+            "MatrixArk and ExternalBaseline/ExternalBaseline rows must use the same OSS reader model, "
             "embedding/encoding model, retrieval block budget, reader context budget, reader output-token budget, "
             "and reader fallback policy."
         ),

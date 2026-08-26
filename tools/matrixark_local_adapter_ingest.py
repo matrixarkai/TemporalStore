@@ -293,6 +293,7 @@ class _LocalAdapterIngestMixin:
                 pending_memory_layer = candidate_memory_layer_name(pending_event_record)
                 if pending_memory_layer:
                     pending_event_record["memory_layer"] = pending_memory_layer
+                self._begin_append_coalescing()
                 self.append(pending_event_record)
                 pending_embedding_record = compact_context_embedding_record(
                     {
@@ -361,6 +362,7 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+            self._flush_append_coalescing()
             pending_events = self.pending_session_events(envelope["scope"])
             pending_event_count = len(pending_events)
             pending_message_count = session_event_message_count(pending_events)
@@ -490,7 +492,7 @@ class _LocalAdapterIngestMixin:
                 "auto_batch_extract_result": auto_batch_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
-        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records(envelope["scope"])
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")
@@ -541,6 +543,7 @@ class _LocalAdapterIngestMixin:
         resource_import_task_hash = 0
         resource_import_task_status = "not_applicable"
         resource_import_wait = True
+        held_import_completion: list[Json] = []
         resource_import_metrics: Json = {}
         resource_fact_event_hashes: list[int] = []
         resource_fact_entity_hashes: list[int] = []
@@ -660,7 +663,9 @@ class _LocalAdapterIngestMixin:
             resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
             try:
                 storage_resolution = resolve_raw_resource_for_ingest(
-                    args,
+                    # The engine blob tier rides the adapter's rust proxy client when there is
+                    # one; the pure-local adapter has none and the key stays absent.
+                    {**args, "_engine_blob_client": getattr(self, "_client", None)},
                     envelope,
                     requested_raw_uri,
                     resource_type,
@@ -1330,7 +1335,15 @@ class _LocalAdapterIngestMixin:
                 "summary_dirty_count": len(resource_dirty_hashes),
             }
             resource_import_task_status = "completed"
-            self.append(
+            # On the background worker this call still has writes ahead of it -- the hot path
+            # event batch and its index postings land after this point. Appending "completed"
+            # here publishes the one signal a caller polls for while a fifth of the task's
+            # records are still missing, and lets the caller tear the log down underneath the
+            # worker. Hold the marker and append it once the call has finished writing.
+            append_import_completion = (
+                held_import_completion.append if resource_import_background else self.append
+            )
+            append_import_completion(
                 {
                     "record_type": "resource_import_task",
                     "task_hash": resource_import_task_hash,
@@ -1695,6 +1708,8 @@ class _LocalAdapterIngestMixin:
                     threshold_messages=session_buffer_threshold,
                 )
             )
+        for held_record in held_import_completion:
+            self.append(held_record)
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
@@ -1834,7 +1849,7 @@ class _LocalAdapterIngestMixin:
                 "reason": "logical batch below extraction threshold",
             }
 
-        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records(envelope["scope"])
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")

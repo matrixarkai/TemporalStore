@@ -2839,3 +2839,41 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
         "every node here carries its vector inline, so nothing may fall back to the rows"
     );
 }
+
+
+/// A lifecycle record that says nothing about where its payload lives must decode as holding it
+/// inline, which is what constructing one gives you.
+///
+/// `#[serde(default)]` on a bool decodes an absent field to `false`, and here false means "the
+/// payload is in the object store" -- so a record that simply did not mention it would send a
+/// reader to an `external_object_uri` it does not carry. The type's own `Default` says true, and
+/// decoding must not disagree with constructing.
+#[test]
+fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
+    let mut body: serde_json::Value =
+        serde_json::to_value(ContextResourceLifecycleRecord::default()).unwrap();
+    let removed = body.as_object_mut().unwrap().remove("inline_payload");
+    assert!(removed.is_some(), "a serialised record should carry the field");
+
+    let silent: ContextResourceLifecycleRecord = serde_json::from_value(body).unwrap();
+    assert!(
+        silent.inline_payload,
+        "a record that does not mention where its payload lives decoded as pointing at the object \
+         store, and carries no uri to point with"
+    );
+    assert_eq!(
+        silent.inline_payload,
+        ContextResourceLifecycleRecord::default().inline_payload,
+        "an omitted field must decode to what the type's own default says"
+    );
+
+    // Saying it explicitly still works -- this is about what silence means.
+    let mut external: serde_json::Value =
+        serde_json::to_value(ContextResourceLifecycleRecord::default()).unwrap();
+    external
+        .as_object_mut()
+        .unwrap()
+        .insert("inline_payload".to_string(), serde_json::Value::Bool(false));
+    let stated: ContextResourceLifecycleRecord = serde_json::from_value(external).unwrap();
+    assert!(!stated.inline_payload);
+}

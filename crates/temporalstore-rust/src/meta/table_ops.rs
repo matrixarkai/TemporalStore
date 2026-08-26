@@ -101,11 +101,15 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        self.record_mutation(MetaMutation::DeleteTable(request.clone()));
-        self.apply_delete_table(request)
+        let at_ms = self.record_mutation(MetaMutation::DeleteTable(request.clone()));
+        self.apply_delete_table(request, at_ms)
     }
 
-    pub(super) fn apply_delete_table(&self, request: DeleteTableRequest) -> AckResponse {
+    pub(super) fn apply_delete_table(
+        &self,
+        request: DeleteTableRequest,
+        at_ms: u64,
+    ) -> AckResponse {
         if request.namespace.is_empty() || request.table_name.is_empty() {
             return AckResponse {
                 status: Status::error("bad_request", "namespace and table_name are required"),
@@ -143,7 +147,7 @@ impl SingleNodeMeta {
             &mut state,
             &dropped_key("table", &key),
             MetaEntityState::Dropped,
-            now_ms(),
+            at_ms,
         );
         AckResponse {
             status: Status::ok(),
@@ -154,16 +158,16 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        self.record_mutation(MetaMutation::FreezeTable(request.clone()));
-        self.apply_set_table_state(request, MetaEntityState::Frozen)
+        let at_ms = self.record_mutation(MetaMutation::FreezeTable(request.clone()));
+        self.apply_set_table_state(request, MetaEntityState::Frozen, at_ms)
     }
 
     pub fn unfreeze_table(&self, request: DeleteTableRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        self.record_mutation(MetaMutation::UnfreezeTable(request.clone()));
-        self.apply_set_table_state(request, MetaEntityState::Normal)
+        let at_ms = self.record_mutation(MetaMutation::UnfreezeTable(request.clone()));
+        self.apply_set_table_state(request, MetaEntityState::Normal, at_ms)
     }
 
     pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
@@ -236,7 +240,9 @@ impl SingleNodeMeta {
                 return AckResponse {
                     status: Status::error(
                         "shards_registered",
-                        "shard_count cannot change once the table's shards are registered:                          the key range of every existing shard would move, and nothing                          redistributes the data that moved with it",
+                        "shard_count cannot change once the table's shards are registered: \
+                         the key range of every existing shard would move, and \
+                         nothing redistributes the data that moved with it",
                     ),
                 };
             }

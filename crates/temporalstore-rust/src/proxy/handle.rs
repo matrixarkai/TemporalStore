@@ -13,7 +13,8 @@ impl ProxyService {
                 (200, self.prometheus_metrics().into_bytes())
             }
             ("GET", "/readiness") => {
-                json_response(200, &crate::production_readiness_report())
+                let (status, response) = self.readiness_response();
+                json_response(status, &response)
             }
             ("GET", "/proxy/info") | ("GET", "/ProxyService/GetInfo") => {
                 json_response(200, &self.info())

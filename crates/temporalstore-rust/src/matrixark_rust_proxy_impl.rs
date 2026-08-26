@@ -14,6 +14,7 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -95,6 +96,28 @@ struct RecordLogRequest {
     visibility_keys: Vec<String>,
     #[serde(default)]
     top_level_response: bool,
+    /// Byte offset for `matrixark_resource_blob_fetch` (0 = start).
+    #[serde(default)]
+    blob_offset: Option<u64>,
+    /// Byte count for `matrixark_resource_blob_fetch` (0/absent = to the end).
+    #[serde(default)]
+    blob_length: Option<u64>,
+    /// Content hashes (16-digit hex) the caller's resource records still name, for
+    /// `matrixark_resource_blob_sweep` -- everything else older than the age floor goes.
+    #[serde(default)]
+    blob_referenced_hashes: Option<Vec<String>>,
+    /// Minimum age before an unreferenced blob is eligible for the sweep.
+    #[serde(default)]
+    blob_min_age_ms: Option<u64>,
+    /// Client-chosen correlation id, echoed verbatim on the response. The serve loop answers
+    /// requests strictly in order on one stdout, so a client that abandons a slow request (its
+    /// own timeout) and keeps the process alive would otherwise read the ABANDONED request's
+    /// late response as the answer to its next request -- every later reply shifted one back,
+    /// silently serving the wrong data (observed as one scope's scan answered with another
+    /// scope's records). The echo lets the client discard late responses instead of
+    /// mis-attributing them.
+    #[serde(default)]
+    client_request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -346,6 +369,9 @@ struct RecordLogResponse {
     error_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
+    /// The request's correlation id, echoed verbatim (see RecordLogRequest::client_request_id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_request_id: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -423,6 +449,7 @@ fn response_from_result(
             error: String::new(),
             error_code: String::new(),
             retryable: None,
+            client_request_id: None,
             extra: output.extra,
         },
         Err((op, error)) => {
@@ -447,6 +474,7 @@ fn response_from_result(
                 error,
                 error_code,
                 retryable: Some(retryable),
+                client_request_id: None,
                 extra: BTreeMap::new(),
             }
         }
@@ -541,6 +569,13 @@ fn serve() -> i32 {
         }
         let started = Instant::now();
         let request: Result<RecordLogRequest, _> = serde_json::from_str(&line);
+        // Captured before the request moves into its handler; echoed on EVERY response line
+        // (including shutdown), so the client can match responses to requests and discard the
+        // late answer of a request it abandoned instead of shifting every later reply back one.
+        let client_request_id = request
+            .as_ref()
+            .ok()
+            .and_then(|request| request.client_request_id.clone());
         let result = match request {
             Ok(request) if request.op == "shutdown" => {
                 let cached_clients = cached_engine_count();
@@ -555,6 +590,7 @@ fn serve() -> i32 {
                     Ok(("shutdown".to_string(), output)),
                     started.elapsed().as_millis(),
                 );
+                response.client_request_id = client_request_id;
                 let _ = writeln!(stdout, "{}", serialize_response_with_metrics(&mut response));
                 let _ = stdout.flush();
                 return 0;
@@ -586,6 +622,7 @@ fn serve() -> i32 {
         };
         let elapsed_ms = started.elapsed().as_millis();
         let mut response = response_from_result(result, elapsed_ms);
+        response.client_request_id = client_request_id;
         let response_json = serialize_response_with_metrics(&mut response);
         command_count += 1;
         let observed_elapsed_ms = response.elapsed_ms.unwrap_or(elapsed_ms);
@@ -1126,6 +1163,42 @@ fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
     }
 }
 
+/// Fetch the payload values at `locations` ("{shard:06}:{field}") through the shard hash
+/// snapshots, in append order (lexical location order = shard, then zero-padded field).
+///
+/// Reads whole shard hashes via hgetall_map on purpose: HashMultiGet re-reads each field's page
+/// uncached on every call (measured ~0.5 ms/field, never warming), while the snapshot is read
+/// once and then kept current by the write runtimes -- the same coherence the shard walk has
+/// always relied on. A location whose field is missing or empty is a stale index entry: the
+/// record was physically removed after its entry was written, and skipping it is the contract.
+fn fetch_indexed_payload_values(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    locations: &std::collections::BTreeSet<String>,
+) -> Result<(Vec<String>, u64), String> {
+    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for location in locations {
+        if let Some((shard, field)) = location.split_once(':') {
+            fields_by_shard
+                .entry(shard.to_string())
+                .or_default()
+                .push(field.to_string());
+        }
+    }
+    let shards_touched = fields_by_shard.len() as u64;
+    let mut values = Vec::with_capacity(locations.len());
+    for (shard, fields) in fields_by_shard {
+        let snapshot = hgetall_map(engine, format!("{record_hash_key}:{shard}"))?;
+        for field in fields {
+            match snapshot.get(&field) {
+                Some(value) if !value.is_empty() => values.push(value.clone()),
+                _ => {}
+            }
+        }
+    }
+    Ok((values, shards_touched))
+}
+
 fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, String>, String> {
     if let Ok(cache) = hgetall_snapshot_cache().lock() {
         if let Some(cached) = cache.get(&key) {
@@ -1150,8 +1223,14 @@ fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, 
                     .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
                 decoded.insert(field, value);
             }
-            if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
-                cache.insert(key, decoded.clone());
+            // An empty read must stay a question, not become an answer: caching it would pin
+            // "no data" for a key no write may ever touch again (observed once as a pinned
+            // get_all stuck at 0 rows after a cold start until restart). An actually-empty hash
+            // re-reads at map-miss cost, no page reads.
+            if !decoded.is_empty() {
+                if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+                    cache.insert(key, decoded.clone());
+                }
             }
             Ok(decoded)
         }
@@ -1393,55 +1472,8 @@ fn type_index_payloads(
         }
     }
     // BTreeSet order is lexical: shard6 then the zero-padded record field = append order.
-    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for location in &locations {
-        if let Some((shard, field)) = location.split_once(':') {
-            fields_by_shard
-                .entry(shard.to_string())
-                .or_default()
-                .push(field.to_string());
-        }
-    }
-    let shards_touched = fields_by_shard.len() as u64;
-    let mut values = Vec::with_capacity(locations.len());
-    for (shard, fields) in fields_by_shard {
-        let key = format!("{record_hash_key}:{shard}");
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: DEFAULT_SHARD_ID,
-            command: Command::HashMultiGet {
-                key,
-                fields: fields.clone(),
-            },
-        });
-        if !response.status.ok {
-            return Err(format!(
-                "{}: {}",
-                response.status.code, response.status.message
-            ));
-        }
-        match response.response {
-            CommandResponse::Values {
-                values: shard_values,
-            } => {
-                for value in shard_values {
-                    // A missing or empty field is a stale index entry: the record was physically
-                    // removed after its index entry was written. Skipping it is the contract.
-                    let Some(bytes) = value else { continue };
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    values.push(String::from_utf8(bytes).map_err(|error| {
-                        format!("stored hash value is not UTF-8: {error}")
-                    })?);
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unexpected response for type-index fetch: {other:?}"
-                ))
-            }
-        }
-    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &locations)?;
     Ok(Some((values, shards_touched)))
 }
 
@@ -1514,6 +1546,13 @@ fn scope_index_payloads(
         return Ok(None);
     }
     let mut source_buckets: Vec<String> = vec![bucket.to_string()];
+    // Tenant-scoped records (a scope_key with a tenant but no user) live in "partial". Consumers
+    // differ on them -- get_all wants exact tenant AND user equality and drops them, while prior
+    // context accepts a tenant-wide summary for a user in that tenant -- so the fetch includes
+    // them and the shared filter loop applies each consumer's real predicate. The index stays a
+    // pre-filter; widening it can cost a wasted read, never a wrong answer, and an unpinned scan
+    // was already returning these rows.
+    source_buckets.push("partial".to_string());
     if allowed_types.is_empty() {
         source_buckets.push("none".to_string());
     } else {
@@ -1547,50 +1586,8 @@ fn scope_index_payloads(
                 .collect();
         }
     }
-    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for location in &positions {
-        if let Some((shard, field)) = location.split_once(':') {
-            fields_by_shard
-                .entry(shard.to_string())
-                .or_default()
-                .push(field.to_string());
-        }
-    }
-    let shards_touched = fields_by_shard.len() as u64;
-    let mut values = Vec::with_capacity(positions.len());
-    for (shard, fields) in fields_by_shard {
-        let key = format!("{record_hash_key}:{shard}");
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: DEFAULT_SHARD_ID,
-            command: Command::HashMultiGet { key, fields },
-        });
-        if !response.status.ok {
-            return Err(format!(
-                "{}: {}",
-                response.status.code, response.status.message
-            ));
-        }
-        match response.response {
-            CommandResponse::Values {
-                values: shard_values,
-            } => {
-                for value in shard_values {
-                    let Some(bytes) = value else { continue };
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    values.push(String::from_utf8(bytes).map_err(|error| {
-                        format!("stored hash value is not UTF-8: {error}")
-                    })?);
-                }
-            }
-            other => {
-                return Err(format!(
-                    "unexpected response for scope-index fetch: {other:?}"
-                ))
-            }
-        }
-    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &positions)?;
     Ok(Some((values, shards_touched)))
 }
 
@@ -1628,13 +1625,28 @@ fn record_id_linked(record: &Value, ids: &HashSet<String>) -> bool {
     {
         return true;
     }
-    for field in ["target_memory_id", "superseded_by"] {
+    for field in ["target_memory_id", "superseded_by", "source_event_hash"] {
         match record.get(field) {
             Some(Value::String(text)) if ids.contains(text.as_str()) => return true,
             Some(Value::Number(number)) if ids.contains(number.to_string().as_str()) => {
                 return true
             }
             _ => {}
+        }
+    }
+    // Provenance arrays: a derivative points at its sources through these, without carrying
+    // them as addressable ids -- exactly the records a get-by-id must return alongside the event.
+    for field in ["source_event_ids", "source_refs"] {
+        if let Some(Value::Array(items)) = record.get(field) {
+            for item in items {
+                match item {
+                    Value::String(text) if ids.contains(text.as_str()) => return true,
+                    Value::Number(number) if ids.contains(number.to_string().as_str()) => {
+                        return true
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     false
@@ -1660,6 +1672,18 @@ fn id_scoped_payloads(
         return Ok(None);
     };
     let locator_key = format!("{prefix}:context_ref_locator");
+    // A store whose locator was fed pointed ids (provenance + targets) from its FIRST append
+    // marks itself; on such stores the locator alone answers "records about these ids", and the
+    // type-index compose below -- which would fetch every record of each requested type -- is
+    // skipped. Unmarked (pre-existing) stores keep the composed behavior unchanged.
+    let locator_covers_pointed_ids = hgetall_map(engine, format!("{locator_key}_meta"))
+        .ok()
+        .map(|meta| {
+            meta.get("provenance_from_start")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
     let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for id in requested_ids {
         let raw = read_bytes(
@@ -1702,58 +1726,18 @@ fn id_scoped_payloads(
             return Ok(None);
         }
     }
-    for record_type in allowed_types {
-        if record_type == "context_event" {
-            continue;
-        }
-        for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
-            positions.insert(location);
-        }
-    }
-    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for location in &positions {
-        if let Some((shard, field)) = location.split_once(':') {
-            fields_by_shard
-                .entry(shard.to_string())
-                .or_default()
-                .push(field.to_string());
-        }
-    }
-    let shards_touched = fields_by_shard.len() as u64;
-    let mut values = Vec::with_capacity(positions.len());
-    for (shard, fields) in fields_by_shard {
-        let key = format!("{record_hash_key}:{shard}");
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: DEFAULT_SHARD_ID,
-            command: Command::HashMultiGet { key, fields },
-        });
-        if !response.status.ok {
-            return Err(format!(
-                "{}: {}",
-                response.status.code, response.status.message
-            ));
-        }
-        match response.response {
-            CommandResponse::Values {
-                values: shard_values,
-            } => {
-                for value in shard_values {
-                    let Some(bytes) = value else { continue };
-                    if bytes.is_empty() {
-                        continue;
-                    }
-                    values.push(String::from_utf8(bytes).map_err(|error| {
-                        format!("stored hash value is not UTF-8: {error}")
-                    })?);
-                }
+    if !locator_covers_pointed_ids {
+        for record_type in allowed_types {
+            if record_type == "context_event" {
+                continue;
             }
-            other => {
-                return Err(format!(
-                    "unexpected response for id-scoped fetch: {other:?}"
-                ))
+            for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
+                positions.insert(location);
             }
         }
     }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &positions)?;
     Ok(Some((values, shards_touched)))
 }
 
@@ -2302,6 +2286,70 @@ fn record_addressable_ids(record: &Value) -> Vec<String> {
 /// Mirrors `forget_scope_records` -- same shard walk, same survivor rewrite, same single durable
 /// batch that also clears the scan/hgetall caches so a later retrieve cannot re-serve a removed
 /// record from cache. Only the predicate differs: identity ids instead of a scope.
+/// The `(shard, field)` locations the ref locator holds for `ids`, or `None` when the locator
+/// cannot be trusted to be complete for this store.
+///
+/// Completeness is the whole question: visiting only located fields is correct exactly when the
+/// locator saw every record this store ever wrote, which is what the `provenance_from_start`
+/// marker attests (it is stamped by the batch that writes the store's first record). Without it
+/// the caller must walk, because a missed field would leave a deleted record physically present.
+fn located_fields_for_ids(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    ids: &[String],
+) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
+    let Some(prefix) = record_hash_key.strip_suffix(":records") else {
+        return Ok(None);
+    };
+    let locator_key = format!("{prefix}:context_ref_locator");
+    let covered = hgetall_map(engine, format!("{locator_key}_meta"))?
+        .get("provenance_from_start")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false);
+    if !covered {
+        return Ok(None);
+    }
+    let mut by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in ids {
+        let raw = read_bytes(
+            engine,
+            Command::HashGet {
+                key: locator_key.clone(),
+                field: id.clone(),
+            },
+        )?;
+        if raw.is_empty() {
+            continue;
+        }
+        let Ok(decoded) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        for location in decoded
+            .get("locations")
+            .and_then(Value::as_array)
+            .map(|items| items.as_slice())
+            .unwrap_or(&[])
+        {
+            let key = location.get("key").and_then(Value::as_str).unwrap_or("");
+            let field = location.get("field").and_then(Value::as_str).unwrap_or("");
+            if key.is_empty() || field.is_empty() {
+                continue;
+            }
+            let Some((base, shard)) = record_shard_key_parts(key) else {
+                continue;
+            };
+            if base != record_hash_key {
+                continue;
+            }
+            let fields = by_shard.entry(shard.to_string()).or_default();
+            if !fields.iter().any(|existing| existing == field) {
+                fields.push(field.to_string());
+            }
+        }
+    }
+    Ok(Some(by_shard))
+}
+
 fn delete_records_by_ids(
     engine: &TemporalEngine,
     record_hash_key: &str,
@@ -2326,10 +2374,31 @@ fn delete_records_by_ids(
     }
     let max_shard = (count - 1) / shard_size;
     let mut commands = Vec::new();
-    for shard in 0..=max_shard {
+    // Which fields could hold these ids? The locator answers directly on a store it covers
+    // completely; otherwise every shard has to be read.
+    let located = located_fields_for_ids(engine, record_hash_key, ids)?;
+    let visit: Vec<(String, Vec<String>)> = match &located {
+        Some(by_shard) => by_shard
+            .iter()
+            .map(|(shard, fields)| (shard.clone(), fields.clone()))
+            .collect(),
+        None => (0..=max_shard)
+            .map(|shard| (format!("{shard:06}"), Vec::new()))
+            .collect(),
+    };
+    for (shard, only_fields) in visit {
         stats.shards_scanned += 1;
-        let key = format!("{}:{:06}", record_hash_key, shard);
-        for (field, value) in hgetall_map(engine, key.clone())? {
+        let key = format!("{}:{}", record_hash_key, shard);
+        let shard_map = hgetall_map(engine, key.clone())?;
+        let entries: Vec<(String, String)> = if only_fields.is_empty() {
+            shard_map.into_iter().collect()
+        } else {
+            only_fields
+                .into_iter()
+                .filter_map(|field| shard_map.get(&field).map(|value| (field, value.clone())))
+                .collect()
+        };
+        for (field, value) in entries {
             let records = decode_matrixark_payload(&value);
             if records.is_empty() {
                 // Undecodable / non-record field (e.g. a counter): never touch it.
@@ -2359,14 +2428,14 @@ fn delete_records_by_ids(
                 for record_type in payload_record_types(&value) {
                     commands.push(Command::HashDelete {
                         key: type_index_key(record_hash_key, &record_type),
-                        field: format!("{shard:06}:{field}"),
+                        field: format!("{shard}:{field}"),
                     });
                 }
                 for record in decode_matrixark_payload(&value) {
                     for bucket in record_scope_buckets(&record) {
                         commands.push(Command::HashDelete {
                             key: scope_index_key(record_hash_key, &bucket),
-                            field: format!("{shard:06}:{field}"),
+                            field: format!("{shard}:{field}"),
                         });
                     }
                 }
@@ -2600,6 +2669,91 @@ fn execute_record_log_request(
             cached_clients: None,
             extra: BTreeMap::new(),
         },
+        // Attachment blob tier, engine command side: the python surface reaches the
+        // embedded engine's content-addressed blob store through these ops, mirroring the
+        // datanode's HTTP /blob tier for deployments that run no HTTP server. Payloads ride
+        // base64 in `value`; structured results ride the flattened extra map.
+        "matrixark_resource_blob_put" => {
+            let tenant_hash: u64 = request
+                .key
+                .trim()
+                .parse()
+                .map_err(|_| format!("blob put needs a decimal tenant hash in key, got {:?}", request.key))?;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobPut {
+                    tenant_hash,
+                    payload_base64: request.value.clone(),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobCommitted { uri, size_bytes, content_hash } = response.response {
+                output.status = "committed".to_string();
+                output.extra.insert("matrixark_blob_uri".to_string(), json!(uri));
+                output.extra.insert("matrixark_blob_size_bytes".to_string(), json!(size_bytes));
+                output.extra.insert(
+                    "matrixark_blob_content_hash".to_string(),
+                    json!(format!("{content_hash:016x}")),
+                );
+            }
+            output
+        }
+        "matrixark_resource_blob_fetch" => {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobFetch {
+                    uri: request.key.clone(),
+                    offset: request.blob_offset.unwrap_or(0),
+                    length: request.blob_length.unwrap_or(0),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobChunk { payload_base64, total_size, eof } = response.response {
+                output.status = "served".to_string();
+                output.value = payload_base64;
+                output.extra.insert("matrixark_blob_total_size".to_string(), json!(total_size));
+                output.extra.insert("matrixark_blob_eof".to_string(), json!(eof));
+            }
+            output
+        }
+        "matrixark_resource_blob_sweep" => {
+            let tenant_hash: u64 = request
+                .key
+                .trim()
+                .parse()
+                .map_err(|_| format!("blob sweep needs a decimal tenant hash in key, got {:?}", request.key))?;
+            let referenced: Vec<u64> = request
+                .blob_referenced_hashes
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+                .collect();
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobSweep {
+                    tenant_hash,
+                    referenced_content_hashes: referenced,
+                    min_age_ms: request.blob_min_age_ms.unwrap_or(3_600_000),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobSwept { scanned, deleted } = response.response {
+                output.status = "swept".to_string();
+                output.extra.insert("matrixark_blob_scanned".to_string(), json!(scanned));
+                output.extra.insert("matrixark_blob_deleted".to_string(), json!(deleted));
+            }
+            output
+        }
         "matrixark_publish_visibility" => {
             let visibility_key_count = request.visibility_keys.len();
             let index_bytes = engine
@@ -2959,7 +3113,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         | "metrics_prometheus"
         | "shutdown"
         | "matrixark_publish_visibility" => Ok(()),
-        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
+        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash"
+        | "matrixark_resource_blob_put"
+        | "matrixark_resource_blob_fetch"
+        | "matrixark_resource_blob_sweep" => {
             require_non_empty("key", &request.key)
         }
         "matrixark_scan_candidates"
@@ -3081,35 +3238,25 @@ fn hash_entries_output(
     key: String,
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
-    let response = engine.execute_durable(ExecuteRequest {
-        shard_id: DEFAULT_SHARD_ID,
-        command: Command::HashGetAll { key: key.clone() },
-    });
-    if !response.status.ok {
-        return Err(format!(
-            "{}: {}",
-            response.status.code, response.status.message
-        ));
-    }
-    match response.response {
-        CommandResponse::HashEntries { entries } => {
-            let mut decoded = BTreeMap::new();
+    // Read through the hash snapshot: a raw HashGetAll re-reads every field's page uncached on
+    // each call (measured 14.6 ms warm for a 27-field hash), while the snapshot is read once and
+    // kept current by the write runtimes -- the same coherence every internal hgetall relies on.
+    {
+        let decoded = hgetall_map(engine, key.clone())?;
+        {
             let mut records = Vec::new();
-            for (field, value) in entries {
-                let value = String::from_utf8(value)
-                    .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+            for (field, value) in &decoded {
                 records.push(HashReadRecord {
                     key: key.clone(),
                     field: field.clone(),
                     value: value.clone(),
                 });
-                decoded.insert(field, value);
             }
             let mut extra = BTreeMap::new();
             extra.insert("native_prefix_scan".to_string(), json!(true));
             extra.insert(
                 "prefix_scan_path".to_string(),
-                json!("rust_proxy_scan_hash"),
+                json!("rust_proxy_scan_hash_snapshot"),
             );
             Ok(RecordLogOutput {
                 value: serde_json::to_string(&decoded)
@@ -3127,7 +3274,6 @@ fn hash_entries_output(
                 extra,
             })
         }
-        other => Err(format!("unexpected response for hgetall: {other:?}")),
     }
 }
 
@@ -3144,6 +3290,64 @@ fn clear_engine_cache() {
     if let Ok(mut cache) = engine_cache().lock() {
         cache.clear();
     }
+}
+
+/// Page-cache capacity already handed out across every engine this process has opened.
+static ENGINE_CACHE_GRANTED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// MemTotal in bytes, or None where /proc is not available.
+fn system_memory_bytes() -> Option<usize> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        let rest = match line.strip_prefix("MemTotal:") {
+            Some(rest) => rest,
+            None => continue,
+        };
+        let kilobytes: usize = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+        return kilobytes.checked_mul(1024);
+    }
+    None
+}
+
+/// Page-cache capacity for a newly opened engine.
+///
+/// The old fixed 128 MiB default is smaller than the working set of any store past a few hundred
+/// megabytes, and every page read that misses it pays a second-layer read AND a cache fill. That
+/// is what made writes look linear in corpus size. Measured on one 260 MB store, the same ingest
+/// took 3 291 ms at 128 MiB, 1 157 ms at 384 MiB and 902 ms at 1 GiB, while that ingest against a
+/// 20 MB store took 173 ms -- so the "linear growth" was mostly the working set crossing a fixed
+/// cache, not the corpus. A 24 GiB machine now lands each engine at the 512 MiB per-engine
+/// ceiling.
+///
+/// This is a CAPACITY, not an allocation: a cache that may hold a gigabyte still holds only what
+/// has actually been read, so a small store costs no more than it did before. What the capacity
+/// does set is a ceiling, so the number is derived from the machine and bounded twice -- per
+/// engine, and across every engine this process opens, since one proxy can serve many namespaces
+/// and N independent caches at the per-engine size would be N times the intended footprint.
+/// `MATRIXARK_RUST_PROXY_CACHE_BYTES` still overrides this absolutely, per engine, for
+/// deployments that know their own working set.
+fn default_engine_cache_bytes() -> usize {
+    const FLOOR: usize = 128 * 1024 * 1024;
+    const PER_ENGINE_CEILING: usize = 512 * 1024 * 1024;
+    const PROCESS_FLOOR: usize = 512 * 1024 * 1024;
+    const PROCESS_CEILING: usize = 4096 * 1024 * 1024;
+
+    let memory = match system_memory_bytes() {
+        Some(memory) => memory,
+        None => return FLOOR,
+    };
+    // Per engine, not per process: one proxy opens a separate engine per record-log prefix, so a
+    // generous per-engine number spent entirely on the first one starves the rest. A share each
+    // beats everything for one.
+    let want = (memory / 16).clamp(FLOOR, PER_ENGINE_CEILING);
+    let process_ceiling = (memory / 4).clamp(PROCESS_FLOOR, PROCESS_CEILING);
+    // First come, first served against the process budget: an engine opened once the budget is
+    // spent falls back to the floor rather than pushing the process past its ceiling.
+    let granted = ENGINE_CACHE_GRANTED_BYTES.load(Ordering::Relaxed);
+    let remaining = process_ceiling.saturating_sub(granted);
+    let grant = if remaining >= want { want } else { FLOOR };
+    ENGINE_CACHE_GRANTED_BYTES.fetch_add(grant, Ordering::Relaxed);
+    grant
 }
 
 fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
@@ -3166,7 +3370,17 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(128 * 1024 * 1024);
+        .unwrap_or_else(default_engine_cache_bytes);
+    eprintln!(
+        "engine page cache: {} MiB for {} ({})",
+        cache_bytes / (1024 * 1024),
+        root.display(),
+        if env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES").is_ok() {
+            "MATRIXARK_RUST_PROXY_CACHE_BYTES"
+        } else {
+            "default, derived from system memory"
+        }
+    );
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_bytes,
         root.join("cache"),
@@ -3182,7 +3396,31 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
     if defaulted_nonblocking_warm {
         env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
     }
-    engine.load_shard(DEFAULT_SHARD_ID);
+    // A shard load can be REFUSED (corrupt delta stream, WAL hole, replay failure) or can
+    // genuinely fail partway. `load_shard` discards that answer, and the engine below is
+    // cached -- so a refused load used to become a healthy-looking server whose every op
+    // returns shard_not_loaded, which upstream layers can mistake for an empty store. That
+    // is precisely how a damaged-at-scale store served vacuous empties on every reload.
+    // Refuse to open instead: the error names the cause, nothing is cached, and the next
+    // request retries the load rather than inheriting a permanently-empty engine.
+    let load = engine.load_shard_with(temporalstore_rust::LoadShardRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !load.status.ok && load.status.code != "already_exists" {
+        return Err(format!(
+            "shard load refused for record-log root {}: {}: {}",
+            root.display(),
+            load.status.code,
+            load.status.message
+        ));
+    }
     let async_cache_warm = !matches!(
         env::var("MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD")
             .unwrap_or_else(|_| "1".to_string())
@@ -3224,6 +3462,40 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             ..Config::default()
         },
     });
+    // Embedded log maintenance: the proxy engine runs no storage-manager cycle (only the
+    // server/data-node do), so without this its WAL and index-log grow without bound -- a
+    // 100K-record ingest left a multi-GB index log that nothing ever truncated. Poll the
+    // threshold-dump cadence in the background: when the undumped index-log gap crosses
+    // `TS_INDEX_DUMP_WAL_GAP_BYTES`, dump the catalog and reclaim the log prefixes the dump
+    // made redundant. The poll itself is one file-length stat per interval; the dump/reclaim
+    // runs off the request path so no client write pays for the base-index materialization.
+    // No-op (thread not spawned) with the fold gate off or the interval set to 0.
+    let reclaim_interval_ms = env::var("MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1000);
+    if temporalstore_rust::index_log::index_catalog_fold_enabled() && reclaim_interval_ms > 0 {
+        let reclaim_engine = engine.clone();
+        let reclaim_root = root.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(reclaim_interval_ms));
+            if let Some(report) = reclaim_engine.maybe_dump_and_reclaim_index_logs(DEFAULT_SHARD_ID)
+            {
+                eprintln!(
+                    "matrixark_rust_proxy_log_reclaim root={} wal_anchor={} index_log_bytes={}->{} ({} records removed) wal_bytes={}->{} ({} records removed) floor={:?}",
+                    reclaim_root.display(),
+                    report.wal_anchor,
+                    report.index_log_bytes_before,
+                    report.index_log_bytes_after,
+                    report.index_log_records_removed,
+                    report.wal_bytes_before,
+                    report.wal_bytes_after,
+                    report.wal_records_removed,
+                    report.wal_retention_floor,
+                );
+            }
+        });
+    }
     let mut cache = engine_cache()
         .lock()
         .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
@@ -4361,6 +4633,11 @@ mod tests {
             record: None,
             visibility_keys: Vec::new(),
             top_level_response: false,
+            blob_offset: None,
+            blob_length: None,
+            blob_referenced_hashes: None,
+            blob_min_age_ms: None,
+            client_request_id: None,
         }
     }
 
@@ -4442,6 +4719,142 @@ mod tests {
         format!(
             r#"{{"record_type":"context_event","event_id_hash":{event_id},"text":"{text}","scope_key":"t={tenant}|u={user}|s=1|","access_scope":{{"tenant_hash":{tenant},"user_hash":{user},"scope_key":"t={tenant}|u={user}|s=1|"}}}}"#
         )
+    }
+
+    /// A store whose shard load is REFUSED (here: a corrupt WAL record with no base to hide
+    /// behind) must refuse to open -- not hand back a cached engine whose every op answers
+    /// shard_not_loaded. Upstream layers read that steady error stream as an empty store, which
+    /// is exactly how a damaged-at-scale store served vacuous empties on every reload while its
+    /// records sat durably on disk. The refusal must also not be cached: each open retries the
+    /// load, so repairing the artifacts heals the next request.
+    #[test]
+    fn a_refused_shard_load_refuses_open_instead_of_serving_empty() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        {
+            let engine = open_engine(&probe).expect("fresh store opens");
+            let mut put = request("put_string");
+            put.key = "k1".to_string();
+            put.value = "v1".to_string();
+            execute_record_log_request(&engine, put, root.clone()).expect("write lands");
+        }
+        // Crash-and-damage: the process is gone (drop the cache's engine), the durable base is
+        // absent (none was materialized), and a WAL record is corrupt -- so the reload must
+        // replay the WAL and must refuse when it cannot.
+        clear_engine_cache();
+        let wal_path = root.join("indexes").join("wals").join("shard-1.wal.jsonl");
+        let contents = std::fs::read(&wal_path).expect("wal exists");
+        let mut damaged = b"GARBAGE-NOT-A-FRAMED-RECORD".to_vec();
+        damaged.push(b'\n');
+        damaged.extend_from_slice(&contents);
+        std::fs::write(&wal_path, damaged).expect("corrupt wal");
+        let base_path = root.join("indexes").join("shard-1.index.json");
+        let _ = std::fs::remove_file(&base_path);
+
+        let refused = open_engine(&probe);
+        let error = refused.expect_err("a refused load must refuse the open");
+        assert!(
+            error.contains("shard load refused"),
+            "the refusal must name the cause, got: {error}"
+        );
+        assert!(
+            !engine_cache()
+                .lock()
+                .expect("engine cache lock")
+                .contains_key(&root),
+            "a refused load must not cache an engine; the next open must retry the load"
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    /// The blob ops are the python surface's road to the embedded engine's attachment tier:
+    /// put publishes a content-addressed blob and answers with its URI, fetch range-reads it
+    /// back byte-identical through the same op surface, and sweep leaves a still-referenced
+    /// blob alone while collecting the orphan.
+    #[test]
+    fn blob_ops_roundtrip_the_attachment_through_the_op_surface() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+
+        let payload = b"the original attachment bytes, fetched back whole".repeat(64);
+        let mut put = request("matrixark_resource_blob_put");
+        put.key = "42".to_string();
+        put.value = base64_encode_bytes(&payload);
+        let committed = execute_record_log_request(&engine, put, root.clone()).expect("blob put");
+        let uri = committed
+            .extra
+            .get("matrixark_blob_uri")
+            .and_then(Value::as_str)
+            .expect("blob uri")
+            .to_string();
+        assert!(uri.starts_with("temporalstore://resources/"), "unexpected uri {uri}");
+        let kept_hash = committed
+            .extra
+            .get("matrixark_blob_content_hash")
+            .and_then(Value::as_str)
+            .expect("content hash")
+            .to_string();
+
+        let mut fetch = request("matrixark_resource_blob_fetch");
+        fetch.key = uri.clone();
+        let served = execute_record_log_request(&engine, fetch, root.clone()).expect("blob fetch");
+        assert_eq!(
+            Some(payload.len() as u64),
+            served.extra.get("matrixark_blob_total_size").and_then(Value::as_u64)
+        );
+        assert_eq!(Some(true), served.extra.get("matrixark_blob_eof").and_then(Value::as_bool));
+        assert_eq!(payload, base64_decode_str(&served.value), "fetched bytes differ");
+
+        let mut range = request("matrixark_resource_blob_fetch");
+        range.key = uri.clone();
+        range.blob_offset = Some(3);
+        range.blob_length = Some(11);
+        let window = execute_record_log_request(&engine, range, root.clone()).expect("range fetch");
+        assert_eq!(payload[3..14].to_vec(), base64_decode_str(&window.value));
+        assert_eq!(Some(false), window.extra.get("matrixark_blob_eof").and_then(Value::as_bool));
+
+        let mut orphan = request("matrixark_resource_blob_put");
+        orphan.key = "42".to_string();
+        orphan.value = base64_encode_bytes(b"orphaned attachment");
+        execute_record_log_request(&engine, orphan, root.clone()).expect("orphan put");
+
+        let mut sweep = request("matrixark_resource_blob_sweep");
+        sweep.key = "42".to_string();
+        sweep.blob_referenced_hashes = Some(vec![kept_hash]);
+        sweep.blob_min_age_ms = Some(0);
+        let swept = execute_record_log_request(&engine, sweep, root.clone()).expect("sweep");
+        assert_eq!(Some(2), swept.extra.get("matrixark_blob_scanned").and_then(Value::as_u64));
+        assert_eq!(Some(1), swept.extra.get("matrixark_blob_deleted").and_then(Value::as_u64));
+
+        let mut refetch = request("matrixark_resource_blob_fetch");
+        refetch.key = uri;
+        let still_there = execute_record_log_request(&engine, refetch, root).expect("kept blob");
+        assert_eq!(payload, base64_decode_str(&still_there.value), "the referenced blob must survive the sweep");
+    }
+
+    fn base64_encode_bytes(bytes: &[u8]) -> String {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        STANDARD.encode(bytes)
+    }
+
+    fn base64_decode_str(encoded: &str) -> Vec<u8> {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        STANDARD.decode(encoded).expect("valid base64")
     }
 
     /// The core property: walk + backfill on the first pinned scan, scope index on the second,
@@ -5197,6 +5610,11 @@ mod tests {
             .expect("get targeted hash field"),
             r#"{"record_type":"context_event","text":"target published"}"#
         );
+        // Every acked write lands a WAL record even under async storage -- async only
+        // defers the fsync barrier, it does not skip the log -- so a clean reopen
+        // replays the log and restores writes the publish did not target. Targeted
+        // publish governs which keys get their index snapshot persisted (asserted
+        // above via the publish diagnostics), not which writes survive replay.
         assert_eq!(
             read_bytes(
                 &reopened,
@@ -5206,7 +5624,7 @@ mod tests {
                 },
             )
             .expect("get untargeted hash field"),
-            ""
+            r#"{"record_type":"context_event","text":"target not published"}"#
         );
 
         clear_engine_cache();

@@ -3,6 +3,7 @@
 
 //! TemporalStoreClient meta topology sync + route refresh/invalidation + reports, split from client.rs.
 use super::*;
+use crate::meta::TableServingField;
 
 impl TemporalStoreClient {
     pub fn sync_table_topology(
@@ -24,7 +25,7 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TableTopologyResponse = match post_json_with_options(
+        let topology: TableTopologyResponse = match post_json_with_options_and_headers(
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
@@ -33,6 +34,7 @@ impl TemporalStoreClient {
                 table_name: table_name.clone(),
                 old_topology_version: self.last_synced_topology_version(&namespace, &table_name),
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         ) {
             Ok(topology) => topology,
@@ -76,28 +78,29 @@ impl TemporalStoreClient {
                 .max(table.topology_version)
         };
         let serving_options = table.serving_options.clone();
-        let default_serving_options = crate::meta::TableServingOptions::default();
+        // Whether the table speaks for a field, or leaves it to this client's own
+        // option. Asking the table settles it; the alternative -- inferring it from
+        // "the value differs from the default" -- silently overrode any table that
+        // chose a default value on purpose, which is exactly what `drop_percent: 0`
+        // ("never shed this table") and `max_write_retries: 0` ("never retry a write
+        // here") are.
+        let table_decides = |field: TableServingField| serving_options.table_decides(field);
         let options = TableOptions {
             table_id: table.table_id,
-            io_timeout_ms: if serving_options.io_timeout_ms == default_serving_options.io_timeout_ms
-            {
-                self.inner.options.io_timeout_ms
-            } else {
+            io_timeout_ms: if table_decides(TableServingField::IoTimeoutMs) {
                 serving_options.io_timeout_ms
-            },
-            connect_timeout_ms: if serving_options.connect_timeout_ms
-                == default_serving_options.connect_timeout_ms
-            {
-                self.inner.options.connect_timeout_ms
             } else {
+                self.inner.options.io_timeout_ms
+            },
+            connect_timeout_ms: if table_decides(TableServingField::ConnectTimeoutMs) {
                 serving_options.connect_timeout_ms
-            },
-            continuous_failed_time_ms: if serving_options.continuous_failed_time_ms
-                == default_serving_options.continuous_failed_time_ms
-            {
-                TableOptions::default().continuous_failed_time_ms
             } else {
+                self.inner.options.connect_timeout_ms
+            },
+            continuous_failed_time_ms: if table_decides(TableServingField::ContinuousFailedTimeMs) {
                 serving_options.continuous_failed_time_ms
+            } else {
+                TableOptions::default().continuous_failed_time_ms
             },
             first_shard_id: table.first_shard_id,
             shard_count: table.shard_count,
@@ -106,36 +109,32 @@ impl TemporalStoreClient {
             replica_read_policy: replica_read_policy_from_meta(
                 &serving_options.replica_read_policy,
             ),
-            preferred_location: if serving_options.preferred_location.is_empty() {
-                self.inner.options.local_location.clone()
-            } else {
+            preferred_location: if table_decides(TableServingField::PreferredLocation)
+                && !serving_options.preferred_location.is_empty()
+            {
                 serving_options.preferred_location.clone()
-            },
-            drop_percent: if serving_options.drop_percent == default_serving_options.drop_percent {
-                self.inner.options.drop_percent.min(100)
             } else {
+                self.inner.options.local_location.clone()
+            },
+            drop_percent: if table_decides(TableServingField::DropPercent) {
                 serving_options.drop_percent.min(100)
-            },
-            max_read_retries: if serving_options.max_read_retries
-                == default_serving_options.max_read_retries
-            {
-                self.inner.options.max_read_retries
             } else {
+                self.inner.options.drop_percent.min(100)
+            },
+            max_read_retries: if table_decides(TableServingField::MaxReadRetries) {
                 serving_options.max_read_retries as usize
-            },
-            max_write_retries: if serving_options.max_write_retries
-                == default_serving_options.max_write_retries
-            {
-                self.inner.options.max_write_retries
             } else {
+                self.inner.options.max_read_retries
+            },
+            max_write_retries: if table_decides(TableServingField::MaxWriteRetries) {
                 serving_options.max_write_retries as usize
-            },
-            retry_backoff_ms: if serving_options.retry_backoff_ms
-                == default_serving_options.retry_backoff_ms
-            {
-                self.inner.options.retry_backoff_ms
             } else {
+                self.inner.options.max_write_retries
+            },
+            retry_backoff_ms: if table_decides(TableServingField::RetryBackoffMs) {
                 serving_options.retry_backoff_ms
+            } else {
+                self.inner.options.retry_backoff_ms
             },
             ..TableOptions::default()
         };
@@ -241,12 +240,13 @@ impl TemporalStoreClient {
 
     pub(super) fn current_meta_topology_version(&self) -> Option<u64> {
         let meta_addr = self.inner.options.meta_addr.as_ref()?;
-        let topology = post_json_with_options::<_, TopologyVersionReport>(
+        let topology = post_json_with_options_and_headers::<_, TopologyVersionReport>(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version: 0,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )
         .ok()?;
@@ -266,12 +266,13 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_json_with_options(
+        let topology: TopologyVersionReport = post_json_with_options_and_headers(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
@@ -368,12 +369,13 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_json_with_options(
+        let topology: TopologyVersionReport = post_json_with_options_and_headers(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
@@ -864,6 +866,7 @@ impl TemporalStoreClient {
                 consecutive_errors: 0,
                 last_error: String::new(),
                 shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
     }
 
@@ -881,6 +884,47 @@ impl TemporalStoreClient {
             .get(&key)
             .map(|state| state.last_topology_version)
             .unwrap_or(0)
+    }
+
+    /// Whether a failure-driven topology sync for this table is due, claiming the slot if so.
+    ///
+    /// Claimed as it answers, so concurrent failures cannot all decide they are due and fire
+    /// the same sync. Losing that race means skipping a sync another thread is already making,
+    /// which is the outcome wanted.
+    pub(super) fn forced_sync_is_due(&self, namespace: &str, table_name: &str) -> bool {
+        let interval = self.inner.options.topo_error_retry_interval_ms;
+        if interval == 0 {
+            return true;
+        }
+        let now = now_unix_ms();
+        let key = table_combine_name(namespace, table_name);
+        let mut states = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned");
+        let state = states
+            .entry(key)
+            .or_insert_with(|| ClientMetaSyncTableState {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                sync_generation: 0,
+                last_success_unix_ms: 0,
+                last_error_unix_ms: 0,
+                next_sync_after_unix_ms: 0,
+                last_topology_version: 0,
+                consecutive_errors: 0,
+                last_error: String::new(),
+                shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
+            });
+        let last = state.last_forced_sync_unix_ms;
+        // A clock that went backwards should not lock the refresh out until it catches up.
+        if last != 0 && now >= last && now.saturating_sub(last) < interval {
+            return false;
+        }
+        state.last_forced_sync_unix_ms = now;
+        true
     }
 
     pub(super) fn record_meta_sync_success(
@@ -910,6 +954,7 @@ impl TemporalStoreClient {
                 consecutive_errors: 0,
                 last_error: String::new(),
                 shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_success_unix_ms = now;
@@ -946,6 +991,7 @@ impl TemporalStoreClient {
                 consecutive_errors: 0,
                 last_error: String::new(),
                 shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_error_unix_ms = now;

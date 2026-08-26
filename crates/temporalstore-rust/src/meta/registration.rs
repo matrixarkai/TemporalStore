@@ -50,6 +50,8 @@ impl SingleNodeMeta {
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
+                reported_record_count: 0,
+                reported_storage_bytes: 0,
                 load_key_count: 0,
                 load_memory_bytes: 0,
                 worst_shard_state_penalty: 0,
@@ -229,6 +231,16 @@ impl SingleNodeMeta {
             .iter()
             .map(|load| load.memory_bytes)
             .sum();
+        server.reported_record_count = server
+            .shard_states
+            .iter()
+            .map(|reported| reported.total_records as u64)
+            .sum();
+        server.reported_storage_bytes = server
+            .shard_states
+            .iter()
+            .map(|reported| reported.storage_bytes as u64)
+            .sum();
         server.worst_shard_state_penalty = server
             .shard_states
             .iter()
@@ -321,6 +333,12 @@ impl SingleNodeMeta {
             MetaEntityState::Normal,
             now_ms(),
         );
+        record_topology_event(
+            &mut state,
+            "register_proxy",
+            format!("proxy:{proxy_addr}"),
+            "state=normal",
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -370,12 +388,14 @@ impl SingleNodeMeta {
         // The attached group is the authority on what this proxy serves, so the
         // heartbeat is where a reassignment -- or a release back to idle --
         // reaches the proxy.
-        let (group_changed, namespace, config_version) = Self::proxy_group_config(
+        let served = Self::proxy_group_config(
             &state,
             &proxy_addr,
             &request.namespace,
             request.config_version,
         );
+        let (group_changed, namespace, config_version) =
+            (served.changed, served.namespace, served.config_version);
         let attached = state
             .proxies
             .get(&proxy_addr)
@@ -401,7 +421,9 @@ impl SingleNodeMeta {
             namespace,
             config_version,
             serving_mode,
-            drop_percent: 0,
+            // What the group asks its proxies to shed. Zero unless an operator
+            // has said otherwise, which is what every group means by default.
+            drop_percent: if attached { served.drop_percent } else { 0 },
         }
     }
 
@@ -419,10 +441,20 @@ impl SingleNodeMeta {
     pub(super) fn apply_add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         self.counters.namespace_create_total.fetch_add(1, Ordering::Relaxed);
+        let namespace = request.namespace;
+        let created = !state.namespaces.contains_key(&namespace);
         state
             .namespaces
-            .entry(request.namespace)
+            .entry(namespace.clone())
             .or_insert(MetaEntityState::Normal);
+        if created {
+            record_topology_event(
+                &mut state,
+                "add_namespace",
+                format!("namespace:{namespace}"),
+                "state=normal",
+            );
+        }
         AckResponse {
             status: Status::ok(),
         }
@@ -469,29 +501,22 @@ impl SingleNodeMeta {
                     status: Status::error("not_modified", "namespace state is unchanged"),
                 };
             }
-            if next == MetaEntityState::Dropped {
-                let live = state.tables.values().any(|table| {
-                    table.info.namespace == request.namespace
-                        && table.info.state != MetaEntityState::Dropped
-                });
-                if live {
-                    return AckResponse {
-                        status: Status::error(
-                            "namespace_not_empty",
-                            "namespace still holds a table that is not dropped",
-                        ),
-                    };
-                }
-            }
         }
-        self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
-        self.apply_set_namespace_state(request, next)
+        if let Some(status) =
+            self.admission_refusal(&MetaMutation::SetNamespaceState(request.clone(), next))
+        {
+            return AckResponse { status };
+        }
+        let at_ms =
+            self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
+        self.apply_set_namespace_state(request, next, at_ms)
     }
 
     pub(crate) fn apply_set_namespace_state(
         &self,
         request: AddNamespaceRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         let Some(current) = state.namespaces.get_mut(&request.namespace) else {
@@ -504,7 +529,7 @@ impl SingleNodeMeta {
             &mut state,
             &dropped_key("namespace", &request.namespace),
             next,
-            now_ms(),
+            at_ms,
         );
         // Topology is derived on read, so the version bump is what makes clients
         // notice that a namespace stopped, or resumed, serving.

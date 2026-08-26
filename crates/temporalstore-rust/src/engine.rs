@@ -23,6 +23,7 @@ mod object_manager;
 mod packed_pages;
 mod product_model;
 mod set_index_serde;
+mod zset_index_serde;
 mod bucket_dump_manifest_methods;
 mod storage_lifecycle_methods;
 mod storage_manager_cycle;
@@ -33,6 +34,7 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+pub mod resource_blobs;
 pub mod quota;
 pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
@@ -104,6 +106,9 @@ pub struct TemporalEngine {
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
+    // Set only when the engine minted its own index_dir (no caller-supplied one): the
+    // engine owns that scratch directory, and the last clone's drop removes it.
+    index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
@@ -137,6 +142,68 @@ impl TemporalEngine {
             .read()
             .expect("quota lock poisoned")
             .config_of(shard_id)
+    }
+
+    /// How far behind the log each loaded shard's durable index is, in records.
+    ///
+    /// Records land in the log first and the index accounts for them afterwards; this is the
+    /// distance between. It explains two symptoms that otherwise look unrelated to each other: a
+    /// restart that takes much longer than usual, because everything past the index anchor is
+    /// replayed, and reclaim that frees nothing, because it will not pass that anchor.
+    ///
+    /// Every shard in one pass. Callers that already hold a read lock on the shard table must not
+    /// ask per shard: a second read on the same lock, with a writer queued between them, deadlocks.
+    pub fn shard_index_lags(&self) -> Vec<(ShardId, u64)> {
+        let applied: Vec<(ShardId, u64)> = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            shards
+                .iter()
+                .map(|(shard_id, shard)| (*shard_id, shard.applied_wal_sequence.unwrap_or(0)))
+                .collect()
+        };
+        applied
+            .into_iter()
+            .map(|(shard_id, applied)| {
+                let appended = self.wal_store.cached_last_sequence(shard_id);
+                (shard_id, appended.saturating_sub(applied))
+            })
+            .collect()
+    }
+
+    /// How many keys each loaded shard is holding an expiry deadline for.
+    ///
+    /// The sweep's own report says what it REMOVED, which looks equally healthy whether the backlog
+    /// behind it is draining or growing. This says which. The engine already decides how hard to
+    /// work from this number -- it becomes the expiry component of the storage cycle's pressure
+    /// signal -- so publishing it only makes visible what is already being acted on.
+    ///
+    /// Every shard in one pass, for the same reason as the trailing distance: a caller inside the
+    /// metrics loop already holds a read lock on the shard table.
+    pub fn shard_expiry_backlogs(&self) -> Vec<(ShardId, u64)> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .iter()
+            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms.len() as u64))
+            .collect()
+    }
+
+    /// What a shard's rate limit has allowed and refused, if it has one.
+    ///
+    /// Absent means the shard is not limited, which is different from a limit that has refused
+    /// nothing -- and the difference is the one an operator actually wants.
+    pub fn shard_quota_counters(&self, shard_id: ShardId) -> Option<quota::QuotaCounters> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .counters_of(shard_id)
+    }
+
+    /// Every shard carrying a rate limit, for reporting.
+    pub fn rate_limited_shards(&self) -> Vec<ShardId> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .limited_shards()
     }
 
     /// Take one token for `kind`. True when the command may proceed.
@@ -304,6 +371,11 @@ impl TemporalEngine {
                     response: CommandResponse::Empty,
                 };
             }
+        }
+        // Blob commands run before the shard lock: blobs live beside the engine, not inside
+        // any shard's record state, and a large upload must never hold the shard write lock.
+        if let Some(response) = self.execute_resource_blob_command(&request) {
+            return response;
         }
         if async_storage_override.is_some() {
             if let Some(response) = self.execute_read_only_fast_path(&request) {
@@ -496,6 +568,7 @@ impl TemporalEngine {
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
             let delta_command_keys = object_keys.clone();
+            let upsert_components = command_upsert_components(&command);
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -604,6 +677,7 @@ impl TemporalEngine {
                                     request.shard_id,
                                     &record.staged_pages,
                                     log_id,
+                                    record.sequence,
                                     &self.wal_store,
                                 );
                             }
@@ -672,12 +746,30 @@ impl TemporalEngine {
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
                 // is gone); the base is materialized at compaction/unload, the funnel serves
                 // the live in-memory shard between them, and cold reload folds base + deltas.
-                let items = collect_command_index_items(
-                    shard,
-                    &delta_command_keys,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let (items, upsert_record) = match upsert_components
+                    .as_ref()
+                    .filter(|_| upsert_deltas_enabled())
+                {
+                    Some(components) => (
+                        collect_upsert_index_items(
+                            shard,
+                            request.shard_id,
+                            components,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        true,
+                    ),
+                    None => (
+                        collect_command_index_items(
+                            shard,
+                            &delta_command_keys,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        false,
+                    ),
+                };
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
@@ -694,6 +786,7 @@ impl TemporalEngine {
                     key_states,
                     shard.applied_wal_sequence,
                     None,
+                    upsert_record,
                     index_log_durable,
                 );
             }
@@ -1495,8 +1588,103 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
     value
 }
 
+/// Serialize a shard whose stamp is already current, straight to bytes.
+///
+/// The stamping path builds an entire intermediate `serde_json::Value` tree of the whole index
+/// before encoding it -- serializing a multi-megabyte structure twice, once into a tree of
+/// allocations and once into bytes, on every snapshot. A shard whose version field is already
+/// correct needs none of that; one whose field is stale still takes the stamping path, so the
+/// bytes are identical either way.
+pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
+    shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
+    encode_index_bytes(shard)
+}
+
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    serde_json::to_vec(&stamp_index_format_version(shard)).expect("shard index should serialize")
+    if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
+        return encode_index_bytes(shard);
+    }
+    wrap_index_json(
+        serde_json::to_vec(&stamp_index_format_version(shard))
+            .expect("shard index should serialize"),
+    )
+}
+
+/// Container magic for a non-JSON served index. A JSON index starts with `{`, so a reader can
+/// tell the two apart from the first byte and never has to be told which it is holding.
+const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
+
+/// Payload codec ids inside the container. The whole point of the container is that this is an
+/// enumeration rather than a decision: a future protobuf or bincode payload is a new id whose
+/// decoder lands beside the existing ones, and every index written before it keeps loading.
+const INDEX_CODEC_ZSTD_JSON: u8 = 1;
+
+/// Compression level for the container payload. The served index is written whole, in the
+/// background, and read whole -- so this trades a little CPU on a path that is not the request
+/// path for a large cut in bytes written and bytes read at load.
+const INDEX_ZSTD_LEVEL: i32 = 3;
+
+/// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
+/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
+/// index written either way loads in either setting.
+fn index_binary_container_enabled() -> bool {
+    env_flag_on("TS_INDEX_BINARY")
+}
+
+/// The single place the served index becomes bytes.
+///
+/// The measured cost of raw JSON here is real: a 1 000-memory store carries a 74 MB index, and a
+/// dump rewrites it whole. Compressing the same JSON keeps ONE representation of the struct --
+/// no schema mirrored by hand, no second definition to drift -- while cutting what is written and
+/// what must be read back at load.
+pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
+    wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
+}
+
+/// Put already-serialized index JSON into the container (or leave it as JSON when the container
+/// is off). Separate from `encode_index_bytes` because the version-stamping path serializes a
+/// patched `Value` rather than the struct, and both must produce the same on-disk shape.
+fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
+    if !index_binary_container_enabled() {
+        return json;
+    }
+    match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
+        Ok(payload) => {
+            let mut out = Vec::with_capacity(payload.len() + INDEX_CONTAINER_MAGIC.len() + 1);
+            out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+            out.push(INDEX_CODEC_ZSTD_JSON);
+            out.extend_from_slice(&payload);
+            out
+        }
+        // A compression failure must not cost the index: fall back to the bytes that always work.
+        Err(_) => json,
+    }
+}
+
+/// The single place served-index bytes become a `ShardState`, whatever wrote them.
+///
+/// Sniffs the container magic, so JSON written by any earlier binary keeps loading unchanged and
+/// a container written by a newer one is refused with a clear error rather than mis-parsed. Every
+/// decode site goes through here; the previous attempt at a binary index failed precisely because
+/// the decoders were scattered and could not move together.
+pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
+    if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
+        return serde_json::from_slice::<ShardState>(bytes).map_err(|error| error.to_string());
+    }
+    let body = &bytes[INDEX_CONTAINER_MAGIC.len()..];
+    let (codec, payload) = body
+        .split_first()
+        .ok_or_else(|| "served index container is truncated".to_string())?;
+    match *codec {
+        INDEX_CODEC_ZSTD_JSON => {
+            let json = zstd::stream::decode_all(payload)
+                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
+            serde_json::from_slice::<ShardState>(&json).map_err(|error| error.to_string())
+        }
+        other => Err(format!(
+            "served index uses payload codec {other}, which this binary cannot read"
+        )),
+    }
 }
 
 /// Collect the served-index delta items for exactly the object keys a single write
@@ -1505,6 +1693,109 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
 /// touched key. Deleted pages ride as `deleted` tombstones so a fold applies the removal.
 /// Empty when the command has no object keys (e.g. a context rebuild command); the caller
 /// still appends the record so the index-log sequence advances per write.
+/// The (kind, object_key, component) writes a command performs when -- and only when -- every
+/// one of them lands through the page-upsert path (one new page per component, predecessor
+/// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
+/// rewrites), and the caller must fall back to the whole-object snapshot record.
+/// Emission gate for upsert delta records. ON by default; TS_INDEXLOG_UPSERT_DELTAS=0 is the
+/// escape hatch. The gate was OFF while a multi-restart scale store that reconstructed EMPTY
+/// on reload was attributed to the fold of a large upsert-record log. The scale
+/// reload-equality suite (tests/upsert_reload_equality.rs: thousands of batch-committed
+/// upsert records, config-log present, threshold dumps, SIGKILL restarts across two
+/// generations, verified under BOTH recovery modes) plus an engine-level reload of the
+/// preserved damaged store under every mode/artifact combination showed the fold reconstructs
+/// the full served view; the observed emptiness came from the serving layer answering
+/// vacuously (a discarded shard-load failure served as an empty store) and is fixed there.
+fn upsert_deltas_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("TS_INDEXLOG_UPSERT_DELTAS")
+            .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
+            .unwrap_or(true)
+    })
+}
+
+fn command_upsert_components(
+    command: &Command,
+) -> Option<Vec<(&'static str, String, Option<String>)>> {
+    match command {
+        Command::HashSet { key, field, .. } => {
+            Some(vec![("hash", key.clone(), Some(field.clone()))])
+        }
+        Command::HashMultiSet { key, entries } => Some(
+            entries
+                .iter()
+                .map(|(field, _)| ("hash", key.clone(), Some(field.clone())))
+                .collect(),
+        ),
+        Command::HashIncrBy { key, field, .. } => {
+            Some(vec![("hash", key.clone(), Some(field.clone()))])
+        }
+        Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
+        _ => None,
+    }
+}
+
+/// Build the exact index items for an upsert record from post-apply shard state: each written
+/// component's address is read back from the map the write just updated, so the logged page is
+/// precisely the one a reload must serve. A component absent from the map (its append failed)
+/// is skipped -- it produced no page to pin.
+fn collect_upsert_index_items(
+    shard: &ShardState,
+    shard_id: ShardId,
+    components: &[(&'static str, String, Option<String>)],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> Vec<crate::index_log::IndexItem> {
+    let mut items = Vec::with_capacity(components.len());
+    for (kind, object_key, component) in components {
+        let address = match (*kind, component) {
+            ("hash", Some(field)) => shard
+                .hashes
+                .get(object_key)
+                .and_then(|fields| fields.get(field))
+                .cloned(),
+            ("string", None) => shard.strings.get(object_key).cloned(),
+            _ => None,
+        };
+        let Some(address) = address else { continue };
+        let routing_bucket = address
+            .routing_bucket
+            .unwrap_or_else(|| {
+                page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+            });
+        let object_id = address.object_id.unwrap_or_else(|| {
+            stable_page_object_id(shard_id, kind, object_key, component.as_deref())
+        });
+        let page_ref_key = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            kind,
+            object_key,
+            component.as_deref().unwrap_or(""),
+            address.page_slab_id,
+            address.offset,
+            address.length,
+            address.page_id.unwrap_or_default(),
+            address.generation.unwrap_or_default()
+        );
+        items.push(crate::index_log::IndexItem {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket,
+            page_ref_key,
+            object_key: object_key.clone(),
+            model_id: (*kind).to_string(),
+            component: component.clone(),
+            object_id,
+            page_id: address.page_id.unwrap_or(0),
+            size: address.length,
+            in_log: address.page_id.is_none(),
+            deleted: false,
+            address: Some(address),
+        });
+    }
+    items
+}
+
 fn collect_command_index_items(
     shard: &ShardState,
     command_keys: &[String],
@@ -1680,8 +1971,24 @@ fn fold_delta_page_items(
     bucket_index: &mut CoreIndex,
     covered_keys: &BTreeSet<String>,
     items: &[crate::index_log::IndexItem],
+    upsert: bool,
 ) {
-    if !covered_keys.is_empty() {
+    if upsert {
+        // Upsert record: each item replaces exactly its (kind, object, component) predecessor,
+        // the same replacement the write path performed in memory. The predecessor lives in the
+        // same routing bucket (the bucket derives from the object key), so the removal scans one
+        // bucket per item and the covered-key wipe below stays untouched for snapshot records.
+        for item in items {
+            let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
+                continue;
+            };
+            bucket.page_index.retain(|_, page| {
+                !(page.model_id == item.model_id
+                    && page.object_key == item.object_key
+                    && page.component == item.component)
+            });
+        }
+    } else if !covered_keys.is_empty() {
         for bucket in bucket_index.bucket_map.values_mut() {
             bucket
                 .page_index
@@ -2073,16 +2380,9 @@ fn next_temp_counter() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[cfg(test)]
 fn unique_temp_path(kind: &str) -> PathBuf {
-    let counter = next_temp_counter();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
+    crate::scratch::unique_temp_path(kind)
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
@@ -2288,6 +2588,9 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
     removed |= shard.sets.remove(key).is_some();
+    removed |= shard.lists.remove(key).is_some();
+    removed |= shard.zsets.remove(key).is_some();
+    removed |= shard.buckets.remove(key).is_some();
     if shard.features.remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
@@ -2450,6 +2753,12 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     }
     for members in shard.sets.values() {
         ids.extend(members.values().map(|address| address.page_slab_id));
+    }
+    for elements in shard.lists.values() {
+        ids.extend(elements.values().map(|address| address.page_slab_id));
+    }
+    for members in shard.zsets.values() {
+        ids.extend(members.values().map(|(_, address)| address.page_slab_id));
     }
     for series in shard.features.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
@@ -2629,6 +2938,8 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
+        || shard.lists.contains_key(key)
+        || shard.zsets.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)
@@ -2649,6 +2960,8 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "string",
         "hash",
         "set",
+        "list",
+        "zset",
         "feature",
         "sequence",
         "control_state",
@@ -2810,6 +3123,8 @@ fn object_manager_stats(
         let secondary_object_count = shard.strings.len()
             + shard.hashes.len()
             + shard.sets.len()
+            + shard.lists.len()
+            + shard.zsets.len()
             + shard.features.len()
             + shard.control_state.len()
             + shard.control_state_changes.len()
@@ -2826,6 +3141,8 @@ fn object_manager_stats(
         let secondary_page_ref_count = shard.strings.len()
             + shard.hashes.values().map(HashMap::len).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.lists.values().map(BTreeMap::len).sum::<usize>()
+            + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_nodes.len()
             + shard
@@ -2895,6 +3212,8 @@ fn object_manager_stats(
     let object_count = shard.strings.len()
         + shard.hashes.len()
         + shard.sets.len()
+        + shard.lists.len()
+        + shard.zsets.len()
         + shard.features.len()
         + shard.control_state.len()
         + shard.context_nodes.len()
@@ -2908,6 +3227,8 @@ fn object_manager_stats(
     let page_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.lists.values().map(BTreeMap::len).sum::<usize>()
+        + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_nodes.len()
         + shard

@@ -1217,6 +1217,7 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
                     },
                 }],
                 state_image: None,
+                state_image_externalized: false,
             },
         )
         .unwrap();
@@ -1448,11 +1449,16 @@ fn replication_pipeline_enforces_inflight_apply_memory_and_oversized_limits() {
 
     let first = cluster.build_append_entries_request(3).unwrap();
     assert_eq!(first.entries.len(), 1);
-    let append_pressure = cluster.build_append_entries_request(3).unwrap_err();
-    assert!(matches!(
-        append_pressure,
-        RaftError::AppendBackpressure { .. }
-    ));
+    // A charged window no longer refuses -- it degrades to a single-entry PROBE, because the
+    // refusal blocked the very acknowledgements that drain the window (a follower past the
+    // window was cut off for good). The limit still binds: the batch never grows past one
+    // entry while the window is charged.
+    let probe = cluster.build_append_entries_request(3).unwrap();
+    assert_eq!(
+        probe.entries.len(),
+        1,
+        "a charged window must degrade to a single-entry probe, not a bigger batch"
+    );
 
     let apply_pressure = cluster
         .receive_append_entries(AppendEntriesRequest {

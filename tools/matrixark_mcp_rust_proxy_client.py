@@ -181,7 +181,13 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             self._lane_cursors[group] = index + 1
         return group, lanes[index]
 
-    def _read_json_line(self, proc: subprocess.Popen[str], op: str, lane: Json | None = None) -> Json:
+    def _read_json_line(
+        self,
+        proc: subprocess.Popen[str],
+        op: str,
+        lane: Json | None = None,
+        expected_request_id: str | None = None,
+    ) -> Json:
         assert proc.stdout is not None
         deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
         while time.monotonic() < deadline:
@@ -201,9 +207,19 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             if not line.strip().startswith("{"):
                 continue
             try:
-                return json.loads(line)
+                parsed = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
+            # The proxy answers strictly in order on one stdout, so the late response of a
+            # request some earlier caller abandoned (its own timeout) would otherwise be read
+            # as THIS request's answer -- and every later reply shifts one back, silently
+            # serving the wrong data. Discard responses tagged for a different request; an
+            # untagged response (older proxy binary) is accepted unchanged.
+            if expected_request_id is not None:
+                stale_id = parsed.get("client_request_id")
+                if stale_id is not None and stale_id != expected_request_id:
+                    continue
+            return parsed
         raise MatrixArkError(
             f"Rust TemporalStore {op} timed out waiting for response from {self.cli_path} "
             f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
@@ -239,6 +255,12 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
             with lock:
                 proc = self._ensure_lane_proc(lane)
                 assert proc.stdin is not None
+                # Tag the request so the reader can discard the late responses of requests a
+                # previous caller abandoned on this lane (see _read_json_line).
+                request_id = f"{id(lane)}-{time.monotonic_ns()}"
+                lane_command = dict(command)
+                lane_command["client_request_id"] = request_id
+                payload = json.dumps(lane_command, separators=(",", ":")) + "\n"
                 try:
                     proc.stdin.write(payload)
                     proc.stdin.flush()
@@ -253,7 +275,7 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
                     if stderr:
                         detail += f": {stderr[-1000:]}"
                     raise MatrixArkError(detail) from exc
-                response = self._read_json_line(proc, op, lane)
+                response = self._read_json_line(proc, op, lane, expected_request_id=request_id)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)
@@ -363,6 +385,25 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
 
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
+
+    def resource_blob_put(self, tenant_hash: int, payload_base64: str) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_put", key=str(int(tenant_hash)), value=payload_base64
+        )
+
+    def resource_blob_fetch(self, uri: str, *, offset: int = 0, length: int = 0) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_fetch", key=str(uri), blob_offset=int(offset), blob_length=int(length)
+        )
+
+    def resource_blob_sweep(self, tenant_hash: int, referenced_hashes: list[str], min_age_ms: int) -> Json:
+        return self._call_json(
+            "matrixark_resource_blob_sweep",
+            key=str(int(tenant_hash)),
+            blob_referenced_hashes=[str(item) for item in referenced_hashes],
+            blob_min_age_ms=int(min_age_ms),
+        )
+
 
     @staticmethod
     def _entries_for_single_key(compact_entries: list[list[str]]) -> tuple[str, list[list[str]]] | None:

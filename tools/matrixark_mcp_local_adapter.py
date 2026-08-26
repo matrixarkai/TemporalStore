@@ -246,6 +246,12 @@ def retrieval_memory_inventory(records: list[Json], retrieval_scope: Json) -> Js
         is_session = memory_scope in {"session", "session_memory"} or session_continuity == "same_session"
 
         if is_shared:
+            # A folded owner counts as the embedding it carries -- the separate record it
+            # replaced would have landed in this same layer.
+            if record_type != "context_embedding" and (
+                record.get("vector") or record.get("embedding_meta")
+            ):
+                count("shared", "context_embeddings")
             if record_type == "resource_chunk":
                 count("shared", "resource_chunks")
             elif record_type == "resource_manifest":
@@ -263,6 +269,10 @@ def retrieval_memory_inventory(records: list[Json], retrieval_scope: Json) -> Js
             continue
 
         if is_profile:
+            if record_type != "context_embedding" and (
+                record.get("vector") or record.get("embedding_meta")
+            ):
+                count("profile", "context_embeddings")
             if record_type == "context_entity":
                 count("profile", "context_entities")
             elif record_type == "context_embedding":
@@ -276,6 +286,10 @@ def retrieval_memory_inventory(records: list[Json], retrieval_scope: Json) -> Js
             continue
 
         if is_session or record_type in {"context_event", "context_segment"}:
+            if record_type != "context_embedding" and (
+                record.get("vector") or record.get("embedding_meta")
+            ):
+                count("session", "context_embeddings")
             if record_type == "context_event":
                 count("session", "context_events")
             elif record_type == "context_segment":
@@ -616,48 +630,90 @@ INLINE_VECTOR_OWNER_BY_REF_TYPE = {
     "entity": ("context_entity", "entity_hash"),
     "summary": ("context_summary", "summary_hash"),
     "node": ("context_node", "node_hash"),
+    "segment": ("context_segment", "segment_hash"),
+    "compression": ("context_compression_event", "compression_id_hash"),
+    "resource_chunk": ("resource_chunk", "chunk_hash"),
+    "skill_section": ("skill_section", "section_hash"),
 }
 
 
-def attach_inline_embedding_vectors(records: list[Json]) -> list[Json]:
-    """Copy each embedding's vector onto its owner record, keeping the embedding record too.
+def fold_embedding_records(
+    records: list[Json],
+    resolve_owner=None,
+) -> list[Json]:
+    """Fold each embedding's vector onto its owner record and DROP the separate record.
 
-    Step 1 of folding embeddings into their owners: DUAL-WRITE. Every reader still joins through
-    (ref_type, ref_hash), so nothing changes behaviourally; the owners simply start carrying the
-    vector so readers can be migrated next against records that already have it.
+    Python embeddings are addressed by the owner's OWN hash (ref_type + ref_hash), so the join
+    back to the owner is direct -- which is what makes retiring the separate records possible
+    at this one choke point instead of at every writer.
 
-    Only owners appended in the SAME batch are matched. An embedding written in a later batch
-    than its owner leaves the owner without an inline vector, which is why the separate records
-    must stay until reader migration is done and measured -- an inline vector is "present or
-    not yet", never authoritative on its own.
+    Three cases, tried in this order:
+      * the owner is in the SAME batch: its vector (and embedding metadata) is set in place and
+        the embedding record vanishes;
+      * the owner was appended EARLIER: ``resolve_owner(record_type, field, ref_hash)`` fetches
+        it from the durable view, and an UPDATED copy of the owner replaces the embedding
+        record in the batch -- owners are keyed, so the re-append supersedes;
+      * no owner can be found (or the ref_type has no mapped owner): the embedding record is
+        KEPT exactly as before. A vector is never dropped on the floor.
+
+    Readers keep working across the transition: old logs still hold separate records and every
+    read path still accepts them; new logs simply stop growing them.
     """
-    vectors: dict[tuple[str, Any], Any] = {}
-    for record in records:
-        if record.get("record_type") != "context_embedding":
+    embeddings: list[tuple[int, Json]] = []
+    owners_by_key: dict[tuple[str, Any], Json] = {}
+    for index, record in enumerate(records):
+        record_type = record.get("record_type")
+        if record_type == "context_embedding":
+            embeddings.append((index, record))
             continue
-        vector = record.get("vector")
-        ref_hash = record.get("ref_hash")
-        if not vector or ref_hash in (None, ""):
-            continue
-        vectors[(str(record.get("ref_type") or ""), ref_hash)] = vector
-    if not vectors:
+        for ref_type, (owner_type, field) in INLINE_VECTOR_OWNER_BY_REF_TYPE.items():
+            if record_type == owner_type and record.get(field) not in (None, ""):
+                owners_by_key[(ref_type, record[field])] = record
+    if not embeddings:
         return records
-    for record in records:
-        owner = next(
-            (
-                (ref_type, field)
-                for ref_type, (record_type, field) in INLINE_VECTOR_OWNER_BY_REF_TYPE.items()
-                if record_type == record.get("record_type")
-            ),
-            None,
-        )
-        if owner is None or record.get("vector"):
+
+    drop: set[int] = set()
+    replace: dict[int, Json] = {}
+    for index, record in embeddings:
+        vector = record.get("vector")
+        ref_type = str(record.get("ref_type") or "")
+        ref_hash = record.get("ref_hash")
+        mapped = INLINE_VECTOR_OWNER_BY_REF_TYPE.get(ref_type)
+        if not vector or ref_hash in (None, "") or mapped is None:
             continue
-        ref_type, field = owner
-        vector = vectors.get((ref_type, record.get(field)))
-        if vector:
-            record["vector"] = vector
-    return records
+        owner = owners_by_key.get((ref_type, ref_hash))
+        if owner is None and resolve_owner is not None:
+            owner_type, field = mapped
+            resolved = resolve_owner(owner_type, field, ref_hash)
+            if resolved is not None:
+                owner = dict(resolved)
+                replace[index] = owner
+        if owner is None:
+            continue
+        owner["vector"] = vector
+        # The separate record carried more than the vector: serving-layer lineage, scope and
+        # source aggregates that budgeting and recovery consume. It rides along under ONE
+        # namespaced key so the owner keeps its own shape -- nothing is lost, and nothing
+        # leaks into the owner top level.
+        meta = {
+            key: value
+            for key, value in record.items()
+            if key not in ("record_type", "ref_type", "ref_hash", "vector")
+            and value not in (None, "", [], {})
+        }
+        if meta:
+            owner.setdefault("embedding_meta", meta)
+        if index not in replace:
+            drop.add(index)
+
+    if not drop and not replace:
+        return records
+    out: list[Json] = []
+    for index, record in enumerate(records):
+        if index in drop:
+            continue
+        out.append(replace.get(index, record))
+    return out
 
 
 def compact_context_embedding_record(record: Json) -> Json:
@@ -4203,10 +4259,53 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _apply_serving_dedup(self, records: list[Json]) -> list[Json]:
         return self._coalesce_summary_dirty(self._filter_duplicate_model_registry(records))
 
+    @property
+    def _append_coalesce_tls(self) -> threading.local:
+        tls = getattr(self, "_append_coalesce_tls_obj", None)
+        if tls is None:
+            tls = threading.local()
+            self._append_coalesce_tls_obj = tls
+        return tls
+
+    def _begin_append_coalescing(self) -> None:
+        """Buffer this THREAD's subsequent append() calls until flush.
+
+        For a run of consecutive appends with no interleaved read, one append_many is
+        semantically identical (same records, same order, same batch pipeline) and costs one
+        durable engine batch instead of one per record. Thread-local on purpose: the adapter is
+        shared across request threads, and one request's buffer must never receive another's
+        records. The caller owns the flush point (before its first read) and the abort on
+        failure (so a reused pool thread cannot inherit an active buffer).
+        """
+        tls = self._append_coalesce_tls
+        tls.buffer = []
+        tls.active = True
+
+    def _flush_append_coalescing(self) -> None:
+        tls = self._append_coalesce_tls
+        if not getattr(tls, "active", False):
+            return
+        tls.active = False
+        buffered = tls.buffer
+        tls.buffer = []
+        if buffered:
+            self.append_many(buffered)
+
+    def _abort_append_coalescing(self) -> None:
+        """Drop this thread's buffered records without writing (failed-request cleanup)."""
+        tls = self._append_coalesce_tls
+        tls.active = False
+        tls.buffer = []
+
     def append(self, record: Json) -> None:
+        tls = getattr(self, "_append_coalesce_tls_obj", None)
+        if tls is not None and getattr(tls, "active", False):
+            tls.buffer.append(record)
+            return
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
+        records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4233,12 +4332,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._maintain_event_membership_after_append(records)
 
     def append_many(self, records: list[Json]) -> None:
-        # Fold step 1: copy each embedding's vector onto its owner record, before the policy
-        # and dedup passes below reshape the batch.
-        records = attach_inline_embedding_vectors(records)
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch(records))
         )
+        # Embeddings fold onto their owners here and the separate records are dropped -- the
+        # owners are the only place vectors live in new logs. Cross-batch embeddings update
+        # their earlier owner through the durable view. The fold runs AFTER the serving
+        # materialization so the metadata that rides along under embedding_meta is exactly the
+        # shape the separate record used to persist in.
+        records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4258,6 +4360,21 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
         self._update_read_cache_after_append(sanitized, pre_size=pre_size)
+
+    def _resolve_embedding_owner(
+        self, record_type: str, field: str, ref_hash: Any
+    ) -> Json | None:
+        """The newest durable record of ``record_type`` whose ``field`` equals ``ref_hash`` --
+        the owner a late-arriving embedding folds onto. None when no such owner exists yet, in
+        which case the embedding record is kept as-is rather than losing the vector."""
+        try:
+            records = self.read_all()
+        except Exception:
+            return None
+        for record in reversed(records):
+            if record.get("record_type") == record_type and record.get(field) == ref_hash:
+                return record
+        return None
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         if not hasattr(self, "_session_buffer_cache_lock"):
@@ -4728,7 +4845,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     # (the purged log replays to the same logical state). DEFERRED (separate parallel workstream):
     # rust-datanode-native StringDelete/CommonDelete/FeatureDelete wiring, and true re-derivation
     # (re-extraction) of a demoted multi-source entity/summary -- we trim evidence, not re-summarize.
-    def prior_context_records(self) -> list[Json]:
+    def prior_context_records(self, scope: Json | None = None) -> list[Json]:
         """The live records prior-context collection reads. Base implementation: the whole store.
 
         `collect_prior_context` and the caller-supplied-fields carry-over consume only three
@@ -4928,6 +5045,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             result["purge"] = purge
         return result
 
+    def records_for_delete(self, memory_id: str) -> list[Json]:
+        """The live records a delete reasons over: the event and everything pointing at it.
+
+        Base implementation: the whole store. delete's own predicates run over whatever this
+        returns, so an override only has to produce a SUPERSET of the id's live records --
+        missing one would leave a derivative pointing at a deleted source.
+        """
+        return self.read_all()
+
     def delete_memory(self, args: Json, hook: Json | None = None) -> Json:
         """Delete a single memory by id/hash (mem0 ``delete``), with provenance-closure cascade.
 
@@ -4947,7 +5073,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memory_id = str(args.get("memory_id") or args.get("id") or "").strip()
         if not memory_id:
             raise MatrixArkError("delete requires a memory_id")
-        records = self.read_all()
+        records = self.records_for_delete(memory_id)
         try:
             memory_id_int: int | None = int(memory_id)
         except (TypeError, ValueError):
@@ -5409,6 +5535,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         purge = self.purge_tombstones(force=True)
         return {"reset": True, "tenant_hash": tenant_hash, "removed_count": removed, "purge": purge}
 
+    def records_for_get_memory(self, memory_id: str) -> list[Json]:
+        """The live records get_memory filters for one id. Base implementation: the whole store.
+
+        get_memory's own matching (id equality and the provenance check) runs over whatever this
+        returns, so an override only has to produce a SUPERSET of the id's live records -- being
+        slow is recoverable, answering {found: false} for a live memory is not.
+        """
+        return self.read_all()
+
     def get_memory(self, args: Json) -> Json:
         """Fetch a single memory by id (mem0 ``get``). Returns the live ``context_event`` for
         ``memory_id`` projected to ``{id, memory, text, metadata, ...}`` plus the derived records
@@ -5420,7 +5555,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         memory_id_int = _safe_int(memory_id)
         event: Json | None = None
         derived: list[Json] = []
-        for record in self.read_all():
+        for record in self.records_for_get_memory(memory_id):
             record_type = str(record.get("record_type") or "")
             if record_type == "context_event" and str(record.get("event_id_hash")) == memory_id:
                 event = record
@@ -5478,8 +5613,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             new_text = args.get("content")
         if not isinstance(new_text, str) or not new_text.strip():
             raise MatrixArkError("update requires new content (data / text)")
+        # The id's own records, not the store's. An update reasons over exactly what a delete
+        # does -- the addressed event plus everything pointing at it -- and the same subset serves
+        # both the lookup here and the supersede closure below, so one id-scoped fetch replaces
+        # two full-store reads. The seam's contract is a SUPERSET of the id's live records, which
+        # is what both uses need; on an adapter without the index it still returns the whole store.
+        update_records = self.records_for_delete(memory_id)
         old: Json | None = None
-        for record in self.read_all():
+        for record in update_records:
             if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == memory_id:
                 old = record
                 break
@@ -5526,7 +5667,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if memory_id_int is not None:
             # Sweep the superseded version's own embeddings / index postings so the old text can't leak
             # via retrieval after the update (same closure identity set as delete).
-            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(self.read_all(), memory_id, memory_id_int)
+            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(update_records, memory_id, memory_id_int)
             self._forget_persisted_event_members(memory_id)
             self._invalidate_event_member_index()
         self.append(tombstone)

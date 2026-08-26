@@ -508,6 +508,9 @@ pub type LocalWalStore = LocalWriteAheadLogStore;
 #[derive(Debug)]
 struct WriteAheadLogInner {
     root: PathBuf,
+    // Set only by Default: the store owns its minted scratch directory, and the last
+    // clone's drop removes it. Never set for a caller-supplied root.
+    scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
     // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
@@ -549,6 +552,7 @@ impl LocalWriteAheadLogStore {
         Self {
             inner: Arc::new(Mutex::new(WriteAheadLogInner {
                 root,
+                scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
@@ -695,6 +699,10 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+        // Start a piece if a crash left none, exactly as the single-record path does. Without it
+        // the record creates the file with no base header, so it reads as starting at log id zero
+        // -- an address the sealed pieces already own.
+        ensure_active_wal_segment(&mut inner, shard_id)?;
         let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
         inner.last_sequence_by_shard.insert(shard_id, last_sequence);
         let seq = last_sequence.saturating_add(1);
@@ -710,10 +718,19 @@ impl LocalWriteAheadLogStore {
         // record is not yet durable); the coalesced barrier advances it once it reaches disk.
         let report = append_record_locked(&mut inner, &rec, false, None)?;
         inner.stats.last_sequence = report.current_sequence;
+        // Roll after the record lands, as the single-record path does. This is only safe because
+        // sealing a piece now fsyncs its contents: the barrier this record is waiting for opens
+        // the piece being WRITTEN, which after a roll is the new one, so without that fsync the
+        // record would be sealed away with no barrier covering it.
+        let rolled = roll_wal_segment_if_due(&mut inner, shard_id, Some(report.persistent_bytes))?;
         inner.last_sequence_by_shard.insert(shard_id, seq);
-        inner
-            .verified_len_by_shard
-            .insert(shard_id, report.persistent_bytes);
+        if !rolled {
+            // After a roll the piece being written is new and its length was recorded by the roll;
+            // the length this record left behind belongs to the piece just sealed.
+            inner
+                .verified_len_by_shard
+                .insert(shard_id, report.persistent_bytes);
+        }
         // `inner` + `_append_lock` drop here so a concurrent writer can append while this
         // writer's (later, lock-released) group-commit fsync is in flight.
         Ok(rec)
@@ -762,10 +779,16 @@ impl LocalWriteAheadLogStore {
         let batch_size = commands.len() as u32;
         let mut records = Vec::with_capacity(commands.len());
         let last_sequence;
+        let mut batch_end: Option<u64> = None;
         {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
             fs::create_dir_all(&inner.root)?;
             let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            // Start a piece if a crash left none. Without this the first record of the batch
+            // creates the file with no base header, so it reads as starting at log id zero -- an
+            // address the sealed pieces already own. The single-record path has always done this;
+            // the batch path did not, and nothing about a batch makes it safe to skip.
+            ensure_active_wal_segment(&mut inner, shard_id)?;
             let (disk_last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
             let cached_last_sequence = inner
                 .last_sequence_by_shard
@@ -791,10 +814,18 @@ impl LocalWriteAheadLogStore {
                 // only advances on an actual fsync, which happens once, after the loop.
                 let report = append_record_locked(&mut inner, &rec, false, None)?;
                 inner.stats.last_sequence = report.current_sequence;
+                batch_end = Some(report.persistent_bytes);
                 records.push(rec);
             }
             inner.last_sequence_by_shard.insert(shard_id, seq);
             last_sequence = seq;
+            // Roll AFTER the batch, never inside it: rolling mid-batch would split one
+            // crash-atomic group across two pieces for nothing, and taken here the batch stays
+            // contiguous while the next one starts in the new piece. Without this a batch appends
+            // into the piece being written without ever asking whether it is full, so segmentation
+            // stops applying to the path that writes the most -- and reclaim cannot unlink the
+            // piece being written, so the unlinking stops working with it.
+            roll_wal_segment_if_due(&mut inner, shard_id, batch_end)?;
         }
         if sync {
             // One coalesced fdatasync makes the entire buffered batch durable. Reusing the
@@ -876,6 +907,13 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
+        // Start a piece if a crash left none, before anything reads where the log ends. Replay
+        // writes a record whose sequence is already decided, so creating the file without a base
+        // header here would give it an address the sealed pieces already own -- and a replayed
+        // record is exactly the one nobody would think to re-check. No roll: replay is
+        // reconstructing a log that already exists, and choosing new piece boundaries part-way
+        // through that is a separate decision.
+        ensure_active_wal_segment(&mut inner, record.shard_id)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&record.shard_id).copied() {
             Some(sequence) => sequence,
             None => {
@@ -964,6 +1002,9 @@ impl LocalWriteAheadLogStore {
             // start plus its length says where it ends, so skipping it costs a stat rather than a
             // read of every line in it. This is what makes a windowed scan cost the window: without
             // it the loop below still reads the whole log and merely declines to return most of it.
+            // Also what skips a piece reclaimed since the listing above: an absent piece reads
+            // as base zero with no length, so this says it ends before any window and the loop
+            // moves on rather than opening a file that is gone. See `read_wal_base`.
             let piece_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
             if base.saturating_add(piece_len.saturating_sub(header_len)) <= start_offset {
                 continue;
@@ -1081,6 +1122,14 @@ impl LocalWriteAheadLogStore {
     /// Set this to the dump watermark and advance it as blocks are dumped into bands. Until a
     /// shard registers a floor its GC is unconstrained, so this is inert for callers that do not
     /// put blocks in the WAL.
+    /// Whether two handles address the SAME underlying log (clones of one store). Registrations
+    /// keyed only by (shard, object) conflate engines -- every embedded engine in a process
+    /// serves shard 1 -- so consumers that aggregate across a registry must filter by the log
+    /// identity the registration actually points at.
+    pub fn same_log(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn set_block_retention_floor(&self, shard_id: ShardId, sequence: u64) {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.block_retention_floor_by_shard.insert(shard_id, sequence);
@@ -1444,7 +1493,14 @@ impl LocalWriteAheadLogStore {
 
 impl Default for LocalWriteAheadLogStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("wals"))
+        let scratch = crate::scratch::owned_scratch_dir("wals");
+        let store = Self::new(scratch.path());
+        store
+            .inner
+            .lock()
+            .expect("write-ahead log lock poisoned")
+            .scratch = Some(scratch);
+        store
     }
 }
 
@@ -1464,7 +1520,14 @@ fn drop_covered_wal_segments(
     let active = write_ahead_log_path(root, shard_id);
     let mut dropped = 0usize;
     let mut freed = 0u64;
+    // Stop after this many, so the lock every append needs is not held for the whole backlog.
+    // Whatever is left is dropped by the next pass: pieces go from the front in order, so stopping
+    // early leaves the rest exactly where the next pass would have looked anyway.
+    let limit = wal_reclaim_max_segments_per_pass();
     for path in wal_segment_paths(root, shard_id) {
+        if limit > 0 && dropped >= limit {
+            break;
+        }
         if path == active || !path.exists() {
             continue;
         }
@@ -1623,9 +1686,25 @@ fn roll_wal_segment_if_due(
 
     // Trim the reservation before sealing, so a sealed piece's length IS its contents and every
     // reader that derives a sealed piece's end from its file length keeps being right.
-    if record_end < length {
+    //
+    // The fsync here is what makes the piece's CONTENTS durable, and it has to happen whether or
+    // not there was anything to trim. A record appended with sync=false sits in the page cache
+    // until a barrier, and the barrier that follows -- `group_commit_sync` -- opens the piece
+    // being written, which after this rename is the NEW one. Sealing an unsynced piece would
+    // therefore leave those bytes with no barrier that ever covers them, while the commit returns
+    // success: acked and not durable.
+    //
+    // Until now that only held by accident. The trim runs when a preallocated file is longer than
+    // its records, which is the default, so the fsync usually happened -- for an unrelated reason.
+    // With preallocation off it did not happen at all. The block store's own roll has always done
+    // this deliberately ("the outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
+    // durable before we seal"); this one now does too.
+    {
         let file = OpenOptions::new().write(true).open(&path)?;
-        file.set_len(record_end)?;
+        if record_end < length {
+            file.set_len(record_end)?;
+        }
+        crate::durability_metrics::record_barrier("wal_seal_outgoing_piece");
         file.sync_all()?;
     }
     inner.prealloc_physical_by_shard.remove(&shard_id);
@@ -1634,11 +1713,17 @@ fn roll_wal_segment_if_due(
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
     fs::rename(&path, &sealed)?;
     sync_parent_dir(&sealed)?;
+    // Sealed, and nothing to append to yet. A crash here leaves a log whose pieces are all sealed,
+    // and an absent piece reads as starting at log id zero -- which those pieces already own.
+    crate::fault::point("wal/roll/after_rename");
 
     // Start the next piece where this one ended. If a crash lands before this, the next append
     // derives the same starting point from the sealed pieces.
     let next_base = base.saturating_add(holds);
     let mut file = File::create(&path)?;
+    // Created, no header yet. A crash here leaves a piece of zero length, which reads as starting
+    // at log id zero for the same reason.
+    crate::fault::point("wal/roll/after_create");
     file.write_all(&crate::log_framing::encode_base_header(next_base))?;
     file.flush()?;
     // No barrier for the header, and none for the directory entry. The header rides the barrier
@@ -1938,6 +2023,22 @@ fn wal_env_flag_default_on(name: &str) -> bool {
 /// forced on; the env var remains the escape hatch (=0 restores growing appends, and a log
 /// written either way reads back under the other, since the tail scan treats a zeros run as
 /// room and a plain file simply ends at its records).
+/// TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS: how many sealed pieces one reclaim pass may unlink.
+///
+/// The unlinking happens while the log's lock is held, and every append takes that lock, so an
+/// unbounded pass stops every writer for as long as it takes -- about 45 microseconds per piece,
+/// measured. Zero means unbounded, which is what this did before.
+///
+/// A bound does not reduce total work; it increases it, because every extra pass pays the
+/// directory barrier again. It bounds how long the lock is held in one pass, which is the thing
+/// writers actually feel.
+fn wal_reclaim_max_segments_per_pass() -> usize {
+    std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(64)
+}
+
 fn wal_preallocate_enabled() -> bool {
     wal_env_flag_default_on("TS_WAL_PREALLOCATE")
 }
@@ -2158,6 +2259,15 @@ fn reclaim_min_freed_percent() -> u32 {
 }
 
 fn read_wal_base(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    // An absent piece answers (0, 0) rather than failing, and `scan` DEPENDS on that. A piece can
+    // be reclaimed between being listed and being read -- reclaim removes whole pieces from the
+    // front -- and answering zero here makes the length check in `scan` treat it as ending before
+    // any window, so the loop skips it instead of opening a file that is gone.
+    //
+    // Turning this into an error would surface as shards refusing to load: recovery treats ANY
+    // scan failure as data loss, so a piece legitimately reclaimed mid-scan would stop a shard
+    // coming up. If this ever has to report absence distinctly, `scan` needs to skip on it
+    // explicitly at the same time.
     if !path.exists() {
         return Ok((0, 0));
     }
@@ -2416,23 +2526,22 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unique_temp_path(kind: &str) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Command;
+
+    #[test]
+    fn default_store_scratch_dir_dies_with_the_last_clone() {
+        let store = LocalWriteAheadLogStore::default();
+        let root = store.inner.lock().unwrap().root.clone();
+        assert!(root.exists(), "Default must create its scratch dir");
+        let clone = store.clone();
+        drop(store);
+        assert!(root.exists(), "a live clone must keep the scratch dir");
+        drop(clone);
+        assert!(!root.exists(), "the last clone's drop must remove the scratch dir");
+    }
 
     #[test]
     fn wal_interleaved_processes_refresh_sequence_from_disk() {
@@ -4271,7 +4380,8 @@ mod tests {
         );
         assert!(
             surviving.iter().all(|survivor| *survivor < log_id),
-            "a record written after the crash took an address that still resolves to an earlier              one: new {log_id}, highest surviving {:?}",
+            "a record written after the crash took an address that still resolves to an \
+             earlier one: new {log_id}, highest surviving {:?}",
             surviving.iter().max()
         );
         set_wal_segment_bytes_for_test(None);
@@ -4822,22 +4932,30 @@ mod tests {
     /// durable. That leaves a window where the piece exists and the header does not, and an empty
     /// piece reads as starting at log id zero, which the sealed pieces already own. An empty piece
     /// therefore has to be treated as one that was never started.
+    ///
+    /// Entered by stopping in it, so the state on disk is what a crash at that line leaves rather
+    /// than what this test guessed it would leave.
     #[test]
     fn a_crash_before_the_header_reaches_disk_does_not_reuse_addresses() {
         set_wal_segment_bytes_for_test(Some(2 * 1024));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
 
-        // Stop the moment a roll has happened, so the piece being written holds NO records yet.
-        // That is the window this is about: the piece was created and its header had not reached
-        // disk. Truncating a piece that already holds records is a different event -- it destroys
-        // those records, and reusing their addresses afterwards is correct, because nothing can
-        // still be pointing at them.
+        // Stop inside the roll, between creating the piece and writing its header. Reproducing
+        // this window by hand instead -- appending until the piece happens to hold no records, then
+        // truncating it -- would encode two unchecked assumptions: that such a piece is where the
+        // roll left off, and that truncating to zero is what a crash before the header leaves.
+        // Stopping AT the line needs neither: what is on disk afterwards is what that line leaves.
         let mut written = Vec::new();
         let mut index = 0u64;
-        loop {
-            let (record, log_id) = store
-                .append_with_sync_reporting(
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_create",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
                     1,
                     Command::StringSet {
                         key: format!("k{index:06}"),
@@ -4845,31 +4963,32 @@ mod tests {
                     },
                     false,
                 )
-                .unwrap();
-            written.push((record.sequence, log_id));
-            index += 1;
-            let active = write_ahead_log_path(dir.path(), 1);
-            let (_, header_len) = read_wal_base(&active).unwrap();
-            if active.metadata().map(|m| m.len()).unwrap_or(0) == header_len && index >= 50 {
-                break;
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    stopped = true;
+                    break;
+                }
             }
-            assert!(index < 5_000, "never caught the log just after a roll");
+            index += 1;
         }
+        assert!(stopped, "never reached a roll, so this tested nothing");
         assert!(
             wal_segment_paths(dir.path(), 1).len() > 1,
             "the log should be in more than one piece"
         );
         drop(store);
 
-        // The crash: the piece exists, its header never reached disk. No record is lost with it,
-        // because the piece held none.
+        // And this is what that line left: the piece exists and has nothing in it.
         let active = write_ahead_log_path(dir.path(), 1);
-        OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&active)
-            .unwrap();
-        assert_eq!(active.metadata().unwrap().len(), 0, "the piece should be empty");
+        assert_eq!(
+            active.metadata().unwrap().len(),
+            0,
+            "the piece should exist and be empty -- that is the window"
+        );
 
         let reopened = LocalWriteAheadLogStore::new(dir.path());
         let (_, log_id) = reopened
@@ -4954,6 +5073,386 @@ mod tests {
             at(&mut r, 1.0),
         );
         assert!(!rolled.is_empty(), "nothing rolled, so this measured nothing");
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// The window between sealing a piece and starting the next one, entered by stopping there.
+    ///
+    /// There is already a test for this window that builds its state by hand -- it removes the
+    /// piece being written and reopens. That is only a test of this window if removing that file is
+    /// what a crash there leaves behind, and nothing checks the claim. Applying the same reasoning
+    /// one window over produced a test that failed for the wrong reason, so the reasoning is worth
+    /// removing rather than repeating: here the roll is stopped AT the line, and whatever is on
+    /// disk afterwards is what a crash at that line leaves, by construction.
+    #[test]
+    fn stopping_a_roll_after_the_rename_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        // Write until a roll is about to happen, with the point disarmed.
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_rename",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    // The roll stopped after the rename. The store's lock is poisoned by that
+                    // unwind, which is exactly what a crash would cost us: this handle is done.
+                    stopped = true;
+                    break;
+                }
+            }
+            index += 1;
+        }
+        assert!(stopped, "never reached a roll, so this tested nothing");
+        drop(store);
+
+        // Everything is sealed and there is nothing to append to -- the state a crash there leaves.
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert!(!active.exists(), "the piece being written should be gone");
+        assert!(
+            wal_segment_paths(dir.path(), 1).iter().any(|p| p != &active),
+            "the sealed pieces should still be there"
+        );
+
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let (_, log_id) = reopened
+            .append_with_sync_reporting(
+                1,
+                Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        assert!(
+            written.iter().all(|(_, earlier)| *earlier < log_id),
+            "a record written after the crash took an address an earlier one already owns"
+        );
+        // And every address handed out before the crash still resolves to its own record.
+        for (sequence, earlier) in &written {
+            if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
+                let end = bytes
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |at| at + 1);
+                assert_eq!(
+                    decode_wal_line(&bytes[..end]).unwrap().sequence,
+                    *sequence,
+                    "log id {earlier} resolved to the wrong record"
+                );
+            }
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// One reclaim pass unlinks at most its bound, and later passes take the rest.
+    ///
+    /// The unlinking runs while the log's lock is held and every append needs that lock, so an
+    /// unbounded pass over a large backlog stops every writer for as long as it takes. Bounding it
+    /// does not make the total cheaper -- each pass pays the directory barrier again -- it bounds
+    /// how long any one pass holds the lock.
+    #[test]
+    fn one_reclaim_pass_unlinks_at_most_its_bound() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        std::env::set_var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS", "4");
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut last = 0u64;
+        for index in 0..400u64 {
+            last = store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence;
+        }
+        let sealed_before = wal_segment_paths(dir.path(), 1).len();
+        assert!(sealed_before > 8, "need a backlog worth bounding, saw {sealed_before}");
+
+        // One pass drops no more than the bound.
+        let first = store.gc_before_sequence(1, last).unwrap();
+        assert!(
+            first.dropped_segments <= 4,
+            "one pass dropped {} pieces, past its bound",
+            first.dropped_segments
+        );
+        assert!(first.dropped_segments > 0, "the pass should have dropped something");
+
+        // Later passes take the rest, without recomputing anything.
+        let mut passes = 1;
+        loop {
+            let report = store.gc_before_sequence(1, last).unwrap();
+            if report.dropped_segments == 0 {
+                break;
+            }
+            assert!(
+                report.dropped_segments <= 4,
+                "a later pass dropped {} pieces, past its bound",
+                report.dropped_segments
+            );
+            passes += 1;
+            assert!(passes < 500, "reclaim never drained");
+        }
+        assert!(passes > 1, "the backlog should have taken more than one pass");
+
+        // And the records that had to survive still do.
+        let survivors = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!survivors.is_empty(), "the retained tail should still be there");
+        for (_, line) in &survivors {
+            decode_wal_line(line).expect("every surviving record should decode");
+        }
+        std::env::remove_var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS");
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Not an assertion, a measurement -- how long one reclaim pass holds the log's lock.
+    ///   cargo test --lib -- --ignored --exact wal::tests::measure_reclaim_pass --nocapture
+    #[test]
+    #[ignore]
+    fn measure_reclaim_pass() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut last = 0u64;
+        for index in 0..3_000u64 {
+            last = store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap()
+                .sequence;
+        }
+        let pieces = wal_segment_paths(dir.path(), 1).len();
+        let started = std::time::Instant::now();
+        let report = store.gc_before_sequence(1, last).unwrap();
+        let micros = started.elapsed().as_secs_f64() * 1e6;
+        println!(
+            "bound={:?} backlog {pieces} pieces: one pass {micros:.0} us, dropped {}",
+            std::env::var("TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS").unwrap_or_default(),
+            report.dropped_segments
+        );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A batch append rolls when the piece it is writing fills up.
+    ///
+    /// Without this, batch ingest appends into one piece forever: segmentation stops applying to
+    /// the path that writes the most, and reclaim -- which cannot unlink the piece being written --
+    /// loses the unlinking it exists for.
+    #[test]
+    fn a_batch_append_rolls_when_the_piece_fills() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        for round in 0..12u64 {
+            let commands: Vec<Command> = (0..20u64)
+                .map(|index| Command::StringSet {
+                    key: format!("k{round:03}_{index:03}"),
+                    value: vec![118u8; 64],
+                })
+                .collect();
+            store.append_batch_atomic(1, commands, false).unwrap();
+        }
+
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "batch ingest should have rolled the log, not grown one piece"
+        );
+        // And the log still reads as one log, in order, with everything present.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 240, "every record should still be there");
+        let mut expected = 1u64;
+        for (_, line) in &scanned {
+            assert_eq!(
+                decode_wal_line(line).unwrap().sequence,
+                expected,
+                "the records should read back in order across pieces"
+            );
+            expected += 1;
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A batch append after a crash between sealing and starting the next piece does not reuse
+    /// addresses.
+    ///
+    /// The single-record path rebuilds the missing piece from what is on disk; the batch path did
+    /// not, and instead let the first record create the file with no base header -- so it read as
+    /// starting at log id zero, an address the sealed pieces already own.
+    ///
+    /// Entered by stopping inside the roll rather than by building the state by hand, so what is on
+    /// disk is what a crash at that line leaves.
+    #[test]
+    fn a_batch_append_after_a_crash_mid_roll_does_not_reuse_addresses() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let mut written = Vec::new();
+        let mut index = 0u64;
+        let mut stopped = false;
+        while index < 5_000 {
+            let armed = crate::fault::arm(
+                "wal/roll/after_rename",
+                crate::fault::FaultAction::Stop,
+            );
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                store.append_with_sync_reporting(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+            }));
+            drop(armed);
+            match outcome {
+                Ok(Ok((record, log_id))) => written.push((record.sequence, log_id)),
+                Ok(Err(err)) => panic!("append failed: {err}"),
+                Err(_) => {
+                    stopped = true;
+                    break;
+                }
+            }
+            index += 1;
+        }
+        assert!(stopped, "never reached a roll, so this tested nothing");
+        drop(store);
+
+        let active = write_ahead_log_path(dir.path(), 1);
+        assert!(!active.exists(), "the piece being written should be gone");
+
+        // The batch path is what has to recover here.
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let commands: Vec<Command> = (0..4u64)
+            .map(|index| Command::StringSet {
+                key: format!("after{index}"),
+                value: b"v".to_vec(),
+            })
+            .collect();
+        let records = reopened.append_batch_atomic(1, commands, false).unwrap();
+        assert_eq!(records.len(), 4);
+
+        // Every address the batch took must be past everything handed out before the crash.
+        for record in &records {
+            let log_id = reopened.log_id_at(1, record.sequence).unwrap();
+            assert!(
+                written.iter().all(|(_, earlier)| *earlier < log_id),
+                "a batch record took an address an earlier record already owns"
+            );
+        }
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// Sealing a piece makes its contents durable, whether or not there was a reservation to trim.
+    ///
+    /// A record appended with sync=false sits in the page cache until a barrier, and the barrier
+    /// that follows opens the piece being WRITTEN, which after a roll is the new one. So the bytes
+    /// in the piece just sealed have no barrier that ever covers them unless the roll provides one.
+    ///
+    /// This counts the barrier. A test cannot show the loss itself without a real crash: the page
+    /// cache serves the bytes back to this process whether or not they reached the device.
+    #[test]
+    fn sealing_a_piece_makes_its_contents_durable() {
+        set_wal_segment_bytes_for_test(Some(2 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let seal_barriers = || -> u64 {
+            crate::durability_metrics::snapshot()
+                .get("wal_seal_outgoing_piece")
+                .copied()
+                .unwrap_or(0)
+        };
+        let before = seal_barriers();
+        let mut rolled = false;
+        let mut index = 0u64;
+        while index < 5_000 && !rolled {
+            let pieces_before = wal_segment_paths(dir.path(), 1).len();
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            rolled = wal_segment_paths(dir.path(), 1).len() > pieces_before;
+            index += 1;
+        }
+        assert!(rolled, "never rolled, so this tested nothing");
+        assert!(
+            seal_barriers() > before,
+            "sealing took no barrier, so the records in the sealed piece have none"
+        );
+        set_wal_segment_bytes_for_test(None);
+    }
+
+    /// The group-commit reserve path rolls, and its records survive the roll.
+    #[test]
+    fn the_group_commit_path_rolls_and_keeps_its_records() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut last = 0u64;
+        for index in 0..300u64 {
+            last = store
+                .append_for_group_commit(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 64],
+                    },
+                )
+                .unwrap()
+                .sequence;
+        }
+        store.commit_barrier(1, last).unwrap();
+        assert!(
+            wal_segment_paths(dir.path(), 1).len() > 1,
+            "the group-commit path should have rolled the log, not grown one piece"
+        );
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 300, "every reserved record should still be there");
+        let mut expected = 1u64;
+        for (_, line) in &scanned {
+            assert_eq!(decode_wal_line(line).unwrap().sequence, expected);
+            expected += 1;
+        }
         set_wal_segment_bytes_for_test(None);
     }
 }

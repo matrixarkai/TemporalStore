@@ -39,7 +39,10 @@ use crate::client::{
     ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
-use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
+use crate::http::{
+    get_json_with_options_and_headers, post_json_with_options_and_headers, HttpRequest,
+    HttpRequestOptions,
+};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -187,12 +190,30 @@ pub struct ProxyOptions {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// What a proxy will accept.
+///
+/// Five names, three behaviours. Two pairs mean exactly the same thing to admission, and
+/// nothing said so until now -- an operator picking between them was picking between synonyms
+/// while believing the choice mattered.
 pub enum ProxyServingMode {
+    /// Reads and writes both accepted.
     #[default]
     Serving,
+    /// Writes refused with `proxy_write_disabled`; reads accepted.
+    ///
+    /// Identical to `WriteDisabled` in effect. The two exist because both spellings arrive
+    /// over the wire from the metaserver, not because they differ.
     Readonly,
+    /// Writes refused with `proxy_write_disabled`; reads accepted. Identical to `Readonly`.
     WriteDisabled,
+    /// **Reads and writes both accepted -- identical to `Serving` for admission.**
+    ///
+    /// This is a label, not a control. It changes what the status surfaces and the serving-mode
+    /// gauge report, so a fleet can be marked unhealthy without changing what it serves; it
+    /// does not shed, restrict, or refuse anything. Setting it expecting protection gets none,
+    /// which is the reason it is spelled out here.
     Degraded,
+    /// Everything refused with `proxy_not_serving`. This is the drain state.
     NotServing,
 }
 
@@ -447,6 +468,25 @@ pub struct ProxyPreflightReport {
     #[serde(default)]
     pub service_discovery: ProxyServiceDiscoveryReport,
     pub degraded_reasons: Vec<String>,
+}
+
+/// What `GET /readiness` answers for a proxy.
+///
+/// The build-wide capability report is still here, flattened, so anything already reading
+/// those fields keeps working. What is new is the state of THIS proxy, because the endpoint
+/// was answering a question nobody asked: the capability report is a description of what the
+/// code supports and is identical on every process, so a drained proxy reported ready and an
+/// orchestrator kept sending it traffic it refuses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyReadinessResponse {
+    /// Whether this proxy will accept anything at all. False only while drained.
+    pub serving: bool,
+    pub serving_mode: ProxyServingMode,
+    /// Reads and writes separately, since refusing writes is not the same as refusing traffic.
+    pub serving_reads: bool,
+    pub serving_writes: bool,
+    #[serde(flatten)]
+    pub production: crate::ProductionReadinessReport,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1200,9 +1240,10 @@ impl ProxyService {
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
-        get_json_with_options::<GetShardResponse>(
+        get_json_with_options_and_headers::<GetShardResponse>(
             &options.meta_addr,
             &format!("/shards/{shard_id}"),
+            &crate::meta::admin_auth_header(),
             options.http_options(),
         )
         .map_err(|err| {
@@ -1531,9 +1572,10 @@ impl ProxyService {
         if options.context_shard_count != 0 {
             return;
         }
-        let Ok(listed) = get_json_with_options::<crate::meta::ListShardsResponse>(
+        let Ok(listed) = get_json_with_options_and_headers::<crate::meta::ListShardsResponse>(
             &options.meta_addr,
             "/shards",
+            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         ) else {
             return;
@@ -1564,6 +1606,33 @@ impl ProxyService {
         self.inner
             .cluster_shards_checked
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// This proxy's answer to a readiness probe, and the HTTP status that goes with it.
+    ///
+    /// A drained proxy answers 503. That is the whole point of a readiness probe: drain exists
+    /// to stop traffic arriving, and answering 200 while refusing every request with
+    /// `proxy_not_serving` defeats the control it is supposed to serve.
+    ///
+    /// Read-only and write-disabled still answer 200 -- they serve reads, and a probe that
+    /// failed for them would take a proxy out of rotation that is doing useful work. The two
+    /// flags say which is which for anyone who needs the distinction.
+    pub fn readiness_response(&self) -> (u16, ProxyReadinessResponse) {
+        let options = self.options();
+        let serving_reads = !matches!(options.serving_mode, ProxyServingMode::NotServing);
+        let serving_writes = matches!(
+            options.serving_mode,
+            ProxyServingMode::Serving | ProxyServingMode::Degraded
+        );
+        let response = ProxyReadinessResponse {
+            serving: serving_reads,
+            serving_mode: options.serving_mode,
+            serving_reads,
+            serving_writes,
+            production: crate::production_readiness_report(),
+        };
+        let status = if serving_reads { 200 } else { 503 };
+        (status, response)
     }
 
     /// Whether enough time has passed to try registering with the metaserver again.
@@ -1709,7 +1778,7 @@ pub(super) fn proxy_metric_families_from(rendered: &str) -> Vec<String> {
 fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
     vec![
         proxy_metric_mapping(
-            "common::metrics::CounterHolder proxy command/admission counters",
+            "proxy command/admission counters",
             "temporalstore_proxy_requests_total",
             vec!["kind"],
             "Proxy Requests And Admission",
@@ -3427,6 +3496,94 @@ mod tests {
         assert!(proxy_on.client_options_snapshot().refresh_route_on_backend_error);
         assert!(!proxy_off.client_options_snapshot().refresh_route_on_backend_error);
     }
+
+    #[test]
+    fn every_option_a_config_push_can_change_is_noticed() {
+        // Whether a pushed config is applied is decided by comparing its version to the
+        // running one. That version was hashed from a hand-listed subset of the options,
+        // and the list had fallen behind: `context_shard_count`, `context_first_shard_id`,
+        // `context_io_timeout_ms`, `service_registry_ttl_ms` and `listen_addr` were all
+        // missing, so a push that changed only one of them produced the same version and
+        // was answered "unchanged" -- telling the operator, in the report, that their
+        // change was a no-op.
+        //
+        // Rather than list the fields again here -- which is the mistake being fixed --
+        // this walks the serialized options and changes each one in turn, so a field
+        // added later is covered without anyone editing this test.
+        //
+        // The proxy is built from exactly this baseline. An earlier version of this test
+        // built it with a helper that overrode meta_addr, so every push differed in a
+        // field that IS hashed, every assertion passed, and the test proved nothing. The
+        // guard below is what catches that: if pushing the baseline back is treated as a
+        // change, the comparison is not being exercised at all.
+        let baseline = ProxyOptions {
+            config_version: 0,
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        };
+        let unchanged =
+            ProxyService::new(baseline.clone()).update_options_report(baseline.clone());
+        assert!(
+            !unchanged.applied,
+            "pushing an identical config must be a no-op, or the assertions below pass \
+             without testing anything (reason: {})",
+            unchanged.reason
+        );
+
+        let serde_json::Value::Object(fields) = serde_json::to_value(&baseline).unwrap() else {
+            panic!("options serialize as an object");
+        };
+
+        let mut checked = 0;
+        for (name, value) in fields {
+            // config_version IS the version, so changing it is not a content change.
+            if name == "config_version" {
+                continue;
+            }
+            let candidates: Vec<serde_json::Value> = match &value {
+                serde_json::Value::Bool(flag) => vec![serde_json::Value::Bool(!flag)],
+                serde_json::Value::Number(number) => {
+                    vec![serde_json::Value::from(number.as_u64().unwrap_or(0) + 1)]
+                }
+                serde_json::Value::String(text) => vec![
+                    serde_json::Value::from(format!("{text}-changed")),
+                    // enum-valued fields reject arbitrary text; offer real alternatives
+                    serde_json::Value::from("not_serving"),
+                    serde_json::Value::from("draining"),
+                ],
+                other => panic!("teach this test how to change {name} (it is {other})"),
+            };
+
+            let changed = candidates
+                .into_iter()
+                .filter_map(|candidate| {
+                    let serde_json::Value::Object(mut document) =
+                        serde_json::to_value(&baseline).unwrap()
+                    else {
+                        return None;
+                    };
+                    document.insert(name.clone(), candidate);
+                    serde_json::from_value::<ProxyOptions>(serde_json::Value::Object(document)).ok()
+                })
+                .find(|candidate| candidate != &baseline)
+                .unwrap_or_else(|| {
+                    panic!("could not produce a changed value for {name}; teach this test about it")
+                });
+
+            let proxy = ProxyService::new(baseline.clone());
+            let report = proxy.update_options_report(changed);
+            assert!(
+                report.applied,
+                "a config push changing {name} must be applied, not answered \"{}\"",
+                report.reason
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "expected to exercise every option; only walked {checked}"
+        );
+    }
     #[test]
     fn proxy_location_reaches_replica_selection() {
         // The proxy has always accepted a location, reported it to the metaserver and shown
@@ -3624,6 +3781,131 @@ mod tests {
     }
 
     #[test]
+    fn a_drained_proxy_fails_its_readiness_probe() {
+        // The runbook points operators at GET /readiness for exactly this, and it used to
+        // answer with a build-wide capability report: the same bytes on every process, with a
+        // hardcoded 200. So a proxy that had been drained -- refusing every request with
+        // proxy_not_serving -- reported itself ready, and anything using the probe to decide
+        // where to send traffic kept sending it. The drain control was defeated by the probe
+        // meant to honour it.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let (status, body) = drained.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/readiness".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(
+            status, 503,
+            "a drained proxy must fail its probe, or draining it does not take it \
+             out of rotation"
+        );
+        let parsed = parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+        assert!(!parsed.serving);
+        assert_eq!(parsed.serving_mode, ProxyServingMode::NotServing);
+
+        // Serving answers 200, and so does read-only: it still serves reads, and failing its
+        // probe would pull a proxy doing useful work out of rotation. The flags carry the
+        // distinction for anyone who needs it.
+        for (mode, expect_writes) in [
+            (ProxyServingMode::Serving, true),
+            (ProxyServingMode::Degraded, true),
+            (ProxyServingMode::Readonly, false),
+            (ProxyServingMode::WriteDisabled, false),
+        ] {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+            let (status, body) = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: "/readiness".to_string(),
+                body: Vec::new(),
+            });
+            assert_eq!(status, 200, "{mode:?} serves reads and must pass its probe");
+            let parsed =
+                parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+            assert!(parsed.serving, "{mode:?} should report serving");
+            assert_eq!(
+                parsed.serving_writes, expect_writes,
+                "{mode:?} should report serving_writes as {expect_writes}"
+            );
+            // The capability report is still carried, so anything already reading those fields
+            // keeps working rather than being broken by this.
+            assert!(
+                !parsed.production.areas.is_empty(),
+                "the capability report must still be included"
+            );
+        }
+    }
+
+    #[test]
+    fn every_serving_mode_states_what_it_actually_refuses() {
+        // Five modes, three behaviours. The pairs that mean the same thing are not obvious from
+        // their names -- Degraded in particular reads like a restriction and is not one, it
+        // accepts exactly what Serving accepts. This pins the real matrix so the documentation
+        // beside the enum cannot drift away from it, and so that anyone narrowing one mode has
+        // to decide what happens to the mode it is currently a synonym for.
+        let cases = [
+            (ProxyServingMode::Serving, true, true),
+            (ProxyServingMode::Degraded, true, true),
+            (ProxyServingMode::Readonly, true, false),
+            (ProxyServingMode::WriteDisabled, true, false),
+            (ProxyServingMode::NotServing, false, false),
+        ];
+
+        for (mode, reads_allowed, writes_allowed) in cases {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+
+            let read = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k".to_string(),
+                },
+            });
+            let read_refused = read.status.code == "proxy_not_serving"
+                || read.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !read_refused, reads_allowed,
+                "{mode:?}: reads_allowed should be {reads_allowed}, got status {:?}",
+                read.status.code
+            );
+
+            let write = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let write_refused = write.status.code == "proxy_not_serving"
+                || write.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !write_refused, writes_allowed,
+                "{mode:?}: writes_allowed should be {writes_allowed}, got status {:?}",
+                write.status.code
+            );
+
+            // The report has to agree with what admission actually did, or an operator reading
+            // the status surface is told one thing while traffic experiences another.
+            let policy = proxy.policy_report();
+            assert_eq!(
+                policy.serving_writes, writes_allowed,
+                "{mode:?}: the policy report disagrees with admission about writes"
+            );
+            assert_eq!(
+                policy.serving_reads, reads_allowed,
+                "{mode:?}: the policy report disagrees with admission about reads"
+            );
+        }
+    }
+
+    #[test]
     fn drop_percent_refuses_the_same_keys_every_time_including_writes() {
         // drop_percent reads like a load-shedding knob and is not one. The decision comes from
         // a hash of the routing key, so at 50 it is not "half the requests" -- it is "half the
@@ -3668,7 +3950,8 @@ mod tests {
             });
             assert_eq!(
                 response.status.code, "proxy_traffic_dropped",
-                "attempt {attempt} on a refused key must be refused again -- the decision is                  per key, not per request"
+                "attempt {attempt} on a refused key must be refused again -- the decision \
+                 is per key, not per request"
             );
             assert!(
                 response.status.message.contains("will not succeed"),
@@ -5092,7 +5375,8 @@ mod tests {
         assert_eq!(
             hits.load(Ordering::SeqCst),
             1,
-            "a write that timed out must not be sent again -- the timeout says the datanode              stopped answering, not that it never received the write"
+            "a write that timed out must not be sent again -- the timeout says the datanode \
+             stopped answering, not that it never received the write"
         );
 
         // A read is a different matter: repeating it cannot change anything, so the

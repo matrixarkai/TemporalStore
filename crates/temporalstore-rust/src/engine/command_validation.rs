@@ -38,6 +38,7 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         // Touches no object, so it holds no object keys.
         Command::LeaderEstablish => Vec::new(),
         Command::CommonDelete { key } => associated_record_keys(key),
+        Command::CommonPersist { key } => associated_record_keys(key),
         Command::CommonExpire { key, .. }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
@@ -49,6 +50,21 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::ListPush { key, .. }
+        | Command::ListPop { key, .. }
+        | Command::ListRange { key, .. }
+        | Command::ListLen { key }
+        | Command::ZSetAdd { key, .. }
+        | Command::ZSetScore { key, .. }
+        | Command::ZSetRemove { key, .. }
+        | Command::ZSetCard { key }
+        | Command::ZSetRange { key, .. }
+        | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetPop { key, .. }
+        | Command::ZSetRank { key, .. }
+        | Command::BucketTake { key, .. }
+        | Command::BucketPeek { key, .. }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
@@ -236,6 +252,12 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQuerySummaries { .. }
         | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextQueryCompressionEvents { .. }
+        | Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. }
         | Command::ContextQueryNodeContext { .. } => Vec::new(),
     }
 }
@@ -254,6 +276,12 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::ListPush { .. }
+            | Command::ListPop { .. }
+            | Command::ZSetAdd { .. }
+            | Command::ZSetRemove { .. }
+            | Command::ZSetIncrBy { .. }
+            | Command::ZSetPop { .. }
             | Command::ControlStateIncrement { .. }
             | Command::ControlStateIncrementWithOptions { .. }
             | Command::ControlStateSet { .. }
@@ -267,6 +295,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
         command,
         Command::CommonDelete { .. }
             | Command::CommonExpire { .. }
+            | Command::CommonPersist { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }
@@ -277,6 +306,13 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::ListPush { .. }
+            | Command::ListPop { .. }
+            | Command::ZSetAdd { .. }
+            | Command::ZSetRemove { .. }
+            | Command::ZSetIncrBy { .. }
+            | Command::ZSetPop { .. }
+            | Command::BucketTake { .. }
             | Command::FeatureAppend { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
@@ -289,6 +325,11 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
             | Command::ControlStateSelectionSet { .. }
+            | Command::ContextResourceBlobBegin { .. }
+            | Command::ContextResourceBlobAppend { .. }
+            | Command::ContextResourceBlobCommit { .. }
+            | Command::ContextResourceBlobPut { .. }
+            | Command::ContextResourceBlobSweep { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }
