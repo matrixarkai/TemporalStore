@@ -58,6 +58,33 @@ class _TemporalDirectRetrieveMixin:
             rows = batch_hget(entries)
         except Exception as exc:
             return {"locations": [], "locator_rows": 0, "eligible": False, "reason": f"placement_lookup_failed:{exc}"}
+        # A node's locations are held in bounded chunks so an append does not rewrite the whole
+        # list. The head keeps the original field name and shape -- so this still works against a
+        # store written before chunking -- and names how many overflow chunks follow it. Missing
+        # them would drop locations silently, which reads as a memory that simply is not there.
+        chunk_entries = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get("value"):
+                continue
+            try:
+                decoded = json.loads(str(row.get("value")))
+            except Exception:
+                continue
+            if not isinstance(decoded, dict):
+                continue
+            try:
+                chunks = int(decoded.get("location_chunks") or 0)
+            except (TypeError, ValueError):
+                chunks = 0
+            for index in range(1, chunks + 1):
+                chunk_entries.append({"key": row.get("key"), "field": f"{row.get('field')}#{index}"})
+        if chunk_entries:
+            try:
+                extra = batch_hget(chunk_entries)
+            except Exception:
+                extra = []
+            if isinstance(extra, list):
+                rows = list(rows) + extra
         locations: list[Json] = []
         resource_versions: set[str] = set()
         seen: set[tuple[str, str]] = set()
