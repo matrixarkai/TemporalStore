@@ -1200,6 +1200,21 @@ fn restore_shared_index_before_load(
                 0
             }
         };
+    // Inherit the dump lineage along with the data. Without it this node treats every live
+    // generation as never dumped, which blocks WAL reclaim until it has re-dumped the whole
+    // shard itself. Advisory: the data is already restored and serving, so a lineage that
+    // cannot be read costs re-dumping, not correctness.
+    match runtime.block_on(replicator.restore_bucket_dump_manifests(shard_id, engine)) {
+        Ok(0) => {}
+        Ok(restored) => info!(
+            shard_id,
+            restored, "inherited bucket-dump manifests from shared storage"
+        ),
+        Err(err) => warn!(
+            shard_id, %err,
+            "could not restore bucket-dump manifests; this node will re-dump before it can reclaim"
+        ),
+    }
     Some(after_wal_index)
 }
 
@@ -1297,6 +1312,27 @@ fn publish_shard_checkpoint(
         }
         published += 1;
         last_wal_index = record.sequence;
+    }
+    // Send the dump lineage before the checkpoint manifest, so the checkpoint manifest is
+    // still the last object written and therefore still the commit point for a restore.
+    // Advisory on failure: the checkpoint alone is what a restore needs today, and failing
+    // the whole publish over the lineage would make this strictly worse than not having it.
+    match runtime.block_on(
+        replicator.publish_bucket_dump_manifests(
+            shard_id,
+            &engine.list_bucket_dump_manifests(shard_id),
+        ),
+    ) {
+        Ok(0) => {}
+        Ok(count) => info!(
+            shard_id,
+            manifests = count,
+            "published bucket-dump manifests to shared storage"
+        ),
+        Err(err) => warn!(
+            shard_id, %err,
+            "could not publish bucket-dump manifests; checkpoint still published without lineage"
+        ),
     }
     // Publish a real metadata+slab checkpoint at the current last-applied WAL index so
     // a future owner can lazily restore (index + slab addresses) and replay only the
