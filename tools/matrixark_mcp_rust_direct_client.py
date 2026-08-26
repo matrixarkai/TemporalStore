@@ -213,7 +213,7 @@ class MatrixArkRustCdylibClient:
             append_options=append_options,
         )
 
-    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int]) -> Json:
+    def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int], newest_by_type: Json | None = None) -> Json:
         request = json.dumps({"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}, separators=(",", ":"), sort_keys=True).encode("utf-8")
         def call() -> Json:
             out = self._ctypes.c_void_p()

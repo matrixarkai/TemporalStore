@@ -78,6 +78,14 @@ struct RecordLogRequest {
     shard_size: Option<u64>,
     #[serde(default)]
     record_types: Option<Vec<String>>,
+    /// Cap the scan to the newest N locations of a given record type, by append order.
+    ///
+    /// For a consumer that only ever looks at the tail of a type -- prior context reads the newest
+    /// eight events and stops -- fetching the whole type is work whose result is discarded. Capping
+    /// is per TYPE on purpose: the same scan also carries tombstones and retention cutoffs, and a
+    /// cap on the union would drop the very records that make deleted memories stay deleted.
+    #[serde(default)]
+    newest_by_type: Option<BTreeMap<String, usize>>,
     /// Identity ids to remove, for `matrixark_delete_records`. Sent by the caller, which owns the
     /// decision about what a delete covers; the engine only matches and removes.
     #[serde(default)]
@@ -1107,6 +1115,9 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
         "secondary_index_groups": command.secondary_index_groups,
         "scope": command.scope,
         "return_index_records": command.return_index_records,
+        // A capped scan and an uncapped one are different answers to the same question, so they
+        // must not share a cache entry: the capped answer is a SUBSET.
+        "newest_by_type": command.newest_by_type,
     }))
     .unwrap_or_else(|_| format!("fallback:{count}"))
 }
@@ -1567,6 +1578,7 @@ fn scope_index_payloads(
     record_hash_key: &str,
     allowed_types: &HashSet<String>,
     bucket: &str,
+    newest_by_type: Option<&BTreeMap<String, usize>>,
 ) -> Result<Option<(Vec<String>, u64)>, String> {
     let ready = read_record_count(engine, &scope_index_ready_key(record_hash_key))?;
     if ready.trim() != SCOPE_INDEX_LAYOUT_VERSION {
@@ -1611,6 +1623,38 @@ fn scope_index_payloads(
                 .intersection(&type_positions)
                 .cloned()
                 .collect();
+            // Per-type cap, applied AFTER the scope intersection so "newest" means newest within
+            // this scope rather than newest in the store. A location is "{shard:06}:{field}" with
+            // both parts zero-padded, so lexical order IS append order and the newest N are the
+            // last N. Types without a cap keep every position they had.
+            if let Some(caps) = newest_by_type {
+                let mut capped: std::collections::BTreeSet<String> = positions.clone();
+                for (record_type, limit) in caps {
+                    if *limit == 0 || !allowed_types.contains(record_type) {
+                        continue;
+                    }
+                    let mut of_type: Vec<String> = Vec::new();
+                    for (location, _) in
+                        hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                    {
+                        if positions.contains(&location) {
+                            of_type.push(location);
+                        }
+                    }
+                    if of_type.len() <= *limit {
+                        continue;
+                    }
+                    of_type.sort();
+                    let keep: std::collections::BTreeSet<String> =
+                        of_type[of_type.len() - *limit..].iter().cloned().collect();
+                    for location in of_type {
+                        if !keep.contains(&location) {
+                            capped.remove(&location);
+                        }
+                    }
+                }
+                positions = capped;
+            }
         }
     }
     let (values, shards_touched) =
@@ -1858,9 +1902,13 @@ fn scan_matrixark_candidates(
     let mut scope_index_used = false;
     if !id_scoped_used && count > 0 {
         if let Some(bucket) = &query_bucket {
-            if let Some((values, shards_touched)) =
-                scope_index_payloads(engine, &record_hash_key, &allowed_types, bucket)?
-            {
+            if let Some((values, shards_touched)) = scope_index_payloads(
+                engine,
+                &record_hash_key,
+                &allowed_types,
+                bucket,
+                command.newest_by_type.as_ref(),
+            )? {
                 payload_values = values;
                 placement_partitions_touched = shards_touched;
                 scope_index_used = true;
