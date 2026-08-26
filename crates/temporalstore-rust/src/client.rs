@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -636,7 +636,10 @@ struct ClientInner {
     options: ClientOptions,
     routes: Mutex<HashMap<ShardId, CachedRoute>>,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
-    tables: Mutex<HashMap<String, TableOptions>>,
+    /// Read on every request for the live options, written only by topology
+    /// sync and open/close. A Mutex made those reads queue behind each other,
+    /// so adding threads cost throughput instead of adding it.
+    tables: RwLock<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
     /// Topology version this client last heard from the metaserver.
@@ -752,7 +755,7 @@ impl TemporalStoreClient {
                 options,
                 routes: Mutex::default(),
                 backend_failures: Mutex::default(),
-                tables: Mutex::default(),
+                tables: RwLock::default(),
                 meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),
                 known_topology_version: AtomicU64::new(0),
@@ -768,12 +771,12 @@ impl TemporalStoreClient {
     ) -> TemporalStoreTable {
         let namespace = namespace.into();
         let table_name = table_name.into();
-        let combine_name = table_combine_name(&namespace, &table_name);
+        let combined_name = table_combine_name(&namespace, &table_name);
         self.inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
-            .insert(combine_name, options.clone());
+            .insert(combined_name.clone(), options.clone());
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
@@ -786,6 +789,7 @@ impl TemporalStoreClient {
             table_name,
             shard_id: self.inner.options.default_shard_id,
             options,
+            combined_name,
         }
     }
 
@@ -807,12 +811,14 @@ impl TemporalStoreClient {
     ) -> Option<TemporalStoreTable> {
         let namespace = namespace.into();
         let table_name = table_name.into();
+        let combined_name = table_combine_name(&namespace, &table_name);
+        // A read, so it shares the lock with every request doing the same.
         let options = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
-            .get(&table_combine_name(&namespace, &table_name))
+            .get(&combined_name)
             .cloned()?;
         Some(TemporalStoreTable {
             client: self.clone(),
@@ -820,6 +826,7 @@ impl TemporalStoreClient {
             table_name,
             shard_id: self.inner.options.default_shard_id,
             options,
+            combined_name,
         })
     }
 
@@ -968,6 +975,12 @@ pub struct TemporalStoreTable {
     /// reads the copy the metaserver sync keeps current -- this one never changes, so
     /// anything reading it directly is frozen at open time.
     options: TableOptions,
+    /// This handle's key into the client's table map, built once.
+    ///
+    /// It is `namespace` and `table_name` joined, and neither changes for the
+    /// life of the handle -- but it was rebuilt, and allocated, on every
+    /// request that asked for the live options.
+    combined_name: String,
 }
 
 impl TemporalStoreTable {
@@ -1001,9 +1014,9 @@ impl TemporalStoreTable {
         self.client
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
-            .get(&table_combine_name(&self.namespace, &self.table_name))
+            .get(&self.combined_name)
             .cloned()
             .unwrap_or_else(|| self.options.clone())
     }
