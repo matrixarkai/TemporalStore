@@ -100,6 +100,16 @@ impl MatrixObjectObjectStore {
         Arc::clone(&self.inner)
     }
 
+    /// Synchronous read of one object, for the lazy slab read-through: the store is a mutex
+    /// over in-process state, so nothing here would actually await.
+    pub fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        let inner = self.inner.lock().expect("matrixobject lock poisoned");
+        let object = inner
+            .get_object(&self.bucket, key)
+            .map_err(map_matrixobject_error)?;
+        Ok(Bytes::from(object.data))
+    }
+
     /// Force the durable snapshot to disk after a mutation.
     ///
     /// This is a no-op when the store has no `persistent_snapshot_path` (the

@@ -205,7 +205,8 @@ impl MetaTaskScheduler {
             raft_membership_report: execution.raft_membership_report.clone(),
             queue_len: run.queue_len,
         };
-        self.record_execution(MetaSchedulerExecutionRecord {
+        let mut response = response;
+        let persisted = self.record_execution(MetaSchedulerExecutionRecord {
             task_id: task.id,
             node_addr: response.node_addr.clone(),
             status: response.status.clone(),
@@ -225,6 +226,12 @@ impl MetaTaskScheduler {
             raft_membership_report: response.raft_membership_report.clone(),
             queue_len: response.queue_len,
         });
+        // Only when the execution itself succeeded. An execution that already
+        // failed has the more useful error, and the three sibling paths have no
+        // separate outcome to lose so they simply return theirs.
+        if response.status.ok && !persisted.ok {
+            response.status = persisted;
+        }
         response
     }
 
@@ -321,7 +328,15 @@ impl MetaTaskScheduler {
         Ok(())
     }
 
-    fn record_execution(&self, record: MetaSchedulerExecutionRecord) {
+    /// Record one execution and return what persisting it did.
+    ///
+    /// The status used to be dropped here while `submit`, `run_next` and
+    /// `restore` all fold theirs into the response they return. `persist_current`
+    /// writes the execution history *and* the scheduler snapshot, so a failed
+    /// write left the post-execution state non-durable while the caller was told
+    /// the execution succeeded -- and a restart could hand out a task that had
+    /// already run.
+    fn record_execution(&self, record: MetaSchedulerExecutionRecord) -> Status {
         {
             let mut executions = self
                 .executions
@@ -334,7 +349,7 @@ impl MetaTaskScheduler {
                 executions.drain(0..overflow);
             }
         }
-        let _ = self.persist_current();
+        self.persist_current()
     }
 
     fn persist_current(&self) -> Status {

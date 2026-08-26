@@ -1159,6 +1159,32 @@ pub(crate) fn page_wal_single_barrier() -> bool {
     )
 }
 
+/// Bands are neither preallocated nor recycled, and both are deliberate.
+///
+/// The log does preallocate, and it measured **2.16x** cheaper per append for doing so
+/// (1131 us against 2444, ranges [1042-1285] and [2442-2565], six interleaved runs). So the same
+/// treatment here looks obviously worth having. It is not, and the reason is the barrier rate
+/// rather than anything about files.
+///
+/// That win comes entirely from not persisting a new file size on every barrier. Measured across
+/// group sizes, it is 65.5% at one barrier per record, 42.7% at eight, and **gone by sixty-four**:
+/// with no barrier, growing a file is page-cache work and costs nothing worth reclaiming.
+///
+/// This path has no barrier per write. `defer_data_sync` is
+/// `bulk_relaxed_durability() || page_wal_single_barrier()`, and the second is true unless legacy
+/// recovery is turned back on -- so by default the per-write page fdatasync is already deferred
+/// (see the note on `page_wal_only_sync`). Preallocating would remove a cost that is not being
+/// paid.
+///
+/// Recycling a band rather than creating and unlinking one is the same story from the other end.
+/// What it saves is the create and the unlink -- and bands are large, so that turnover is rare
+/// against the writes going through them. Reusing already-allocated blocks is the other half of the
+/// preallocation argument, and it lapses for the same reason.
+///
+/// What WOULD change the answer: making page writes synchronous again (turning
+/// `TS_WAL_LEGACY_RECOVERY` on, or anything else that stops deferring that fdatasync). Then this
+/// path starts paying per barrier for a file that grows per write, and both are worth revisiting
+/// together -- with the group-size table above as the guide to how much is there.
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {

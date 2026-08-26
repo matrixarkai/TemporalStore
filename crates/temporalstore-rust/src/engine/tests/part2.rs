@@ -2144,6 +2144,131 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
 }
 
 #[test]
+fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
+    // Embedded-path log reclaim: once a threshold dump durably captures the shard, the
+    // index-log records the base reflects and the WAL prefix below the anchor are redundant --
+    // reclaiming them must SHRINK both files on disk, keep the cadence alive (watermark
+    // measured from the post-reclaim length), and leave a reload byte-exact.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    for i in 0..60 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    let report = engine
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1)
+        .expect("past the gap, the dump + reclaim must fire");
+    assert!(
+        report.index_log_bytes_after < report.index_log_bytes_before,
+        "the index log must shrink on disk after the dump ({} -> {})",
+        report.index_log_bytes_before,
+        report.index_log_bytes_after
+    );
+    assert!(
+        report.wal_bytes_after < report.wal_bytes_before,
+        "the WAL must shrink on disk after the dump ({} -> {})",
+        report.wal_bytes_before,
+        report.wal_bytes_after
+    );
+    assert!(report.index_log_records_removed > 0);
+    assert!(report.wal_records_removed > 0);
+    // The folded catalog anchor survives its own sweep -- it is the load-time catalog seed.
+    assert!(
+        engine
+            .index_log_store()
+            .latest_zone_catalog(1)
+            .unwrap()
+            .is_some(),
+        "the folded catalog anchor must survive the index-log sweep"
+    );
+    // The watermark was re-marked at the post-reclaim length: no immediate re-dump, and the
+    // cadence fires again once new writes regrow the gap (it must not wait for the file to
+    // regrow past its PRE-reclaim size).
+    assert!(engine.maybe_dump_and_reclaim_with_gap_for_test(1, u64::MAX).is_none());
+    for i in 60..70 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    assert!(
+        engine.maybe_dump_and_reclaim_with_gap_for_test(1, 1).is_some(),
+        "the cadence must keep firing after a reclaim shrank the log"
+    );
+    drop(engine);
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    for i in 0..70 {
+        assert_eq!(
+            read_string(&restarted, &format!("key-{i}")),
+            Some(format!("val-{i}").into_bytes()),
+            "every acked key must survive reload after the logs were reclaimed"
+        );
+    }
+}
+
+#[test]
+fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
+    // An async write's page can live ONLY in its WAL record (served back through the
+    // block-in-WAL registration). A post-dump WAL sweep must pin its floor at the lowest
+    // registered sequence so that record survives, even when the dump anchor is far above it.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // One async write first: its WAL record carries its staged page.
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+    write_string(&engine, "async-key", b"async-value");
+    // Then a run of synchronous writes, which advance the dump anchor past the async record.
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 3,
+            async_storage: false,
+            ..Config::default()
+        },
+    });
+    for i in 0..40 {
+        write_string(&engine, &format!("sync-{i}"), format!("val-{i}").as_bytes());
+    }
+    let report = engine
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1)
+        .expect("dump + reclaim must fire");
+    let floor = report
+        .wal_retention_floor
+        .expect("the staged async page must register a WAL retention floor");
+    assert!(
+        floor <= report.wal_anchor,
+        "the floor ({floor}) pins a record below the dump anchor ({})",
+        report.wal_anchor
+    );
+    // The pinned record survived: the async value still reads back exactly.
+    assert_eq!(
+        read_string(&engine, "async-key"),
+        Some(b"async-value".to_vec()),
+        "the async write's page must survive the WAL sweep"
+    );
+}
+
+#[test]
 fn manifest_fold_reload_reconstructs_catalog_with_band_manifest_deleted() {
     // MANIFEST-CONFORMANCE FOLD round-trip: write, dump (folds the catalog), delete the band-manifest
     // file, reload -- every acked key must survive AND the band lifecycle must reconstruct from

@@ -141,7 +141,7 @@ def benchmark_model_contract(args: argparse.Namespace, reader: "BenchmarkReader"
             and reader_output_budget_matches
         ),
         "comparison_rule": (
-            "Paper/comparable claims require MatrixArk, VikingMem/OpenViking, and other baselines "
+            "Paper/comparable claims require MatrixArk, ExternalBaseline/ExternalBaseline, and other baselines "
             "to use the same OSS reader model, embedding/encoding model, retrieval block budget, "
             "adaptive retrieval policy, retrieval budget split, reader context budget, and reader "
             "output-token budget, with the same reader fallback policy. Provider "

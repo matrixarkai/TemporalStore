@@ -34,7 +34,7 @@ pub(super) struct ContextDirtyEntry {
     pub(super) mark_count: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
     /// On-disk shape of this index. 0 means "written before the stamp existed".
     ///
@@ -56,6 +56,25 @@ pub(super) struct ShardState {
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    /// Token buckets: key -> (tokens remaining, last refill ms). Config rides each command,
+    /// never the store -- the caller owns policy, which is exactly what a quota layer wants.
+    /// No pages back this state: it persists only with the shard index snapshot, so a crash
+    /// refills every bucket to capacity. That direction is deliberate and documented -- a
+    /// limiter that briefly over-admits after a crash beats one that starves recovered
+    /// tenants on stale counts.
+    #[serde(default)]
+    pub(super) buckets: HashMap<String, (f64, u64)>,
+    /// Sorted sets: member -> (total-order score bits, element page). The score-ordered view
+    /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
+    /// in-memory map rebuilt at load, never a second persisted structure (the index component
+    /// already encodes score-then-member, so recovery has the order for free).
+    #[serde(default, with = "super::zset_index_serde")]
+    pub(super) zsets: HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>,
+    /// Redis-style lists: element pages keyed by a signed sequence -- left pushes walk the
+    /// low end down, right pushes walk the high end up, so both ends are O(log n) and the
+    /// BTree's order IS the list's order.
+    #[serde(default)]
+    pub(super) lists: HashMap<String, BTreeMap<i64, BlockAddress>>,
     pub(super) features: HashMap<String, BTreeMap<u64, BlockAddress>>,
     // Sequence data is now stored in `features` (thin-layer fold: Sequence is Feature
     // with a typed row codec over identical timestamped-KV storage). This field is

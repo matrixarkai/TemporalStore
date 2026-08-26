@@ -33,7 +33,7 @@ class _Adapter(adapters.MatrixArkTemporalStoreDirectAdapter):
         self.full_reads = 0
         self.scan_kwargs = None
 
-    def _scan_records_of_types(self, record_types, record_ids=None):
+    def _scan_records_of_types(self, record_types, record_ids=None, scope=None):
         self.scan_kwargs = {"record_types": list(record_types), "record_ids": record_ids}
         if self.scanned is None:
             return None

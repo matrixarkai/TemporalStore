@@ -109,7 +109,6 @@ pub(super) fn build_shards(
         let end_bucket = (bucket_count * (offset + 1) / table.shard_count).saturating_sub(1);
         let mut replicas = Vec::new();
         let mut seen_replicas = BTreeSet::new();
-        let mut used_locations = BTreeSet::new();
         let mut used_hosts = BTreeSet::new();
         let mut placed_locations: Vec<Location> = Vec::new();
         // A shard that is not serving gets no placement at all. Skipping only
@@ -148,7 +147,6 @@ pub(super) fn build_shards(
                 state,
                 &mut replicas,
                 &mut seen_replicas,
-                &mut used_locations,
                 &mut used_hosts,
                 &location.server_addr,
             );
@@ -188,7 +186,6 @@ pub(super) fn build_shards(
                     state,
                     &mut replicas,
                     &mut seen_replicas,
-                    &mut used_locations,
                     &mut used_hosts,
                     candidate.server_addr,
                 );
@@ -219,7 +216,6 @@ pub(super) fn build_shards(
                     state,
                     &mut replicas,
                     &mut seen_replicas,
-                    &mut used_locations,
                     &mut used_hosts,
                     candidate.server_addr,
                 );

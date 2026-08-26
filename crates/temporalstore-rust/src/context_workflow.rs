@@ -426,10 +426,21 @@ pub struct ContextResourceLifecycleRecord {
     pub payload_size_bytes: usize,
     #[serde(default)]
     pub max_inline_bytes: usize,
-    #[serde(default)]
+    /// Whether the payload is held in the record rather than in the object store.
+    ///
+    /// Defaulted explicitly rather than with a bare `#[serde(default)]`: on a bool that decodes an
+    /// ABSENT field to `false`, which here means "the payload is elsewhere" and sends a reader to
+    /// an `external_object_uri` that such a record does not carry. This type's own `Default` says
+    /// true, and decoding it should not disagree with constructing it.
+    #[serde(default = "inline_payload_default")]
     pub inline_payload: bool,
     #[serde(default)]
     pub external_object_uri: String,
+}
+
+/// A record with nothing said about where its payload lives holds it inline; see the field.
+fn inline_payload_default() -> bool {
+    true
 }
 
 impl Default for ContextResourceLifecycleRecord {
