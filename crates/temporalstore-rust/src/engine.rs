@@ -1597,14 +1597,94 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
 /// bytes are identical either way.
 pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
     shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
-    serde_json::to_vec(shard).expect("shard index should serialize")
+    encode_index_bytes(shard)
 }
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
     if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
-        return serde_json::to_vec(shard).expect("shard index should serialize");
+        return encode_index_bytes(shard);
     }
-    serde_json::to_vec(&stamp_index_format_version(shard)).expect("shard index should serialize")
+    wrap_index_json(
+        serde_json::to_vec(&stamp_index_format_version(shard))
+            .expect("shard index should serialize"),
+    )
+}
+
+/// Container magic for a non-JSON served index. A JSON index starts with `{`, so a reader can
+/// tell the two apart from the first byte and never has to be told which it is holding.
+const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
+
+/// Payload codec ids inside the container. The whole point of the container is that this is an
+/// enumeration rather than a decision: a future protobuf or bincode payload is a new id whose
+/// decoder lands beside the existing ones, and every index written before it keeps loading.
+const INDEX_CODEC_ZSTD_JSON: u8 = 1;
+
+/// Compression level for the container payload. The served index is written whole, in the
+/// background, and read whole -- so this trades a little CPU on a path that is not the request
+/// path for a large cut in bytes written and bytes read at load.
+const INDEX_ZSTD_LEVEL: i32 = 3;
+
+/// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
+/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
+/// index written either way loads in either setting.
+fn index_binary_container_enabled() -> bool {
+    env_flag_on("TS_INDEX_BINARY")
+}
+
+/// The single place the served index becomes bytes.
+///
+/// The measured cost of raw JSON here is real: a 1 000-memory store carries a 74 MB index, and a
+/// dump rewrites it whole. Compressing the same JSON keeps ONE representation of the struct --
+/// no schema mirrored by hand, no second definition to drift -- while cutting what is written and
+/// what must be read back at load.
+pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
+    wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
+}
+
+/// Put already-serialized index JSON into the container (or leave it as JSON when the container
+/// is off). Separate from `encode_index_bytes` because the version-stamping path serializes a
+/// patched `Value` rather than the struct, and both must produce the same on-disk shape.
+fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
+    if !index_binary_container_enabled() {
+        return json;
+    }
+    match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
+        Ok(payload) => {
+            let mut out = Vec::with_capacity(payload.len() + INDEX_CONTAINER_MAGIC.len() + 1);
+            out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+            out.push(INDEX_CODEC_ZSTD_JSON);
+            out.extend_from_slice(&payload);
+            out
+        }
+        // A compression failure must not cost the index: fall back to the bytes that always work.
+        Err(_) => json,
+    }
+}
+
+/// The single place served-index bytes become a `ShardState`, whatever wrote them.
+///
+/// Sniffs the container magic, so JSON written by any earlier binary keeps loading unchanged and
+/// a container written by a newer one is refused with a clear error rather than mis-parsed. Every
+/// decode site goes through here; the previous attempt at a binary index failed precisely because
+/// the decoders were scattered and could not move together.
+pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
+    if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
+        return serde_json::from_slice::<ShardState>(bytes).map_err(|error| error.to_string());
+    }
+    let body = &bytes[INDEX_CONTAINER_MAGIC.len()..];
+    let (codec, payload) = body
+        .split_first()
+        .ok_or_else(|| "served index container is truncated".to_string())?;
+    match *codec {
+        INDEX_CODEC_ZSTD_JSON => {
+            let json = zstd::stream::decode_all(payload)
+                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
+            serde_json::from_slice::<ShardState>(&json).map_err(|error| error.to_string())
+        }
+        other => Err(format!(
+            "served index uses payload codec {other}, which this binary cannot read"
+        )),
+    }
 }
 
 /// Collect the served-index delta items for exactly the object keys a single write

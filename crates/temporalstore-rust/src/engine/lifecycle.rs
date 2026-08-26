@@ -175,7 +175,7 @@ impl TemporalEngine {
                     // which refuses to install a manifest older than the delta-advanced index-log
                     // sequence -- cannot block trusting the durable checkpoint over the un-synced
                     // delta.
-                    match serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
+                    match crate::engine::decode_index_bytes(&manifest.index_bytes) {
                         Ok(mut restored) => {
                             rebuild_bucket_page_ownership(
                                 request.shard_id,

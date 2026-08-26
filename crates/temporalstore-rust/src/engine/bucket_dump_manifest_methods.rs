@@ -65,7 +65,7 @@ impl TemporalEngine {
             .export_index_bytes(shard_id)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         let index_sha256 = sha256_hex_bytes(&index_bytes);
-        let dump_index_state = serde_json::from_slice::<ShardState>(&index_bytes)
+        let dump_index_state = crate::engine::decode_index_bytes(&index_bytes)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         // The manifest's replay watermark MUST equal the WAL sequence the EMBEDDED index
         // actually reflects -- NOT the live WAL tail. Under MATRIXARK_BULK_INGEST the on-disk
@@ -562,7 +562,7 @@ impl TemporalEngine {
                 format!("slot dump references missing page segments: {missing:?}"),
             ));
         }
-        let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // `hashes` is `skip_serializing`, so a freshly deserialized index never carries it.
         // Without this the model-maps lifecycle below sees no hash objects while the
@@ -760,7 +760,7 @@ impl TemporalEngine {
         let mut unreadable_page_bytes = 0u64;
         let mut restored_index = None;
         if !manifest.index_bytes.is_empty() && missing_page_slab_ids.is_empty() {
-            if let Ok(restored) = serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
+            if let Ok(restored) = crate::engine::decode_index_bytes(&manifest.index_bytes) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 for entry in collect_live_page_entries(&restored) {
                     let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
@@ -1263,7 +1263,7 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+        let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
         // ownership. `rebuild_bucket_page_ownership` clears the bucket map and repopulates it
