@@ -1023,6 +1023,80 @@ where
         Ok(manifests)
     }
 
+    /// Publish this shard's bucket-dump manifests to the object store.
+    ///
+    /// A dump manifest is the durable reclaim watermark plus the recovery index for the data it
+    /// covers. In shared mode that data outlives the node -- it is in the object store -- but
+    /// the manifest describing it was only ever written to the node's local index dir, so
+    /// losing the node lost the lineage for data that was still perfectly present. A manifest
+    /// should be as durable as the data it describes; this is the half that was missing.
+    ///
+    /// Deliberately not on the write path. Manifests are produced at dump cadence, so this is
+    /// one put per manifest at checkpoint time and nothing at all in the steady state -- unlike
+    /// the WAL, which is the per-write barrier and stays node-local for exactly that reason.
+    pub async fn publish_bucket_dump_manifests(
+        &self,
+        shard_id: ShardId,
+        manifests: &[crate::BucketDumpManifest],
+    ) -> Result<usize, SharedStoreReplicationError> {
+        let mut published = 0usize;
+        for manifest in manifests {
+            if manifest.shard_id != shard_id {
+                continue;
+            }
+            self.object_store
+                .put(
+                    &self.bucket_dump_manifest_key(shard_id, &manifest.manifest_id),
+                    Bytes::from(serde_json::to_vec_pretty(manifest)?),
+                )
+                .await?;
+            published += 1;
+        }
+        Ok(published)
+    }
+
+    /// Land every published bucket-dump manifest for this shard in the local index dir.
+    ///
+    /// The counterpart to [`publish_bucket_dump_manifests`](Self::publish_bucket_dump_manifests):
+    /// a node taking over a shard inherits the dump lineage along with the data, instead of
+    /// starting blind and treating every live generation as never dumped -- which is what
+    /// blocks WAL reclaim until this node has dumped everything again itself.
+    ///
+    /// A manifest already present locally is left alone. A local manifest is at least as
+    /// current as a published one, and rewriting it would churn the very file that authorizes
+    /// WAL reclaim.
+    pub async fn restore_bucket_dump_manifests(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+    ) -> Result<usize, SharedStoreReplicationError> {
+        let existing: std::collections::BTreeSet<String> = engine
+            .list_bucket_dump_manifests(shard_id)
+            .into_iter()
+            .map(|manifest| manifest.manifest_id)
+            .collect();
+        let mut restored = 0usize;
+        for key in self
+            .object_store
+            .list(&self.bucket_dump_prefix(shard_id))
+            .await?
+        {
+            if !key.ends_with(".json") {
+                continue;
+            }
+            let manifest: crate::BucketDumpManifest =
+                serde_json::from_slice(&self.object_store.get(&key).await?)?;
+            // A manifest filed under another shard's prefix, or one this node already has,
+            // is not ours to write.
+            if manifest.shard_id != shard_id || existing.contains(&manifest.manifest_id) {
+                continue;
+            }
+            engine.store_bucket_dump_manifest(&manifest)?;
+            restored += 1;
+        }
+        Ok(restored)
+    }
+
     pub async fn restore_checkpoint(
         &self,
         manifest: &SharedStoreCheckpointManifest,
@@ -1467,6 +1541,14 @@ where
 
     fn checkpoints_prefix(&self, shard_id: ShardId) -> String {
         format!("{}checkpoints/", self.shard_prefix(shard_id))
+    }
+
+    fn bucket_dump_prefix(&self, shard_id: ShardId) -> String {
+        format!("{}slot_dumps/", self.shard_prefix(shard_id))
+    }
+
+    fn bucket_dump_manifest_key(&self, shard_id: ShardId, manifest_id: &str) -> String {
+        format!("{}{manifest_id}.json", self.bucket_dump_prefix(shard_id))
     }
 
     fn checkpoint_prefix(&self, shard_id: ShardId, checkpoint_id: &str) -> String {
@@ -3894,6 +3976,84 @@ mod tests {
                 value: Some(b"1".to_vec())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn bucket_dump_manifests_travel_with_the_data_to_a_new_owner() {
+        // In shared mode the data outlives the node, but the manifest describing it was only
+        // ever written to that node's local index dir. Losing the node lost the lineage for
+        // data that was still perfectly present -- the next owner could not tell what had
+        // already been dumped, so it had to treat every live generation as undumped.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let dumped = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+
+        let published = replicator
+            .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
+            .await
+            .unwrap();
+        assert_eq!(published, 1);
+
+        // A different node: its own index dir, and no local lineage whatsoever.
+        let successor = test_engine(dir.path(), "successor");
+        successor.load_shard(1);
+        assert!(successor.list_bucket_dump_manifests(1).is_empty());
+
+        let restored = replicator
+            .restore_bucket_dump_manifests(1, &successor)
+            .await
+            .unwrap();
+        assert_eq!(restored, 1);
+
+        let inherited = successor.list_bucket_dump_manifests(1);
+        assert_eq!(inherited.len(), 1);
+        assert_eq!(inherited[0].manifest_id, dumped.manifest_id);
+        assert_eq!(
+            inherited[0].wal_sequence, dumped.wal_sequence,
+            "the reclaim watermark has to survive the move, not merely the file"
+        );
+    }
+
+    #[tokio::test]
+    async fn restoring_bucket_dump_manifests_leaves_a_local_one_alone() {
+        // A local manifest is at least as current as a published one, and it is the file that
+        // authorizes WAL reclaim. Rewriting it on every restore would churn exactly the wrong
+        // thing, so a manifest this node already has is skipped rather than overwritten.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        replicator
+            .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
+            .await
+            .unwrap();
+
+        // Restoring onto the very node that produced them writes nothing.
+        let restored = replicator
+            .restore_bucket_dump_manifests(1, &primary)
+            .await
+            .unwrap();
+        assert_eq!(restored, 0);
+        assert_eq!(primary.list_bucket_dump_manifests(1).len(), 1);
     }
 
     #[tokio::test]

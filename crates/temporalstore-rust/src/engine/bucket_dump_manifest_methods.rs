@@ -248,6 +248,20 @@ impl TemporalEngine {
         list_bucket_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()
     }
 
+    /// Land a manifest in this node's index dir durably, without installing it.
+    ///
+    /// This is deliberately NOT [`install_bucket_dump_manifest`](Self::install_bucket_dump_manifest):
+    /// installing rewrites shard state from the manifest, which is what a restore-onto-this-shard
+    /// wants. This one only records that the dump EXISTS, for a node inheriting a shard whose
+    /// data is already in shared storage -- the lineage arrives with the data, and whether to
+    /// install any of it stays a separate decision.
+    pub fn store_bucket_dump_manifest(
+        &self,
+        manifest: &BucketDumpManifest,
+    ) -> Result<(), std::io::Error> {
+        self.persist_bucket_dump_manifest(manifest)
+    }
+
     pub fn interrupted_bucket_dump_installs(&self, shard_id: ShardId) -> Vec<BucketDumpInstallMarker> {
         interrupted_bucket_dump_installs_at(&self.index_dir, shard_id).unwrap_or_default()
     }
