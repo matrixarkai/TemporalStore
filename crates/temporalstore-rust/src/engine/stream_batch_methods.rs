@@ -195,13 +195,35 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
-        if promote_model_maps_to_bucket_index_authority(
-            request.shard_id,
-            shard,
-            start_routing_bucket,
-            end_routing_bucket,
-        ) {
-            reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+        // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
+        // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
+        // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
+        // that `bucket_index` -- which each mutating command already upserts before returning --
+        // is in sync. Measured on a 290 MB store, that made an ingest 1.65 s of pure proxy CPU
+        // against 0.15 s on a 26 MB one, and it was the single hottest frame in a stack profile
+        // of the write path. Every mem0 write arrives here, so the guarded path was the one that
+        // mattered and the unguarded one was the one being used.
+        //
+        // `promote_scan_done` is `#[serde(skip)]`, so a freshly loaded shard still pays exactly
+        // one full reconcile before the skip engages, and with the gate off the scan runs on
+        // every batch precisely as before.
+        if !(phase1_flat_enabled() && shard.promote_scan_done) {
+            self.promote_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if promote_model_maps_to_bucket_index_authority(
+                request.shard_id,
+                shard,
+                start_routing_bucket,
+                end_routing_bucket,
+            ) {
+                reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+            }
+            // Latch only once the shard actually holds model-map state: `promote` returns false
+            // without establishing anything on an empty shard, so guarding on non-emptiness
+            // avoids latching before the first real write.
+            if phase1_flat_enabled() && shard_has_model_entries(shard) {
+                shard.promote_scan_done = true;
+            }
         }
         let mut mutated_any = false;
         let mut wal_commands = Vec::new();
