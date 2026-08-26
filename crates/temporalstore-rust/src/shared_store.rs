@@ -316,6 +316,24 @@ struct ShardLease {
 /// `TS_SHARED_STORE_FENCE`: gate for the durable single-writer fence (R2). Default OFF so the
 /// shared-store write path is byte-identical to the pre-fence behavior unless explicitly
 /// enabled.
+/// TS_SHARED_STORE_MAX_PENDING: how many entries the async queue may hold before a write
+/// stops being allowed to defer its own durability.
+///
+/// The async path acks a write once its entry is on an in-memory queue, so the queue depth IS
+/// the size of what a non-graceful exit loses. Unbounded, a store that is merely slow turns
+/// every ack into memory the process never gets back, and the eventual loss is the entire
+/// backlog -- the failure gets worse the longer it goes unnoticed, which is backwards.
+///
+/// At the cap the next write publishes itself synchronously instead of queueing. The ack slows
+/// to the store's own latency, which is precisely the signal a caller needs, and the backlog
+/// stops growing. `0` restores the previous unbounded behaviour.
+fn shared_store_max_pending() -> usize {
+    std::env::var("TS_SHARED_STORE_MAX_PENDING")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(50_000)
+}
+
 fn shared_store_fence_enabled() -> bool {
     matches!(
         std::env::var("TS_SHARED_STORE_FENCE")
@@ -389,6 +407,11 @@ pub struct SharedStoreStorageWriter<O> {
     mode: SharedStoreStorageMode,
     next_wal_index: AtomicU64,
     pending: Mutex<VecDeque<SharedStoreWalEntry>>,
+    /// Depth at which the async path stops deferring. See [`shared_store_max_pending`].
+    max_pending: usize,
+    /// How many writes have been forced to publish themselves because the queue was full.
+    /// Non-zero means the store is not keeping up and acks are paying for it.
+    capacity_hits: AtomicU64,
     /// Timer-less queue-coalesced group commit for the SYNC path. When enabled, concurrent
     /// sync writers append their entry to `commit` and await a covering durable barrier instead
     /// of each publishing inline, amortizing N object-store appends onto ~1 per group. Ignored
@@ -845,6 +868,8 @@ where
             mode,
             next_wal_index: AtomicU64::new(next_wal_index.max(1)),
             pending: Mutex::default(),
+            max_pending: shared_store_max_pending(),
+            capacity_hits: AtomicU64::new(0),
             group_commit: false,
             commit_delay: Duration::ZERO,
             commit: Mutex::default(),
@@ -2054,6 +2079,21 @@ where
 {
     /// Enable timer-less queue-coalesced group commit on the SYNC path. `commit_delay` (default
     /// `ZERO`) optionally widens each batch under extreme load; `ZERO` keeps it purely timer-less.
+    /// Override the async queue depth at which writes stop deferring. `0` is unbounded.
+    pub fn with_max_pending(mut self, max_pending: usize) -> Self {
+        self.max_pending = max_pending;
+        self
+    }
+
+    /// How many writes have published themselves because the queue was at capacity.
+    ///
+    /// Zero is the healthy state. Non-zero means the async path is no longer absorbing the
+    /// write rate, and the acks that hit it paid the store's latency rather than silently
+    /// growing the amount a crash would lose.
+    pub fn queue_capacity_hits(&self) -> u64 {
+        self.capacity_hits.load(Ordering::Relaxed)
+    }
+
     pub fn with_group_commit(mut self, enabled: bool, commit_delay: Duration) -> Self {
         self.group_commit = enabled;
         self.commit_delay = commit_delay;
@@ -2080,6 +2120,24 @@ where
                 Ok(write_report_from_receipt(wal_index, receipt.as_ref()))
             }
             SharedStoreStorageMode::Async => {
+                // Read the depth and release the lock before any await: holding it across the
+                // publish below would serialize every writer behind one object-store round trip.
+                let at_capacity = {
+                    let pending = self
+                        .pending
+                        .lock()
+                        .expect("shared-store async queue lock poisoned");
+                    self.max_pending > 0 && pending.len() >= self.max_pending
+                };
+                if at_capacity {
+                    // The queue is the loss window, so it is not allowed to grow without end.
+                    // This write pays for its own durability instead of adding to what a
+                    // non-graceful exit would drop. The report already tells the truth about
+                    // which happened -- `published`, not `queued`.
+                    self.capacity_hits.fetch_add(1, Ordering::Relaxed);
+                    let receipt = self.replicator.publish_wal_entry(entry).await?;
+                    return Ok(write_report_from_receipt(wal_index, receipt.as_ref()));
+                }
                 self.pending
                     .lock()
                     .expect("shared-store async queue lock poisoned")
@@ -3976,6 +4034,84 @@ mod tests {
                 value: Some(b"1".to_vec())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn the_async_queue_stops_growing_once_it_reaches_its_cap() {
+        // The queue depth IS the loss window: an async write acks once its entry is in memory,
+        // so whatever is queued when the process dies non-gracefully is gone. Unbounded, a slow
+        // store makes that window grow without end -- the failure gets worse the longer nobody
+        // notices. At the cap a write publishes itself instead, which bounds the loss and makes
+        // the ack latency say so.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+        let writer = replicator
+            .storage_writer(SharedStoreStorageMode::Async, 1)
+            .with_max_pending(2);
+
+        for key in ["a", "b"] {
+            let report = writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(report.queued, "below the cap a write defers: {report:?}");
+            assert!(!report.published);
+        }
+        assert_eq!(writer.queued_len(), 2);
+        assert_eq!(writer.queue_capacity_hits(), 0);
+
+        // The third write finds the queue full and pays for its own durability.
+        let report = writer
+            .write(
+                1,
+                Command::StringSet {
+                    key: "c".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(report.published, "at the cap the write publishes: {report:?}");
+        assert!(!report.queued);
+        assert_eq!(
+            writer.queued_len(),
+            2,
+            "the backlog must not have grown past the cap"
+        );
+        assert_eq!(writer.queue_capacity_hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_async_queue_still_defers_every_write() {
+        // 0 restores the previous behaviour exactly, so an operator who wants the old
+        // unbounded queue can still have it -- and the escape hatch is tested, not assumed.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+        let writer = replicator
+            .storage_writer(SharedStoreStorageMode::Async, 1)
+            .with_max_pending(0);
+
+        for key in ["a", "b", "c", "d"] {
+            let report = writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(report.queued, "unbounded: every write defers: {report:?}");
+        }
+        assert_eq!(writer.queued_len(), 4);
+        assert_eq!(writer.queue_capacity_hits(), 0);
     }
 
     #[tokio::test]
