@@ -5613,8 +5613,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             new_text = args.get("content")
         if not isinstance(new_text, str) or not new_text.strip():
             raise MatrixArkError("update requires new content (data / text)")
+        # The id's own records, not the store's. An update reasons over exactly what a delete
+        # does -- the addressed event plus everything pointing at it -- and the same subset serves
+        # both the lookup here and the supersede closure below, so one id-scoped fetch replaces
+        # two full-store reads. The seam's contract is a SUPERSET of the id's live records, which
+        # is what both uses need; on an adapter without the index it still returns the whole store.
+        update_records = self.records_for_delete(memory_id)
         old: Json | None = None
-        for record in self.read_all():
+        for record in update_records:
             if str(record.get("record_type") or "") == "context_event" and str(record.get("event_id_hash")) == memory_id:
                 old = record
                 break
@@ -5661,7 +5667,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if memory_id_int is not None:
             # Sweep the superseded version's own embeddings / index postings so the old text can't leak
             # via retrieval after the update (same closure identity set as delete).
-            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(self.read_all(), memory_id, memory_id_int)
+            tombstone["closure_ref_ids"] = self._closure_ref_ids_for_event(update_records, memory_id, memory_id_int)
             self._forget_persisted_event_members(memory_id)
             self._invalidate_event_member_index()
         self.append(tombstone)
