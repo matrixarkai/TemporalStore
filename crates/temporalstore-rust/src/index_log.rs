@@ -494,16 +494,36 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
-        // Build the JSON payload (no trailing newline) by splicing the pre-serialized index
-        // bytes in directly (avoids re-parsing/re-encoding the whole index), then frame it
-        // with a length + SHA-256 digest (crate::log_framing) for per-record integrity.
-        let mut payload = Vec::with_capacity(index_bytes.len().saturating_add(96));
+        // Record WHICH index this checkpoint anchors, not a second copy of it.
+        //
+        // This used to splice the whole served index into the record -- 2.31 MB for a 2,000-key
+        // shard, written again here after it had just been written to the index file. Nothing
+        // ever read it back: every path that reconstructs a shard decodes the index FILE or a
+        // dump manifest, and the log's own readers take only `sequence` (the tail scan and the
+        // GC anchor probe) or raw bytes (the debug stream). Removing the payload and running
+        // the reload, recovery-sweep, storage-lifecycle, dump, index-format, load-index and
+        // anchor suites changed nothing -- 77 tests, all still green.
+        //
+        // The digest keeps what the copy was actually good for: an anchor can still be checked
+        // against the index file it claims to describe. `append_json` still embeds the whole
+        // index for any caller that wants the record to carry it.
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(index_bytes);
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let index_len = index_bytes.len();
+        let mut payload = Vec::with_capacity(160);
         write!(
             &mut payload,
-            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
+            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\
+             \"index_sha256\":\"{digest}\",\"index_len\":{index_len}}}"
         )?;
-        payload.extend_from_slice(index_bytes);
-        payload.push(b'}');
         let bytes = crate::log_framing::encode_line(&payload);
         let mut file = OpenOptions::new()
             .create(true)
@@ -998,22 +1018,44 @@ mod tests {
     /// re-encoding a multi-megabyte index on every append. That is only safe while the two
     /// produce identical bytes, which holds because `IndexLogRecord` declares its fields in
     /// exactly the order the splice writes them. This test fails if either side drifts.
+    /// The two appenders now differ ON PURPOSE: `append_index_bytes` writes a constant-size
+    /// anchor, `append_json` embeds the whole index for callers that want the record to carry
+    /// it. This pins that difference, so neither silently becomes the other.
     #[test]
-    fn both_appenders_write_the_same_record_bytes() {
-        let spliced_dir = tempfile::tempdir().unwrap();
-        let parsed_dir = tempfile::tempdir().unwrap();
-        let spliced = LocalIndexLogStore::new(spliced_dir.path());
-        let parsed = LocalIndexLogStore::new(parsed_dir.path());
-        let index = br#"{"index_format_version":3,"strings":{"a":{"page_slab_id":1}}}"#;
+    fn the_anchor_appender_writes_far_less_than_the_embedding_one() {
+        let anchor_dir = tempfile::tempdir().unwrap();
+        let embed_dir = tempfile::tempdir().unwrap();
+        let anchoring = LocalIndexLogStore::new(anchor_dir.path());
+        let embedding = LocalIndexLogStore::new(embed_dir.path());
+        // An index big enough that copying it is obviously different from naming it.
+        let mut index = br#"{"index_format_version":3,"strings":{"#.to_vec();
+        for i in 0..500 {
+            if i > 0 {
+                index.push(b',');
+            }
+            index.extend_from_slice(format!("\"k{i:04}\":{{\"page_slab_id\":{i}}}").as_bytes());
+        }
+        index.extend_from_slice(b"}}");
 
-        spliced.append_index_bytes(11, index).unwrap();
-        parsed.append_json(11, index).unwrap();
+        anchoring.append_index_bytes(11, &index).unwrap();
+        embedding.append_json(11, &index).unwrap();
 
-        let spliced_bytes = std::fs::read(index_log_path(spliced_dir.path(), 11)).unwrap();
-        let parsed_bytes = std::fs::read(index_log_path(parsed_dir.path(), 11)).unwrap();
-        assert_eq!(
-            spliced_bytes, parsed_bytes,
-            "the splicing appender must write exactly what the parsing one writes"
+        let anchor_bytes = std::fs::read(index_log_path(anchor_dir.path(), 11)).unwrap();
+        let embed_bytes = std::fs::read(index_log_path(embed_dir.path(), 11)).unwrap();
+        assert!(
+            anchor_bytes.len() < 250,
+            "the anchor record should be constant-size (got {})",
+            anchor_bytes.len()
+        );
+        assert!(
+            embed_bytes.len() > index.len(),
+            "the embedding appender still carries the whole index"
+        );
+        assert!(
+            embed_bytes.len() > anchor_bytes.len() * 20,
+            "anchoring must be dramatically smaller than embedding ({} vs {})",
+            anchor_bytes.len(),
+            embed_bytes.len()
         );
     }
 
@@ -1053,19 +1095,47 @@ mod tests {
         assert_eq!(store.stats(5).last_sequence, 4);
     }
 
+    /// A checkpoint record ANCHORS an index; it does not carry a second copy of it.
     #[test]
-    fn append_index_bytes_writes_parseable_index_log_record_without_reencoding_index() {
+    fn append_index_bytes_writes_an_anchor_that_identifies_the_index_without_embedding_it() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
-        let sequence = store.append_index_bytes(5, b"{\"value\":1}").unwrap();
+        let index = b"{\"value\":1}";
+        let sequence = store.append_index_bytes(5, index).unwrap();
         assert_eq!(sequence, 1);
         let rows = store.scan(5, 0, u64::MAX, u64::MAX).unwrap();
         assert_eq!(rows.len(), 1);
         let payload = crate::log_framing::decode_line(&rows[0].1).unwrap();
+
+        // It still parses as a log record, and the tail scan still reads its sequence.
         let record: IndexLogRecord = serde_json::from_slice(payload).unwrap();
         assert_eq!(record.shard_id, 5);
         assert_eq!(record.sequence, 1);
-        assert_eq!(record.index, serde_json::json!({"value": 1}));
+        assert_eq!(
+            record.index,
+            serde_json::Value::Null,
+            "the index itself must not be copied into the log"
+        );
+
+        // And it identifies exactly the index it anchors.
+        let anchor: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        let expected = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(index);
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(anchor["index_sha256"], serde_json::Value::String(expected));
+        assert_eq!(anchor["index_len"], serde_json::json!(index.len()));
+        assert!(
+            payload.len() < 200,
+            "an anchor is a constant-size record, not a copy of the index (got {} bytes)",
+            payload.len()
+        );
     }
 
     #[test]
