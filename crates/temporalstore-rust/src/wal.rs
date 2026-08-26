@@ -577,6 +577,15 @@ struct WriteAheadLogInner {
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
     stats: WriteAheadLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
+    /// Per shard: how far the ACTIVE segment has actually been made durable, and the highest
+    /// sequence covered by that barrier.
+    ///
+    /// `stats` is one struct for the whole store, so its `persistent_bytes` and
+    /// `last_flushed_sequence` describe whichever shard synced most recently -- reporting them
+    /// for a specific shard attributes another shard's barrier to this one. Durability is a
+    /// property of a log, so it is tracked per log.
+    durable_active_bytes_by_shard: HashMap<ShardId, u64>,
+    durable_sequence_by_shard: HashMap<ShardId, u64>,
     // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
     // this process last left it after its own append (or after a full reconcile scan), per shard.
     // On the next append the fast path stats the file: if the on-disk length still equals this,
@@ -619,6 +628,8 @@ impl LocalWriteAheadLogStore {
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
+                durable_active_bytes_by_shard: HashMap::new(),
+                durable_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
                 base_by_shard: HashMap::new(),
@@ -961,6 +972,17 @@ impl LocalWriteAheadLogStore {
             if snapshot > inner.stats.last_flushed_sequence {
                 inner.stats.last_flushed_sequence = snapshot;
             }
+            // The barrier above covered everything written to this shard's active segment, so
+            // its whole current length is durable. Recorded per shard for the same reason the
+            // flush path does it.
+            let durable_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            let bytes_entry = inner
+                .durable_active_bytes_by_shard
+                .entry(shard_id)
+                .or_default();
+            *bytes_entry = (*bytes_entry).max(durable_bytes);
+            let sequence_entry = inner.durable_sequence_by_shard.entry(shard_id).or_default();
+            *sequence_entry = (*sequence_entry).max(snapshot);
         }
         Ok(())
     }
@@ -1171,6 +1193,13 @@ impl LocalWriteAheadLogStore {
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = last_sequence;
         inner.stats.persistent_bytes = persistent_bytes;
+        // Per shard, so a later barrier on a different shard cannot be read as this one's.
+        inner
+            .durable_active_bytes_by_shard
+            .insert(shard_id, persistent_bytes);
+        inner
+            .durable_sequence_by_shard
+            .insert(shard_id, last_sequence);
         Ok(WriteAheadLogFlushReport {
             shard_id,
             path,
@@ -1500,11 +1529,30 @@ impl LocalWriteAheadLogStore {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.stats.stats_full_scans = inner.stats.stats_full_scans.saturating_add(1);
         let path = write_ahead_log_path(&inner.root, shard_id);
+        // Durable bytes, not written bytes. An append puts a record in the file whether or not
+        // a barrier followed it, so the file's length is what has been WRITTEN -- reporting it
+        // as `persistent_bytes` says unsynced records are on disk to survive a crash, which is
+        // the one thing this number exists to answer. Sealed pieces are durable by construction
+        // (a piece is only sealed after its barrier); the active piece counts only as far as
+        // its last barrier reached.
+        let sealed_bytes = wal_all_segment_bytes(&inner.root, shard_id)
+            .saturating_sub(path.metadata().map(|metadata| metadata.len()).unwrap_or(0));
+        let durable_active = inner
+            .durable_active_bytes_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0);
+        let durable_sequence = inner
+            .durable_sequence_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0);
         WriteAheadLogStats {
             last_sequence: last_wal_sequence_at(&inner.root, shard_id)
                 .map(|(sequence, _)| sequence)
                 .unwrap_or_default(),
-            persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+            persistent_bytes: sealed_bytes.saturating_add(durable_active),
+            last_flushed_sequence: durable_sequence,
             ..inner.stats
         }
     }
@@ -1578,7 +1626,14 @@ impl LocalWriteAheadLogStore {
             current_sequence = current_sequence.max(record.sequence);
             records += 1;
         }
-        let length_bytes = path.metadata()?.len();
+        // The whole log, not just its newest piece.
+        let length_bytes = wal_all_segment_bytes(&inner.root, shard_id);
+        let sealed_bytes = length_bytes.saturating_sub(path.metadata()?.len());
+        let durable_active = inner
+            .durable_active_bytes_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0);
         Ok(WriteAheadLogInfo {
             shard_id,
             path,
@@ -1586,8 +1641,17 @@ impl LocalWriteAheadLogStore {
             current_sequence,
             records,
             length_bytes,
-            persistent_length_bytes: length_bytes,
-            last_flushed_sequence: inner.stats.last_flushed_sequence.max(current_sequence),
+            // Durable bytes and the sequence a barrier actually covered. The previous values --
+            // the file length, and `last_flushed_sequence.max(current_sequence)` -- both took
+            // the highest number in sight, so an unsynced append reported itself as durable.
+            // Understating is survivable; overstating is the failure this field exists to
+            // prevent, so a shard this handle has never synced reports 0 rather than guessing.
+            persistent_length_bytes: sealed_bytes.saturating_add(durable_active),
+            last_flushed_sequence: inner
+                .durable_sequence_by_shard
+                .get(&shard_id)
+                .copied()
+                .unwrap_or(0),
             format_version: WRITE_AHEAD_LOG_FORMAT_VERSION,
         })
     }
@@ -1870,6 +1934,18 @@ fn sealed_wal_start_log_id(path: &Path, shard_id: ShardId) -> Option<u64> {
 ///
 /// A log that has never been rolled is one file, and this returns just that -- the same path the
 /// rest of the code has always used.
+/// Bytes of every piece of this shard's log, sealed pieces included.
+///
+/// The active segment alone is not the log: after a roll its length is the size of the newest
+/// piece, so reporting it as the log's length makes a log SHRINK as it grows.
+fn wal_all_segment_bytes(root: &Path, shard_id: ShardId) -> u64 {
+    wal_segment_paths(root, shard_id)
+        .into_iter()
+        .filter_map(|path| path.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
 fn wal_segment_paths(root: &Path, shard_id: ShardId) -> Vec<PathBuf> {
     let mut sealed = fs::read_dir(root)
         .into_iter()
@@ -2295,6 +2371,19 @@ fn append_record_locked(
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
+    if sync {
+        // EVERY path that makes a record durable records it per shard, not just flush() and the
+        // group-commit barrier: a replayed append syncs here and nowhere else, and a durability
+        // figure that misses one sync path understates exactly the writes a follower just took.
+        inner
+            .durable_active_bytes_by_shard
+            .insert(record.shard_id, persistent_bytes);
+        let durable_sequence = inner
+            .durable_sequence_by_shard
+            .entry(record.shard_id)
+            .or_default();
+        *durable_sequence = (*durable_sequence).max(record.sequence);
+    }
     Ok(WriteAheadLogAppendReport {
         shard_id: record.shard_id,
         requested_sequence: record.sequence,
@@ -3145,6 +3234,114 @@ mod tests {
                 )
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn an_unsynced_append_is_not_reported_as_durable() {
+        // The whole point of a persistent-length figure is "what survives a crash". An append
+        // puts its record in the file whether or not a barrier followed, so reading the file's
+        // length back as `persistent_length_bytes` answers a different question than the one
+        // asked -- and answers it in the dangerous direction.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+
+        let info = store.info(1).unwrap();
+        assert!(info.length_bytes > 0, "the record was written");
+        assert_eq!(
+            info.persistent_length_bytes, 0,
+            "nothing has been synced, so nothing is durable"
+        );
+        assert_eq!(
+            info.last_flushed_sequence, 0,
+            "no barrier has covered any sequence yet"
+        );
+        assert!(info.current_sequence > info.last_flushed_sequence);
+
+        // After a barrier the two agree.
+        store.flush(1).unwrap();
+        let synced = store.info(1).unwrap();
+        assert_eq!(synced.persistent_length_bytes, synced.length_bytes);
+        assert_eq!(synced.last_flushed_sequence, synced.current_sequence);
+    }
+
+    #[test]
+    fn one_shards_barrier_is_not_reported_as_another_shards() {
+        // `stats` is one struct for the whole store, so a barrier on shard 1 used to raise the
+        // durability reported for shard 2, which never synced at all.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append_with_sync(
+                2,
+                Command::StringSet {
+                    key: "untouched".to_string(),
+                    value: b"v".to_vec(),
+                },
+                false,
+            )
+            .unwrap();
+        store
+            .append_with_sync(
+                1,
+                Command::StringSet {
+                    key: "synced".to_string(),
+                    value: b"v".to_vec(),
+                },
+                true,
+            )
+            .unwrap();
+
+        assert!(
+            store.info(1).unwrap().persistent_length_bytes > 0,
+            "shard 1 synced"
+        );
+        assert_eq!(
+            store.info(2).unwrap().persistent_length_bytes,
+            0,
+            "shard 2 never synced; another shard's barrier is not its own"
+        );
+        assert_eq!(store.info(2).unwrap().last_flushed_sequence, 0);
+    }
+
+    #[test]
+    fn the_log_length_counts_every_piece_not_just_the_newest() {
+        // After a roll the active piece is the SMALLEST one. Reporting its length as the log's
+        // makes the log appear to shrink as it grows, and hides every sealed byte from anyone
+        // deciding whether to compact.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        set_wal_segment_bytes_for_test(Some(256));
+        append_n(&store, 1, 40);
+        set_wal_segment_bytes_for_test(None);
+
+        let segments = wal_segment_paths(dir.path(), 1);
+        assert!(
+            segments.len() > 1,
+            "the test needs a roll to have happened, got {segments:?}"
+        );
+        let active_len = write_ahead_log_path(dir.path(), 1).metadata().unwrap().len();
+        let total: u64 = segments
+            .iter()
+            .filter_map(|path| path.metadata().ok())
+            .map(|metadata| metadata.len())
+            .sum();
+
+        let info = store.info(1).unwrap();
+        assert_eq!(info.length_bytes, total, "every piece counts");
+        assert!(
+            info.length_bytes > active_len,
+            "the sealed pieces were being dropped from the total"
+        );
     }
 
     #[test]
