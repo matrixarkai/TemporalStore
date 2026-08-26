@@ -1148,6 +1148,33 @@ fn hgetall_snapshot_contains(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Drop named fields from a cached shard snapshot, keeping the rest of it.
+///
+/// The write side has always patched snapshots in place; deletes dropped the whole snapshot for
+/// the key, which is the same as discarding a shard's worth of reads because one field went away.
+/// It showed up as `update` being far slower than `add` on the same subject: an update purges the
+/// superseded version, and every index and record snapshot that purge touched had to be rebuilt
+/// cold by the very next scan -- one page read per member. A `HashDelete` names ONE field, so the
+/// exact post-delete snapshot is the snapshot minus that field.
+fn remove_hgetall_snapshot_fields(key: &str, fields: &[String]) {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        let Some(snapshot) = cache.get_mut(key) else {
+            return;
+        };
+        for field in fields {
+            snapshot.remove(field);
+        }
+        // Deleting the LAST field of a hash removes the whole key in the engine, and a cached
+        // empty map for a key that no longer exists is the shape that once pinned a served view
+        // at zero rows until restart. `hgetall_map` refuses to cache an empty read for the same
+        // reason; a removal must not create through the back door what the read path declines to
+        // store. Drop the snapshot instead and let the next read decide.
+        if snapshot.is_empty() {
+            cache.remove(key);
+        }
+    }
+}
+
 fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
         if let Some(snapshot) = cache.get_mut(key) {
@@ -3670,13 +3697,27 @@ fn execute_empty_batch_runtime(
     } else {
         Vec::new()
     };
+    // A whole-key delete genuinely invalidates the snapshot; a single-field delete does not.
     let cache_invalidates = commands
         .iter()
         .filter_map(|command| match command {
-            Command::HashDelete { key, .. } | Command::CommonDelete { key } => Some(key.clone()),
+            Command::CommonDelete { key } => Some(key.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
+    let cache_field_removals = if hgetall_snapshot_cache_has_entries() {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::HashDelete { key, field } if hgetall_snapshot_contains(key) => {
+                    Some((key.clone(), field.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let record_count_updates = commands
         .iter()
         .filter_map(|command| match command {
@@ -3720,6 +3761,9 @@ fn execute_empty_batch_runtime(
     }
     for key in record_count_invalidates {
         invalidate_record_count_cache(&key);
+    }
+    for (key, field) in cache_field_removals {
+        remove_hgetall_snapshot_fields(&key, std::slice::from_ref(&field));
     }
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
