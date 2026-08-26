@@ -161,8 +161,12 @@ For ingest-heavy enterprise workloads (metadata KV + large attachments):
   = true) so the primary write path is non-blocking; large attachments to the MatrixObject
   blob store via the `append_blob` extent path.
 - **Concurrency**: ~1.5-2 writer threads per core, spread across multiple client instances
-  (independent lock domains). Cache: default `MATRIXARK_RUST_PROXY_CACHE_BYTES` (128 MiB) was
-  sufficient; raise for larger hot sets.
+  (independent lock domains). Cache: the page-cache default is now
+  derived from system memory (a sixteenth per engine, 128 MiB floor, 512 MiB ceiling,
+  bounded across a process at a quarter of memory) rather than a fixed 128 MiB. A cache
+  smaller than the working set is what makes writes look linear in corpus size: on one
+  260 MB store the same ingest took 3 291 ms at 128 MiB, 1 157 ms at 384 MiB and 902 ms at
+  1 GiB. `MATRIXARK_RUST_PROXY_CACHE_BYTES` still overrides it per engine.
 - **Sizing**: expect ~5,000 concurrent ops/s and ~4,700 ingest ops/s per 8-core box at these
   latencies; scale out horizontally beyond that (single-box throughput plateaus ~5,300 ops/s
   by 16 cores until the connection-per-request and per-client-lock limits are addressed).
