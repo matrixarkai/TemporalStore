@@ -633,6 +633,32 @@ class _TemporalDirectReadMixin:
             rows = batch_hget(entries)
         except Exception as exc:
             return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "posting_buckets": [], "eligible": False, "reason": f"index_lookup_failed:{exc}"}
+        # A posting's ref set is held in bounded chunks so an append does not rewrite all of it.
+        # The head names how many follow; missing them would silently narrow every search that
+        # uses this term, which looks like a memory that was never stored.
+        chunk_entries = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get("value"):
+                continue
+            try:
+                decoded = json.loads(str(row.get("value")))
+            except Exception:
+                continue
+            if not isinstance(decoded, dict):
+                continue
+            try:
+                chunks = int(decoded.get("ref_chunks") or 0)
+            except (TypeError, ValueError):
+                chunks = 0
+            for index in range(1, chunks + 1):
+                chunk_entries.append({"key": row.get("key"), "field": f"{row.get('field')}#r{index}"})
+        if chunk_entries:
+            try:
+                extra = batch_hget(chunk_entries)
+            except Exception:
+                extra = []
+            if isinstance(extra, list):
+                rows = list(rows) + extra
         ref_hashes: set[int] = set()
         posting_buckets: set[int] = set()
         postings_found = 0
