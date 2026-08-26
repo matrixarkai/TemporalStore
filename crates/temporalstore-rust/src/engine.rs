@@ -229,11 +229,29 @@ impl TemporalEngine {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None)
+        self.execute_with_storage_override(request, None, Vec::new())
+    }
+
+    /// Apply `request`, attaching `pages` to its log record instead of whatever this node
+    /// would derive for it.
+    ///
+    /// For replaying a write that was already acked somewhere else. A page can be derived
+    /// state -- a serialized counter series, a hash map -- and re-executing the command that
+    /// produced it reconstructs it only from a state this node may no longer have. When the
+    /// original bytes travelled with the command, they are the truth, and re-deriving would
+    /// quietly substitute a reconstruction for what was actually acknowledged.
+    ///
+    /// An empty `pages` is exactly [`execute`](Self::execute).
+    pub fn execute_with_carried_pages(
+        &self,
+        request: ExecuteRequest,
+        pages: Vec<crate::wal::StagedPage>,
+    ) -> ExecuteResponse {
+        self.execute_with_storage_override(request, None, pages)
     }
 
     pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, Some(false))
+        self.execute_with_storage_override(request, Some(false), Vec::new())
     }
 
     /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
@@ -244,7 +262,7 @@ impl TemporalEngine {
     /// tail is safe -- raft-log replay on restart re-applies and rebuilds the served index.
     pub fn execute_raft_apply(&self, request: ExecuteRequest) -> ExecuteResponse {
         let _guard = RaftApplyGuard::enter();
-        self.execute_with_storage_override(request, Some(false))
+        self.execute_with_storage_override(request, Some(false), Vec::new())
     }
 
     /// Apply a batch of committed raft entries to the state machine. Under
@@ -269,7 +287,7 @@ impl TemporalEngine {
         let batch_guard = RaftApplyBatchGuard::enter();
         let mut responses = Vec::with_capacity(requests.len());
         for request in requests {
-            responses.push(self.execute_with_storage_override(request, Some(false)));
+            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new()));
         }
         let barrier = batch_guard.take_barrier();
         drop(batch_guard);
@@ -302,10 +320,10 @@ impl TemporalEngine {
         };
         match replication_mode {
             EventReplicationMode::SyncStorage => {
-                self.execute_with_storage_override(request, Some(false))
+                self.execute_with_storage_override(request, Some(false), Vec::new())
             }
             EventReplicationMode::AsyncStorage => {
-                self.execute_with_storage_override(request, Some(true))
+                self.execute_with_storage_override(request, Some(true), Vec::new())
             }
             EventReplicationMode::Raft | EventReplicationMode::Inherit => self.execute(request),
         }
@@ -342,6 +360,7 @@ impl TemporalEngine {
         &self,
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
+        mut carried_pages: Vec<crate::wal::StagedPage>,
     ) -> ExecuteResponse {
         // Charged before anything else, including the read-only fast path -- a read served without
         // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
@@ -651,8 +670,11 @@ impl TemporalEngine {
                 // WAL sequence here; the single coalesced fdatasync is issued once for the whole
                 // batch in `execute_raft_apply_batch` (see `raft_apply_batch_active`). WAL order
                 // still equals apply order (reservation + byte-append stay under this lock).
-                let concurrent_commit =
-                    sync && (engine_concurrent_commit() || raft_apply_batch_active());
+                // The reserve-only branch appends bytes without pages, so a write carrying
+                // pages must take the staged branch or they would be dropped on the floor.
+                let concurrent_commit = sync
+                    && carried_pages.is_empty()
+                    && (engine_concurrent_commit() || raft_apply_batch_active());
                 let append_result = if concurrent_commit {
                     self.wal_store
                         .append_for_group_commit(request.shard_id, command)
@@ -663,10 +685,20 @@ impl TemporalEngine {
                             request.shard_id,
                             command,
                             sync,
-                            if block_in_wal::enabled() {
-                                block_in_wal::take_staged()
+                            if carried_pages.is_empty() {
+                                if block_in_wal::enabled() {
+                                    block_in_wal::take_staged()
+                                } else {
+                                    Vec::new()
+                                }
                             } else {
-                                Vec::new()
+                                // The caller handed us the pages the original write produced.
+                                // Drop whatever this execute re-derived rather than letting a
+                                // reconstruction win over the bytes that were acked.
+                                if block_in_wal::enabled() {
+                                    let _ = block_in_wal::take_staged();
+                                }
+                                std::mem::take(&mut carried_pages)
                             },
                         )
                         .map(|(record, log_id)| {

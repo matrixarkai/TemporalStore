@@ -1301,6 +1301,11 @@ fn publish_shard_checkpoint(
             shard_id,
             wal_index: record.sequence,
             command: record.command,
+            // The local record already carries whatever pages this write produced, and a
+            // page can be derived state that the command alone cannot rebuild. Mirroring
+            // the command without them would publish a history a successor could not
+            // finish replaying.
+            staged_pages: record.staged_pages,
         };
         if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
             return PublishShardCheckpointResponse {
