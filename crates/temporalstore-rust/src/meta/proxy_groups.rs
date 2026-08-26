@@ -574,6 +574,7 @@ mod tests {
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
                 instance_num: 3,
+                drop_percent: 0,
             })
             .status
             .ok);
@@ -624,6 +625,7 @@ mod tests {
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
                 instance_num: 1,
+                drop_percent: 0,
             })
             .status
             .ok);
@@ -975,6 +977,7 @@ mod tests {
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
                 instance_num: 1,
+                drop_percent: 0,
             })
             .status
             .ok);
@@ -1039,6 +1042,7 @@ mod tests {
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
                 instance_num: 2,
+                drop_percent: 0,
             })
             .status
             .ok);
