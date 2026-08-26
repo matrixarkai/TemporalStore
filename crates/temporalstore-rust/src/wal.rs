@@ -425,6 +425,11 @@ pub struct WriteAheadLogGcReport {
     /// The block-retention floor held this reclaim back: records at or above it may still be
     /// the only copy of a block's bytes.
     pub clamped_by_block_retention: bool,
+    /// The durable-index anchor held this reclaim back: the caller asked to drop records that
+    /// the durable served index does not yet reflect, so the ask was narrowed to what the index
+    /// can actually replace.
+    #[serde(default)]
+    pub clamped_by_durable_index: bool,
     /// Bytes reclaimed from the head of this shard's log over its lifetime, after this pass.
     /// A record's log id minus this is where it now physically lives.
     pub base_offset: u64,
@@ -441,6 +446,65 @@ pub struct WriteAheadLogGcReport {
     /// What those pieces held.
     #[serde(default)]
     pub dropped_segment_bytes: u64,
+}
+
+/// Evidence that the durable served index for a shard already reflects every WAL record at or
+/// below `through_sequence` -- and therefore that those records may be reclaimed.
+///
+/// A WAL record may only be dropped once the state that supersedes it is on disk. That ordering
+/// held here by convention: each reclaim site was expected to have written a manifest, or run a
+/// dump, before calling. One site did not. The operator `/gc` RPC took a sequence off the wire
+/// and reclaimed straight to it, with no check that anything durable could replace what it was
+/// about to delete -- the tail-continuity and block-retention floors were the only things
+/// standing in the way, and neither of those knows about the index.
+///
+/// Making the proof an argument turns that convention into a precondition of the call: a site
+/// that wants to reclaim has to name the durable state it is reclaiming against. The clamp is
+/// the safety net -- an anchor that understates what is durable costs an under-reclaim, which
+/// the next pass picks up, while the alternative costs acked data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DurableIndexAnchor {
+    shard_id: ShardId,
+    through_sequence: u64,
+}
+
+impl DurableIndexAnchor {
+    /// Assert that the shard's durable served index reflects every record at or below
+    /// `through_sequence`.
+    ///
+    /// The caller is making a claim about work it has already completed -- a dump whose base
+    /// index was written durably, or a set of bucket-dump manifests covering every live
+    /// generation. Mint this from that completed work, never from an intent to do it.
+    pub fn proven_durable_through(shard_id: ShardId, through_sequence: u64) -> Self {
+        Self {
+            shard_id,
+            through_sequence,
+        }
+    }
+
+    /// An anchor that proves nothing and therefore constrains nothing.
+    ///
+    /// For callers with no durable state to point at: measurement harnesses driving reclaim
+    /// directly, and the operator RPC on a shard that has never dumped, where narrowing to a
+    /// non-existent frontier would silently turn the endpoint into a no-op. Reclaim through one
+    /// of these is exactly as safe as it was before the anchor existed -- which is the point of
+    /// naming it, because the call site now says so.
+    pub fn unproven(shard_id: ShardId) -> Self {
+        Self {
+            shard_id,
+            through_sequence: u64::MAX,
+        }
+    }
+
+    /// The highest WAL sequence this anchor vouches for.
+    pub fn through_sequence(&self) -> u64 {
+        self.through_sequence
+    }
+
+    /// The shard this anchor speaks for. An anchor proves nothing about any other shard.
+    pub fn shard_id(&self) -> ShardId {
+        self.shard_id
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1213,7 +1277,43 @@ impl LocalWriteAheadLogStore {
         Ok(Some(bytes))
     }
 
+    /// Reclaim this shard's WAL prefix below `retain_from_sequence`, never going past what the
+    /// durable served index proves it can replace.
+    ///
+    /// See [`DurableIndexAnchor`] for why the proof is an argument. A caller that asks for more
+    /// than its anchor covers gets a narrowed reclaim and `clamped_by_durable_index` set, not an
+    /// error: the ask is a target, the anchor is the limit, and the difference is reported
+    /// rather than silently folded into the counts.
     pub fn gc_before_sequence(
+        &self,
+        shard_id: ShardId,
+        retain_from_sequence: u64,
+        durable_index: &DurableIndexAnchor,
+    ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
+        // An anchor minted for another shard says nothing about this one, so it authorizes
+        // nothing. Retaining from 0 keeps every record.
+        let ceiling = if durable_index.shard_id() == shard_id {
+            durable_index.through_sequence().saturating_add(1)
+        } else {
+            0
+        };
+        let clamped = retain_from_sequence > ceiling;
+        let mut report =
+            self.gc_before_sequence_unchecked(shard_id, retain_from_sequence.min(ceiling))?;
+        // Report the sequence the caller ASKED for. `effective_retain_from_sequence` already
+        // carries what was actually used, and a reclaim that did less than requested should be
+        // visible as such instead of looking like a smaller request that succeeded exactly.
+        report.retain_from_sequence = retain_from_sequence;
+        report.clamped_by_durable_index = clamped;
+        Ok(report)
+    }
+
+    /// [`gc_before_sequence`](Self::gc_before_sequence) without the durable-index clamp,
+    /// subject only to the tail-continuity and block-retention floors below.
+    ///
+    /// This is the reclaim primitive; the anchored wrapper is the way in. Tests drive this
+    /// directly to exercise those two floors in isolation.
+    pub(crate) fn gc_before_sequence_unchecked(
         &self,
         shard_id: ShardId,
         retain_from_sequence: u64,
@@ -1330,6 +1430,7 @@ impl LocalWriteAheadLogStore {
                 retain_from_sequence,
                 effective_retain_from_sequence: effective_retain,
                 clamped_by_block_retention,
+                clamped_by_durable_index: false,
                 records_before,
                 records_after: records_before,
                 records_removed: 0,
@@ -1387,6 +1488,7 @@ impl LocalWriteAheadLogStore {
             base_offset: new_base,
             effective_retain_from_sequence: effective_retain,
             clamped_by_block_retention,
+            clamped_by_durable_index: false,
             bytes_copied: retained_bytes,
             skipped_not_worth_rewrite: false,
             dropped_segments,
@@ -2600,7 +2702,7 @@ mod tests {
         }
         assert_eq!(store.stats(1).last_sequence, 5);
         // Full reclaim: retain floor past the max sequence would empty the file.
-        store.gc_before_sequence(1, 6).unwrap();
+        store.gc_before_sequence_unchecked(1, 6).unwrap();
         drop(store);
         // Restart: the sequence generator is seeded from the file. The tail record must have
         // survived so the next sequence is 6, not a regressed 1 (which would reuse a sequence
@@ -2766,7 +2868,7 @@ mod tests {
         assert_eq!(record.sequence, 1);
         let stats: WalStats = store.stats(5);
         assert_eq!(stats.last_sequence, 1);
-        let gc: WalGcReport = store.gc_before_sequence(5, 1).unwrap();
+        let gc: WalGcReport = store.gc_before_sequence_unchecked(5, 1).unwrap();
         assert_eq!(gc.records_removed, 0);
     }
 
@@ -2786,7 +2888,7 @@ mod tests {
                 .unwrap();
         }
 
-        let report = store.gc_before_sequence(7, 3).unwrap();
+        let report = store.gc_before_sequence_unchecked(7, 3).unwrap();
         assert_eq!(report.records_before, 3);
         assert_eq!(report.records_after, 1);
         assert_eq!(report.records_removed, 2);
@@ -3054,12 +3156,68 @@ mod tests {
         append_n(&store, 1, 6);
 
         assert_eq!(store.block_retention_floor(1), None);
-        let report = store.gc_before_sequence(1, 4).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, 4).unwrap();
 
         assert_eq!(report.records_before, 6);
         assert_eq!(report.records_after, 3, "sequences 4, 5, 6 survive");
         assert!(!report.clamped_by_block_retention);
         assert_eq!(report.effective_retain_from_sequence, 4);
+    }
+
+    #[test]
+    fn gc_will_not_reclaim_past_the_durable_index_anchor() {
+        // The durable served index reflects sequences 1..=3. Asking to drop everything below 6
+        // would delete records 4 and 5, whose effects survive only in an index write whose
+        // barrier is still deferred -- a crash there turns acked writes into missing ones.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        let durable_index = DurableIndexAnchor::proven_durable_through(1, 3);
+        let report = store.gc_before_sequence(1, 6, &durable_index).unwrap();
+
+        assert!(report.clamped_by_durable_index);
+        assert_eq!(
+            report.retain_from_sequence, 6,
+            "the report states the sequence the caller ASKED for"
+        );
+        assert_eq!(
+            report.effective_retain_from_sequence, 4,
+            "narrowed to one past what the durable index proves"
+        );
+        assert_eq!(report.records_after, 3, "sequences 4, 5 and 6 survive");
+    }
+
+    #[test]
+    fn an_anchor_minted_for_another_shard_authorizes_no_reclaim() {
+        // Durability is per shard. An anchor that proves shard 2 is dumped through sequence 6
+        // says nothing whatever about shard 1, and must not be read as though it did.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        let durable_index = DurableIndexAnchor::proven_durable_through(2, 6);
+        let report = store.gc_before_sequence(1, 6, &durable_index).unwrap();
+
+        assert!(report.clamped_by_durable_index);
+        assert_eq!(report.records_removed, 0);
+        assert_eq!(report.records_after, 6, "every record survives");
+    }
+
+    #[test]
+    fn an_unproven_anchor_reclaims_exactly_as_the_bare_primitive_does() {
+        // What the measurement harnesses and the never-dumped operator path use: no proof, so
+        // no clamp, and the same outcome the unanchored primitive gives for the same ask.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append_n(&store, 1, 6);
+
+        let durable_index = DurableIndexAnchor::unproven(1);
+        let report = store.gc_before_sequence(1, 4, &durable_index).unwrap();
+
+        assert!(!report.clamped_by_durable_index);
+        assert_eq!(report.effective_retain_from_sequence, 4);
+        assert_eq!(report.records_after, 3, "sequences 4, 5 and 6 survive");
     }
 
     #[test]
@@ -3071,7 +3229,7 @@ mod tests {
         append_n(&store, 1, 6);
 
         store.set_block_retention_floor(1, 3);
-        let report = store.gc_before_sequence(1, 6).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, 6).unwrap();
 
         assert!(
             report.clamped_by_block_retention,
@@ -3093,16 +3251,16 @@ mod tests {
         append_n(&store, 1, 6);
 
         store.set_block_retention_floor(1, 2);
-        assert_eq!(store.gc_before_sequence(1, 6).unwrap().records_after, 5);
+        assert_eq!(store.gc_before_sequence_unchecked(1, 6).unwrap().records_after, 5);
 
         store.set_block_retention_floor(1, 5);
-        let report = store.gc_before_sequence(1, 6).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, 6).unwrap();
         assert_eq!(report.effective_retain_from_sequence, 5);
         assert_eq!(report.records_after, 2, "sequences 5 and 6");
 
         store.clear_block_retention_floor(1);
         assert_eq!(store.block_retention_floor(1), None);
-        let report = store.gc_before_sequence(1, 6).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, 6).unwrap();
         assert!(!report.clamped_by_block_retention);
         assert_eq!(report.records_after, 1, "the tail record is always kept");
     }
@@ -3117,7 +3275,7 @@ mod tests {
         append_n(&store, 1, 3);
 
         store.set_block_retention_floor(1, u64::MAX);
-        let report = store.gc_before_sequence(1, u64::MAX).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, u64::MAX).unwrap();
 
         assert_eq!(report.records_after, 1, "the tail survives both clamps");
         assert_eq!(report.effective_retain_from_sequence, 3);
@@ -3142,7 +3300,7 @@ mod tests {
         assert_eq!(tail_log_id, tail_physical_before);
         let tail_bytes_before = record_bytes_at(dir.path(), 1, tail_physical_before as usize);
 
-        store.gc_before_sequence(1, 4).unwrap();
+        store.gc_before_sequence_unchecked(1, 4).unwrap();
 
         // The record moved.
         let tail_physical_after = *record_offsets_on_disk(dir.path(), 1).last().unwrap() as u64;
@@ -3176,7 +3334,7 @@ mod tests {
         append_n(&store, 1, 6);
         let first_log_id = record_offsets_on_disk(dir.path(), 1)[0] as u64;
 
-        store.gc_before_sequence(1, 4).unwrap();
+        store.gc_before_sequence_unchecked(1, 4).unwrap();
 
         assert!(store.base_offset(1).unwrap() > first_log_id);
         assert_eq!(
@@ -3201,7 +3359,7 @@ mod tests {
         let split = offsets[3];
         let suffix_before = raw_before[split..].to_vec();
 
-        store.gc_before_sequence(1, 4).unwrap();
+        store.gc_before_sequence_unchecked(1, 4).unwrap();
 
         let raw_after = std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap();
         let header_len = raw_after
@@ -3227,9 +3385,9 @@ mod tests {
         let last_log_id = *all_offsets.last().unwrap() as u64;
         let last_bytes = record_bytes_at(dir.path(), 1, last_log_id as usize);
 
-        store.gc_before_sequence(1, 4).unwrap();
+        store.gc_before_sequence_unchecked(1, 4).unwrap();
         let base_after_first = store.base_offset(1).unwrap();
-        store.gc_before_sequence(1, 9).unwrap();
+        store.gc_before_sequence_unchecked(1, 9).unwrap();
         let base_after_second = store.base_offset(1).unwrap();
 
         assert!(
@@ -3269,7 +3427,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         append_n(&store, 1, 8);
-        store.gc_before_sequence(1, 5).unwrap();
+        store.gc_before_sequence_unchecked(1, 5).unwrap();
 
         // scan(), which recovery and checkpoint publishing both read through
         let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
@@ -3357,7 +3515,7 @@ mod tests {
             reported.push((log_id, record.sequence));
         }
 
-        store.gc_before_sequence(1, 5).unwrap();
+        store.gc_before_sequence_unchecked(1, 5).unwrap();
         let base = store.base_offset(1).unwrap();
         assert!(base > 0, "the reclaim must have moved the base");
 
@@ -3386,7 +3544,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         append_n(&store, 1, 6);
-        store.gc_before_sequence(1, 4).unwrap();
+        store.gc_before_sequence_unchecked(1, 4).unwrap();
         let base = store.base_offset(1).unwrap();
         assert!(base > 0);
 
@@ -4420,7 +4578,7 @@ mod tests {
 
         // Keep only the last fifty records.
         let retain_from = 251u64;
-        let report = store.gc_before_sequence(1, retain_from).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, retain_from).unwrap();
 
         assert!(
             report.dropped_segments > 0,
@@ -4493,7 +4651,7 @@ mod tests {
                     .unwrap();
             }
             let started = std::time::Instant::now();
-            let report = store.gc_before_sequence(1, records - 100).unwrap();
+            let report = store.gc_before_sequence_unchecked(1, records - 100).unwrap();
             let micros = started.elapsed().as_secs_f64() * 1e6;
             println!(
                 "  piece size {:>6}: {micros:>9.0} us, copied {:>8} B, unlinked {} piece(s) holding {} B",
@@ -4627,7 +4785,7 @@ mod tests {
         // A block still depends on everything from sequence 50 on.
         store.set_block_retention_floor(1, 50);
         // The caller asks to keep only the last fifty records, which is well past the floor.
-        let report = store.gc_before_sequence(1, 251).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, 251).unwrap();
         assert!(
             report.effective_retain_from_sequence <= 50,
             "the retain point should have been narrowed to the floor, got {}",
@@ -4694,7 +4852,7 @@ mod tests {
         );
 
         // Ask for everything to go.
-        store.gc_before_sequence(1, u64::MAX).unwrap();
+        store.gc_before_sequence_unchecked(1, u64::MAX).unwrap();
 
         assert_eq!(
             last_wal_sequence_at(dir.path(), 1).unwrap().0,
@@ -5196,7 +5354,7 @@ mod tests {
         assert!(sealed_before > 8, "need a backlog worth bounding, saw {sealed_before}");
 
         // One pass drops no more than the bound.
-        let first = store.gc_before_sequence(1, last).unwrap();
+        let first = store.gc_before_sequence_unchecked(1, last).unwrap();
         assert!(
             first.dropped_segments <= 4,
             "one pass dropped {} pieces, past its bound",
@@ -5207,7 +5365,7 @@ mod tests {
         // Later passes take the rest, without recomputing anything.
         let mut passes = 1;
         loop {
-            let report = store.gc_before_sequence(1, last).unwrap();
+            let report = store.gc_before_sequence_unchecked(1, last).unwrap();
             if report.dropped_segments == 0 {
                 break;
             }
@@ -5255,7 +5413,7 @@ mod tests {
         }
         let pieces = wal_segment_paths(dir.path(), 1).len();
         let started = std::time::Instant::now();
-        let report = store.gc_before_sequence(1, last).unwrap();
+        let report = store.gc_before_sequence_unchecked(1, last).unwrap();
         let micros = started.elapsed().as_secs_f64() * 1e6;
         println!(
             "bound={:?} backlog {pieces} pieces: one pass {micros:.0} us, dropped {}",

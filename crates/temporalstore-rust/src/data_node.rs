@@ -773,6 +773,19 @@ pub struct GcResponse {
     #[serde(default)]
     #[serde(alias = "page_segments_retained_live_physical_bytes")]
     pub page_slabs_retained_live_physical_bytes: u64,
+    /// The reclaims below were bounded by a durable-index proof: bucket dumps covering every
+    /// live generation. False means the requested sequences were taken on trust, which is what
+    /// this endpoint has always done and what a never-dumped shard still gets.
+    #[serde(default)]
+    pub gc_durable_index_backed: bool,
+    /// That proof narrowed the WAL reclaim -- records the caller asked to drop are still held,
+    /// because the durable index does not yet reflect them.
+    #[serde(default)]
+    pub wal_gc_clamped_by_durable_index: bool,
+    /// That proof narrowed the index-log reclaim, for the same reason. These records carry the
+    /// addresses a served index is rebuilt from, so a premature drop loses where data lives.
+    #[serde(default)]
+    pub index_log_gc_clamped_by_durable_index: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_plan: Option<StorageLifecyclePlan>,
 }

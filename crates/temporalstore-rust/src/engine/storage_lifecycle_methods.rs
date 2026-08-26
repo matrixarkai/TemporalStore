@@ -731,9 +731,16 @@ impl TemporalEngine {
                 ..StorageWalReclaimReport::default()
             };
         }
+        // The plan reached `safe_to_reclaim` by finding a durable bucket-dump manifest for
+        // every live generation and taking the LOWEST wal sequence among them, so the durable
+        // index reflects everything at or below that frontier.
+        let durable_index = crate::wal::DurableIndexAnchor::proven_durable_through(
+            plan.shard_id,
+            plan.durable_bucket_generation_frontier_wal_sequence,
+        );
         let wal_gc = self
             .write_ahead_log_store()
-            .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence)
+            .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence, &durable_index)
             .ok();
         StorageWalReclaimReport {
             applied: wal_gc.is_some(),

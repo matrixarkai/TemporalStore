@@ -549,9 +549,14 @@ impl TemporalEngine {
         // WAL prefix below the anchor: the durable base reflects those records, replay-on-load
         // starts above the anchor, and gc itself additionally retains the highest-sequence
         // record (sequence continuity) and everything at or above the floor just set.
+        // The dump above wrote the base served index durably and fsynced the folded catalog
+        // anchor on top of it, so the durable index reflects everything at or below
+        // `wal_anchor`. That completed work IS the proof this reclaim needs.
+        let durable_index =
+            crate::wal::DurableIndexAnchor::proven_durable_through(shard_id, wal_anchor);
         let wal_gc = self
             .wal_store
-            .gc_before_sequence(shard_id, wal_anchor.saturating_add(1))
+            .gc_before_sequence(shard_id, wal_anchor.saturating_add(1), &durable_index)
             .ok();
         Some(super::reports::CatalogDumpReclaimReport {
             shard_id,
