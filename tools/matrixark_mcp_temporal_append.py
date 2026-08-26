@@ -21,10 +21,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 _ROUTE_KEYS_WORTH_STORING = (
     "placement_key",
     "placement_hash",
-    "routing_key",
-    "partition_key",
-    "colocation_group",
 )
+# What was dropped and why: `routing_key` and `partition_key` are set to `placement_key` and
+# `colocation_group` to a constant, so all three are copies of something already here. Measured on
+# one add, they cost 25 index postings x ~280 bytes -- about 7 KB per add to say the same thing
+# three more times. The one place that reads them consults `placement_key` first and falls through
+# to `routing_key` / `partition_key` only when it is absent, which it is not.
 
 
 def slim_persisted_storage_route(record: Json) -> Json:

@@ -3593,7 +3593,16 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
                 "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES",
                 "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
             ],
-            4096,
+            // Was 4096, and every index write an add makes is smaller than that: the postings, the
+            // placement rows, the locator entries. Those are also the most repetitive bytes in the
+            // system -- one add writes 28 postings carrying the same scope key and policy -- so
+            // they are exactly what compression is good at, and exactly what a 4 KB floor excluded.
+            //
+            // Measured over 120 adds on a fresh store: 176.8 KB per add at 4096, 148.1 KB at 256,
+            // and the adds were no slower (152.5 ms -> 144.7 ms). Compressing everything is worse:
+            // at a 1-byte floor the disk saving stops (149.7 KB) while the median add rises to
+            // 256.0 ms, because tiny payloads cost more to compress than they give back.
+            256,
         ),
         compression_level: env_i32_any(
             &[
@@ -5345,7 +5354,14 @@ mod tests {
 
         let options = matrixark_proxy_block_store_options();
         assert!(options.compression_enabled);
-        assert_eq!(options.compression_min_bytes, 4096);
+        // 256, not the 4096 this pinned before, and the floor moved because it was measured
+        // rather than because it was in the way: every index write an add makes is under 4 KB, and
+        // those are the most repetitive bytes in the store. Over 120 adds on a fresh store the
+        // disk cost went 176.8 -> 148.1 KB per add and the median add went 152.5 -> 144.7 ms, so
+        // the throughput this threshold exists to protect did not pay for it. Dropping the floor
+        // to 1 is worse on both counts (149.7 KB, 256.0 ms): the smallest payloads cost more to
+        // compress than they give back, which is what a floor is for.
+        assert_eq!(options.compression_min_bytes, 256);
         assert_eq!(
             options.compression_level,
             BlockStoreOptions::default().compression_level
