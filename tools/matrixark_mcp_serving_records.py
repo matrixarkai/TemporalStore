@@ -382,6 +382,16 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
         summary_hash = record.get("summary_hash") or record.get("node_hash")
         if summary_type and summary_hash is not None:
             return ("context_summary", summary_type, summary_hash)
+    if record_type == "matrixark_async_pipeline_task":
+        # A queue entry's only meaningful state is its CURRENT status, and the drain already reads
+        # it that way: it folds the records down to the latest per task_hash and ignores the rest.
+        # Held in the append log, every status transition a task ever made was re-read on every
+        # ingest -- measured at 271 records and 998 KB for a single add, growing without bound. A
+        # latest-state identity collapses each task to one row AND keeps it out of the append log,
+        # which is where the re-reading came from.
+        task_hash = record.get("task_hash")
+        if task_hash is not None:
+            return ("matrixark_async_pipeline_task", task_hash)
     if record_type == "context_model_registry":
         model_kind = str(record.get("model_kind") or "embedding")
         model_ref = str(record.get("model_ref") or "")
