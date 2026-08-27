@@ -125,6 +125,13 @@ pub struct TemporalEngine {
     /// `promote_scan_done` fast-skip holds it to a small constant once warm. Read by the phase-1
     /// aging test to prove the per-write O(n) reconcile scan is gone.
     promote_scans: Arc<std::sync::atomic::AtomicU64>,
+    /// Diagnostics: how many recorded outcomes this engine has INSTALLED during WAL replay.
+    ///
+    /// Recovery falls back to re-executing a record's command when it carries no outcomes, so a
+    /// restart test comparing shard shapes passes either way and proves nothing about which path
+    /// ran. This makes the claim checkable: a test can require that recovery installed what the
+    /// writes recorded rather than quietly replaying commands again.
+    replay_installs: Arc<std::sync::atomic::AtomicU64>,
     /// Where to mirror writes this engine performs OUTSIDE the request path.
     ///
     /// Request-path writes are mirrored a layer up, by the data node, which sees each command

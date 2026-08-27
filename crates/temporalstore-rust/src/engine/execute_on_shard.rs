@@ -210,9 +210,22 @@ pub(crate) fn execute_on_shard(
                     true,
                 );
                 shard.strings.insert(key.clone(), address);
-                shard
-                    .expires_at_ms
-                    .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                shard.expires_at_ms.insert(key.clone(), expires_at);
+                // This write sets a value AND a deadline. Recording only the page passes a probe
+                // that asks whether the record said anything, and produces a recovered key that
+                // never expires -- so the deadline is recorded too, already resolved, exactly as
+                // CommonExpire records its own.
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
