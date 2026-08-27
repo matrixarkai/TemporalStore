@@ -388,6 +388,20 @@ impl TemporalEngine {
     /// re-appending to the WAL or re-persisting the index per record, then anchor and
     /// persist the reconstructed index once. Matches the WAL replay path,
     /// including its strict sequence-continuity check.
+    /// The address the index holds for a string key, so a test can compare it against what a
+    /// record claims the write did.
+    pub(super) fn string_page_address(
+        &self,
+        shard_id: ShardId,
+        key: &str,
+    ) -> Option<crate::block_store::BlockAddress> {
+        self.shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&shard_id)
+            .and_then(|shard| shard.strings.get(key).cloned())
+    }
+
     /// How many WAL-resident page locations this shard's index is carrying.
     ///
     /// The point of the map is that it is part of the index rather than process state, so a
@@ -416,6 +430,7 @@ impl TemporalEngine {
         };
         for (object_id, placement) in &shard.wal_resident_pages {
             super::block_in_wal::register_at(
+                &self.page_store,
                 shard_id,
                 *object_id,
                 placement.log_id,
@@ -652,7 +667,7 @@ impl TemporalEngine {
         hot_page_spill::clear_shard(request.shard_id);
         // Drop this shard's WAL-resident registrations too: they name records in a log this
         // engine no longer serves, and a reload re-derives them from the WAL anyway.
-        block_in_wal::clear_shard(request.shard_id);
+        block_in_wal::clear_shard(&self.page_store, request.shard_id);
         UnloadShardResponse {
             status: Status::ok(),
         }
@@ -852,6 +867,7 @@ mod batch_truncation_tests {
             command,
             metadata: Some(metadata),
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         }
     }
 

@@ -325,6 +325,7 @@ mod tests {
                     batch_index: None,
                 }),
                 staged_pages: Vec::new(),
+                outcomes: Vec::new(),
             };
             let today = crate::log_framing::encode_line(&serde_json::to_vec(&record).unwrap());
 
@@ -440,6 +441,7 @@ mod tests {
                     batch_index: None,
                 }),
                 staged_pages: Vec::new(),
+                outcomes: Vec::new(),
             };
             let framed = crate::log_framing::encode_line(&serde_json::to_vec(&record).unwrap());
             // base64 of n bytes is 4 characters per 3, rounded up to a multiple of 4.

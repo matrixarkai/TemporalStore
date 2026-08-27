@@ -4064,6 +4064,253 @@ fn a_store_that_puts_no_pages_in_the_log_carries_no_locations() {
     assert_eq!(engine.wal_resident_page_count(1), 0);
 }
 
+/// A record can state what the write DID, and that statement has to match what the command
+/// actually produced.
+///
+/// This is the obligation that has to be discharged before replay can install outcomes instead
+/// of re-running commands. If an item disagreed with the index entry the command built, then
+/// switching replay over would silently rebuild a different shard.
+#[test]
+fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "outcome-key".to_string(),
+                    value: b"outcome-value".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    let record = records
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .find(|record| !record.outcomes.is_empty())
+        .expect("the record must state what the write did");
+
+    let item = record
+        .outcomes
+        .iter()
+        .find(|item| item.object_key == "outcome-key")
+        .expect("the object it touched must be named");
+    assert_eq!(item.kind, "string");
+    assert!(!item.deleted);
+    assert_eq!(item.object_id, item.address.object_id.unwrap_or_default());
+
+    // The claim has to equal what the index actually holds. This is the whole point.
+    let indexed = engine
+        .string_page_address(1, "outcome-key")
+        .expect("the index holds an address for the key");
+    assert_eq!(
+        item.address, indexed,
+        "the recorded outcome disagrees with the index entry the command built"
+    );
+}
+
+/// With the gate off a record carries no outcomes, so it is byte-identical to before.
+#[test]
+fn a_record_carries_no_outcomes_unless_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "0");
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "plain".to_string(),
+                    value: b"v".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    assert!(
+        records
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .all(|record| record.outcomes.is_empty()),
+        "no record should carry outcomes with the gate off"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Multiple engines in ONE process. The embedded path (the gateway proxy) does exactly this,
+// and every embedded engine serves shard 1 -- so anything keyed on (shard, object) alone is
+// shared between engines that have nothing to do with each other.
+// ---------------------------------------------------------------------------------------
+
+/// Two engines, same shard id, same object key: each must read back its OWN value.
+///
+/// The page resolver is a process-wide table keyed on (shard, object id), and a page's object
+/// id is derived from kind + key -- not from which engine wrote it. Two embedded engines
+/// therefore collide on every key they happen to share, and the only thing separating them is
+/// that a registration also remembers WHICH log it points into.
+#[test]
+fn two_engines_in_one_process_do_not_read_each_others_pages() {
+    let dir = tempfile::tempdir().unwrap();
+    let make = |name: &str| {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join(format!("{name}-cache")),
+            dir.path().join(format!("{name}-pages")),
+            dir.path().join(format!("{name}-index")),
+        );
+        engine.load_shard(1);
+        engine.set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        });
+        engine
+    };
+
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+
+    let first = make("first");
+    let second = make("second");
+
+    // Same shard, same key, different values, different engines.
+    for (engine, value) in [(&first, b"from-first".to_vec()), (&second, b"from-second".to_vec())] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "shared-key".to_string(),
+                        value,
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    // Drop every cached copy so the read has to go through the resolver, which is the shared
+    // thing. If it resolved by (shard, object) alone, one engine would serve the other's bytes.
+    first.cache().invalidate_shard(1).unwrap();
+    second.cache().invalidate_shard(1).unwrap();
+
+    let read = |engine: &TemporalEngine| {
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "shared-key".to_string(),
+                },
+            })
+            .response
+    };
+    let first_read = read(&first);
+    let second_read = read(&second);
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    std::env::remove_var("TS_HOT_PAGE_SPILL");
+
+    assert_eq!(
+        first_read,
+        CommandResponse::Bytes {
+            value: Some(b"from-first".to_vec())
+        },
+        "the first engine read the wrong engine's page"
+    );
+    assert_eq!(
+        second_read,
+        CommandResponse::Bytes {
+            value: Some(b"from-second".to_vec())
+        },
+        "the second engine read the wrong engine's page"
+    );
+}
+
+/// One engine's log-resident pages must not pin another engine's reclaim floor.
+///
+/// The retention floor is the lowest sequence any live registration still depends on. Computed
+/// across the whole process it would be pinned by every OTHER engine's writes forever, and a
+/// shard that had dumped everything would never be able to reclaim.
+#[test]
+fn one_engines_retention_floor_ignores_another_engines_registrations() {
+    let dir = tempfile::tempdir().unwrap();
+    let make = |name: &str| {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join(format!("{name}-cache")),
+            dir.path().join(format!("{name}-pages")),
+            dir.path().join(format!("{name}-index")),
+        );
+        engine.load_shard(1);
+        engine.set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        });
+        engine
+    };
+
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    let busy = make("busy");
+    let quiet = make("quiet");
+
+    // The busy engine registers pages; the quiet one writes nothing at all.
+    for index in 0..8 {
+        assert!(
+            busy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("busy-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            })
+            .status
+            .ok
+        );
+    }
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+
+    // The quiet engine's log has nothing registered against it, so nothing holds its floor.
+    assert_eq!(
+        quiet.write_ahead_log_store().block_retention_floor(1),
+        None,
+        "another engine's registrations pinned this engine's reclaim floor"
+    );
+}
+
 /// What waiting before a dump saves, and what the wait costs.
 ///
 /// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log
