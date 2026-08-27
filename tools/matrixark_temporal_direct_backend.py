@@ -8,6 +8,19 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:  # package path
+    from tools.matrixark_temporal_location_codec import (
+        compact_location,
+        compact_location_list,
+        expand_location,
+    )
+except ImportError:
+    from matrixark_temporal_location_codec import (
+        compact_location,
+        compact_location_list,
+        expand_location,
+    )
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     MatrixArkLocalAdapter,
@@ -872,6 +885,41 @@ class _TemporalDirectBackendMixin:
                 seen.add(ref_hash)
         return refs
 
+    def _location_base(self) -> str:
+        """The record log every compact location is relative to.
+
+        This is the RECORD log (`{storage_prefix}:records`), not the raw-ingestion log. They are
+        different keys, and using the wrong one is silent: every entry simply fails the prefix
+        test and stays in the long form, so the encoding looks live and saves nothing.
+        """
+        base = str(getattr(self, "_record_hash_key", "") or "")
+        if base:
+            return base
+        prefix = str(getattr(self, "_storage_prefix", "") or "")
+        return ("%s:records" % prefix) if prefix else ""
+
+    def _location_token(self, location: Json) -> Json | None:
+        """One location in the form it will be STORED in, or None if it is not a location.
+
+        The merge used to expand every stored entry into `{"key", "field"}` and the writer then
+        compacted every one of them straight back -- two string formats per entry, on a list that
+        runs to four figures per ingest. Nothing in between needed the long form: the callers
+        serialize the result, count it, or compare entries to each other. So the merge now works
+        in the stored form throughout, and the compact string doubles as its own dedupe key.
+        """
+        if isinstance(location, str):
+            return location or None
+        if isinstance(location, dict):
+            key = str(location.get("key") or "")
+            field = str(location.get("field") or "")
+            if not key or not field:
+                return None
+            compact = compact_location(key, field, self._location_base())
+            if isinstance(compact, str):
+                return compact
+            return (key, field)
+        return None
+
     def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
         locations: list[Json] = []
         resource_versions: set[str] = set()
@@ -883,21 +931,17 @@ class _TemporalDirectBackendMixin:
                 decoded = {}
             raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
             for location in raw_locations if isinstance(raw_locations, list) else []:
-                if not isinstance(location, dict):
+                token = self._location_token(location)
+                if token is None or token in seen:
                     continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
+                locations.append(token)
+                seen.add(token)
         for location in new_locations:
-            key = str(location.get("key") or "")
-            field = str(location.get("field") or "")
-            if not key or not field or (key, field) in seen:
+            token = self._location_token(location)
+            if token is None or token in seen:
                 continue
-            locations.append({"key": key, "field": field})
-            seen.add((key, field))
+            locations.append(token)
+            seen.add(token)
         return locations
 
     def _merge_resource_versions(self, existing_value: str, new_versions: set[str]) -> list[str]:
@@ -1128,7 +1172,10 @@ class _TemporalDirectBackendMixin:
                 {
                     "key": locator_key,
                     "field": field,
-                    "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
+                    "value": json.dumps(
+                        {"locations": compact_location_list(merged_locations, self._location_base())},
+                        separators=(",", ":"),
+                    ),
                     "storage_route": route_by_hash_field.get((locator_key, field), {}),
                 }
             )
@@ -1286,7 +1333,10 @@ class _TemporalDirectBackendMixin:
         entries: list[Json] = []
         if tail_index == 0:
             merged_versions = self._merge_resource_versions(head_value, new_versions)
-            payload: Json = {"locations": merged_tail, "resource_versions": merged_versions}
+            payload: Json = {
+                "locations": compact_location_list(merged_tail, self._location_base()),
+                "resource_versions": merged_versions,
+            }
             if chunk_count:
                 payload["location_chunks"] = chunk_count
             entries.append({"key": key, "field": field, "value": json.dumps(payload, separators=(",", ":")),
@@ -1294,7 +1344,10 @@ class _TemporalDirectBackendMixin:
             return entries
 
         entries.append({"key": key, "field": tail_field,
-                        "value": json.dumps({"locations": merged_tail}, separators=(",", ":")),
+                        "value": json.dumps(
+                            {"locations": compact_location_list(merged_tail, self._location_base())},
+                            separators=(",", ":"),
+                        ),
                         "storage_route": storage_route})
         # The head carries the chunk count and the resource versions, and is rewritten only when
         # one of those actually changes -- once per chunk rollover, not once per add.
