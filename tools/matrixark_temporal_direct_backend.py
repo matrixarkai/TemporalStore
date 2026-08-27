@@ -1167,17 +1167,14 @@ class _TemporalDirectBackendMixin:
             })
         for ref_hash, new_locations in locator_updates.items():
             field = str(ref_hash)
-            merged_locations = self._merge_ref_locations(existing_for(locator_key, field), new_locations)
-            entries.append(
-                {
-                    "key": locator_key,
-                    "field": field,
-                    "value": json.dumps(
-                        {"locations": compact_location_list(merged_locations, self._location_base())},
-                        separators=(",", ":"),
-                    ),
-                    "storage_route": route_by_hash_field.get((locator_key, field), {}),
-                }
+            entries.extend(
+                self._locator_entries_for_ref(
+                    locator_key,
+                    field,
+                    new_locations,
+                    existing_for,
+                    route_by_hash_field.get((locator_key, field), {}),
+                )
             )
         for (key, field), update in placement_updates.items():
             new_locations = update.get("locations", []) if isinstance(update, dict) else []
@@ -1278,6 +1275,99 @@ class _TemporalDirectBackendMixin:
     @staticmethod
     def _placement_chunk_field(field: str, index: int) -> str:
         return field if index == 0 else f"{field}#{index}"
+
+    # A ref's locator list is every record location carrying that ref, and it had exactly the
+    # problem the placement list had before chunking: held whole, each append re-read the list,
+    # added an entry, and wrote the whole thing back. O(list) bytes per add, O(list^2) over the
+    # life of a term. Measured by walking the page segments over 300 ingests, rows carrying only a
+    # `locations` field -- which is what a locator row is -- were **76.7 KB of the 77.6 KB** that
+    # every `locations` field cost per add. The placement rows beside them, already chunked, came
+    # to 0.4 KB.
+    #
+    # Same fix, same shape: the head field keeps its original name and contents, so a reader that
+    # knows nothing about chunks still finds locations there, overflow lives in "{ref}#1", "{ref}#2",
+    # and the head names how many follow.
+    LOCATOR_CHUNK_LOCATIONS = 32
+
+    @staticmethod
+    def _locator_chunk_field(field: str, index: int) -> str:
+        return field if index == 0 else f"{field}#{index}"
+
+    def _locator_entries_for_ref(
+        self,
+        key: str,
+        field: str,
+        new_locations: list[Json],
+        existing_for,
+        storage_route: Json,
+    ) -> list[Json]:
+        """Append `new_locations` to a ref's locator list, touching only the tail chunk."""
+        head_value = existing_for(key, field)
+        head_decoded: Json = {}
+        if head_value:
+            try:
+                decoded = json.loads(head_value)
+                if isinstance(decoded, dict):
+                    head_decoded = decoded
+            except Exception:
+                head_decoded = {}
+        head_locations = head_decoded.get("locations")
+        head_locations = head_locations if isinstance(head_locations, list) else []
+        try:
+            chunk_count = int(head_decoded.get("location_chunks") or 0)
+        except (TypeError, ValueError):
+            chunk_count = 0
+
+        tail_index = chunk_count if chunk_count else 0
+        if tail_index == 0 and len(head_locations) >= self.LOCATOR_CHUNK_LOCATIONS:
+            tail_index = 1
+        tail_field = self._locator_chunk_field(field, tail_index)
+        tail_value = head_value if tail_index == 0 else existing_for(key, tail_field)
+
+        merged_tail = self._merge_ref_locations(tail_value, new_locations)
+        # A tail that overflows starts the next chunk rather than growing without bound. A list
+        # already over the limit -- written before chunking -- is left where it is: rewriting it
+        # would cost exactly the O(list) write this exists to avoid.
+        if tail_index > 0 and len(merged_tail) > self.LOCATOR_CHUNK_LOCATIONS:
+            keep = self._merge_ref_locations(tail_value, [])
+            overflow = [item for item in merged_tail if item not in keep]
+            if overflow:
+                tail_index += 1
+                tail_field = self._locator_chunk_field(field, tail_index)
+                merged_tail = overflow
+        elif tail_index == 0 and len(merged_tail) > self.LOCATOR_CHUNK_LOCATIONS and head_locations:
+            overflow = [item for item in merged_tail if item not in head_locations]
+            if overflow:
+                tail_index = 1
+                tail_field = self._locator_chunk_field(field, tail_index)
+                merged_tail = overflow
+
+        base = self._location_base()
+        entries: list[Json] = []
+        if tail_index == 0:
+            payload: Json = {"locations": compact_location_list(merged_tail, base)}
+            if chunk_count:
+                payload["location_chunks"] = chunk_count
+            entries.append({"key": key, "field": field,
+                            "value": json.dumps(payload, separators=(",", ":")),
+                            "storage_route": storage_route})
+            return entries
+
+        entries.append({"key": key, "field": tail_field,
+                        "value": json.dumps(
+                            {"locations": compact_location_list(merged_tail, base)},
+                            separators=(",", ":")),
+                        "storage_route": storage_route})
+        # The head is rewritten only when the chunk count actually changes -- once per rollover,
+        # not once per add. That is the whole point: the common add touches one small tail.
+        if tail_index != chunk_count:
+            entries.append({"key": key, "field": field,
+                            "value": json.dumps(
+                                {"locations": compact_location_list(head_locations, base),
+                                 "location_chunks": tail_index},
+                                separators=(",", ":")),
+                            "storage_route": storage_route})
+        return entries
 
     def _placement_entries_for_node(
         self,

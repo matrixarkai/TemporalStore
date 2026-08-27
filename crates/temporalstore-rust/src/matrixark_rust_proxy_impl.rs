@@ -1474,6 +1474,58 @@ fn type_index_ready_key(record_hash_key: &str) -> String {
 /// A compact entry is always relative to the reader's own record log, which is the same thing the
 /// long shape's base check enforces: an entry under another base is not this log's business, and
 /// the writer leaves those in the long shape precisely because the compact one cannot say them.
+/// Every location a ref's locator holds, head chunk and continuations together.
+///
+/// A locator list longer than one chunk keeps its head under the ref's own field and continues in
+/// `"{ref}#1"`, `"{ref}#2"`, with the head naming how many follow. A reader that stops at the head
+/// sees a truncated list, and here that is not a slow answer but a wrong one: one of these callers
+/// decides which records a delete touches, so a missed chunk leaves records undeleted.
+fn locator_location_values(
+    engine: &TemporalEngine,
+    locator_key: &str,
+    id: &str,
+) -> Result<Vec<Value>, String> {
+    let mut out: Vec<Value> = Vec::new();
+    let raw = read_bytes(
+        engine,
+        Command::HashGet {
+            key: locator_key.to_string(),
+            field: id.to_string(),
+        },
+    )?;
+    if raw.is_empty() {
+        return Ok(out);
+    }
+    let Ok(decoded) = serde_json::from_str::<Value>(&raw) else {
+        return Ok(out);
+    };
+    if let Some(items) = decoded.get("locations").and_then(Value::as_array) {
+        out.extend(items.iter().cloned());
+    }
+    let chunks = decoded
+        .get("location_chunks")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    for index in 1..=chunks {
+        let chunk_raw = read_bytes(
+            engine,
+            Command::HashGet {
+                key: locator_key.to_string(),
+                field: format!("{id}#{index}"),
+            },
+        )?;
+        if chunk_raw.is_empty() {
+            continue;
+        }
+        if let Ok(chunk) = serde_json::from_str::<Value>(&chunk_raw) {
+            if let Some(items) = chunk.get("locations").and_then(Value::as_array) {
+                out.extend(items.iter().cloned());
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn location_shard_and_field(location: &Value, record_hash_key: &str) -> Option<(String, String)> {
     if let Some(compact) = location.as_str() {
         let (shard, offset) = compact.split_once(':')?;
@@ -1788,30 +1840,13 @@ fn id_scoped_payloads(
         .unwrap_or(false);
     let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for id in requested_ids {
-        let raw = read_bytes(
-            engine,
-            Command::HashGet {
-                key: locator_key.clone(),
-                field: id.clone(),
-            },
-        )?;
         let mut found = 0_usize;
-        if !raw.is_empty() {
-            if let Ok(decoded) = serde_json::from_str::<Value>(&raw) {
-                for location in decoded
-                    .get("locations")
-                    .and_then(Value::as_array)
-                    .map(|items| items.as_slice())
-                    .unwrap_or(&[])
-                {
-                    let Some((shard, field)) = location_shard_and_field(location, record_hash_key)
-                    else {
-                        continue;
-                    };
-                    positions.insert(format!("{shard}:{field}"));
-                    found += 1;
-                }
-            }
+        for location in locator_location_values(engine, &locator_key, id)? {
+            let Some((shard, field)) = location_shard_and_field(&location, record_hash_key) else {
+                continue;
+            };
+            positions.insert(format!("{shard}:{field}"));
+            found += 1;
         }
         if found == 0 {
             // An old store predating the side index, or an id that never existed. The walk is
@@ -2408,26 +2443,8 @@ fn located_fields_for_ids(
     }
     let mut by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for id in ids {
-        let raw = read_bytes(
-            engine,
-            Command::HashGet {
-                key: locator_key.clone(),
-                field: id.clone(),
-            },
-        )?;
-        if raw.is_empty() {
-            continue;
-        }
-        let Ok(decoded) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        for location in decoded
-            .get("locations")
-            .and_then(Value::as_array)
-            .map(|items| items.as_slice())
-            .unwrap_or(&[])
-        {
-            let Some((shard, field)) = location_shard_and_field(location, record_hash_key) else {
+        for location in locator_location_values(engine, &locator_key, id)? {
+            let Some((shard, field)) = location_shard_and_field(&location, record_hash_key) else {
                 continue;
             };
             let fields = by_shard.entry(shard).or_default();
