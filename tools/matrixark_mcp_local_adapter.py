@@ -4456,6 +4456,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         if pending:
                             source_set = set(source_ids)
                             self._session_pending_event_ids_by_key[key] = [event_id for event_id in pending if event_id not in source_set]
+                        # A committed event's body is dead weight here. `_context_event_by_hash`
+                        # exists so the session buffer can hand back the events it is still
+                        # holding; every consumer of it looks up PENDING ids. Nothing was ever
+                        # removed, so the map kept one parsed record per event for the life of the
+                        # process: gateway RSS grew 31 -> 59 MB over 800 ingests, about 35 KB a
+                        # memory, and it did not stop.
+                        #
+                        # Dropping a committed body is safe because it is a cache, not a store:
+                        # the read path that populates it re-reads and re-populates on a miss.
+                        # The committed ID set stays -- it is what marks an event done, and it is
+                        # eight bytes rather than a record.
+                        for event_id in source_ids:
+                            self._context_event_by_hash.pop(event_id, None)
                 continue
             if record_type == "context_node":
                 try:
