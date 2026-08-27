@@ -53,6 +53,39 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
         .unwrap_or_default()
 }
 
+/// State that a timestamped point now lives at an address.
+///
+/// Emitted from the producer rather than from its callers: eleven handlers append timestamped
+/// pages -- feature series, sequences, control state, context events -- and each one having to
+/// remember to record the outcome is exactly how a kind ends up silently missing. The series is
+/// keyed by timestamp, so that is the component.
+fn stage_timestamped_outcomes(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    refs: &[(u64, BlockAddress)],
+) {
+    if refs.is_empty() || !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    for (timestamp_ms, address) in refs {
+        let component = timestamp_ms.to_string();
+        super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            kind: kind.to_string(),
+            object_key: key.to_string(),
+            component: Some(component.clone()),
+            object_id: stable_page_object_id(shard_id, kind, key, Some(&component)),
+            routing_bucket,
+            address: Some(address.clone()),
+            value: None,
+            ttl: None,
+            deleted: false,
+            meta: false,
+        });
+    }
+}
+
 pub(super) fn append_timestamped_kv_pages(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,
@@ -91,6 +124,7 @@ pub(super) fn append_timestamped_kv_pages(
                     .map(|point| (point.timestamp_ms, address.clone())),
             );
         }
+        stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs);
         return Ok(refs);
     }
 
@@ -111,6 +145,7 @@ pub(super) fn append_timestamped_kv_pages(
                 .map(|point| (point.timestamp_ms, address.clone())),
         );
     }
+    stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs);
     Ok(refs)
 }
 

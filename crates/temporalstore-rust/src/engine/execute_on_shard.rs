@@ -4,6 +4,39 @@
 //! Standalone per-shard command execution extracted from engine.rs.
 use super::*;
 
+/// Put aside an outcome that no page backs: a deletion, a deadline, or state that lives only
+/// in the index snapshot.
+///
+/// The page path stages its outcome inside `upsert_bucket_index_page`, because that is where a
+/// page outcome is produced. These have no such moment, so they say it here.
+#[allow(clippy::too_many_arguments)]
+fn stage_meta_outcome(
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    value: Option<Vec<u8>>,
+    ttl: Option<u64>,
+    deleted: bool,
+) {
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: object_key.to_string(),
+        component: None,
+        object_id: stable_page_object_id(shard_id, kind, object_key, None),
+        routing_bucket: page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
+        address: None,
+        value,
+        ttl,
+        deleted,
+        meta: true,
+    });
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -36,6 +69,18 @@ pub(crate) fn execute_on_shard(
         | Command::ContextResourceBlobFetch { .. }
         | Command::ContextResourceBlobSweep { .. } => CommandResponse::Empty,
         Command::CommonDelete { key } => {
+            // An outcome with no page: the object is gone. Their log item states the same thing
+            // with `object_deleted`, and replay applies it without re-running a delete.
+            stage_meta_outcome(
+                shard_id,
+                "object",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                None,
+                true,
+            );
             mutated = delete_record(shard, &key);
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
@@ -48,6 +93,19 @@ pub(crate) fn execute_on_shard(
                 }
             }
             mutated = true;
+            // The deadline is recorded ALREADY RESOLVED. That is the point: a replay applying
+            // this outcome needs no clock of its own, where re-running the command would resolve
+            // the TTL against the restart clock and extend every recently-expiring key.
+            stage_meta_outcome(
+                shard_id,
+                "object",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                Some(expires_at),
+                false,
+            );
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
         }
@@ -238,6 +296,16 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::StringDelete { key } => {
+            stage_meta_outcome(
+                shard_id,
+                "string",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                None,
+                true,
+            );
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             mutated |= shard.strings.remove(&key).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
@@ -443,7 +511,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::HashDelete { key, field } => {
-            mutated |= mark_bucket_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
+            mutated |= mark_bucket_index_page_deleted(shard, shard_id, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
                 // Mirror hash2::Del: deleting the last field removes the whole key
@@ -508,7 +576,7 @@ pub(crate) fn execute_on_shard(
             }
             if let Some(old_biased) = existed {
                 let old_component = zset_component(old_biased, &member);
-                mark_bucket_index_page_deleted(shard, "zset", &key, Some(&old_component));
+                mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&old_component));
             }
             let component = zset_component(biased, &member);
             let object_id = stable_page_object_id(shard_id, "zset", &key, Some(&component));
@@ -571,7 +639,7 @@ pub(crate) fn execute_on_shard(
                 Some((biased, _)) => {
                     mutated = true;
                     let component = zset_component(biased, &member);
-                    mark_bucket_index_page_deleted(shard, "zset", &key, Some(&component));
+                    mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&component));
                     if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
                         shard.zsets.remove(&key);
                     }
@@ -665,6 +733,18 @@ pub(crate) fn execute_on_shard(
         } => {
             let now = resolve_now_ms();
             let floor = now.saturating_sub(window_ms);
+            // No page backs a seen-set; it lives in the index snapshot. So the outcome carries
+            // the member and the moment, which is everything an apply needs.
+            stage_meta_outcome(
+                shard_id,
+                "seen",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(member.clone()),
+                Some(now),
+                false,
+            );
             let seen = shard.seen.entry(key).or_default();
             // Bounded sweep from the time-ordered front: enough to keep pace with any
             // sustained rate, never enough to stall a hot call on a huge backlog.
@@ -711,6 +791,54 @@ pub(crate) fn execute_on_shard(
             let current = shard.buckets.get(&key).copied();
             let (allowed, remaining, retry_after_ms, next) =
                 bucket_take(current, now, tokens, capacity, refill_per_sec);
+            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
+            // not the take itself. Re-running a take would recompute against a different clock;
+            // installing the resulting bucket cannot.
+            let mut bucket_state = Vec::with_capacity(16);
+            bucket_state.extend_from_slice(&next.0.to_le_bytes());
+            bucket_state.extend_from_slice(&next.1.to_le_bytes());
+            stage_meta_outcome(
+                shard_id,
+                "bucket",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(bucket_state),
+                None,
+                false,
+            );
+            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
+            // not the take itself. Re-running a take would recompute against a different clock;
+            // installing the resulting bucket cannot.
+            let mut bucket_state = Vec::with_capacity(16);
+            bucket_state.extend_from_slice(&next.0.to_le_bytes());
+            bucket_state.extend_from_slice(&next.1.to_le_bytes());
+            stage_meta_outcome(
+                shard_id,
+                "bucket",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(bucket_state),
+                None,
+                false,
+            );
+            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
+            // not the take itself. Re-running a take would recompute against a different clock;
+            // installing the resulting bucket cannot.
+            let mut bucket_state = Vec::with_capacity(16);
+            bucket_state.extend_from_slice(&next.0.to_le_bytes());
+            bucket_state.extend_from_slice(&next.1.to_le_bytes());
+            stage_meta_outcome(
+                shard_id,
+                "bucket",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(bucket_state),
+                None,
+                false,
+            );
             shard.buckets.insert(key, next);
             mutated = true;
             CommandResponse::Members {
@@ -746,7 +874,7 @@ pub(crate) fn execute_on_shard(
             let biased = zset_score_bits(score);
             if let Some(old_biased) = old {
                 let old_component = zset_component(old_biased, &member);
-                mark_bucket_index_page_deleted(shard, "zset", &key, Some(&old_component));
+                mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&old_component));
             }
             let component = zset_component(biased, &member);
             let object_id = stable_page_object_id(shard_id, "zset", &key, Some(&component));
@@ -801,7 +929,7 @@ pub(crate) fn execute_on_shard(
             let mut members = Vec::new();
             for (member, biased) in ordered {
                 let component = zset_component(biased, &member);
-                mark_bucket_index_page_deleted(shard, "zset", &key, Some(&component));
+                mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&component));
                 if let Some(entries) = shard.zsets.get_mut(&key) {
                     entries.remove(&member);
                 }
@@ -916,7 +1044,7 @@ pub(crate) fn execute_on_shard(
                     let component =
                         format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
                     mutated = true;
-                    mark_bucket_index_page_deleted(shard, "list", &key, Some(&component));
+                    mark_bucket_index_page_deleted(shard, shard_id, "list", &key, Some(&component));
                     if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
                         shard.lists.remove(&key);
                     }
@@ -999,7 +1127,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             let member_component = hex::encode(&member);
-            mutated |= mark_bucket_index_page_deleted(shard, "set", &key, Some(&member_component));
+            mutated |= mark_bucket_index_page_deleted(shard, shard_id, "set", &key, Some(&member_component));
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
             }

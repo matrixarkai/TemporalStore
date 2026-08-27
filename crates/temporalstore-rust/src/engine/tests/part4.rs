@@ -4113,14 +4113,21 @@ fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
         .expect("the object it touched must be named");
     assert_eq!(item.kind, "string");
     assert!(!item.deleted);
-    assert_eq!(item.object_id, item.address.object_id.unwrap_or_default());
+    assert_eq!(
+        item.object_id,
+        item.address
+            .as_ref()
+            .and_then(|address| address.object_id)
+            .unwrap_or_default()
+    );
 
     // The claim has to equal what the index actually holds. This is the whole point.
     let indexed = engine
         .string_page_address(1, "outcome-key")
         .expect("the index holds an address for the key");
     assert_eq!(
-        item.address, indexed,
+        item.address.as_ref(),
+        Some(&indexed),
         "the recorded outcome disagrees with the index entry the command built"
     );
 }
@@ -4308,6 +4315,298 @@ fn one_engines_retention_floor_ignores_another_engines_registrations() {
         quiet.write_ahead_log_store().block_retention_floor(1),
         None,
         "another engine's registrations pinned this engine's reclaim floor"
+    );
+}
+
+/// Every command that changes stored state has to record what it did, or replay cannot be
+/// switched from re-running commands to installing outcomes without silently losing that state.
+///
+/// This is a COVERAGE probe, not a spot check: it drives a spread of write commands and reports
+/// every one whose record carries no outcome, so the gap list comes from the engine rather than
+/// from reading call sites and hoping the list is complete.
+#[test]
+fn every_mutating_command_records_what_it_did() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+
+    let commands = vec![
+        Command::StringSet {
+            key: "probe-string".to_string(),
+            value: b"v".to_vec(),
+        },
+        Command::StringSetEx {
+            key: "probe-setex".to_string(),
+            value: b"v".to_vec(),
+            ttl_ms: 60_000,
+        },
+        Command::HashSet {
+            key: "probe-hash".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        },
+        Command::HashIncrBy {
+            key: "probe-hash".to_string(),
+            field: "counter".to_string(),
+            increment: 3,
+        },
+        Command::SetAdd {
+            key: "probe-set".to_string(),
+            member: b"m".to_vec(),
+        },
+        Command::ZSetAdd {
+            key: "probe-zset".to_string(),
+            member: b"m".to_vec(),
+            score: 1.5,
+        },
+        Command::ListPush {
+            key: "probe-list".to_string(),
+            member: b"m".to_vec(),
+            left: true,
+        },
+        Command::SeenCheck {
+            key: "probe-seen".to_string(),
+            member: b"m".to_vec(),
+            window_ms: 60_000,
+        },
+        Command::BucketTake {
+            key: "probe-bucket".to_string(),
+            tokens: 1.0,
+            capacity: 10.0,
+            refill_per_sec: 1.0,
+        },
+        Command::ControlStateIncrement {
+            key: "probe-control".to_string(),
+            timestamp_ms: 1_787_270_070_000,
+            amount: 2,
+        },
+        Command::CommonExpire {
+            key: "probe-string".to_string(),
+            ttl_ms: 30_000,
+        },
+        // Removals go through mark_bucket_index_page_deleted, not the upsert -- a different
+        // path, so a different chance to record nothing.
+        Command::HashDelete {
+            key: "probe-hash".to_string(),
+            field: "f".to_string(),
+        },
+        Command::SetRemove {
+            key: "probe-set".to_string(),
+            member: b"m".to_vec(),
+        },
+        Command::ZSetRemove {
+            key: "probe-zset".to_string(),
+            member: b"m".to_vec(),
+        },
+        Command::ListPop {
+            key: "probe-list".to_string(),
+            left: true,
+        },
+        Command::StringDelete {
+            key: "probe-setex".to_string(),
+        },
+        // Feature series have their own map again.
+        Command::FeatureAppend {
+            key: "probe-feature".to_string(),
+            points: vec![crate::types::FeaturePoint {
+                timestamp_ms: 1_787_270_070_000,
+                value: b"fv".to_vec(),
+            }],
+        },
+        Command::CommonDelete {
+            key: "probe-string".to_string(),
+        },
+    ];
+
+    let mut attempted = Vec::new();
+    for command in commands {
+        let label = format!("{command:?}");
+        let label = label
+            .split_once(' ')
+            .map(|(head, _)| head.to_string())
+            .unwrap_or(label);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        // Only commands the engine ACCEPTED are evidence about outcome coverage.
+        if response.status.ok {
+            attempted.push(label);
+        }
+    }
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+
+    // Which of the accepted writes left a record that says nothing about what changed?
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    let mut silent = Vec::new();
+    for (_, line) in records {
+        let Ok(record) = crate::wal::decode_wal_line(&line) else {
+            continue;
+        };
+        if record.outcomes.is_empty() {
+            let label = format!("{:?}", record.command);
+            let label = label
+                .split_once(' ')
+                .map(|(head, _)| head.to_string())
+                .unwrap_or(label);
+            silent.push(label);
+        }
+    }
+    silent.sort();
+    silent.dedup();
+
+    assert!(
+        silent.is_empty(),
+        "these accepted writes recorded nothing about what they changed, so replay could not \
+         install them: {silent:?} (attempted: {attempted:?})"
+    );
+}
+
+/// THE GATE. A shard rebuilt by installing recorded outcomes must equal one built by running
+/// the commands.
+///
+/// Until this holds, replay cannot be switched over: an apply that drops or garbles a kind
+/// produces a shard that is subtly wrong rather than one that fails, and nothing downstream
+/// would notice. Kinds are brought over one at a time and this test grows with them.
+#[test]
+fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let ran = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("ran-cache"),
+        dir.path().join("ran-pages"),
+        dir.path().join("ran-index"),
+    );
+    ran.load_shard(1);
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+
+    // The kinds the apply path claims to handle so far.
+    let workload = vec![
+        Command::StringSet {
+            key: "eq-a".to_string(),
+            value: b"first".to_vec(),
+        },
+        Command::StringSet {
+            key: "eq-b".to_string(),
+            value: b"second".to_vec(),
+        },
+        Command::StringSet {
+            key: "eq-a".to_string(),
+            value: b"first-overwritten".to_vec(),
+        },
+        Command::SeenCheck {
+            key: "eq-seen".to_string(),
+            member: b"m1".to_vec(),
+            window_ms: 60_000,
+        },
+        Command::BucketTake {
+            key: "eq-bucket".to_string(),
+            tokens: 2.0,
+            capacity: 10.0,
+            refill_per_sec: 1.0,
+        },
+        Command::HashSet {
+            key: "eq-hash".to_string(),
+            field: "f1".to_string(),
+            value: b"hv".to_vec(),
+        },
+        Command::HashSet {
+            key: "eq-hash".to_string(),
+            field: "f2".to_string(),
+            value: b"hv2".to_vec(),
+        },
+        Command::SetAdd {
+            key: "eq-set".to_string(),
+            member: b"member-one".to_vec(),
+        },
+        Command::ZSetAdd {
+            key: "eq-zset".to_string(),
+            member: b"zm".to_vec(),
+            score: 2.5,
+        },
+        Command::ListPush {
+            key: "eq-list".to_string(),
+            member: b"lm".to_vec(),
+            left: true,
+        },
+        Command::ListPush {
+            key: "eq-list".to_string(),
+            member: b"lm2".to_vec(),
+            left: false,
+        },
+        Command::CommonExpire {
+            key: "eq-b".to_string(),
+            ttl_ms: 60_000,
+        },
+        Command::StringSet {
+            key: "eq-doomed".to_string(),
+            value: b"gone".to_vec(),
+        },
+        Command::CommonDelete {
+            key: "eq-doomed".to_string(),
+        },
+    ];
+    for command in workload {
+        let response = ran.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "workload write failed: {response:?}");
+    }
+
+    // Take the outcomes off the log, in the order they were written.
+    let records = ran
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    let mut outcomes = Vec::new();
+    for (_, line) in records {
+        let Ok(record) = crate::wal::decode_wal_line(&line) else {
+            continue;
+        };
+        outcomes.push((record.sequence, record.outcomes));
+    }
+    outcomes.sort_by_key(|(sequence, _)| *sequence);
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+    assert!(
+        outcomes.iter().any(|(_, items)| !items.is_empty()),
+        "the workload recorded no outcomes at all"
+    );
+
+    // A second shard that never sees a command -- only what the first one did.
+    let installed = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("inst-cache"),
+        dir.path().join("inst-pages"),
+        dir.path().join("inst-index"),
+    );
+    installed.load_shard(1);
+    let mut refused = Vec::new();
+    for (sequence, items) in &outcomes {
+        for item in items {
+            if !installed.apply_outcome_item(1, item) {
+                refused.push(format!("seq={sequence} kind={}", item.kind));
+            }
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "the apply path refused outcomes it should understand: {refused:?}"
+    );
+
+    assert_eq!(
+        installed.index_shape_for_test(1),
+        ran.index_shape_for_test(1),
+        "installing the outcomes did not reproduce the shard the commands built"
     );
 }
 
