@@ -5094,3 +5094,294 @@ fn the_storage_cycle_records_how_long_its_stages_take() {
     // Deliberately NOT asserting some stage exceeds zero -- a quick cycle rounds every stage to
     // zero milliseconds, and that assertion would fail on a fast machine for no reason.
 }
+
+/// A COLD RELOAD, not a synthetic apply loop: a fresh engine rebuilds the shard from disk.
+///
+/// The equivalence gate feeds recorded outcomes to an engine by hand, which proves the apply path
+/// understands them. It does not prove RECOVERY uses them -- replay could ignore every outcome and
+/// re-execute every command and that gate would stay green.
+///
+/// Neither does comparing shard shapes across a restart, which is worth stating because the first
+/// version of this test did exactly that and passed while recovery installed NOTHING: unloading a
+/// shard flushes its index, so the reload had no tail left to replay and never entered the path
+/// under test. The install counter is what caught it, and asserting on it is what keeps this test
+/// honest -- so the engine is dropped without unloading, the way a crash leaves it.
+#[test]
+fn a_cold_reload_rebuilds_the_shard_from_what_the_writes_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+
+    let workload = vec![
+        Command::StringSet {
+            key: "rs-a".to_string(),
+            value: b"alpha".to_vec(),
+        },
+        Command::StringSetEx {
+            key: "rs-ttl".to_string(),
+            value: b"expiring".to_vec(),
+            ttl_ms: 600_000,
+        },
+        Command::HashSet {
+            key: "rs-hash".to_string(),
+            field: "f".to_string(),
+            value: b"hv".to_vec(),
+        },
+        Command::SetAdd {
+            key: "rs-set".to_string(),
+            member: b"m".to_vec(),
+        },
+        Command::ZSetAdd {
+            key: "rs-zset".to_string(),
+            member: b"zm".to_vec(),
+            score: 3.5,
+        },
+        Command::ListPush {
+            key: "rs-list".to_string(),
+            member: b"lm".to_vec(),
+            left: true,
+        },
+        Command::SeenCheck {
+            key: "rs-seen".to_string(),
+            member: b"m".to_vec(),
+            window_ms: 600_000,
+        },
+        Command::BucketTake {
+            key: "rs-bucket".to_string(),
+            tokens: 2.0,
+            capacity: 10.0,
+            refill_per_sec: 1.0,
+        },
+        Command::FeatureAppend {
+            key: "rs-feature".to_string(),
+            points: (0..3)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index * 1_000,
+                    value: format!("p{index}").into_bytes(),
+                })
+                .collect(),
+        },
+    ];
+
+    let (before, before_index, recorded) = {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            cache.clone(),
+            pages.clone(),
+            indexes.clone(),
+        );
+        engine.load_shard(1);
+        std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+        for command in workload {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
+            assert!(response.status.ok, "workload write failed: {response:?}");
+        }
+        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+        let shape = engine.index_shape_for_test(1);
+        assert!(
+            shape.contains("string rs-a") && shape.contains("feature rs-feature"),
+            "the workload did not build the shard it was supposed to: {shape}"
+        );
+        let records = engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap();
+        let recorded = records
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .filter(|record| !record.outcomes.is_empty())
+            .count();
+        assert!(
+            recorded >= 8,
+            "expected the workload to leave records carrying outcomes, got {recorded}"
+        );
+        (shape, engine.bucket_index_shape_for_test(1), recorded)
+        // dropped WITHOUT unload: the index is not flushed, so the tail must be replayed.
+    };
+
+    // The gate stays OFF for the reload. Recording is what it gates; a record that already says
+    // what it did is installed on its own evidence.
+    let recovered = TemporalEngine::with_local_dirs(1024 * 1024, cache, pages, indexes);
+    recovered.load_shard(1);
+
+    // The shapes below would match even if recovery ignored every outcome and re-executed the
+    // commands, so assert WHICH path ran before asserting the result.
+    let installed = recovered.replay_installs_for_test();
+    assert!(
+        installed >= recorded as u64,
+        "recovery installed {installed} outcomes for {recorded} records that carried them, so it          fell back to replaying commands and this test proves nothing"
+    );
+
+    assert_eq!(
+        recovered.index_shape_for_test(1),
+        before,
+        "a cold reload did not rebuild the shard the writes described"
+    );
+    assert_eq!(
+        recovered.bucket_index_shape_for_test(1),
+        before_index,
+        "a cold reload rebuilt the maps but not the index"
+    );
+}
+
+/// PER COMMAND: does what a write recorded describe EVERYTHING it changed, or just something?
+///
+/// The coverage probe asks whether a record said anything at all, which is a much weaker question
+/// than it looks. StringSetEx writes a value and a deadline; recording only the value passes the
+/// probe, passes the equivalence gate as long as no deadline is in the workload, and produces a
+/// recovered key that never expires. That defect was real and this is the test that names it.
+///
+/// Each command runs alone against a fresh pair of shards -- one built by running it, one built by
+/// installing only what it recorded -- so a failure names the command rather than the workload.
+#[test]
+fn what_each_command_recorded_describes_everything_it_changed() {
+    let commands: Vec<(&str, Command)> = vec![
+        (
+            "StringSet",
+            Command::StringSet {
+                key: "pc-string".to_string(),
+                value: b"v".to_vec(),
+            },
+        ),
+        (
+            "StringSetEx",
+            Command::StringSetEx {
+                key: "pc-setex".to_string(),
+                value: b"v".to_vec(),
+                ttl_ms: 600_000,
+            },
+        ),
+        (
+            "HashSet",
+            Command::HashSet {
+                key: "pc-hash".to_string(),
+                field: "f".to_string(),
+                value: b"v".to_vec(),
+            },
+        ),
+        (
+            "HashIncrBy",
+            Command::HashIncrBy {
+                key: "pc-hash".to_string(),
+                field: "counter".to_string(),
+                increment: 3,
+            },
+        ),
+        (
+            "SetAdd",
+            Command::SetAdd {
+                key: "pc-set".to_string(),
+                member: b"m".to_vec(),
+            },
+        ),
+        (
+            "ZSetAdd",
+            Command::ZSetAdd {
+                key: "pc-zset".to_string(),
+                member: b"m".to_vec(),
+                score: 1.5,
+            },
+        ),
+        (
+            "ListPush",
+            Command::ListPush {
+                key: "pc-list".to_string(),
+                member: b"m".to_vec(),
+                left: true,
+            },
+        ),
+        (
+            "SeenCheck",
+            Command::SeenCheck {
+                key: "pc-seen".to_string(),
+                member: b"m".to_vec(),
+                window_ms: 600_000,
+            },
+        ),
+        (
+            "BucketTake",
+            Command::BucketTake {
+                key: "pc-bucket".to_string(),
+                tokens: 1.0,
+                capacity: 10.0,
+                refill_per_sec: 1.0,
+            },
+        ),
+        (
+            "FeatureAppend",
+            Command::FeatureAppend {
+                key: "pc-feature".to_string(),
+                points: vec![crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000,
+                    value: b"fv".to_vec(),
+                }],
+            },
+        ),
+    ];
+
+    let mut incomplete = Vec::new();
+    for (label, command) in commands {
+        let dir = tempfile::tempdir().unwrap();
+        let ran = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("ran-cache"),
+            dir.path().join("ran-pages"),
+            dir.path().join("ran-index"),
+        );
+        ran.load_shard(1);
+        std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+        let response = ran.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+        if !response.status.ok {
+            continue;
+        }
+        let outcomes = ran
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .flat_map(|record| record.outcomes)
+            .collect::<Vec<_>>();
+
+        let installed = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("inst-cache"),
+            dir.path().join("inst-pages"),
+            dir.path().join("inst-index"),
+        );
+        installed.load_shard(1);
+        for item in &outcomes {
+            if !installed.apply_outcome_item(1, item) {
+                incomplete.push(format!("{label}: apply refused a {} outcome", item.kind));
+            }
+        }
+        let expected = ran.index_shape_for_test(1);
+        let actual = installed.index_shape_for_test(1);
+        if expected != actual {
+            let missing = expected
+                .lines()
+                .filter(|line| !actual.lines().any(|other| other == *line))
+                .collect::<Vec<_>>();
+            let extra = actual
+                .lines()
+                .filter(|line| !expected.lines().any(|other| other == *line))
+                .collect::<Vec<_>>();
+            incomplete.push(format!(
+                "{label}: recorded outcomes do not describe everything it changed -- missing {missing:?}, extra {extra:?}"
+            ));
+        }
+    }
+
+    assert!(
+        incomplete.is_empty(),
+        "these commands recorded SOMETHING but not EVERYTHING, so a recovered shard would be          quietly wrong rather than obviously broken: {incomplete:#?}"
+    );
+}

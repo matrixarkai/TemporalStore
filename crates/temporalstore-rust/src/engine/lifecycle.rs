@@ -66,9 +66,16 @@ impl TemporalEngine {
             infos: Arc::default(),
             admissions: Arc::default(),
             promote_scans: Arc::default(),
+            replay_installs: Arc::default(),
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
         }
+    }
+
+    /// How many recorded outcomes recovery has installed (see `replay_installs`).
+    pub(crate) fn replay_installs_for_test(&self) -> u64 {
+        self.replay_installs
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Total per-execute promote reconcile scans this engine has run (see `promote_scans`).
@@ -1029,6 +1036,34 @@ impl TemporalEngine {
                     .expect("config lock poisoned")
                     .insert(shard_id, config_log[config_cursor].config.clone());
                 config_cursor += 1;
+            }
+            // A record that says what its write DID is installed, not re-executed. Re-executing
+            // reproduces state only if everything that influenced the original execution is
+            // reproduced with it -- which is why the two lines below this exist at all.
+            //
+            // The fallback is not a nicety. A record carrying no outcomes is replayed as a
+            // command exactly as before, so a kind that records nothing recovers correctly
+            // instead of silently recovering as nothing. The command cannot be dropped from the
+            // record until no accepted write can produce an empty one.
+            if !record.outcomes.is_empty() {
+                for item in &record.outcomes {
+                    if !self.apply_outcome_item(shard_id, item) {
+                        return Err(Status::error(
+                            "wal_replay_outcome_refused",
+                            format!(
+                                "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it",
+                                item.kind, record.sequence
+                            ),
+                        ));
+                    }
+                }
+                self.replay_installs.fetch_add(
+                    record.outcomes.len() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                replayed_through = record.sequence;
+                expected = expected.saturating_add(1);
+                continue;
             }
             // Resolve TTL deadlines / event times against the LEADER's timestamp
             // captured when this record was written, not the (later) restart clock, so
