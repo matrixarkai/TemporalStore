@@ -5239,9 +5239,14 @@ fn a_cold_reload_rebuilds_the_shard_from_what_the_writes_recorded() {
 /// installing only what it recorded -- so a failure names the command rather than the workload.
 #[test]
 fn what_each_command_recorded_describes_everything_it_changed() {
-    let commands: Vec<(&str, Command)> = vec![
+    // (label, what must already exist, the command under test). A command that only fires
+    // against existing state -- a conditional write, a persist -- cannot be probed on an empty
+    // shard, and leaving it out is how StringSetConditional kept a real defect through four
+    // rounds of this.
+    let commands: Vec<(&str, Vec<Command>, Command)> = vec![
         (
             "StringSet",
+            Vec::new(),
             Command::StringSet {
                 key: "pc-string".to_string(),
                 value: b"v".to_vec(),
@@ -5249,6 +5254,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "StringSetEx",
+            Vec::new(),
             Command::StringSetEx {
                 key: "pc-setex".to_string(),
                 value: b"v".to_vec(),
@@ -5257,6 +5263,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "HashSet",
+            Vec::new(),
             Command::HashSet {
                 key: "pc-hash".to_string(),
                 field: "f".to_string(),
@@ -5265,6 +5272,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "HashIncrBy",
+            Vec::new(),
             Command::HashIncrBy {
                 key: "pc-hash".to_string(),
                 field: "counter".to_string(),
@@ -5273,6 +5281,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "SetAdd",
+            Vec::new(),
             Command::SetAdd {
                 key: "pc-set".to_string(),
                 member: b"m".to_vec(),
@@ -5280,6 +5289,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "ZSetAdd",
+            Vec::new(),
             Command::ZSetAdd {
                 key: "pc-zset".to_string(),
                 member: b"m".to_vec(),
@@ -5288,6 +5298,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "ListPush",
+            Vec::new(),
             Command::ListPush {
                 key: "pc-list".to_string(),
                 member: b"m".to_vec(),
@@ -5296,6 +5307,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "SeenCheck",
+            Vec::new(),
             Command::SeenCheck {
                 key: "pc-seen".to_string(),
                 member: b"m".to_vec(),
@@ -5304,6 +5316,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "BucketTake",
+            Vec::new(),
             Command::BucketTake {
                 key: "pc-bucket".to_string(),
                 tokens: 1.0,
@@ -5313,6 +5326,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         ),
         (
             "FeatureAppend",
+            Vec::new(),
             Command::FeatureAppend {
                 key: "pc-feature".to_string(),
                 points: vec![crate::types::FeaturePoint {
@@ -5321,10 +5335,105 @@ fn what_each_command_recorded_describes_everything_it_changed() {
                 }],
             },
         ),
+        (
+            "StringSetConditional-refresh",
+            vec![Command::StringSetEx {
+                key: "pc-cond".to_string(),
+                value: b"v1".to_vec(),
+                ttl_ms: 120,
+            }],
+            Command::StringSetConditional {
+                key: "pc-cond".to_string(),
+                value: b"v2".to_vec(),
+                ttl_ms: Some(600_000),
+                condition: crate::types::StringSetCondition::IfExists,
+                return_old: false,
+            },
+        ),
+        (
+            "StringSetConditional-clears-deadline",
+            vec![Command::StringSetEx {
+                key: "pc-cond2".to_string(),
+                value: b"v1".to_vec(),
+                ttl_ms: 600_000,
+            }],
+            Command::StringSetConditional {
+                key: "pc-cond2".to_string(),
+                value: b"v2".to_vec(),
+                ttl_ms: None,
+                condition: crate::types::StringSetCondition::IfExists,
+                return_old: false,
+            },
+        ),
+        (
+            "CommonPersist",
+            vec![Command::StringSetEx {
+                key: "pc-persist".to_string(),
+                value: b"v".to_vec(),
+                ttl_ms: 600_000,
+            }],
+            Command::CommonPersist {
+                key: "pc-persist".to_string(),
+            },
+        ),
+        (
+            "CommonExpire",
+            vec![Command::StringSet {
+                key: "pc-expire".to_string(),
+                value: b"v".to_vec(),
+            }],
+            Command::CommonExpire {
+                key: "pc-expire".to_string(),
+                ttl_ms: 600_000,
+            },
+        ),
+        (
+            "FeatureDelete",
+            vec![Command::FeatureAppend {
+                key: "pc-featdel".to_string(),
+                points: vec![crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000,
+                    value: b"fv".to_vec(),
+                }],
+            }],
+            Command::FeatureDelete {
+                key: "pc-featdel".to_string(),
+            },
+        ),
+        (
+            "ControlStateIncrement",
+            Vec::new(),
+            Command::ControlStateIncrement {
+                key: "pc-ctr".to_string(),
+                timestamp_ms: 1_787_270_070_000,
+                amount: 5,
+            },
+        ),
+        (
+            "ContextUpsertNode",
+            Vec::new(),
+            Command::ContextUpsertNode {
+                tenant_hash: 41,
+                node: crate::types::ContextNode {
+                    node_hash: 9,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: "probe-node".to_string(),
+                    status: 1,
+                    last_event_time_ms: 1_787_270_070_000,
+                    raw_metadata_ref: String::new(),
+                    l0: String::new(),
+                    l1_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
+            },
+        ),
     ];
 
     let mut incomplete = Vec::new();
-    for (label, command) in commands {
+    for (label, prelude, command) in commands {
         let dir = tempfile::tempdir().unwrap();
         let ran = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -5333,6 +5442,15 @@ fn what_each_command_recorded_describes_everything_it_changed() {
             dir.path().join("ran-index"),
         );
         ran.load_shard(1);
+        // The prelude runs with the gate OFF so the only outcomes on the log belong to the
+        // command under test, and the installed shard starts from the same prelude state.
+        for setup in &prelude {
+            let response = ran.execute(ExecuteRequest {
+                shard_id: 1,
+                command: setup.clone(),
+            });
+            assert!(response.status.ok, "{label}: prelude failed: {response:?}");
+        }
         std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
         let response = ran.execute(ExecuteRequest {
             shard_id: 1,
@@ -5358,6 +5476,13 @@ fn what_each_command_recorded_describes_everything_it_changed() {
             dir.path().join("inst-index"),
         );
         installed.load_shard(1);
+        for setup in &prelude {
+            let response = installed.execute(ExecuteRequest {
+                shard_id: 1,
+                command: setup.clone(),
+            });
+            assert!(response.status.ok, "{label}: prelude failed: {response:?}");
+        }
         for item in &outcomes {
             if !installed.apply_outcome_item(1, item) {
                 incomplete.push(format!("{label}: apply refused a {} outcome", item.kind));

@@ -227,6 +227,19 @@ pub struct WriteAheadLogRecord {
     )]
     pub outcomes: Vec<WalOutcomeItem>,
 }
+/// Whether a write that changed the shard but recorded NOTHING should fail loudly.
+///
+/// Opt-in, and nothing sets it outside a deliberate sweep. The point is leverage: enumerating the
+/// mutating command surface by hand and writing a fixture per command tests what the author
+/// remembered to list, while this turns every test that already writes anything into a probe for
+/// the same property. A command that mutates without recording is exactly the one whose records
+/// cannot replace it.
+pub fn wal_outcome_strict() -> bool {
+    std::env::var("TS_WAL_OUTCOME_STRICT")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 
 /// TS_WAL_OUTCOME_ITEMS: also record what a write DID, beside the command that did it.
 ///
