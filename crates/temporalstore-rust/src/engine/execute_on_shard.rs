@@ -10,6 +10,38 @@ use super::*;
 /// The page path stages its outcome inside `upsert_bucket_index_page`, because that is where a
 /// page outcome is produced. These have no such moment, so they say it here.
 #[allow(clippy::too_many_arguments)]
+/// Record a page or a value that belongs to one COMPONENT of an object.
+///
+/// `stage_meta_outcome` states something about the object as a whole -- it is gone, its deadline
+/// is this. This states what one part of it became: which page backs it, or the bytes for state no
+/// page backs at all.
+#[allow(clippy::too_many_arguments)]
+fn stage_component_outcome(
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    routing_bucket: u32,
+    address: Option<crate::block_store::BlockAddress>,
+    value: Option<Vec<u8>>,
+) {
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: object_key.to_string(),
+        component: component.clone(),
+        object_id: stable_page_object_id(shard_id, kind, object_key, component.as_deref()),
+        routing_bucket,
+        address,
+        value,
+        ttl: None,
+        deleted: false,
+        meta: false,
+    });
+}
+
 fn stage_meta_outcome(
     shard_id: ShardId,
     kind: &str,
@@ -127,6 +159,16 @@ pub(crate) fn execute_on_shard(
                 }
                 if removed {
                     mutated = true;
+                    stage_meta_outcome(
+                        shard_id,
+                        "object",
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        None,
+                        None,
+                        false,
+                    );
                     invalidate_record_all(cache, shard_id, &key);
                 }
                 CommandResponse::Integer {
@@ -273,11 +315,36 @@ pub(crate) fn execute_on_shard(
                     );
                     shard.strings.insert(key.clone(), address);
                     if let Some(ttl_ms) = ttl_ms {
-                        shard
-                            .expires_at_ms
-                            .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
+                        let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                        shard.expires_at_ms.insert(key.clone(), expires_at);
+                        // A conditional write that refreshes a deadline records the refreshed
+                        // one. Recording only the page leaves a replay installing the value over
+                        // a LAPSED deadline from an earlier record, and the key reads as expired
+                        // even though the leader kept it alive.
+                        stage_meta_outcome(
+                            shard_id,
+                            "object",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            None,
+                            Some(expires_at),
+                            false,
+                        );
                     } else {
                         shard.expires_at_ms.remove(&key);
+                        // No deadline is equally a result. An object outcome carrying neither a
+                        // deadline nor a deletion says exactly that.
+                        stage_meta_outcome(
+                            shard_id,
+                            "object",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            None,
+                            None,
+                            false,
+                        );
                     }
                     mutated = true;
                 }
@@ -1424,6 +1491,17 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::FeatureDelete { key } => {
+            // A removal with no component: the whole series went, not one point.
+            stage_meta_outcome(
+                shard_id,
+                "feature",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                None,
+                true,
+            );
             mutated = shard.features.remove(&key).is_some();
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
@@ -1637,12 +1715,27 @@ pub(crate) fn execute_on_shard(
             amount,
         } => {
             remove_if_expired(shard, &key);
-            *shard
-                .control_state
-                .entry(key.clone())
-                .or_default()
-                .entry(timestamp_ms)
-                .or_default() += amount;
+            let resulting = {
+                let counter = shard
+                    .control_state
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(timestamp_ms)
+                    .or_default();
+                *counter += amount;
+                *counter
+            };
+            // The RESULT, not the increment. An increment replayed twice counts twice; a count
+            // installed twice is the same count, which is what makes a record idempotent.
+            stage_component_outcome(
+                shard_id,
+                "control_counter",
+                &key,
+                Some(timestamp_ms.to_string()),
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                None,
+                Some(resulting.to_le_bytes().to_vec()),
+            );
             persist_control_state_page(
                 cache,
                 page_store,
@@ -1710,11 +1803,29 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
+            stage_component_outcome(
+                shard_id,
+                "control_change",
+                &key,
+                Some(bucket_ms.to_string()),
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                None,
+                Some(value.clone()),
+            );
             hll::record_change(shard, &key, bucket_ms, value);
             if let Some(ttl_ms) = ttl_ms {
-                shard
-                    .expires_at_ms
-                    .insert(key, resolve_now_ms().saturating_add(ttl_ms));
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                shard.expires_at_ms.insert(key.clone(), expires_at);
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
             }
             mutated = true;
             CommandResponse::Empty
@@ -2019,6 +2130,20 @@ pub(crate) fn execute_on_shard(
                 })
                 .unwrap_or(true);
             if should_store {
+                // The value that WON the comparison, so a replay installs the winner instead of
+                // re-running a comparison against whatever it happens to hold.
+                stage_component_outcome(
+                    shard_id,
+                    "control_selection",
+                    &key,
+                    Some(match selection_type {
+                        ControlStateSelectionType::First => "first".to_string(),
+                        ControlStateSelectionType::Last => "last".to_string(),
+                    }),
+                    page_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                    None,
+                    Some(value.clone()),
+                );
                 shard.control_state_selection.insert(
                     key.clone(),
                     ControlStateSelectionValue {
@@ -2029,11 +2154,23 @@ pub(crate) fn execute_on_shard(
                 );
             }
             if ttl_ms > 0 {
-                shard
-                    .expires_at_ms
-                    .insert(key, resolve_now_ms().saturating_add(ttl_ms));
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                shard.expires_at_ms.insert(key.clone(), expires_at);
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
             }
-            mutated = true;
+            // A comparison this value LOST stored nothing and set no deadline, so it changed
+            // nothing. Reporting it as a mutation dirtied the shard and appended a record for a
+            // write that did not happen.
+            mutated = should_store || ttl_ms > 0;
             CommandResponse::Empty
         }
         Command::ControlStateSelectionQuery { key } => {
@@ -2246,6 +2383,15 @@ pub(crate) fn execute_on_shard(
                         Some(routing_bucket),
                         async_storage,
                     ) {
+                        stage_component_outcome(
+                            shard_id,
+                            "context_node",
+                            &object_key,
+                            Some(CONTEXT_NODE_FIELD.to_string()),
+                            routing_bucket,
+                            Some(address.clone()),
+                            None,
+                        );
                         shard
                             .hashes
                             .entry(object_key.clone())
@@ -2274,6 +2420,18 @@ pub(crate) fn execute_on_shard(
                 Some(routing_bucket),
                 async_storage,
             ) {
+                // Its own kind, deliberately: this writes a hash page and -- unlike HashSet --
+                // never registers it in the bucket index, so recording it as a "hash" would have
+                // a rebuild add an entry the write never made.
+                stage_component_outcome(
+                    shard_id,
+                    "context_node",
+                    &object_key,
+                    Some(CONTEXT_NODE_FIELD.to_string()),
+                    routing_bucket,
+                    Some(address.clone()),
+                    None,
+                );
                 shard
                     .hashes
                     .entry(object_key.clone())
@@ -2980,6 +3138,15 @@ pub(crate) fn execute_on_shard(
                 // insert() on the entity hash OVERWRITES: an entity has one current value, and
                 // its history is the separate context_entity_update_audit series. Keying this
                 // map by time instead would silently turn every upsert into an append.
+                stage_component_outcome(
+                    shard_id,
+                    "context_entity",
+                    &collection_key,
+                    Some(entity.entity_hash.to_string()),
+                    routing_bucket,
+                    Some(address.clone()),
+                    None,
+                );
                 shard
                     .context_entities
                     .entry(collection_key)

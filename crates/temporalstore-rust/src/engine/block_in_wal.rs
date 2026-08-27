@@ -105,6 +105,11 @@ pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
 }
 
 /// Take what this write recorded doing, leaving nothing behind.
+/// How many outcomes this write has staged so far, without consuming them.
+pub(super) fn staged_outcome_count() -> usize {
+    OUTCOMES.with(|outcomes| outcomes.borrow().len())
+}
+
 pub(super) fn take_outcomes() -> Vec<crate::wal::WalOutcomeItem> {
     OUTCOMES.with(|outcomes| std::mem::take(&mut *outcomes.borrow_mut()))
 }

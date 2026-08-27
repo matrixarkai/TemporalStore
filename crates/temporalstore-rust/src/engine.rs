@@ -701,6 +701,24 @@ impl TemporalEngine {
             // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
             // commit). Page/index materialization stays deferred to dump.
             if write_command && !replaying_wal() {
+                // A write that changed the shard and recorded nothing cannot be replaced by its
+                // record. Off unless a sweep asks for it; when it is on, every existing test that
+                // writes anything becomes a probe for that property -- which covers far more of
+                // the mutating surface than a hand-listed fixture per command ever would.
+                if crate::wal::wal_outcome_items_enabled()
+                    && crate::wal::wal_outcome_strict()
+                    && block_in_wal::staged_outcome_count() == 0
+                {
+                    let rendered = format!("{command:?}");
+                    let label = rendered
+                        .split_once(' ')
+                        .map(|(head, _)| head.to_string())
+                        .unwrap_or(rendered);
+                    panic!(
+                        "TS_WAL_OUTCOME_STRICT: {label} changed shard {} and recorded nothing about what it did",
+                        request.shard_id
+                    );
+                }
                 let sync = !config.async_storage && !bulk_ingest_mode();
                 // Concurrent-commit path (gated, default OFF): for a synchronous write, only
                 // RESERVE the WAL sequence + append the bytes here (under the `shards` lock);

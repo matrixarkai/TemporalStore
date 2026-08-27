@@ -485,6 +485,54 @@ impl TemporalEngine {
         }
         // Every timestamped series renders the same way, so a kind that stops being installed
         // shows up as a missing line rather than as a map nobody compares.
+        let mut entities: Vec<_> = shard.context_entities.iter().collect();
+        entities.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, members) in entities {
+            for (entity_hash, address) in members {
+                out.push_str(&format!(
+                    "context_entity {key} id={entity_hash} slab={} off={} len={}
+",
+                    address.page_slab_id, address.offset, address.length
+                ));
+            }
+        }
+        let mut counter_pages: Vec<_> = shard.control_state_pages.iter().collect();
+        counter_pages.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, address) in counter_pages {
+            out.push_str(&format!(
+                "control_state_page {key} slab={} off={} len={}
+",
+                address.page_slab_id, address.offset, address.length
+            ));
+        }
+        let mut counters: Vec<_> = shard.control_state.iter().collect();
+        counters.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, series) in counters {
+            for (bucket_ms, total) in series {
+                out.push_str(&format!("control_counter {key} at={bucket_ms} total={total}
+"));
+            }
+        }
+        let mut selections: Vec<_> = shard.control_state_selection.iter().collect();
+        selections.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, selected) in selections {
+            out.push_str(&format!(
+                "control_selection {key} at={} value={:?}
+",
+                selected.occur_time_ms, selected.value
+            ));
+        }
+        let mut changes: Vec<_> = shard.control_state_changes.iter().collect();
+        changes.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, buckets) in changes {
+            for (bucket_ms, members) in buckets {
+                out.push_str(&format!(
+                    "control_change {key} at={bucket_ms} members={}
+",
+                    members.len()
+                ));
+            }
+        }
         let mut event_keys: Vec<_> = shard.context_events.iter().collect();
         event_keys.sort_by(|left, right| left.0.cmp(right.0));
         for (key, entries) in event_keys {
@@ -602,8 +650,14 @@ impl TemporalEngine {
             // A deadline, already resolved by the write that set it -- so installing it needs
             // no clock, where re-running the command would resolve it against this one.
             "object" => {
+                // No deadline and no deletion means the deadline was CLEARED -- which a write
+                // that refreshes a value without a TTL does, and which has to be installable or
+                // a lapsed deadline from an earlier record outlives the write that removed it.
                 let Some(expires_at) = item.ttl else {
-                    return false;
+                    for record_key in super::associated_record_keys(&item.object_key) {
+                        shard.expires_at_ms.remove(&record_key);
+                    }
+                    return true;
                 };
                 for record_key in super::associated_record_keys(&item.object_key) {
                     if super::record_exists_exact(shard, &record_key) {
@@ -777,6 +831,17 @@ impl TemporalEngine {
             | "context_child"
             | "context_summary"
             | "context_compression" => {
+                // No component on a removal means the whole series went, not one point of it.
+                if item.deleted && item.component.is_none() {
+                    {
+                        let Some(series) = timestamped_series_mut(shard, &item.kind) else {
+                            return false;
+                        };
+                        series.remove(&item.object_key);
+                    }
+                    super::mark_bucket_index_object_deleted(shard, &item.object_key);
+                    return true;
+                }
                 let Some(component) = item.component.clone() else {
                     return false;
                 };
@@ -878,6 +943,115 @@ impl TemporalEngine {
                     &item.object_key,
                     live_addresses,
                     true,
+                );
+                true
+            }
+            // A context node's page. Its own kind because the write registers no bucket-index
+            // entry for it, unlike every other hash page -- so installing it as a "hash" would
+            // add an entry the write never made.
+            // An entity, under its node's collection. Like the node above, the write registers
+            // no bucket-index entry for it, so neither does this.
+            // The whole counter series, serialized to one page. The write registers it in the
+            // bucket index through the same upsert the string kind uses, so this does too.
+            "control_state" => {
+                let Some(address) = item.address.clone() else {
+                    return false;
+                };
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "control_state",
+                    &item.object_key,
+                    None,
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .control_state_pages
+                    .insert(item.object_key.clone(), address);
+                true
+            }
+            "context_entity" => {
+                let (Some(address), Some(component)) =
+                    (item.address.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                let Ok(entity_hash) = component.parse::<u64>() else {
+                    return false;
+                };
+                shard
+                    .context_entities
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(entity_hash, address);
+                true
+            }
+            "context_node" => {
+                let (Some(address), Some(field)) = (item.address.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                shard
+                    .hashes
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(field, address);
+                true
+            }
+            // The counter's RESULTING value at one bucket. Installing a result twice is the same
+            // result; replaying an increment twice is not, which is the whole reason the record
+            // carries the total rather than the delta.
+            "control_counter" => {
+                let (Some(bytes), Some(component)) = (item.value.as_ref(), item.component.clone())
+                else {
+                    return false;
+                };
+                let (Ok(bucket_ms), Ok(total)) = (
+                    component.parse::<u64>(),
+                    bytes.as_slice().try_into().map(i64::from_le_bytes),
+                ) else {
+                    return false;
+                };
+                shard
+                    .control_state
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(bucket_ms, total);
+                true
+            }
+            // A distinct member. Installed through the write path's own producer so the exact-set
+            // and sketch representations are chosen the same way they were originally.
+            "control_change" => {
+                let (Some(value), Some(component)) = (item.value.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                let Ok(bucket_ms) = component.parse::<u64>() else {
+                    return false;
+                };
+                super::hll::record_change(shard, &item.object_key, bucket_ms, value);
+                true
+            }
+            // The value that won a first/last comparison. The winner is installed directly rather
+            // than re-comparing against whatever this shard happens to hold.
+            "control_selection" => {
+                let (Some(value), Some(component)) = (item.value.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                let selection_type = match component.as_str() {
+                    "first" => crate::types::ControlStateSelectionType::First,
+                    "last" => crate::types::ControlStateSelectionType::Last,
+                    _ => return false,
+                };
+                shard.control_state_selection.insert(
+                    item.object_key.clone(),
+                    super::state::ControlStateSelectionValue {
+                        occur_time_ms: item.ttl.unwrap_or_default(),
+                        value,
+                        selection_type,
+                    },
                 );
                 true
             }
