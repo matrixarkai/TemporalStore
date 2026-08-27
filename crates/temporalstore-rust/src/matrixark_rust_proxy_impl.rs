@@ -1433,14 +1433,20 @@ fn passes_secondary_groups(terms: &HashSet<String>, groups: &[Vec<String>]) -> b
 }
 
 fn decode_matrixark_payload(value: &str) -> Vec<Value> {
-    let Ok(decoded) = serde_json::from_str::<Value>(value) else {
+    let Ok(mut decoded) = serde_json::from_str::<Value>(value) else {
         return Vec::new();
     };
-    if let Some(bundle) = decoded.get("record_bundle").and_then(Value::as_array) {
-        return bundle
-            .iter()
-            .filter(|item| item.is_object())
-            .cloned()
+    // Take the bundle rather than copying it. `decoded` is ours -- it was just parsed here and
+    // nothing else can see it -- so cloning each record deep-copied every map and vector in it
+    // for no one. Sampling the proxy under sustained ingest put `BTreeMap::clone_subtree` and
+    // `Vec<Value>::clone` among the hottest frames; this is where they came from.
+    if let Some(bundle) = decoded
+        .get_mut("record_bundle")
+        .and_then(Value::as_array_mut)
+    {
+        return std::mem::take(bundle)
+            .into_iter()
+            .filter(Value::is_object)
             .collect();
     }
     if decoded.is_object() {
