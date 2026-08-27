@@ -30,6 +30,51 @@ use crate::wal::{StagedPage, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogR
 /// this existed reads back unchanged.
 pub(crate) const BINARY_PAYLOAD_MARKER: u8 = 0xB7;
 
+/// Escapes a newline out of an encoded payload.
+///
+/// The log is read with `reader.lines()`. A JSON payload can never contain a raw newline, so that
+/// worked for as long as every record was text. Protobuf bytes contain 0x0A freely, and a record
+/// carrying one splits into fragments that decode as nothing -- which does not fail loudly, it
+/// loses the write.
+///
+/// Byte stuffing rather than base64: base64 costs a third of the payload, and this costs one byte
+/// per newline actually present, which for encoded protobuf is a fraction of a percent. The
+/// checksum in the frame is computed over the ESCAPED bytes, so the frame validates what it
+/// actually holds.
+const ESCAPE: u8 = 0x1B;
+const ESCAPED_NEWLINE: u8 = 0x01;
+const ESCAPED_ESCAPE: u8 = 0x02;
+
+fn escape_newlines(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + 8);
+    for byte in bytes {
+        match *byte {
+            b'\n' => out.extend_from_slice(&[ESCAPE, ESCAPED_NEWLINE]),
+            ESCAPE => out.extend_from_slice(&[ESCAPE, ESCAPED_ESCAPE]),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn unescape_newlines(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut iter = bytes.iter().copied();
+    while let Some(byte) = iter.next() {
+        if byte != ESCAPE {
+            out.push(byte);
+            continue;
+        }
+        match iter.next() {
+            Some(ESCAPED_NEWLINE) => out.push(b'\n'),
+            Some(ESCAPED_ESCAPE) => out.push(ESCAPE),
+            Some(other) => return Err(format!("unknown escape 0x{other:02x} in wal payload")),
+            None => return Err(String::from("wal payload ends mid-escape")),
+        }
+    }
+    Ok(out)
+}
+
 /// TS_WAL_BINARY_RECORDS: write engine records as protobuf.
 ///
 /// Default OFF while it proves out. Reading never consults this -- a payload is decoded by what
@@ -48,7 +93,11 @@ fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
         length: address.length,
         block_id: address.page_id,
         object_id: address.object_id,
-        routing_bucket: address.routing_bucket,
+        // Deliberately dropped, exactly as the text encoding drops it: the item carries the
+        // routing bucket, and `resolved_address` puts it back. Writing it here made the two
+        // encodings of one record decode differently, which is a divergence whether or not
+        // anything currently reads the difference.
+        routing_bucket: None,
         generation: address.generation,
         band_id: address.band_id,
         checksum: address.sha256.clone(),
@@ -188,15 +237,19 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
             })
             .collect(),
     };
-    let mut out = Vec::with_capacity(message.encoded_len() + 1);
+    let mut encoded = Vec::with_capacity(message.encoded_len());
+    message.encode(&mut encoded).map_err(|err| err.to_string())?;
+    let mut out = Vec::with_capacity(encoded.len() + 8);
     out.push(BINARY_PAYLOAD_MARKER);
-    message.encode(&mut out).map_err(|err| err.to_string())?;
+    out.extend_from_slice(&escape_newlines(&encoded));
     Ok(out)
 }
 
 /// Decode a payload this module wrote. The caller has already checked the marker byte.
 pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
-    let message = v1::EngineWalRecord::decode(&payload[1..]).map_err(|err| err.to_string())?;
+    let unescaped = unescape_newlines(&payload[1..])?;
+    let message =
+        v1::EngineWalRecord::decode(unescaped.as_slice()).map_err(|err| err.to_string())?;
     let command = message
         .command
         .and_then(|command| command.kind)

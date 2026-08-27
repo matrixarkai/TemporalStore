@@ -5721,6 +5721,10 @@ fn a_record_encoded_as_protobuf_reads_back_identical() {
     let mut text_bytes = 0usize;
     let mut binary_bytes = 0usize;
     for record in &records {
+        // Both branches set the flag explicitly. Leaving the text branch to inherit the ambient
+        // environment meant that under a suite run with the binary flag on, the "text" encoding
+        // was binary and the comparison silently tested one encoding against itself.
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
         let framed = crate::wal::encode_wal_line_for_test(record).expect("text encodes");
         text_bytes += framed.len();
 
@@ -5752,4 +5756,93 @@ fn a_record_encoded_as_protobuf_reads_back_identical() {
         binary_bytes < text_bytes,
         "protobuf ({binary_bytes} B) should be smaller than text ({text_bytes} B)"
     );
+}
+
+/// Binary records must survive the FILE, not just a round trip in memory.
+///
+/// The first version of the protobuf codec passed a round-trip test and lost writes on reload,
+/// because the round trip never touched a log file. The log is read with `reader.lines()`, and
+/// protobuf carries 0x0A freely -- so a record containing one split into fragments that decoded as
+/// nothing. Values came back empty and no error was raised anywhere.
+///
+/// So this writes through the real append path, drops the engine, and reads every value back from
+/// a cold reload. The values are chosen to contain newlines outright, because a codec that only
+/// works on bytes that happen to avoid one is not a codec.
+#[test]
+fn binary_records_survive_a_reload_through_a_real_log_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+
+    const WRITES: usize = 64;
+    let value_for = |index: usize| -> Vec<u8> {
+        // Newlines, the escape byte itself, and a run of high bytes: everything a line-oriented
+        // reader and a byte-stuffed payload each have to survive.
+        let mut value = format!("line-a-{index}\nline-b\n").into_bytes();
+        value.extend_from_slice(&[0x1b, 0x0a, 0x1b, 0x1b, 0x00, 0xff, 0x7f, 0x80]);
+        value.extend_from_slice(format!("\ntail-{index}").as_bytes());
+        value
+    };
+
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            cache.clone(),
+            pages.clone(),
+            indexes.clone(),
+        );
+        engine.load_shard(1);
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
+        std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+        for index in 0..WRITES {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("nl-{index:04}"),
+                    value: value_for(index),
+                },
+            });
+            assert!(response.status.ok, "write {index} failed: {response:?}");
+        }
+        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
+        // dropped WITHOUT unloading, so the tail has to be replayed off the file.
+    }
+
+    // Every record must still be readable FROM THE FILE, which is what lines() broke.
+    let engine = TemporalEngine::with_local_dirs(1024 * 1024, cache, pages, indexes);
+    engine.load_shard(1);
+    let scanned = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    let decoded = scanned
+        .iter()
+        .filter(|(_, line)| crate::wal::decode_wal_line(line).is_ok())
+        .count();
+    assert_eq!(
+        decoded,
+        scanned.len(),
+        "{} of {} records on disk did not decode",
+        scanned.len() - decoded,
+        scanned.len()
+    );
+
+    for index in 0..WRITES {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("nl-{index:04}"),
+            },
+        });
+        let expected = value_for(index);
+        match response.response {
+            CommandResponse::Bytes { value: Some(ref got) } => assert_eq!(
+                got, &expected,
+                "nl-{index:04} came back with different bytes"
+            ),
+            other => panic!("nl-{index:04} did not survive the reload: {other:?}"),
+        }
+    }
 }
