@@ -5510,3 +5510,98 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         "these commands recorded SOMETHING but not EVERYTHING, so a recovered shard would be          quietly wrong rather than obviously broken: {incomplete:#?}"
     );
 }
+
+/// What a record COSTS, measured through the engine rather than the log.
+///
+/// The reclaim harness appends straight to the WAL store, so it never stages an outcome and its
+/// record bytes are identical with the gate on and off -- byte-for-byte identical base offsets are
+/// how that was caught. Anything measuring the cost of recording outcomes has to go through
+/// execute().
+///
+/// This reports bytes per record both ways and asserts only the direction: carrying a command AND
+/// its outcomes must be bigger than carrying the command alone. The absolute numbers are printed
+/// for the record, not asserted, because they move with the workload.
+#[test]
+fn what_recording_outcomes_costs_per_record() {
+    fn wal_bytes_for(outcomes: bool, writes: usize) -> (u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        if outcomes {
+            std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+        }
+        for index in 0..writes {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("size-{index:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+            assert!(response.status.ok);
+        }
+        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+        let records = engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap();
+        let total: u64 = records.iter().map(|(_, line)| line.len() as u64).sum();
+        (total, records.len() as u64)
+    }
+
+    const WRITES: usize = 2_000;
+    let (without, count_without) = wal_bytes_for(false, WRITES);
+    let (with, count_with) = wal_bytes_for(true, WRITES);
+    let per_without = without as f64 / count_without as f64;
+    let per_with = with as f64 / count_with as f64;
+
+    println!("[record cost] command only      : {without} B over {count_without} records = {per_without:.1} B/record");
+    println!("[record cost] command + outcomes: {with} B over {count_with} records = {per_with:.1} B/record");
+    println!(
+        "[record cost] carrying both costs {:.1} B/record ({:+.1}%)",
+        per_with - per_without,
+        (per_with - per_without) / per_without * 100.0
+    );
+
+    // Print one record each way. A ratio says something is expensive; the bytes say WHAT.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("c"),
+            dir.path().join("p"),
+            dir.path().join("i"),
+        );
+        engine.load_shard(1);
+        std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "size-000000".to_string(),
+                value: vec![b'v'; 64],
+            },
+        });
+        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+        for (_, line) in engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .take(1)
+        {
+            println!("[record cost] one record with outcomes ({} B):", line.len());
+            println!("{}", String::from_utf8_lossy(line));
+        }
+    }
+
+    assert!(count_with >= count_without, "the workload changed shape between runs");
+    assert!(
+        per_with > per_without,
+        "recording outcomes alongside the command should cost bytes; if it does not, the gate is          not reaching the append path and this measurement is meaningless"
+    );
+}
