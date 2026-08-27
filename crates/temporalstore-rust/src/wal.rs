@@ -86,8 +86,25 @@ fn is_current_write_ahead_log_format_version(version: &u32) -> bool {
 /// verifying the per-record integrity envelope when present. Used by every WAL reader
 /// (`last_wal_sequence_at`, `scan` consumers, GC, `info`) so a value-preserving bit-flip in a
 /// committed record surfaces as `Corruption` instead of replaying as truth.
+/// Encode a record exactly as the append path would frame it.
+///
+/// Exposed so a test can compare encodings of the SAME record rather than of two separately
+/// written logs, which is the only way to say anything about fidelity.
+pub fn encode_wal_line_for_test(
+    record: &WriteAheadLogRecord,
+) -> Result<Vec<u8>, WriteAheadLogError> {
+    Ok(crate::log_framing::encode_line(&encode_wal_payload(record)?))
+}
+
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
     let payload = crate::log_framing::decode_line(line)?;
+    // Which encoding a payload is in is a property of the payload, never of configuration: a log
+    // written across a flag change still reads end to end.
+    if payload.first() == Some(&crate::wal_proto::BINARY_PAYLOAD_MARKER) {
+        return crate::wal_proto::decode(payload).map_err(|err| {
+            WriteAheadLogError::Corruption(format!("engine wal record decode failed: {err}"))
+        });
+    }
     let (document, carried) = split_carried_payloads(payload)?;
     if carried.is_empty() {
         return Ok(serde_json::from_slice::<WriteAheadLogRecord>(document)?);
@@ -155,6 +172,11 @@ fn split_carried_payloads(payload: &[u8]) -> Result<(&[u8], Vec<Vec<u8>>), Write
 
 /// Encode a record: the document, and the payloads worth carrying beside it.
 fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAheadLogError> {
+    if crate::wal_proto::binary_records_enabled() {
+        return crate::wal_proto::encode(record).map_err(|err| {
+            WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
+        });
+    }
     let (document, carried) =
         crate::bytes_serde::carrying_payloads(|| serde_json::to_vec(record));
     let mut payload = document?;

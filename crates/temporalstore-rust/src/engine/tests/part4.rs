@@ -5608,3 +5608,148 @@ fn what_recording_outcomes_costs_per_record() {
         "recording outcomes alongside the command should cost bytes; if it does not, the gate is          not reaching the append path and this measurement is meaningless"
     );
 }
+
+/// FIDELITY: a record encoded as protobuf and read back must equal the record that went in.
+///
+/// This is the durability path, so the bar is equality of the whole record -- not "the fields we
+/// modelled survived". A command this codec has never heard of travels verbatim and must come back
+/// byte for byte; anything less means a log written today cannot be replayed tomorrow.
+///
+/// The workload is driven through the engine rather than hand-built, so the records under test are
+/// the ones the engine actually writes, including their outcomes and any blocks they carry.
+#[test]
+fn a_record_encoded_as_protobuf_reads_back_identical() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+
+    let workload = vec![
+        Command::StringSet {
+            key: "pb-string".to_string(),
+            value: b"a value".to_vec(),
+        },
+        // A modelled arm with a TTL, which the codec folds into the same message.
+        Command::StringSetEx {
+            key: "pb-setex".to_string(),
+            value: b"expiring".to_vec(),
+            ttl_ms: 600_000,
+        },
+        Command::HashSet {
+            key: "pb-hash".to_string(),
+            field: "f".to_string(),
+            value: b"hv".to_vec(),
+        },
+        // Deliberately NOT modelled by the command codec: it must travel verbatim.
+        Command::ZSetAdd {
+            key: "pb-zset".to_string(),
+            member: b"zm".to_vec(),
+            score: 2.5,
+        },
+        Command::ListPush {
+            key: "pb-list".to_string(),
+            member: b"lm".to_vec(),
+            left: true,
+        },
+        // No block behind it: the outcome carries bytes instead of an address.
+        Command::SeenCheck {
+            key: "pb-seen".to_string(),
+            member: b"m".to_vec(),
+            window_ms: 600_000,
+        },
+        Command::BucketTake {
+            key: "pb-bucket".to_string(),
+            tokens: 1.0,
+            capacity: 10.0,
+            refill_per_sec: 1.0,
+        },
+        // Several outcomes from one command, each naming a different point.
+        Command::FeatureAppend {
+            key: "pb-feature".to_string(),
+            points: (0..3)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index * 1_000,
+                    value: format!("point-{index}").into_bytes(),
+                })
+                .collect(),
+        },
+        // A value with bytes that are not valid text, which is where an encoding that has no
+        // byte-string type starts guessing.
+        Command::StringSet {
+            key: "pb-binary".to_string(),
+            value: vec![0x00, 0xff, 0x1f, 0x7f, 0x80, b'"', b'\\', b'\n'],
+        },
+        Command::CommonExpire {
+            key: "pb-string".to_string(),
+            ttl_ms: 300_000,
+        },
+        Command::CommonDelete {
+            key: "pb-hash".to_string(),
+        },
+    ];
+    for command in workload {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "workload write failed: {response:?}");
+    }
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .map(|(_, line)| crate::wal::decode_wal_line(line).expect("record decodes"))
+        .collect::<Vec<_>>();
+    assert!(
+        records.len() >= 10,
+        "expected the workload to leave records to round-trip, got {}",
+        records.len()
+    );
+    assert!(
+        records.iter().any(|record| !record.outcomes.is_empty()),
+        "the records under test carry no outcomes, so this proves nothing about them"
+    );
+
+    let mut text_bytes = 0usize;
+    let mut binary_bytes = 0usize;
+    for record in &records {
+        let framed = crate::wal::encode_wal_line_for_test(record).expect("text encodes");
+        text_bytes += framed.len();
+
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
+        let framed_binary = crate::wal::encode_wal_line_for_test(record).expect("binary encodes");
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
+        binary_bytes += framed_binary.len();
+
+        let round_tripped =
+            crate::wal::decode_wal_line(&framed_binary).expect("binary record decodes");
+        assert_eq!(
+            &round_tripped, record,
+            "a record did not survive the protobuf round trip"
+        );
+
+        // And the text encoding still reads, from the same decoder, with no flag consulted.
+        let from_text = crate::wal::decode_wal_line(&framed).expect("text record decodes");
+        assert_eq!(&from_text, record, "the text encoding stopped round-tripping");
+    }
+
+    println!(
+        "[proto] {} records: text {} B, protobuf {} B ({:.1}% of text)",
+        records.len(),
+        text_bytes,
+        binary_bytes,
+        binary_bytes as f64 / text_bytes as f64 * 100.0
+    );
+    assert!(
+        binary_bytes < text_bytes,
+        "protobuf ({binary_bytes} B) should be smaller than text ({text_bytes} B)"
+    );
+}
