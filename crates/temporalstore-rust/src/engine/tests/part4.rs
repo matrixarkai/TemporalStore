@@ -4489,6 +4489,21 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
     ran.load_shard(1);
     std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
 
+    // A bound tight enough that the workload below overflows it. Only this engine is told --
+    // which is the whole point: the shard rebuilt from records has to arrive at the same three
+    // points without ever learning what the bound was.
+    assert!(
+        ran.set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                feature_max_size: 3,
+                ..Config::default()
+            },
+        })
+        .ok
+    );
+
     // The kinds the apply path claims to handle so far.
     let workload = vec![
         Command::StringSet {
@@ -4554,6 +4569,28 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
         Command::CommonDelete {
             key: "eq-doomed".to_string(),
         },
+        // Five points into a series bounded at three. The two oldest are dropped by config the
+        // command never mentions -- so unless the trim itself is recorded, the rebuilt shard
+        // keeps points this one has thrown away.
+        Command::FeatureAppend {
+            key: "eq-feature".to_string(),
+            points: (0..5)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index * 1_000,
+                    value: format!("point-{index}").into_bytes(),
+                })
+                .collect(),
+        },
+        // A replace drops a range and writes over it: removals and inserts in one command.
+        Command::FeatureReplace {
+            key: "eq-feature".to_string(),
+            start_ms: 1_787_270_073_000,
+            end_ms: 1_787_270_074_000,
+            points: vec![crate::types::FeaturePoint {
+                timestamp_ms: 1_787_270_073_500,
+                value: b"replacement".to_vec(),
+            }],
+        },
     ];
     for command in workload {
         let response = ran.execute(ExecuteRequest {
@@ -4562,6 +4599,26 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
         });
         assert!(response.status.ok, "workload write failed: {response:?}");
     }
+    // If this stops being true the trim is no longer under test and the gate has gone quiet.
+    // Five points, bounded to the newest three, then a replace drops two of those and writes one
+    // back: the oldest two must be gone by the trim, and the series must be down to two.
+    let ran_feature = ran
+        .index_shape_for_test(1)
+        .lines()
+        .filter(|line| line.starts_with("feature eq-feature "))
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ran_feature.len(),
+        2,
+        "the workload was supposed to leave a trimmed series, got {ran_feature:?}"
+    );
+    assert!(
+        !ran_feature
+            .iter()
+            .any(|line| line.contains("at=1787270070000") || line.contains("at=1787270071000")),
+        "the two oldest points should have been trimmed, got {ran_feature:?}"
+    );
 
     // Take the outcomes off the log, in the order they were written.
     let records = ran

@@ -421,6 +421,17 @@ impl TemporalEngine {
                 out.push_str(&format!("seen {key} member={member:?} at={at}\n"));
             }
         }
+        let mut features: Vec<_> = shard.features.iter().collect();
+        features.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, series) in features {
+            for (timestamp_ms, address) in series {
+                out.push_str(&format!(
+                    "feature {key} at={timestamp_ms} slab={} off={} len={}
+",
+                    address.page_slab_id, address.offset, address.length
+                ));
+            }
+        }
         let mut hashes: Vec<_> = shard.hashes.iter().collect();
         hashes.sort_by(|left, right| left.0.cmp(right.0));
         for (key, fields) in hashes {
@@ -655,6 +666,51 @@ impl TemporalEngine {
                     .entry(item.object_key.clone())
                     .or_default()
                     .insert(member, (biased, address));
+                true
+            }
+            // feature: the component is the point's timestamp. A trim and a replace both
+            // arrive here as a removal -- which is the whole reason replay can stop consulting
+            // the config that decided the trim.
+            "feature" => {
+                let Some(component) = item.component.clone() else {
+                    return false;
+                };
+                let Ok(timestamp_ms) = component.parse::<u64>() else {
+                    return false;
+                };
+                if item.deleted {
+                    if let Some(series) = shard.features.get_mut(&item.object_key) {
+                        series.remove(&timestamp_ms);
+                        if series.is_empty() {
+                            shard.features.remove(&item.object_key);
+                        }
+                    }
+                    super::mark_bucket_index_page_deleted(
+                        shard,
+                        shard_id,
+                        "feature",
+                        &item.object_key,
+                        Some(&component),
+                    );
+                    return true;
+                }
+                let Some(address) = item.address.clone() else {
+                    return false;
+                };
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &item.object_key,
+                    Some(component),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .features
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(timestamp_ms, address);
                 true
             }
             _ => false,

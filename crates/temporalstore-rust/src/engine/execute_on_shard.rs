@@ -1158,13 +1158,14 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -1225,14 +1226,14 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                    mutated = true;
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -1365,10 +1366,14 @@ pub(crate) fn execute_on_shard(
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(timestamp_ms, _)| *timestamp_ms)
                 .collect::<Vec<_>>();
-            for timestamp_ms in replaced {
-                series.remove(&timestamp_ms);
-                mutated = true;
-            }
+            mutated |= drop_timestamped_points(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                &replaced,
+            );
             let points = sorted_feature_points(points);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
@@ -1385,14 +1390,14 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                    mutated = true;
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -1535,13 +1540,14 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
