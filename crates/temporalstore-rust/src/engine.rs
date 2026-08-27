@@ -122,9 +122,44 @@ pub struct TemporalEngine {
     /// `promote_scan_done` fast-skip holds it to a small constant once warm. Read by the phase-1
     /// aging test to prove the per-write O(n) reconcile scan is gone.
     promote_scans: Arc<std::sync::atomic::AtomicU64>,
+    /// Where to mirror writes this engine performs OUTSIDE the request path.
+    ///
+    /// Request-path writes are mirrored a layer up, by the data node, which sees each command
+    /// as it arrives. Maintenance never passes through there: eviction and the expiry sweep
+    /// append their own tombstones straight to the WAL. In shared mode those deletions therefore
+    /// reached the local log and no other, so a successor replaying the shared log never saw
+    /// them and the key came back -- the same failure the tombstone was introduced to fix, one
+    /// level up from where it was fixed.
+    maintenance_mirror: Arc<RwLock<Option<Arc<dyn crate::data_node::SharedWalSink>>>>,
 }
 
 impl TemporalEngine {
+    /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
+    /// to the same place request-path writes go.
+    ///
+    /// Opt-in. With nothing attached the engine behaves exactly as it did.
+    pub fn set_maintenance_wal_mirror(&self, sink: Arc<dyn crate::data_node::SharedWalSink>) {
+        *self
+            .maintenance_mirror
+            .write()
+            .expect("maintenance mirror lock poisoned") = Some(sink);
+    }
+
+    /// Hand a maintenance-generated command to the mirror, if one is attached.
+    ///
+    /// Called after the local append succeeds, so the mirror never learns of a deletion the
+    /// local log does not already hold.
+    pub(crate) fn mirror_maintenance_write(&self, shard_id: ShardId, command: &Command) {
+        let sink = self
+            .maintenance_mirror
+            .read()
+            .expect("maintenance mirror lock poisoned")
+            .clone();
+        if let Some(sink) = sink {
+            sink.record_write(shard_id, command);
+        }
+    }
+
     /// Set a shard's read and write rate limits, on a running engine.
     ///
     /// A rate of zero leaves that direction unlimited. Replacing a limit rebuilds the bucket, so

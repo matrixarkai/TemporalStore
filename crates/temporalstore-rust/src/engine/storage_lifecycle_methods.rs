@@ -1209,11 +1209,15 @@ impl TemporalEngine {
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
                         for key in &deleted_keys {
-                            let _ = self.wal_store.append_with_sync(
-                                shard_id,
-                                Command::CommonDelete { key: key.clone() },
-                                false,
-                            );
+                            let command = Command::CommonDelete { key: key.clone() };
+                            let appended =
+                                self.wal_store
+                                    .append_with_sync(shard_id, command.clone(), false);
+                            // Same reasoning as the expiry sweep: a drop that deletes is a
+                            // deletion, and it has to reach every log a successor may replay.
+                            if appended.is_ok() {
+                                self.mirror_maintenance_write(shard_id, &command);
+                            }
                         }
                         shard.applied_wal_sequence =
                             Some(self.wal_store.stats(shard_id).last_sequence);
