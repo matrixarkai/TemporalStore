@@ -2900,10 +2900,28 @@ fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> 
 
 fn mark_bucket_index_page_deleted(
     shard: &mut ShardState,
+    shard_id: ShardId,
     model_id: &str,
     key: &str,
     component: Option<&str>,
 ) -> bool {
+    // Removing a member IS an outcome, and it is the one a command log states worst: replay has
+    // to re-run the removal and hope the state it removes from matches. Saying "this component
+    // is gone" needs no such hope. Recorded here because every typed removal comes through.
+    if crate::wal::wal_outcome_items_enabled() {
+        block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            kind: model_id.to_string(),
+            object_key: key.to_string(),
+            component: component.map(str::to_string),
+            object_id: stable_page_object_id(shard_id, model_id, key, component),
+            routing_bucket: page_routing_bucket(key, 0, u32::MAX),
+            address: None,
+            value: None,
+            ttl: None,
+            deleted: true,
+            meta: true,
+        });
+    }
     let mut removed = false;
     let target_buckets = if shard.bucket_index.object_page_lookup.is_empty() {
         shard

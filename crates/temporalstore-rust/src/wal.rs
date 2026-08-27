@@ -280,8 +280,39 @@ pub struct WalOutcomeItem {
     pub object_id: u64,
     #[serde(rename = "b", alias = "routing_bucket")]
     pub routing_bucket: u32,
-    #[serde(rename = "a", alias = "address")]
-    pub address: crate::block_store::BlockAddress,
+    /// Where the page went. `None` for state that no page backs -- the seen-sets and token
+    /// buckets persist with the index snapshot and have no address to name.
+    #[serde(
+        rename = "a",
+        alias = "address",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub address: Option<crate::block_store::BlockAddress>,
+    /// The bytes themselves, for an outcome with no page behind it.
+    ///
+    /// A coverage probe over twelve accepted writes found four that recorded nothing --
+    /// BucketTake and SeenCheck because their state has no page, CommonDelete and CommonExpire
+    /// because they remove or re-stamp rather than upsert. An item carrying only an address
+    /// cannot state those outcomes, which is why the design being followed gives its log item a
+    /// `value` beside its `page`, and a `meta_log` flag to tell them apart.
+    #[serde(
+        rename = "v",
+        alias = "value",
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "outcome_value_serde"
+    )]
+    pub value: Option<Vec<u8>>,
+    /// The deadline this outcome set, if it set one.
+    #[serde(
+        rename = "x",
+        alias = "ttl",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub ttl: Option<u64>,
+    /// The object is gone.
     #[serde(
         rename = "d",
         alias = "deleted",
@@ -289,6 +320,41 @@ pub struct WalOutcomeItem {
         skip_serializing_if = "outcome_not_deleted"
     )]
     pub deleted: bool,
+    /// This item states metadata rather than a page image -- their `meta_log`.
+    #[serde(
+        rename = "m",
+        alias = "meta",
+        default,
+        skip_serializing_if = "outcome_not_deleted"
+    )]
+    pub meta: bool,
+}
+
+/// `Option<Vec<u8>>` through the same byte encoding every other payload gets.
+mod outcome_value_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(bytes) => {
+                #[derive(Serialize)]
+                struct Wrapper<'a>(#[serde(with = "crate::bytes_serde")] &'a Vec<u8>);
+                Wrapper(bytes).serialize(serializer)
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<u8>>, D::Error> {
+        #[derive(Deserialize)]
+        struct Wrapper(#[serde(with = "crate::bytes_serde")] Vec<u8>);
+        Ok(Option::<Wrapper>::deserialize(deserializer)?.map(|wrapper| wrapper.0))
+    }
 }
 
 /// A page put aside during a write, to be carried in that write's log record.

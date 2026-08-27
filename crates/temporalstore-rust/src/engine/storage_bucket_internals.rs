@@ -1137,8 +1137,11 @@ pub(super) fn upsert_bucket_index_page(
             component: component.clone(),
             object_id,
             routing_bucket,
-            address: address.clone(),
+            address: Some(address.clone()),
+            value: None,
+            ttl: None,
             deleted: false,
+            meta: false,
         });
     }
     let entry = LivePageEntry {

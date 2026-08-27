@@ -388,6 +388,279 @@ impl TemporalEngine {
     /// re-appending to the WAL or re-persisting the index per record, then anchor and
     /// persist the reconstructed index once. Matches the WAL replay path,
     /// including its strict sequence-continuity check.
+    /// A deterministic rendering of the state outcomes are supposed to reproduce.
+    ///
+    /// Deliberately not the serialized index: that carries bookkeeping -- the applied watermark,
+    /// the log-resident page map -- which legitimately differs between a shard that ran the
+    /// commands and one that installed their results. Comparing the maps themselves says
+    /// whether the DATA matches, and a mismatch prints as a readable diff rather than as two
+    /// blobs of unequal bytes.
+    pub(super) fn index_shape_for_test(&self, shard_id: ShardId) -> String {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return String::from("<no shard>");
+        };
+        let mut out = String::new();
+        let mut strings: Vec<_> = shard.strings.iter().collect();
+        strings.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, address) in strings {
+            out.push_str(&format!(
+                "string {key} slab={} off={} len={}\n",
+                address.page_slab_id, address.offset, address.length
+            ));
+        }
+        for (key, deadline) in &shard.expires_at_ms {
+            out.push_str(&format!("expires {key} at={deadline}\n"));
+        }
+        let mut seen: Vec<_> = shard.seen.iter().collect();
+        seen.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, set) in seen {
+            let mut members: Vec<_> = set.by_member.iter().collect();
+            members.sort();
+            for (member, at) in members {
+                out.push_str(&format!("seen {key} member={member:?} at={at}\n"));
+            }
+        }
+        let mut hashes: Vec<_> = shard.hashes.iter().collect();
+        hashes.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, fields) in hashes {
+            let mut entries: Vec<_> = fields.iter().collect();
+            entries.sort_by(|left, right| left.0.cmp(right.0));
+            for (field, address) in entries {
+                out.push_str(&format!(
+                    "hash {key}.{field} slab={} off={}\n",
+                    address.page_slab_id, address.offset
+                ));
+            }
+        }
+        let mut sets: Vec<_> = shard.sets.iter().collect();
+        sets.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, members) in sets {
+            for (member, address) in members {
+                out.push_str(&format!(
+                    "set {key} member={member:?} slab={} off={}\n",
+                    address.page_slab_id, address.offset
+                ));
+            }
+        }
+        let mut lists: Vec<_> = shard.lists.iter().collect();
+        lists.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, elements) in lists {
+            for (sequence, address) in elements {
+                out.push_str(&format!(
+                    "list {key}[{sequence}] slab={} off={}\n",
+                    address.page_slab_id, address.offset
+                ));
+            }
+        }
+        let mut zsets: Vec<_> = shard.zsets.iter().collect();
+        zsets.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, members) in zsets {
+            for (member, (score, address)) in members {
+                out.push_str(&format!(
+                    "zset {key} member={member:?} score={score} slab={} off={}\n",
+                    address.page_slab_id, address.offset
+                ));
+            }
+        }
+        let mut buckets: Vec<_> = shard.buckets.iter().collect();
+        buckets.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, (tokens, refilled)) in buckets {
+            out.push_str(&format!("bucket {key} tokens={tokens} at={refilled}\n"));
+        }
+        out
+    }
+
+    /// Install one recorded outcome, without running the command that produced it.
+    ///
+    /// Returns false when the outcome names something this does not know how to install yet, so
+    /// a caller can fall back rather than silently skipping state. Kinds are being brought over
+    /// one at a time, each gated on an equivalence test, because an apply that quietly drops a
+    /// kind rebuilds a shard that is subtly wrong -- which is worse than one that refuses.
+    pub(super) fn apply_outcome_item(
+        &self,
+        shard_id: ShardId,
+        item: &crate::wal::WalOutcomeItem,
+    ) -> bool {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return false;
+        };
+        match item.kind.as_str() {
+            // The object is gone, everywhere it appeared.
+            "object" if item.deleted => {
+                super::delete_record(shard, &item.object_key);
+                true
+            }
+            // A deadline, already resolved by the write that set it -- so installing it needs
+            // no clock, where re-running the command would resolve it against this one.
+            "object" => {
+                let Some(expires_at) = item.ttl else {
+                    return false;
+                };
+                for record_key in super::associated_record_keys(&item.object_key) {
+                    if super::record_exists_exact(shard, &record_key) {
+                        shard.expires_at_ms.insert(record_key, expires_at);
+                    }
+                }
+                true
+            }
+            // State no page backs: the member and the moment it was seen.
+            "seen" => {
+                let (Some(member), Some(seen_at)) = (item.value.clone(), item.ttl) else {
+                    return false;
+                };
+                let seen = shard.seen.entry(item.object_key.clone()).or_default();
+                if let Some(previous) = seen.by_member.insert(member.clone(), seen_at) {
+                    seen.by_time.remove(&(previous, member.clone()));
+                }
+                seen.by_time.insert((seen_at, member), ());
+                true
+            }
+            // The bucket the take left behind: tokens, then the refill moment.
+            "bucket" => {
+                let Some(bytes) = item.value.as_ref() else {
+                    return false;
+                };
+                if bytes.len() != 16 {
+                    return false;
+                }
+                let tokens = f64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
+                let refilled_at = u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes"));
+                shard
+                    .buckets
+                    .insert(item.object_key.clone(), (tokens, refilled_at));
+                true
+            }
+            "string" => {
+                let Some(address) = item.address.clone() else {
+                    return false;
+                };
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "string",
+                    &item.object_key,
+                    None,
+                    address.clone(),
+                    true,
+                );
+                shard.strings.insert(item.object_key.clone(), address);
+                true
+            }
+            // The component is what the map is keyed by, encoded. Each of these mirrors the
+            // encoder that produced it; a wrong decode shows up as an equivalence failure, not
+            // as a silently different shard.
+            "hash" => {
+                let (Some(address), Some(field)) = (item.address.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "hash",
+                    &item.object_key,
+                    Some(field.clone()),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .hashes
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(field, address);
+                true
+            }
+            // set: the component is the member, hex encoded.
+            "set" => {
+                let (Some(address), Some(component)) =
+                    (item.address.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                let Ok(member) = hex::decode(&component) else {
+                    return false;
+                };
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "set",
+                    &item.object_key,
+                    Some(component),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .sets
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(member, address);
+                true
+            }
+            // list: sixteen hex digits of the sequence, biased so the text sorts in list order.
+            "list" => {
+                let (Some(address), Some(component)) =
+                    (item.address.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                let Ok(biased) = u64::from_str_radix(&component, 16) else {
+                    return false;
+                };
+                let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "list",
+                    &item.object_key,
+                    Some(component),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .lists
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(sequence, address);
+                true
+            }
+            // zset: sixteen hex digits of the biased score, then the member in hex.
+            "zset" => {
+                let (Some(address), Some(component)) =
+                    (item.address.clone(), item.component.clone())
+                else {
+                    return false;
+                };
+                if component.len() < 16 {
+                    return false;
+                }
+                let (score_hex, member_hex) = component.split_at(16);
+                let (Ok(biased), Ok(member)) =
+                    (u64::from_str_radix(score_hex, 16), hex::decode(member_hex))
+                else {
+                    return false;
+                };
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "zset",
+                    &item.object_key,
+                    Some(component),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .zsets
+                    .entry(item.object_key.clone())
+                    .or_default()
+                    .insert(member, (biased, address));
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The address the index holds for a string key, so a test can compare it against what a
     /// record claims the write did.
     pub(super) fn string_page_address(
