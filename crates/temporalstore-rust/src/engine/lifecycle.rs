@@ -694,7 +694,7 @@ impl TemporalEngine {
                 true
             }
             "string" => {
-                let Some(address) = item.address.clone() else {
+                let Some(address) = item.resolved_address() else {
                     return false;
                 };
                 super::upsert_bucket_index_page(
@@ -713,7 +713,7 @@ impl TemporalEngine {
             // encoder that produced it; a wrong decode shows up as an equivalence failure, not
             // as a silently different shard.
             "hash" => {
-                let (Some(address), Some(field)) = (item.address.clone(), item.component.clone())
+                let (Some(address), Some(field)) = (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
@@ -736,7 +736,7 @@ impl TemporalEngine {
             // set: the component is the member, hex encoded.
             "set" => {
                 let (Some(address), Some(component)) =
-                    (item.address.clone(), item.component.clone())
+                    (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
@@ -762,7 +762,7 @@ impl TemporalEngine {
             // list: sixteen hex digits of the sequence, biased so the text sorts in list order.
             "list" => {
                 let (Some(address), Some(component)) =
-                    (item.address.clone(), item.component.clone())
+                    (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
@@ -789,7 +789,7 @@ impl TemporalEngine {
             // zset: sixteen hex digits of the biased score, then the member in hex.
             "zset" => {
                 let (Some(address), Some(component)) =
-                    (item.address.clone(), item.component.clone())
+                    (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
@@ -861,7 +861,7 @@ impl TemporalEngine {
                         return false;
                     };
                     let entries = series.entry(item.object_key.clone()).or_default();
-                    match item.address.clone() {
+                    match item.resolved_address() {
                         Some(address) if !item.deleted => {
                             entries.insert(stored_key, address);
                         }
@@ -909,7 +909,7 @@ impl TemporalEngine {
                 }
                 let live_addresses = {
                     let events = shard.context_events.entry(item.object_key.clone()).or_default();
-                    match item.address.clone() {
+                    match item.resolved_address() {
                         Some(address) if !item.deleted => {
                             events.insert(event_id_hash, address);
                         }
@@ -954,7 +954,7 @@ impl TemporalEngine {
             // The whole counter series, serialized to one page. The write registers it in the
             // bucket index through the same upsert the string kind uses, so this does too.
             "control_state" => {
-                let Some(address) = item.address.clone() else {
+                let Some(address) = item.resolved_address() else {
                     return false;
                 };
                 super::upsert_bucket_index_page(
@@ -973,7 +973,7 @@ impl TemporalEngine {
             }
             "context_entity" => {
                 let (Some(address), Some(component)) =
-                    (item.address.clone(), item.component.clone())
+                    (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
@@ -988,7 +988,7 @@ impl TemporalEngine {
                 true
             }
             "context_node" => {
-                let (Some(address), Some(field)) = (item.address.clone(), item.component.clone())
+                let (Some(address), Some(field)) = (item.resolved_address(), item.component.clone())
                 else {
                     return false;
                 };
