@@ -562,7 +562,23 @@ impl DataNodeRuntime {
             (!options.enable_index_gc).then(|| "reclaim_index_disabled".to_string()),
         ));
 
-        if options.enable_metrics_reap {
+        // Gather what the stage has always claimed to gather. Deliberately a snapshot and not
+        // a reset: `durability_metrics` documents its counters as process-wide and monotonic,
+        // and tests reset them to isolate a measurement window -- a background cycle clearing
+        // them would pull the floor out from under anyone diffing two points in time.
+        let metrics_reap = options.enable_metrics_reap.then(|| {
+            let durability_barriers: std::collections::BTreeMap<String, u64> =
+                crate::durability_metrics::snapshot()
+                    .into_iter()
+                    .map(|(site, count)| (site.to_string(), count))
+                    .collect();
+            StorageMetricsReapReport {
+                durability_barriers_total: durability_barriers.values().copied().sum(),
+                durability_barriers,
+                wal: self.inner.engine.write_ahead_log_store().stats(shard_id),
+            }
+        });
+        if metrics_reap.is_some() {
             executed_stages.push("reap_metrics".to_string());
         } else {
             skipped_stages.push("reap_metrics_disabled".to_string());
@@ -603,6 +619,7 @@ impl DataNodeRuntime {
             lifecycle_plan,
             lifecycle_report,
             expired_records_removed,
+            metrics_reap,
             compaction_report,
             gc_report,
             status,

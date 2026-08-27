@@ -1964,6 +1964,85 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
 
 // shared-corpus: storage_matrixraft_dump_load_atomicity storage_matrixraft_cache_refill_pressure
 #[test]
+/// A stage that reports itself as executed has to have executed something.
+///
+/// The reap used to push "reap_metrics" onto the executed list and stop there, so a cycle said
+/// the stage ran while nothing was gathered and nothing published. The WAL counters are the
+/// clearest case: incremented on every append and barrier, and read by nothing outside the
+/// module that owns them.
+#[test]
+fn a_metrics_reap_collects_the_counters_it_says_it_did() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    for key in ["reap-a", "reap-b", "reap-c"] {
+        assert!(
+            runtime
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    let report = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_metrics_reap: true,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert!(
+        report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reap_metrics"),
+        "the stage should report itself executed: {:?}",
+        report.executed_stages
+    );
+    let reaped = report
+        .metrics_reap
+        .expect("the stage ran, so the report carries what it read");
+    assert!(
+        reaped.wal.last_sequence >= 3,
+        "the WAL counters have to be THIS shard's, and three writes went in: {reaped:?}"
+    );
+    assert_eq!(
+        reaped.durability_barriers_total,
+        reaped.durability_barriers.values().copied().sum::<u64>(),
+        "the total has to be the sum of what was attributed"
+    );
+
+    // Disabled: nothing collected, and the cycle says which it was.
+    let off = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_metrics_reap: false,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert!(off.metrics_reap.is_none());
+    assert!(
+        off.skipped_stages
+            .iter()
+            .any(|stage| stage == "reap_metrics_disabled"),
+        "{:?}",
+        off.skipped_stages
+    );
+}
+
 fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
     let dir = tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
