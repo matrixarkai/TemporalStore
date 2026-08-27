@@ -389,6 +389,57 @@ _SUBJECT_RESCOPE_DROP = frozenset({
 
 
 
+def _prior_context_probe_window() -> int:
+    """How many newest events the cheap first pass fetches. 0 disables the probe entirely."""
+    import os as _os
+
+    raw = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_PROBE_WINDOW", "").strip()
+    if not raw:
+        return 32
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 32
+
+
+def _prior_context_probe_is_enough(records: list, scope: object) -> bool:
+    """Does this small subset already hold every event the consumer would select?
+
+    The consumer stops at `MAX_PRIOR_MESSAGES` matches walking newest-first, so a subset holding
+    that many matches yields exactly the same selection. Counts scope matches only -- the consumer
+    also accepts a session-key match, so this undercounts, which escalates rather than truncates.
+    """
+    if not isinstance(scope, dict) or not scope:
+        return False
+    try:
+        from tools.matrixark_mcp_core import (
+            MAX_PRIOR_MESSAGES,
+            scope_from_serving_record,
+            scope_matches,
+        )
+    except (ModuleNotFoundError, ImportError):
+        try:
+            from matrixark_mcp_core import (
+                MAX_PRIOR_MESSAGES,
+                scope_from_serving_record,
+                scope_matches,
+            )
+        except (ModuleNotFoundError, ImportError):
+            return False
+    matched = 0
+    for record in records:
+        if not isinstance(record, dict) or record.get("record_type") != "context_event":
+            continue
+        try:
+            if scope_matches(scope_from_serving_record(record), scope):
+                matched += 1
+                if matched >= MAX_PRIOR_MESSAGES:
+                    return True
+        except Exception:  # noqa: BLE001 - an unanswerable match escalates.
+            return False
+    return False
+
+
 def _prior_context_event_window() -> int:
     """How many of a subject's newest events prior context fetches. 0 disables the cap.
 
@@ -1919,17 +1970,44 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # fetch, and it counts only matches; the margin is what keeps a busy multi-session subject
         # seeing the same eight it saw before.
         newest_events = _prior_context_event_window()
-        subset = self._scan_records_of_types(
-            [
-                "context_event",
-                "context_summary",
-                "context_pack_audit",
-                MEMORY_TOMBSTONE_RECORD_TYPE,
-                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
-            ],
-            scope=engine_scope if pinned_hashes else None,
-            newest_by_type=({"context_event": newest_events} if newest_events else None),
-        )
+        wanted_types = [
+            "context_event",
+            "context_summary",
+            "context_pack_audit",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ]
+        engine_scope_arg = engine_scope if pinned_hashes else None
+
+        # `collect_prior_context` walks these newest-first and STOPS at the eighth event that
+        # matches the request's session or scope. The window exists for the subject that
+        # interleaves sessions, where the eight matches are scattered among many events -- but on
+        # the common subject the eight newest events ARE the eight matches, and fetching 256 to
+        # hand over a list the consumer abandons after eight is the waste. Measured at steady
+        # state on a 300-memory subject: 384 records and 1.32 MB fetched per add, 89 ms, of which
+        # 256 events were 901 KB.
+        #
+        # So probe with a small window first and escalate only when it cannot satisfy the
+        # consumer. The test is deliberately STRICTER than the consumer's: it counts only events
+        # matching by scope, while the consumer also accepts a session-key match. Undercounting
+        # escalates and costs a second fetch; it can never serve fewer matches than the consumer
+        # would have found.
+        probe_events = _prior_context_probe_window()
+        subset = None
+        if probe_events and newest_events and probe_events < newest_events:
+            probe = self._scan_records_of_types(
+                wanted_types,
+                scope=engine_scope_arg,
+                newest_by_type={"context_event": probe_events},
+            )
+            if probe is not None and _prior_context_probe_is_enough(probe, scope):
+                subset = probe
+        if subset is None:
+            subset = self._scan_records_of_types(
+                wanted_types,
+                scope=engine_scope_arg,
+                newest_by_type=({"context_event": newest_events} if newest_events else None),
+            )
         if subset is None:
             return self.read_all()
         # Summaries and other compact records can live in the latest-state HASH rather than the
