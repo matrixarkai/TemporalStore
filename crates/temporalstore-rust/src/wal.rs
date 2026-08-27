@@ -179,6 +179,20 @@ fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAhea
     }
     Ok(payload)
 }
+impl WalOutcomeItem {
+    /// The address with the routing bucket the item carries put back.
+    ///
+    /// Anything installing a recorded page must go through this rather than reading `address`
+    /// directly, or the index entry it builds is missing its routing bucket -- which the
+    /// bucket-index half of the equivalence gate fails on.
+    pub fn resolved_address(&self) -> Option<crate::block_store::BlockAddress> {
+        self.address.clone().map(|mut address| {
+            address.routing_bucket = Some(self.routing_bucket);
+            address
+        })
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct WriteAheadLogRecord {
@@ -269,6 +283,44 @@ pub fn wal_outcome_items_enabled() -> bool {
 fn outcome_not_deleted(deleted: &bool) -> bool {
     !*deleted
 }
+/// The address inside a recorded outcome, without the routing bucket the item already carries.
+///
+/// The item and its address both state a routing bucket, always the same one, so every recorded
+/// outcome said it twice.
+///
+/// Their `object_id`s look equally redundant and are NOT. For a timestamped kind the item's is
+/// derived from (kind, key, COMPONENT) and the page's from (kind, key, None) -- per point against
+/// per series -- so restoring one from the other writes the wrong id into the index entry. The
+/// bucket-index half of the equivalence gate is what caught that; the field stays.
+///
+/// The page checksum stays too: the read path verifies it whenever it is present, and a rebuilt
+/// index entry without one would quietly stop being integrity-checked.
+mod outcome_address_serde {
+    use crate::block_store::BlockAddress;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &Option<BlockAddress>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            None => serializer.serialize_none(),
+            Some(address) => {
+                let mut trimmed = address.clone();
+                trimmed.routing_bucket = None;
+                Some(trimmed).serialize(serializer)
+            }
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<BlockAddress>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<BlockAddress>::deserialize(deserializer)
+    }
+}
+
 
 /// One index mutation a write produced, stated as a result.
 ///
@@ -299,6 +351,7 @@ pub struct WalOutcomeItem {
         rename = "a",
         alias = "address",
         default,
+        with = "outcome_address_serde",
         skip_serializing_if = "Option::is_none"
     )]
     pub address: Option<crate::block_store::BlockAddress>,

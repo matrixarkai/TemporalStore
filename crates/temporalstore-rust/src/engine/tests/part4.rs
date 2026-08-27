@@ -4125,8 +4125,11 @@ fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
     let indexed = engine
         .string_page_address(1, "outcome-key")
         .expect("the index holds an address for the key");
+    // Through the accessor, not the raw field: a recorded address omits the routing bucket the
+    // item already carries, and putting it back is what `resolved_address` is for. Comparing the
+    // raw field against an index entry compares a trimmed address with a whole one.
     assert_eq!(
-        item.address.as_ref(),
+        item.resolved_address().as_ref(),
         Some(&indexed),
         "the recorded outcome disagrees with the index entry the command built"
     );
