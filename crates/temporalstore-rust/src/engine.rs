@@ -61,6 +61,9 @@ mod state;
 
 use self::admin_report::*;
 use self::constants::*;
+// Re-exported so `wal_record::is_wal_resident` can answer for this sentinel too, rather than
+// every site comparing against it by hand.
+pub(crate) use self::constants::HOT_PAGE_SLAB_ID;
 use self::execute_on_shard::execute_on_shard;
 use self::context::*;
 use self::packed_pages::*;
@@ -3184,7 +3187,7 @@ fn read_page_bytes(
     // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
     // this falls through to the normal read below, which returns None -- the WAL still holds the
     // value and a reload replays it.
-    if address.page_slab_id == HOT_PAGE_SLAB_ID {
+    if crate::wal_record::is_wal_resident(address.page_slab_id) {
         if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
             if let Ok(bytes) = page_store.read(&real_address) {
                 let _ = cache.put(cache_key, bytes.clone());

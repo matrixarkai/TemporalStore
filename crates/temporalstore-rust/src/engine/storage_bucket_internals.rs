@@ -1419,7 +1419,7 @@ pub(super) fn object_still_has_hot_page(shard: &ShardState, object_key: &str) ->
     shard
         .strings
         .get(object_key)
-        .map(|address| address.page_slab_id == HOT_PAGE_SLAB_ID)
+        .map(|address| crate::wal_record::is_wal_resident(address.page_slab_id))
         .unwrap_or(false)
         || shard
             .hashes
@@ -1427,7 +1427,7 @@ pub(super) fn object_still_has_hot_page(shard: &ShardState, object_key: &str) ->
             .map(|fields| {
                 fields
                     .values()
-                    .any(|address| address.page_slab_id == HOT_PAGE_SLAB_ID)
+                    .any(|address| crate::wal_record::is_wal_resident(address.page_slab_id))
             })
             .unwrap_or(false)
 }

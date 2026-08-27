@@ -120,9 +120,20 @@ pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> Bl
 /// widening it or adding a parallel flag.
 pub const WAL_LOG_SLAB_ID: u64 = u64::MAX - 1;
 
-/// Whether an address resolves inside the WAL.
+/// Whether an address resolves inside the WAL rather than in a slab file.
+///
+/// Two sentinels answer to this, because the idea got invented twice. [`WAL_LOG_SLAB_ID`] is
+/// the ported one, where the address carries the log id of the record holding the block, so a
+/// read seeks straight to it and the mapping survives a restart because it lives in the served
+/// index. `HOT_PAGE_SLAB_ID` is what the live write path mints today: a counter rather than a
+/// position, which is why resolving it needs a process-local registry and why that mapping is
+/// gone after a reload.
+///
+/// They ask the same question -- is this block in the log? -- so it gets one answer here
+/// instead of an open-coded comparison at each site. The sites are then already asking the
+/// right question on the day the write path starts minting positions instead of counters.
 pub fn is_wal_resident(page_slab_id: u64) -> bool {
-    page_slab_id == WAL_LOG_SLAB_ID
+    page_slab_id == WAL_LOG_SLAB_ID || page_slab_id == crate::engine::HOT_PAGE_SLAB_ID
 }
 
 #[cfg(test)]
