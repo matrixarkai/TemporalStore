@@ -415,6 +415,41 @@ impl TemporalEngine {
     /// commands and one that installed their results. Comparing the maps themselves says
     /// whether the DATA matches, and a mismatch prints as a readable diff rather than as two
     /// blobs of unequal bytes.
+    /// The live page entries the bucket index holds, rendered deterministically.
+    ///
+    /// The typed maps are not the whole shard. The bucket index is durable state that the read
+    /// path consults, so a rebuild that gets the maps right and this wrong is still wrong -- and
+    /// comparing only the maps would never say so.
+    ///
+    /// Volatile bookkeeping is deliberately left out: dirty flags, dirty generations and dump
+    /// sequences describe what still needs writing out, not what the shard holds, and they
+    /// legitimately differ between a shard built by commands and one rebuilt from records.
+    pub(super) fn bucket_index_shape_for_test(&self, shard_id: ShardId) -> String {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return String::from("<no shard>");
+        };
+        let mut out = String::new();
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            for (page_ref_key, page) in &bucket.page_index {
+                out.push_str(&format!(
+                    "bucket={routing_bucket} ref={page_ref_key} kind={} key={} component={:?} object_id={} slab={} off={} len={} deleted={} log_backed={}
+",
+                    page.model_id,
+                    page.object_key,
+                    page.component,
+                    page.object_id,
+                    page.address.page_slab_id,
+                    page.address.offset,
+                    page.address.length,
+                    page.deleted,
+                    page.log_backed,
+                ));
+            }
+        }
+        out
+    }
+
     pub(super) fn index_shape_for_test(&self, shard_id: ShardId) -> String {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
@@ -718,46 +753,39 @@ impl TemporalEngine {
                 let Ok(stored_key) = component.parse::<u64>() else {
                     return false;
                 };
-                if item.deleted {
-                    {
-                        let Some(series) = timestamped_series_mut(shard, &item.kind) else {
-                            return false;
-                        };
-                        if let Some(entries) = series.get_mut(&item.object_key) {
-                            entries.remove(&stored_key);
-                            if entries.is_empty() {
-                                series.remove(&item.object_key);
-                            }
-                        }
-                    }
-                    super::mark_bucket_index_page_deleted(
-                        shard,
-                        shard_id,
-                        &item.kind,
-                        &item.object_key,
-                        Some(&component),
-                    );
-                    return true;
-                }
-                let Some(address) = item.address.clone() else {
+                if !item.deleted && item.address.is_none() {
                     return false;
-                };
-                {
+                }
+                // Mutate the series, then hand the SURVIVING pages to the same index sync the
+                // write path uses. Registering the page directly here instead looked equivalent
+                // and was not: the write path registers a timestamped page with no component,
+                // one entry per address, so imitating it with a component produced a bucket
+                // index that disagreed about every page while the typed maps matched exactly.
+                let live_addresses = {
                     let Some(series) = timestamped_series_mut(shard, &item.kind) else {
                         return false;
                     };
-                    series
-                        .entry(item.object_key.clone())
-                        .or_default()
-                        .insert(stored_key, address.clone());
-                }
-                super::upsert_bucket_index_page(
+                    let entries = series.entry(item.object_key.clone()).or_default();
+                    match item.address.clone() {
+                        Some(address) if !item.deleted => {
+                            entries.insert(stored_key, address);
+                        }
+                        _ => {
+                            entries.remove(&stored_key);
+                        }
+                    }
+                    let live = entries.values().cloned().collect::<Vec<_>>();
+                    if entries.is_empty() {
+                        series.remove(&item.object_key);
+                    }
+                    live
+                };
+                super::sync_bucket_index_object_pages(
                     shard,
                     shard_id,
                     &item.kind,
                     &item.object_key,
-                    Some(component),
-                    address,
+                    live_addresses,
                     true,
                 );
                 true
