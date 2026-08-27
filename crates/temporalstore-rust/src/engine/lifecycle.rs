@@ -478,6 +478,29 @@ impl TemporalEngine {
         }
         // Every timestamped series renders the same way, so a kind that stops being installed
         // shows up as a missing line rather than as a map nobody compares.
+        let mut event_keys: Vec<_> = shard.context_events.iter().collect();
+        event_keys.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, entries) in event_keys {
+            for (event_id_hash, address) in entries {
+                out.push_str(&format!(
+                    "context_event {key} id={event_id_hash} slab={} off={} len={}
+",
+                    address.page_slab_id, address.offset, address.length
+                ));
+            }
+        }
+        // The time index is what every windowed read goes through, so a primary map that is
+        // right and a timeline that is empty must not compare equal.
+        let mut timeline_keys: Vec<_> = shard.context_event_timeline.iter().collect();
+        timeline_keys.sort_by(|left, right| left.0.cmp(right.0));
+        for (key, entries) in timeline_keys {
+            for (timeline_key, event_id_hash) in entries {
+                out.push_str(&format!(
+                    "context_timeline {key} at={timeline_key} id={event_id_hash}
+"
+                ));
+            }
+        }
         for (kind, series) in [
             ("feature", &shard.features),
             ("context_index", &shard.context_indexes),
@@ -784,6 +807,67 @@ impl TemporalEngine {
                     shard,
                     shard_id,
                     &item.kind,
+                    &item.object_key,
+                    live_addresses,
+                    true,
+                );
+                true
+            }
+            // context_event: the page is timestamp-keyed but the index entry is keyed by the
+            // event id, so the component carries both -- sixteen hex digits of the timeline key,
+            // then sixteen of the id. Two maps have to move together: the primary, and the time
+            // index that every windowed read goes through. Installing only the primary leaves a
+            // shard whose events exist and whose time queries return nothing.
+            "context_event" => {
+                let Some(component) = item.component.clone() else {
+                    return false;
+                };
+                if component.len() != 32 {
+                    return false;
+                }
+                let (timeline_hex, id_hex) = component.split_at(16);
+                let (Ok(timeline_key), Ok(event_id_hash)) = (
+                    u64::from_str_radix(timeline_hex, 16),
+                    u64::from_str_radix(id_hex, 16),
+                ) else {
+                    return false;
+                };
+                if !item.deleted && item.address.is_none() {
+                    return false;
+                }
+                let live_addresses = {
+                    let events = shard.context_events.entry(item.object_key.clone()).or_default();
+                    match item.address.clone() {
+                        Some(address) if !item.deleted => {
+                            events.insert(event_id_hash, address);
+                        }
+                        _ => {
+                            events.remove(&event_id_hash);
+                        }
+                    }
+                    let live = events.values().cloned().collect::<Vec<_>>();
+                    let empty = events.is_empty();
+                    let timeline = shard
+                        .context_event_timeline
+                        .entry(item.object_key.clone())
+                        .or_default();
+                    if item.deleted {
+                        timeline.remove(&timeline_key);
+                    } else {
+                        timeline.insert(timeline_key, event_id_hash);
+                    }
+                    if timeline.is_empty() {
+                        shard.context_event_timeline.remove(&item.object_key);
+                    }
+                    if empty {
+                        shard.context_events.remove(&item.object_key);
+                    }
+                    live
+                };
+                super::sync_bucket_index_object_pages(
+                    shard,
+                    shard_id,
+                    "context_event",
                     &item.object_key,
                     live_addresses,
                     true,

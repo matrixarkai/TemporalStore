@@ -4581,6 +4581,40 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
                 })
                 .collect(),
         },
+        // The one kind whose index entry is NOT keyed by the stored timestamp: the page packs by
+        // time, the map keys by event id, and the time index maps one to the other. All three
+        // have to come back, which is why the record carries both keys.
+        Command::ContextWriteExtractedEvent {
+            tenant_hash: 41,
+            node_hash: 42,
+            event: crate::types::ContextEvent {
+                event_id_hash: 445,
+                event_time_ms: 1_787_270_075_000,
+                ingestion_time_ms: 1_787_270_075_000,
+                kind: 7,
+                event_type: 7,
+                actor_hash: 0,
+                status: 1,
+                valid_until_ms: 0,
+                confidence: 0.96,
+                importance: 0.88,
+                text: "an extracted event".to_string(),
+                source_ref: String::new(),
+                related_node_hashes: vec![42],
+                compact_attrs: Vec::new(),
+                vector: Vec::new(),
+            },
+            indexes: crate::types::ContextExtractedEventIndexes {
+                scope_hash: 3001,
+                entity_hashes: vec![501],
+                status_hash: 601,
+                source_hash: 701,
+                event_time_bucket_ms: 1_787_270_000_000,
+                disabled_indexes: Vec::new(),
+            },
+            first_write_only: false,
+            cold_storage: false,
+        },
         // The context maps are the same shape as a feature series -- stored key to page -- so
         // they are installed by the same arm. Which is exactly why they belong in here: one arm
         // covering six kinds is one place for five of them to go silently uninstalled.
@@ -4660,6 +4694,8 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
     // each kind is actually present before comparing anything.
     let ran_shape = ran.index_shape_for_test(1);
     for kind in [
+        "context_event",
+        "context_timeline",
         "context_index",
         "context_audit",
         "context_child",
