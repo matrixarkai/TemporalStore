@@ -342,7 +342,10 @@ class _LocalAdapterDashboardMixin:
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
                         "scope": record_dashboard_scope,
-                        "source_event_count": len(record.get("source_event_ids", [])) if isinstance(record.get("source_event_ids"), list) else 0,
+                        # A profile entity keeps only the newest provenance inline and states its
+                        # true total, so count the field when it is there rather than the window.
+                        "source_event_count": int(record.get("source_event_count") or 0)
+                        or (len(record.get("source_event_ids", [])) if isinstance(record.get("source_event_ids"), list) else 0),
                         "source_entity_count": len(record.get("source_entity_hashes", [])) if isinstance(record.get("source_entity_hashes"), list) else 0,
                         "source_segment_count": len(record.get("source_segment_hashes", [])) if isinstance(record.get("source_segment_hashes"), list) else 0,
                         "source_roles": record.get("source_roles", []),

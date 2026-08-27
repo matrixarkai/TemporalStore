@@ -2300,7 +2300,8 @@ class _LocalAdapterRetrieveMixin:
                 "coordinate_tuples": record.get("coordinate_tuples", []),
                 "non_contiguous": record.get("non_contiguous", False),
                 "source_event_ids": record.get("source_event_ids", []),
-                "source_event_count": len(record.get("source_event_ids", []) or []),
+                "source_event_count": int(record.get("source_event_count") or 0)
+                or len(record.get("source_event_ids", []) or []),
                 "source_record_type": record.get("source_record_type", ""),
                 "segment_origin": record.get("segment_origin", ""),
                 "derived_from_context_events": bool(record.get("derived_from_context_events", False)),

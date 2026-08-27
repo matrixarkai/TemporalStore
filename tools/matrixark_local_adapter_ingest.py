@@ -145,6 +145,31 @@ except ImportError:
 )
 
 
+# How many provenance entries a profile entity keeps inline. The rest live in overflow records.
+_PROFILE_PROVENANCE_INLINE = 16
+
+
+def _profile_provenance_overflow(previous_profile, *, refs_all, events_all):
+    """The provenance entries that just aged out of the inline window, or None.
+
+    One small append per promotion instead of re-writing the whole history: what this returns is
+    the DELTA between what the previous version already carried and what the new window keeps, so
+    nothing is lost and nothing is written twice.
+    """
+    previous_refs = list((previous_profile or {}).get("source_refs", []) or [])
+    previous_events = list((previous_profile or {}).get("source_event_ids", []) or [])
+    kept_refs = set(str(value) for value in refs_all[-_PROFILE_PROVENANCE_INLINE:])
+    kept_events = set(str(value) for value in events_all[-_PROFILE_PROVENANCE_INLINE:])
+    already = set(str(value) for value in previous_refs) | set(str(value) for value in previous_events)
+    aged_refs = [value for value in refs_all
+                 if str(value) not in kept_refs and str(value) not in already]
+    aged_events = [value for value in events_all
+                   if str(value) not in kept_events and str(value) not in already]
+    if not aged_refs and not aged_events:
+        return None
+    return {"source_refs": aged_refs, "source_event_ids": aged_events}
+
+
 class _LocalAdapterIngestMixin:
     _MEMORY_UPSERT_ARG_KEYS = ("expires_at", "ttl_seconds", "retention_cutoff_ts", "identity_key", "truth_class")
 
@@ -1794,6 +1819,7 @@ class _LocalAdapterIngestMixin:
             "auto_batch_extract_result": auto_batch_result,
         }
 
+
     def batch_extract(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         extraction_context_messages = args.get("extraction_context_messages", [])
@@ -2711,11 +2737,33 @@ class _LocalAdapterIngestMixin:
                 profile_source_entity_hashes = ordered_unique_any(
                     list(previous_profile.get("source_entity_hashes", [])) + [entity_hash]
                 )
-                profile_source_refs = ordered_unique_any(
+                # A profile entity is re-written on every promotion, and these two lists carried its
+                # whole history, so version k wrote k entries: O(list) bytes per add and O(list^2)
+                # over the entity's life. Measured by walking the page segments over 300 ingests of
+                # one subject: 261 versions of one profile, `source_event_ids` growing 1 -> 299 and
+                # the record with it, 4 221 -> 16 687 bytes. `context_entity` was the largest record
+                # type in the store at 15.6 KB per add, and most of it was this.
+                #
+                # The tail is kept, not dropped: `_profile_provenance_overflow` records carry every
+                # id that ages out, one small append per promotion, so the full history stays in the
+                # store and stops being re-written. What stays on the entity is the newest window
+                # plus an EXACT count, because the count is what production actually reads --
+                # nothing iterates a context_entity's `source_event_ids` for completeness (the
+                # index-compaction tombstone builder, which would, has no production caller).
+                profile_source_refs_all = ordered_unique_any(
                     list(previous_profile.get("source_refs", [])) + list(promoted_entity.get("source_refs", []))
                 )
-                profile_source_event_ids = ordered_unique_any(
+                profile_source_event_ids_all = ordered_unique_any(
                     list(previous_profile.get("source_event_ids", [])) + entity_source_event_ids
+                )
+                profile_source_refs = profile_source_refs_all[-_PROFILE_PROVENANCE_INLINE:]
+                profile_source_event_ids = profile_source_event_ids_all[-_PROFILE_PROVENANCE_INLINE:]
+                profile_source_ref_count = len(profile_source_refs_all)
+                profile_source_event_id_count = len(profile_source_event_ids_all)
+                profile_provenance_overflow = _profile_provenance_overflow(
+                    previous_profile,
+                    refs_all=profile_source_refs_all,
+                    events_all=profile_source_event_ids_all,
                 )
                 profile_source_roles = ordered_unique_any(
                     list(previous_profile.get("source_roles", [])) + entity_source_roles
@@ -2871,8 +2919,8 @@ class _LocalAdapterIngestMixin:
                         "profile_memory_kind": profile_memory_kind,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_count": len(profile_source_entity_hashes),
-                        "source_ref_count": len(profile_source_refs),
-                        "source_event_count": len(profile_source_event_ids),
+                        "source_ref_count": profile_source_ref_count,
+                        "source_event_count": profile_source_event_id_count,
                         "source_roles": profile_source_roles,
                         "source_role_counts": profile_source_role_counts,
                         "source_hook_types": profile_source_hook_types,
@@ -2909,6 +2957,12 @@ class _LocalAdapterIngestMixin:
                     "operator": promoted_entity["operator"],
                     "source_refs": profile_source_refs,
                     "source_event_ids": profile_source_event_ids,
+                    # The lists above are the newest window; these are the true totals. A reader
+                    # that wants "how many events back this profile" must read the count, not the
+                    # length of the window.
+                    "source_ref_count": profile_source_ref_count,
+                    "source_event_count": profile_source_event_id_count,
+                    "source_provenance_windowed": True,
                     "source_session_ids": profile_source_session_ids,
                     "source_entity_hashes": profile_source_entity_hashes,
                     "source_roles": profile_source_roles,
@@ -2953,6 +3007,23 @@ class _LocalAdapterIngestMixin:
                 if profile_entity_memory_layer:
                     profile_entity_record["memory_layer"] = profile_entity_memory_layer
                 records_to_append.append(profile_entity_record)
+                if profile_provenance_overflow:
+                    # One small append carrying only what just aged out of the window. The history
+                    # is preserved in the store; what stops happening is re-writing all of it on
+                    # every promotion.
+                    records_to_append.append(
+                        {
+                            "record_type": "context_entity_provenance",
+                            "entity_hash": profile_entity_hash,
+                            "node_hash": profile_node_hash,
+                            "batch_id_hash": batch_id_hash,
+                            "scope": profile_scope,
+                            "access_scope": profile_scope,
+                            "source_refs": profile_provenance_overflow["source_refs"],
+                            "source_event_ids": profile_provenance_overflow["source_event_ids"],
+                            "updated_at_ms": now_ms(),
+                        }
+                    )
                 profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
                 profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
                 profile_entity_embedding_record = compact_context_embedding_record({
