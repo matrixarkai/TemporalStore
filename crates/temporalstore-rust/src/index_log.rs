@@ -482,7 +482,16 @@ impl LocalIndexLogStore {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
         }
-        debug_assert!(serde_json::from_slice::<serde_json::Value>(index_bytes).is_ok());
+        // This once asserted the bytes parse as JSON, from when this appender spliced the whole
+        // index into the record. It no longer does -- it writes a digest and a length, and never
+        // looks inside -- so the JSON demand was a precondition that outlived its reason, and it
+        // fires the moment the index is written in its binary container. Assert what this code
+        // actually needs: that it was handed an index at all, in either format a reader accepts.
+        debug_assert!(
+            crate::engine::bytes_look_like_served_index(index_bytes),
+            "index-log anchor was handed {} bytes that are not a served index in any known format",
+            index_bytes.len()
+        );
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {

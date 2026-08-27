@@ -1746,8 +1746,44 @@ const INDEX_ZSTD_LEVEL: i32 = 3;
 /// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
 /// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
 /// index written either way loads in either setting.
+/// Does this look like a served index, in either of the two formats a reader may be handed?
+///
+/// A JSON index starts with `{`; a container starts with its magic. Callers that only need to
+/// know "these bytes are an index" -- rather than to decode one -- ask this instead of parsing.
+pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
+}
+
+/// ON by default; `TS_INDEX_BINARY=0` is the escape hatch.
+///
+/// The container was built, measured and then left switched off, so every store written since has
+/// carried a plain-JSON served index. Measured at 300 adds into one subject, which is the shape
+/// that grows an index rather than merely touching it:
+///
+/// ```text
+///                    index      WAL    durable per memory   add p50
+///     JSON          19.9 MB  15.4 MB          227.0 KB      383.1 ms
+///     container      2.2 MB   2.3 MB          122.0 KB      367.8 ms
+/// ```
+///
+/// 46% less durable disk per memory. The WAL falls with it because index deltas ride the WAL, and
+/// page bytes do not move at all -- the data is unchanged, only the way the index is written.
+///
+/// A format default is a durability decision, not a size one, so the flip is gated on recovery
+/// rather than on the table above. Three cases, 120 memories each, comparing full retrieval
+/// snapshots across a restart:
+///
+///   * written by the container, reopened by it -- identical.
+///   * written as JSON, reopened with the container on -- identical, and the index on disk becomes
+///     a container, so an existing store upgrades in place with no migration step.
+///   * written by the container, reopened with the hatch pulled -- identical, and the index goes
+///     back to JSON. The flip is reversible in both directions, which is what makes it safe to
+///     make it the default rather than an opt-in.
+///
+/// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
+/// magic, so both formats stay loadable whichever way this flag points.
 fn index_binary_container_enabled() -> bool {
-    env_flag_on("TS_INDEX_BINARY")
+    env_flag_default_on("TS_INDEX_BINARY")
 }
 
 /// TS_INDEX_CODEC: which payload to write when the container is on. `msgpack` (the default when

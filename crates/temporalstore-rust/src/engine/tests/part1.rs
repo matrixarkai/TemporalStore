@@ -3176,7 +3176,9 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     );
 
     // Container OFF: raw JSON, and JSON is what an older binary would have written.
-    std::env::remove_var("TS_INDEX_BINARY");
+    // Say "0" rather than unsetting: unsetting selects the DEFAULT, which is the container,
+    // so an unset variable stopped meaning "off" the moment the default changed.
+    std::env::set_var("TS_INDEX_BINARY", "0");
     let plain = encode_index_bytes(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
     let decoded = decode_index_bytes(&plain).expect("json index decodes");
@@ -3271,7 +3273,9 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
 
     // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
-    std::env::remove_var("TS_INDEX_BINARY");
+    // "0" rather than unset -- unset now selects the container, which is not what is under
+    // test here.
+    std::env::set_var("TS_INDEX_BINARY", "0");
     let plain = encode_index_bytes(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
     assert_eq!(

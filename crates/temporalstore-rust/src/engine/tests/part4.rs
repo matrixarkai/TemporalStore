@@ -2091,14 +2091,16 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
 
     let mut reused_owner = manifest.clone();
     {
-        let mut restored = serde_json::from_slice::<ShardState>(&reused_owner.index_bytes)
+        // A manifest carries the index in the format it was written in; decode and re-encode it
+        // through the funnel rather than assuming JSON on either side.
+        let mut restored = crate::engine::decode_index_bytes(&reused_owner.index_bytes)
             .expect("manifest index should decode");
         let address = restored
             .strings
             .get_mut("lifecycle")
             .expect("manifest string address");
         address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
-        reused_owner.index_bytes = serde_json::to_vec(&restored).unwrap();
+        reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
         reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
         reused_owner.checksum = bucket_dump_manifest_checksum(&reused_owner).unwrap();
