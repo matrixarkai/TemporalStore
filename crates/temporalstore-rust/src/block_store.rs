@@ -615,6 +615,18 @@ pub struct LocalBlockStore {
     inner: Arc<Mutex<BlockStoreInner>>,
 }
 
+impl LocalBlockStore {
+    /// Which store this is, as a value that can be compared and hashed.
+    ///
+    /// Clones of one store share their inner handle, so they answer the same; two engines --
+    /// which is what an embedded process runs several of -- never do. That distinction is the
+    /// only thing separating two engines that both serve shard 1 and both hold a key called
+    /// "user:1", so anything keyed per object has to include it.
+    pub fn store_id(&self) -> usize {
+        Arc::as_ptr(&self.inner) as *const u8 as usize
+    }
+}
+
 #[derive(Debug)]
 struct BlockStoreInner {
     root: PathBuf,

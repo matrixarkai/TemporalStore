@@ -710,8 +710,14 @@ impl TemporalEngine {
                 // still equals apply order (reservation + byte-append stay under this lock).
                 // The reserve-only branch appends bytes without pages, so a write carrying
                 // pages must take the staged branch or they would be dropped on the floor.
+                // The reserve-only branch appends bytes and nothing else, so anything the
+                // record has to CARRY -- pages handed in, or the outcomes this write recorded --
+                // forces the staged branch or it would be dropped on the floor. Recording
+                // outcomes therefore costs the group-commit coalescing while the gate is on,
+                // which is one more reason the flip waits until the command comes out.
                 let concurrent_commit = sync
                     && carried_pages.is_empty()
+                    && !crate::wal::wal_outcome_items_enabled()
                     && (engine_concurrent_commit() || raft_apply_batch_active());
                 // Where each page this write stages ends up, so the index can carry it. Filled
                 // by the append below, which is the first moment the log id exists.
@@ -723,7 +729,7 @@ impl TemporalEngine {
                         .map(|record| Some(record.sequence))
                 } else {
                     self.wal_store
-                        .append_with_sync_staged(
+                        .append_with_outcomes(
                             request.shard_id,
                             command,
                             sync,
@@ -742,6 +748,11 @@ impl TemporalEngine {
                                 }
                                 std::mem::take(&mut carried_pages)
                             },
+                            if crate::wal::wal_outcome_items_enabled() {
+                                block_in_wal::take_outcomes()
+                            } else {
+                                Vec::new()
+                            },
                         )
                         .map(|(record, log_id)| {
                             // Point every page this record carries at the record, keyed on the
@@ -749,6 +760,7 @@ impl TemporalEngine {
                             // carries, so a read finds it by identity rather than by timing.
                             if block_in_wal::enabled() {
                                 block_in_wal::register_record(
+                                    &self.page_store,
                                     request.shard_id,
                                     &record.staged_pages,
                                     log_id,
@@ -3258,7 +3270,9 @@ fn read_page_bytes(
         // parses a log record.
         if block_in_wal::enabled() {
             if let Some(bytes) =
-                address.object_id.and_then(|object_id| block_in_wal::read_page(shard_id, object_id))
+                address
+                    .object_id
+                    .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
             {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);

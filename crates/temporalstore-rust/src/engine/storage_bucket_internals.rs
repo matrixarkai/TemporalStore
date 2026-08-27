@@ -1127,6 +1127,20 @@ pub(super) fn upsert_bucket_index_page(
     let object_id = address
         .object_id
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
+    // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
+    // for the record, so replay has the option of installing it instead of re-running the
+    // command that produced it.
+    if crate::wal::wal_outcome_items_enabled() {
+        super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            kind: kind.to_string(),
+            object_key: object_key.to_string(),
+            component: component.clone(),
+            object_id,
+            routing_bucket,
+            address: address.clone(),
+            deleted: false,
+        });
+    }
     let entry = LivePageEntry {
         object_key: object_key.to_string(),
         kind: kind.to_string(),

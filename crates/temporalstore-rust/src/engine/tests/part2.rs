@@ -1511,6 +1511,7 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         })
         .unwrap();
     }

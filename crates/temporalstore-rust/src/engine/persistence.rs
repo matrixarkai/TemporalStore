@@ -551,7 +551,7 @@ impl TemporalEngine {
         // (the write was acked off a synthetic address), so truncating it turns an acked write
         // into a MISSING read while the process is still serving.
         let wal_retention_floor =
-            super::block_in_wal::min_registered_sequence(shard_id, &self.wal_store);
+            super::block_in_wal::min_registered_sequence(&self.page_store, shard_id, &self.wal_store);
         match wal_retention_floor {
             Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
             None => self.wal_store.clear_block_retention_floor(shard_id),

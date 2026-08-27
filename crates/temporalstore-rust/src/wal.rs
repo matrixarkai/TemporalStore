@@ -211,6 +211,84 @@ pub struct WriteAheadLogRecord {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub staged_pages: Vec<StagedPage>,
+    /// What this write did, stated as results rather than as the operation that caused them.
+    ///
+    /// Called `outcomes` and not `items` on purpose: [`WriteAheadLogRecordMetadata`] already has
+    /// an `items` field describing the record's shape, and two different `items` on one record
+    /// would be read wrong by whoever came next.
+    ///
+    /// Empty and skipped unless [`wal_outcome_items_enabled`], so every record written without
+    /// it is byte-identical to before.
+    #[serde(
+        rename = "t",
+        alias = "outcomes",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub outcomes: Vec<WalOutcomeItem>,
+}
+
+/// TS_WAL_OUTCOME_ITEMS: also record what a write DID, beside the command that did it.
+///
+/// The log records commands, so replay re-executes them -- which reproduces state only if
+/// everything that influenced the original execution is reproduced too. That is why replay has
+/// to walk a config log to re-apply the eviction config effective at each record, and why it
+/// pins a replay clock so TTLs resolve against the leader's timestamp instead of the restart
+/// clock. Both are scar tissue from logging operations rather than results.
+///
+/// An outcome states the result instead: this object's page now lives at this address, or this
+/// object is gone. Replay can install that without running anything.
+///
+/// Default OFF while both are carried, because carrying both makes every record bigger and the
+/// payoff only arrives when replay switches to the outcomes and the command comes out. The flip
+/// belongs with that change, not before it.
+pub fn wal_outcome_items_enabled() -> bool {
+    matches!(
+        std::env::var("TS_WAL_OUTCOME_ITEMS")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn outcome_not_deleted(deleted: &bool) -> bool {
+    !*deleted
+}
+
+/// One index mutation a write produced, stated as a result.
+///
+/// Field for field this is the identity half of the log item being followed: the object it
+/// names, the kind/model it belongs to, its routing bucket, its object id, and where its page
+/// ended up. `deleted` covers the other outcome. Nothing here says which command ran, because
+/// replay does not need to know -- that is the entire point.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WalOutcomeItem {
+    #[serde(rename = "k", alias = "kind")]
+    pub kind: String,
+    #[serde(rename = "o", alias = "object_key")]
+    pub object_key: String,
+    #[serde(
+        rename = "c",
+        alias = "component",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub component: Option<String>,
+    #[serde(rename = "i", alias = "object_id")]
+    pub object_id: u64,
+    #[serde(rename = "b", alias = "routing_bucket")]
+    pub routing_bucket: u32,
+    #[serde(rename = "a", alias = "address")]
+    pub address: crate::block_store::BlockAddress,
+    #[serde(
+        rename = "d",
+        alias = "deleted",
+        default,
+        skip_serializing_if = "outcome_not_deleted"
+    )]
+    pub deleted: bool,
 }
 
 /// A page put aside during a write, to be carried in that write's log record.
@@ -663,7 +741,7 @@ impl LocalWriteAheadLogStore {
         command: Command,
         sync: bool,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync, Vec::new())
+        self.append_with_sync_inner(shard_id, command, sync, Vec::new(), Vec::new())
     }
 
     /// Append, carrying pages this write produced, and report the log id it landed at.
@@ -677,7 +755,20 @@ impl LocalWriteAheadLogStore {
         sync: bool,
         staged_pages: Vec<StagedPage>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync, staged_pages)
+        self.append_with_sync_inner(shard_id, command, sync, staged_pages, Vec::new())
+    }
+
+    /// [`append_with_sync_staged`](Self::append_with_sync_staged), also carrying what the write
+    /// DID -- see [`WalOutcomeItem`].
+    pub fn append_with_outcomes(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        sync: bool,
+        staged_pages: Vec<StagedPage>,
+        outcomes: Vec<WalOutcomeItem>,
+    ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
+        self.append_with_sync_inner(shard_id, command, sync, staged_pages, outcomes)
     }
 
     pub fn append_with_sync(
@@ -686,7 +777,7 @@ impl LocalWriteAheadLogStore {
         command: Command,
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
-        self.append_with_sync_inner(shard_id, command, sync, Vec::new())
+        self.append_with_sync_inner(shard_id, command, sync, Vec::new(), Vec::new())
             .map(|(record, _)| record)
     }
 
@@ -696,6 +787,7 @@ impl LocalWriteAheadLogStore {
         command: Command,
         sync: bool,
         staged_pages: Vec<StagedPage>,
+        outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
         // In group-commit mode the durable barrier is deferred out of the append
         // critical section (below), so the byte-append records with sync=false and the
@@ -720,6 +812,7 @@ impl LocalWriteAheadLogStore {
                 metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
                 command,
                 staged_pages,
+                outcomes,
             };
             let report = append_record_locked(&mut inner, &rec, sync && !group, Some(on_disk_len))?;
             inner.stats.last_sequence = report.current_sequence;
@@ -787,6 +880,7 @@ impl LocalWriteAheadLogStore {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
         // group branch of append_with_sync. `last_flushed_sequence` is NOT advanced here (the
@@ -883,6 +977,7 @@ impl LocalWriteAheadLogStore {
                     metadata: Some(metadata),
                     command,
                     staged_pages: Vec::new(),
+                    outcomes: Vec::new(),
                 };
                 // Buffer every record (sync=false); the single durability barrier below covers
                 // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it
@@ -2910,6 +3005,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let mut raw = serde_json::to_vec(&make(1, "k1")).unwrap();
         raw.push(b'\n');
@@ -3099,6 +3195,7 @@ mod tests {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
 
         let first = store.append_replayed_record(replayed.clone()).unwrap();
@@ -3785,6 +3882,7 @@ mod tests {
                 object_id: 7,
                 bytes: page.clone(),
             }],
+            outcomes: Vec::new(),
         };
         let encoded = serde_json::to_vec(&record).unwrap();
         let overhead = encoded.len() as f64 / page.len() as f64;
@@ -3822,6 +3920,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let encoded = String::from_utf8(serde_json::to_vec(&record).unwrap()).unwrap();
         assert!(
@@ -4063,6 +4162,7 @@ mod tests {
                 batch_index: None,
             }),
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let encoded = serde_json::to_string(&record).unwrap();
         assert!(
@@ -4393,6 +4493,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
         assert!(
@@ -4419,6 +4520,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
         assert_eq!(decode_wal_line(&framed).unwrap(), record);
@@ -4437,6 +4539,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let payload = encode_wal_payload(&record).unwrap();
         assert!(
@@ -4458,6 +4561,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let payload = encode_wal_payload(&record).unwrap();
         assert_eq!(
@@ -4497,6 +4601,7 @@ mod tests {
             },
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         };
         let mut payload = encode_wal_payload(&record).unwrap();
         payload.truncate(payload.len() - 40);
