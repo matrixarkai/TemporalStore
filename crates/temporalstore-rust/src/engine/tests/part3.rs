@@ -191,8 +191,14 @@ fn control_api_reads_and_scans_index_log_stream() {
     // which is the complete, current ShardState in both the whole-index (base-file) and the
     // delta (live-in-memory) paths -- the index-log itself is a per-write log, not the
     // authoritative complete image.
-    let served: serde_json::Value =
-        serde_json::from_slice(&engine.export_index_bytes(1).unwrap()).unwrap();
+    // The served index is written in whichever format the container gate selects, so decode it
+    // through the funnel a reader uses and assert over the STATE. Reading the bytes as JSON was an
+    // assumption about the encoding, not about the thing being tested.
+    let served: serde_json::Value = serde_json::to_value(
+        crate::engine::decode_index_bytes(&engine.export_index_bytes(1).unwrap())
+            .expect("served index decodes"),
+    )
+    .expect("shard state re-serializes for assertion");
     // `hashes` is deliberately NOT serialized (`skip_serializing`): it is rebuildable from
     // the durable bucket index on load, and duplicating those page references in every
     // checkpoint is what made large context backfills tens of MB heavier. Assert the hash
@@ -2161,11 +2167,15 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     );
     engine.unload_shard(1);
 
+    // Empty the string map and put it back through the same encoder that wrote it. Injecting the
+    // fault as JSON text quietly required the index to BE JSON, which is not what this test is
+    // about -- it is about recovery rebuilding the strings from the bucket index.
     let index_path = index_dir.join("shard-1.index.json");
-    let mut json: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&index_path).expect("index file")).unwrap();
-    json["strings"] = serde_json::json!({});
-    std::fs::write(&index_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+    let mut damaged =
+        crate::engine::decode_index_bytes(&std::fs::read(&index_path).expect("index file"))
+            .expect("served index decodes");
+    damaged.strings.clear();
+    std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
     let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
     recovered.load_shard(1);
