@@ -46,6 +46,7 @@ impl TemporalEngine {
             infos: Arc::default(),
             admissions: Arc::default(),
             promote_scans: Arc::default(),
+            maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
         }
     }

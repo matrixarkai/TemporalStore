@@ -1618,6 +1618,10 @@ impl DataNodeRuntime {
     /// [`SharedWalSink`]). Opt-in: with no sink attached the runtime behaves
     /// exactly as before.
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
+        // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
+        // pass through this layer. Give it the same sink, or those deletions reach the local
+        // log alone and a successor replaying the shared log resurrects the keys.
+        self.inner.engine.set_maintenance_wal_mirror(Arc::clone(&sink));
         *self
             .inner
             .shared_wal_sink

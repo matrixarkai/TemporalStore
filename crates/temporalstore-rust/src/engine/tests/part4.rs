@@ -3746,6 +3746,216 @@ fn a_carried_page_is_what_reaches_the_log_record() {
     );
 }
 
+// ---------------------------------------------------------------------------------------
+// Interleavings: the shard does not hold still between a decision and the act it authorizes.
+//
+// Most of this suite is sequential -- set up, act, assert -- and that shape found none of the
+// concurrency-adjacent defects in the reclaim sweep. These exercise the seam this codebase
+// actually has: plan and apply are separate calls, so anything that happens in between is a
+// real interleaving, reproducible without threads or timing.
+// ---------------------------------------------------------------------------------------
+
+/// A write that lands between planning a reclaim and applying it must survive.
+///
+/// The plan is computed, handed back -- over an RPC, or through a cycle stage -- and applied
+/// later. The shard keeps taking writes the whole time. A plan authorizes dropping what the
+/// durable index could replace WHEN IT WAS MADE, and a record that did not exist then was
+/// never covered by that proof.
+#[test]
+fn a_reclaim_plan_does_not_authorize_dropping_writes_that_landed_after_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "before".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+
+    let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+
+    // The interleaving: a write lands after the plan was made, before it is applied.
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "after".to_string(),
+                    value: b"v2".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    let after_sequence = engine.write_ahead_log_store().stats(1).last_sequence;
+
+    let _report = engine.apply_storage_wal_reclaim(plan);
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap();
+    let highest = records
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .map(|record| record.sequence)
+        .max()
+        .unwrap_or(0);
+    assert!(
+        highest >= after_sequence,
+        "the later write's record was reclaimed by a plan made before it existed \
+         (highest kept {highest}, the write was at {after_sequence})"
+    );
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "after".to_string()
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"v2".to_vec())
+        },
+        "and it must still read back"
+    );
+}
+
+/// A dump taken between planning a manifest prune and applying it must not be pruned.
+///
+/// The prune decides which manifests are redundant. A dump that completes after that decision
+/// is the freshest thing the shard has, and pruning it would throw away the only manifest
+/// covering the current generation.
+#[test]
+fn a_manifest_created_after_a_prune_plan_is_not_pruned_by_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+
+    let _plan = engine.bucket_dump_manifest_prune_plan(1);
+
+    // The interleaving: a third dump completes after the prune was planned.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "k".to_string(),
+            value: b"v3".to_vec(),
+        },
+    });
+    let newest = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+
+    let _report = engine.apply_bucket_dump_manifest_prune(1);
+
+    let remaining = engine.list_bucket_dump_manifests(1);
+    assert!(
+        remaining
+            .iter()
+            .any(|manifest| manifest.manifest_id == newest.manifest_id),
+        "the dump taken after the prune was planned is the freshest manifest and must survive; \
+         remaining: {:?}",
+        remaining
+            .iter()
+            .map(|manifest| &manifest.manifest_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// The same page must still read back after the shard is RELOADED.
+///
+/// Registrations are live-path state: they are dropped when a shard unloads, and the standing
+/// claim is that reload replays the WAL and re-derives every page. That only holds if replay
+/// revisits the record carrying the page -- and replay starts ABOVE the persisted watermark,
+/// which this very write advanced past its own record. If nothing rebuilds the mapping, the
+/// served index is left pointing at a synthetic address naming no file, and an acked write
+/// reads back as MISSING after a restart: exactly the hole staging was added to close,
+/// reopened by a reload.
+#[test]
+fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+
+    let key = "reload-block-key";
+    let value = b"reload-block-value".to_vec();
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: key.to_string(),
+            value: value.clone(),
+        },
+    });
+    assert!(write.status.ok, "the write must be acked: {write:?}");
+
+    // Drop every cached copy, then take the shard down and bring it back. This is the restart,
+    // and it is what clears the registrations.
+    engine.cache().invalidate_shard(1).unwrap();
+    engine.unload_shard(1);
+    engine.load_shard(1);
+
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: key.to_string(),
+        },
+    });
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    std::env::remove_var("TS_HOT_PAGE_SPILL");
+
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes {
+            value: Some(value)
+        },
+        "an acked write must not read back as missing after a reload"
+    );
+}
+
 /// What waiting before a dump saves, and what the wait costs.
 ///
 /// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log
