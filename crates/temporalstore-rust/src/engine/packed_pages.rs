@@ -86,6 +86,76 @@ fn stage_timestamped_outcomes(
     }
 }
 
+/// Record that a timestamped point is gone.
+///
+/// The insert above records where a point landed; without this its removal is invisible, and a
+/// shard rebuilt from records alone would keep points the shard itself has dropped.
+fn stage_timestamped_removal(shard_id: ShardId, kind: &str, key: &str, routing_bucket: u32, timestamp_ms: u64) {
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    let component = timestamp_ms.to_string();
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: key.to_string(),
+        component: Some(component.clone()),
+        object_id: stable_page_object_id(shard_id, kind, key, Some(&component)),
+        routing_bucket,
+        address: None,
+        value: None,
+        ttl: None,
+        deleted: true,
+        meta: false,
+    });
+}
+
+/// Drop the named points from a series, recording each one.
+///
+/// Returns whether the series changed, so a caller can mark the shard dirty without repeating
+/// the test.
+pub(super) fn drop_timestamped_points(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut BTreeMap<u64, BlockAddress>,
+    timestamps: &[u64],
+) -> bool {
+    let mut dropped = false;
+    for timestamp_ms in timestamps {
+        if series.remove(timestamp_ms).is_some() {
+            stage_timestamped_removal(shard_id, kind, key, routing_bucket, *timestamp_ms);
+            dropped = true;
+        }
+    }
+    dropped
+}
+
+/// Trim a series to its configured bound, oldest first, recording every point that went.
+///
+/// The bound lives in config rather than in the command, which is why replaying a command
+/// reproduces this trim only if the config effective at the time is reproduced with it. Recording
+/// the trimmed point instead states the result, and needs no config at all.
+pub(super) fn trim_timestamped_series(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut BTreeMap<u64, BlockAddress>,
+    max_size: usize,
+) -> bool {
+    let mut trimmed = false;
+    while series.len() > max_size {
+        let Some(oldest) = series.keys().next().copied() else {
+            break;
+        };
+        series.remove(&oldest);
+        stage_timestamped_removal(shard_id, kind, key, routing_bucket, oldest);
+        trimmed = true;
+    }
+    trimmed
+}
+
 pub(super) fn append_timestamped_kv_pages(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,
