@@ -1021,6 +1021,48 @@ class _TemporalDirectBackendMixin:
                 out.append(ref)
         return out
 
+    def _chunk_tail_pairs(self, prefetched: dict) -> list[tuple[str, str]]:
+        """The tail field of every chunked list whose head we just read.
+
+        Three writers chunk, and each names its tail differently: ref postings use
+        ``{field}#r{n}`` with the count in ``ref_chunks``; the locator and placement lists use
+        ``{field}#{n}`` with the count in ``location_chunks``. A head that is full but has no
+        count yet rolls to chunk 1 on this very write, so that is worth fetching too.
+        """
+        pairs: list[tuple[str, str]] = []
+        for (key, field), value in list(prefetched.items()):
+            if not value:
+                continue
+            try:
+                head = json.loads(value)
+            except Exception:  # noqa: BLE001 - an unreadable head just means no prefetch.
+                continue
+            if not isinstance(head, dict):
+                continue
+            try:
+                location_chunks = int(head.get("location_chunks") or 0)
+            except (TypeError, ValueError):
+                location_chunks = 0
+            if location_chunks:
+                pairs.append((key, f"{field}#{location_chunks}"))
+            else:
+                locations = head.get("locations")
+                if isinstance(locations, list) and len(locations) >= min(
+                    self.LOCATOR_CHUNK_LOCATIONS, self.PLACEMENT_CHUNK_LOCATIONS
+                ):
+                    pairs.append((key, f"{field}#1"))
+            try:
+                ref_chunks = int(head.get("ref_chunks") or 0)
+            except (TypeError, ValueError):
+                ref_chunks = 0
+            if ref_chunks:
+                pairs.append((key, f"{field}#r{ref_chunks}"))
+            else:
+                refs = head.get("ref_hashes")
+                if isinstance(refs, list) and len(refs) >= self.REF_HASH_CHUNK:
+                    pairs.append((key, f"{field}#r1"))
+        return pairs
+
     def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
         """Build sidecar lookup rows so retrieval can avoid broad record scans.
 
@@ -1088,6 +1130,17 @@ class _TemporalDirectBackendMixin:
         wanted.extend((prefetch_locator_key, str(ref_hash)) for ref_hash in locator_updates)
         wanted.extend(placement_updates.keys())
         prefetched = self._read_hash_values_best_effort(wanted) if wanted else {}
+        # Second phase. The batch above covers the HEAD of each list, but every chunked writer then
+        # asks for a TAIL whose field name is only knowable once its head has been read -- so those
+        # fell through to a per-entry read. Measured per add: 24.7 single `hget`s at 0.51 ms, 12.5
+        # ms, against 1.75 ms for a batch of any size.
+        #
+        # Now the heads name their tails and those are fetched in one more batch. This is purely a
+        # prefetch: `existing_for` still falls back to the single read, so a tail this guesses
+        # wrong costs one wasted entry in a batch and never a wrong answer.
+        tail_pairs = self._chunk_tail_pairs(prefetched)
+        if tail_pairs:
+            prefetched.update(self._read_hash_values_best_effort(tail_pairs))
 
         def existing_for(key: str, field: str) -> str:
             """The stored value: from the batch when it covered this pair, per-entry otherwise."""
