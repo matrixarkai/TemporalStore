@@ -8,6 +8,11 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:  # package path
+    from tools.matrixark_temporal_location_codec import compact_location_list, expand_location
+except ImportError:
+    from matrixark_temporal_location_codec import compact_location_list, expand_location
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     RETRIEVAL_HOT_RECORD_TYPES,
@@ -106,12 +111,13 @@ class _TemporalDirectRetrieveMixin:
             if not isinstance(raw_locations, list):
                 continue
             locator_rows += 1
+            scan_base = str(getattr(self, "_record_hash_key", "") or "")
             for location in raw_locations:
-                if not isinstance(location, dict):
+                expanded = expand_location(location, scan_base)
+                if expanded is None:
                     continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
+                key, field = expanded
+                if (key, field) in seen:
                     continue
                 locations.append({"key": key, "field": field})
                 seen.add((key, field))
