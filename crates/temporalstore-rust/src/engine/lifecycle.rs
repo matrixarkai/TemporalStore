@@ -9,6 +9,26 @@ impl Default for TemporalEngine {
     }
 }
 
+/// The series a timestamped kind lives in.
+///
+/// Kept as one place so the apply path and anything else that has to go from a recorded kind to
+/// the map it belongs in cannot disagree about the answer.
+fn timestamped_series_mut<'a>(
+    shard: &'a mut super::state::ShardState,
+    kind: &str,
+) -> Option<&'a mut std::collections::HashMap<String, std::collections::BTreeMap<u64, crate::block_store::BlockAddress>>>
+{
+    Some(match kind {
+        "feature" => &mut shard.features,
+        "context_index" => &mut shard.context_indexes,
+        "context_audit" => &mut shard.context_audits,
+        "context_child" => &mut shard.context_children,
+        "context_summary" => &mut shard.context_summaries,
+        "context_compression" => &mut shard.context_compressions,
+        _ => return None,
+    })
+}
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_block_store(cache, LocalBlockStore::default())
@@ -421,15 +441,26 @@ impl TemporalEngine {
                 out.push_str(&format!("seen {key} member={member:?} at={at}\n"));
             }
         }
-        let mut features: Vec<_> = shard.features.iter().collect();
-        features.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, series) in features {
-            for (timestamp_ms, address) in series {
-                out.push_str(&format!(
-                    "feature {key} at={timestamp_ms} slab={} off={} len={}
+        // Every timestamped series renders the same way, so a kind that stops being installed
+        // shows up as a missing line rather than as a map nobody compares.
+        for (kind, series) in [
+            ("feature", &shard.features),
+            ("context_index", &shard.context_indexes),
+            ("context_audit", &shard.context_audits),
+            ("context_child", &shard.context_children),
+            ("context_summary", &shard.context_summaries),
+            ("context_compression", &shard.context_compressions),
+        ] {
+            let mut keys: Vec<_> = series.iter().collect();
+            keys.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, entries) in keys {
+                for (stored_key, address) in entries {
+                    out.push_str(&format!(
+                        "{kind} {key} at={stored_key} slab={} off={} len={}
 ",
-                    address.page_slab_id, address.offset, address.length
-                ));
+                        address.page_slab_id, address.offset, address.length
+                    ));
+                }
             }
         }
         let mut hashes: Vec<_> = shard.hashes.iter().collect();
@@ -668,27 +699,41 @@ impl TemporalEngine {
                     .insert(member, (biased, address));
                 true
             }
-            // feature: the component is the point's timestamp. A trim and a replace both
-            // arrive here as a removal -- which is the whole reason replay can stop consulting
-            // the config that decided the trim.
-            "feature" => {
+            // Every timestamped series is the same shape: stored key -> page, with the key in
+            // the component. One arm covers all of them, so a new kind is a line in the map
+            // below rather than another branch that can be forgotten here.
+            //
+            // For a feature the key is the point's timestamp, and a trim or a replace arrives
+            // as a removal -- which is the whole reason replay can stop consulting the config
+            // that decided the trim.
+            "feature"
+            | "context_index"
+            | "context_audit"
+            | "context_child"
+            | "context_summary"
+            | "context_compression" => {
                 let Some(component) = item.component.clone() else {
                     return false;
                 };
-                let Ok(timestamp_ms) = component.parse::<u64>() else {
+                let Ok(stored_key) = component.parse::<u64>() else {
                     return false;
                 };
                 if item.deleted {
-                    if let Some(series) = shard.features.get_mut(&item.object_key) {
-                        series.remove(&timestamp_ms);
-                        if series.is_empty() {
-                            shard.features.remove(&item.object_key);
+                    {
+                        let Some(series) = timestamped_series_mut(shard, &item.kind) else {
+                            return false;
+                        };
+                        if let Some(entries) = series.get_mut(&item.object_key) {
+                            entries.remove(&stored_key);
+                            if entries.is_empty() {
+                                series.remove(&item.object_key);
+                            }
                         }
                     }
                     super::mark_bucket_index_page_deleted(
                         shard,
                         shard_id,
-                        "feature",
+                        &item.kind,
                         &item.object_key,
                         Some(&component),
                     );
@@ -697,20 +742,24 @@ impl TemporalEngine {
                 let Some(address) = item.address.clone() else {
                     return false;
                 };
+                {
+                    let Some(series) = timestamped_series_mut(shard, &item.kind) else {
+                        return false;
+                    };
+                    series
+                        .entry(item.object_key.clone())
+                        .or_default()
+                        .insert(stored_key, address.clone());
+                }
                 super::upsert_bucket_index_page(
                     shard,
                     shard_id,
-                    "feature",
+                    &item.kind,
                     &item.object_key,
                     Some(component),
-                    address.clone(),
+                    address,
                     true,
                 );
-                shard
-                    .features
-                    .entry(item.object_key.clone())
-                    .or_default()
-                    .insert(timestamp_ms, address);
                 true
             }
             _ => false,

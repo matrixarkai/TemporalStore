@@ -4581,6 +4581,63 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
                 })
                 .collect(),
         },
+        // The context maps are the same shape as a feature series -- stored key to page -- so
+        // they are installed by the same arm. Which is exactly why they belong in here: one arm
+        // covering six kinds is one place for five of them to go silently uninstalled.
+        Command::ContextWriteIndexRef {
+            tenant_hash: 41,
+            index_name: "actor".to_string(),
+            index_value_hash: 77,
+            scope_hash: 3,
+            event_time_ms: 1_787_270_070_000,
+            index_ref: crate::types::ContextIndexRef {
+                primary_node_hash: 9,
+                primary_event_time_ms: 1_787_270_070_000,
+                event_id_hash: 1234,
+            },
+        },
+        Command::ContextWritePackAudit {
+            tenant_hash: 41,
+            audit: crate::types::ContextPackAudit {
+                query_id: "q-1".to_string(),
+                session_hash: 5,
+                request_time_ms: 1_787_270_071_000,
+                query_hash: 6,
+                max_prompt_tokens: 100,
+                selected_tokens: 40,
+                selected_refs: Vec::new(),
+                blocked_refs: Vec::new(),
+            },
+        },
+        Command::ContextUpsertChildRef {
+            tenant_hash: 41,
+            child_ref: crate::types::ContextChildRef {
+                parent_hash: 9,
+                child_hash: 10,
+                updated_at_ms: 1_787_270_072_000,
+            },
+        },
+        Command::ContextUpsertSummary {
+            tenant_hash: 41,
+            summary: crate::types::ContextSummary {
+                node_hash: 9,
+                level: 1,
+                text: "a summary".to_string(),
+                valid_from_ms: 1_787_270_073_000,
+                vector: Vec::new(),
+            },
+        },
+        Command::ContextWriteCompressionEvent {
+            tenant_hash: 41,
+            event: crate::types::ContextCompressionEvent {
+                compression_id_hash: 21,
+                node_hash: 9,
+                source_start_ms: 1_787_270_070_000,
+                source_end_ms: 1_787_270_073_000,
+                compressed_time_ms: 1_787_270_074_000,
+                summary: "compressed".to_string(),
+            },
+        },
         // A replace drops a range and writes over it: removals and inserts in one command.
         Command::FeatureReplace {
             key: "eq-feature".to_string(),
@@ -4599,6 +4656,22 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
         });
         assert!(response.status.ok, "workload write failed: {response:?}");
     }
+    // Two empty maps compare equal, so a workload that quietly wrote nothing would pass. Assert
+    // each kind is actually present before comparing anything.
+    let ran_shape = ran.index_shape_for_test(1);
+    for kind in [
+        "context_index",
+        "context_audit",
+        "context_child",
+        "context_summary",
+        "context_compression",
+    ] {
+        assert!(
+            ran_shape.lines().any(|line| line.starts_with(&format!("{kind} "))),
+            "the workload wrote no {kind}, so installing it proves nothing"
+        );
+    }
+
     // If this stops being true the trim is no longer under test and the gate has gone quiet.
     // Five points, bounded to the newest three, then a replace drops two of those and writes one
     // back: the oldest two must be gone by the trim, and the series must be down to two.
