@@ -4738,6 +4738,14 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
         ran.index_shape_for_test(1),
         "installing the outcomes did not reproduce the shard the commands built"
     );
+
+    // The typed maps are not the whole shard. The bucket index is durable state the read path
+    // consults, so compare it too -- separately, so a failure says WHICH half diverged.
+    assert_eq!(
+        installed.bucket_index_shape_for_test(1),
+        ran.bucket_index_shape_for_test(1),
+        "the typed maps matched but the bucket index did not"
+    );
 }
 
 /// What waiting before a dump saves, and what the wait costs.
