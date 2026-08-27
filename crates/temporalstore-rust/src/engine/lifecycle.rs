@@ -307,6 +307,10 @@ impl TemporalEngine {
         // in-memory state the way startup load replays the wal. Without
         // this an async_storage write (WAL entry recorded, page/index deferred to the
         // dump) is silently lost on restart if the crash beats the dump.
+        // Hand the resolver the log ids the index has been carrying. Without this a page whose
+        // only durable copy is a WAL record stays unreadable by address after a reload -- the
+        // served index points at a synthetic address and the resolver's table starts empty.
+        self.rehydrate_wal_resident_pages(request.shard_id);
         if let Err(status) = self.replay_wal_into_shard(request.shard_id, replay_watermark) {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
@@ -384,6 +388,43 @@ impl TemporalEngine {
     /// re-appending to the WAL or re-persisting the index per record, then anchor and
     /// persist the reconstructed index once. Matches the WAL replay path,
     /// including its strict sequence-continuity check.
+    /// How many WAL-resident page locations this shard's index is carrying.
+    ///
+    /// The point of the map is that it is part of the index rather than process state, so a
+    /// test needs to be able to look at it to say anything about that.
+    pub(super) fn wal_resident_page_count(&self, shard_id: ShardId) -> usize {
+        self.shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&shard_id)
+            .map(|shard| shard.wal_resident_pages.len())
+            .unwrap_or(0)
+    }
+
+    /// Re-register every WAL-resident page the index knows about.
+    ///
+    /// The append path learns a page's log id by writing the record; a reload learns it by
+    /// reading the index. Both end up in the same table, which is why no read path had to
+    /// change for this to work.
+    pub(super) fn rehydrate_wal_resident_pages(&self, shard_id: ShardId) {
+        if !super::block_in_wal::enabled() {
+            return;
+        }
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return;
+        };
+        for (object_id, placement) in &shard.wal_resident_pages {
+            super::block_in_wal::register_at(
+                shard_id,
+                *object_id,
+                placement.log_id,
+                placement.sequence,
+                &self.wal_store,
+            );
+        }
+    }
+
     pub(super) fn replay_wal_into_shard(
         &self,
         shard_id: ShardId,

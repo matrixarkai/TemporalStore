@@ -133,6 +133,23 @@ pub(super) fn register_record(
     }
 }
 
+/// Register a page whose location came from the index rather than from an append.
+///
+/// The append path learns the log id by writing the record; a reload learns it by reading the
+/// index. Same fact, different source, so it lands in the same table -- which is what lets the
+/// read path stay exactly as it was.
+pub(super) fn register_at(
+    shard_id: ShardId,
+    object_id: u64,
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+) {
+    if let Ok(mut map) = registry().lock() {
+        map.insert((shard_id, object_id), (store.clone(), log_id, sequence));
+    }
+}
+
 /// The lowest WAL sequence any of this shard's registrations IN THIS LOG still depends on, or
 /// `None` when nothing is registered. WAL reclaim uses this as the block-retention floor: a
 /// record at or above it may hold the only copy of a page the served index still points at, so
