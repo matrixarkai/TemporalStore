@@ -2334,7 +2334,7 @@ pub(crate) fn execute_on_shard(
                     page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                 // The PAGE stays timestamp-keyed: pages pack by time, and the load path recovers
                 // the timeline key from the packed point. Only the index key changes.
-                if let Ok(addresses) = append_timestamped_kv_pages(
+                if let Ok(addresses) = append_timestamped_kv_pages_keyed(
                     cache,
                     page_store,
                     shard_id,
@@ -2346,6 +2346,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    event_id_hash,
                 ) {
                     for (stored_timeline_key, address) in addresses {
                         series.insert(event_id_hash, address);
@@ -2410,7 +2411,7 @@ pub(crate) fn execute_on_shard(
                     start_routing_bucket,
                     end_routing_bucket,
                 );
-                if let Ok(addresses) = append_timestamped_kv_pages(
+                if let Ok(addresses) = append_timestamped_kv_pages_keyed(
                     cache,
                     page_store,
                     shard_id,
@@ -2422,6 +2423,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    event_id_hash,
                 ) {
                     for (stored_timeline_key, address) in addresses {
                         event_series.insert(event_id_hash, address);

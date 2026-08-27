@@ -59,18 +59,32 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
 /// pages -- feature series, sequences, control state, context events -- and each one having to
 /// remember to record the outcome is exactly how a kind ends up silently missing. The series is
 /// keyed by timestamp, so that is the component.
+/// How a recorded item names the entry a write created.
+///
+/// Most timestamped series are keyed by the stored timestamp, so the timestamp alone names the
+/// entry. A context event is not: its page is timestamp-keyed but its index entry is keyed by the
+/// event id, so the timestamp alone names nothing and the identity has to travel with it. Packing
+/// both is what list and zset already do with their own keys.
+pub(super) fn timestamped_component(stored_key: u64, identity: Option<u64>) -> String {
+    match identity {
+        Some(identity) => format!("{stored_key:016x}{identity:016x}"),
+        None => stored_key.to_string(),
+    }
+}
+
 fn stage_timestamped_outcomes(
     shard_id: ShardId,
     kind: &str,
     key: &str,
     routing_bucket: u32,
     refs: &[(u64, BlockAddress)],
+    identity: Option<u64>,
 ) {
     if refs.is_empty() || !crate::wal::wal_outcome_items_enabled() {
         return;
     }
     for (timestamp_ms, address) in refs {
-        let component = timestamp_ms.to_string();
+        let component = timestamped_component(*timestamp_ms, identity);
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: kind.to_string(),
             object_key: key.to_string(),
@@ -166,6 +180,60 @@ pub(super) fn append_timestamped_kv_pages(
     routing_bucket: u32,
     async_storage: bool,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+    append_timestamped_kv_pages_inner(
+        cache,
+        block_store,
+        shard_id,
+        kind,
+        key,
+        points,
+        routing_bucket,
+        async_storage,
+        None,
+    )
+}
+
+/// Same, for a series whose index entry is keyed by something other than the stored timestamp.
+///
+/// The caller passes the key its map will actually use, so the recorded item can name the entry
+/// the write created. Without it a record states where a page landed and not what it became.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_timestamped_kv_pages_keyed(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    points: Vec<FeaturePoint>,
+    routing_bucket: u32,
+    async_storage: bool,
+    identity: u64,
+) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+    append_timestamped_kv_pages_inner(
+        cache,
+        block_store,
+        shard_id,
+        kind,
+        key,
+        points,
+        routing_bucket,
+        async_storage,
+        Some(identity),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_timestamped_kv_pages_inner(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    points: Vec<FeaturePoint>,
+    routing_bucket: u32,
+    async_storage: bool,
+    identity: Option<u64>,
+) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
     let mut refs = Vec::new();
     let chunks = chunk_timestamped_kv_points(points);
@@ -194,7 +262,7 @@ pub(super) fn append_timestamped_kv_pages(
                     .map(|point| (point.timestamp_ms, address.clone())),
             );
         }
-        stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs);
+        stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs, identity);
         return Ok(refs);
     }
 
@@ -215,7 +283,7 @@ pub(super) fn append_timestamped_kv_pages(
                 .map(|point| (point.timestamp_ms, address.clone())),
         );
     }
-    stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs);
+    stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs, identity);
     Ok(refs)
 }
 
