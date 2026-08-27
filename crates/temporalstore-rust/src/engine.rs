@@ -713,6 +713,10 @@ impl TemporalEngine {
                 let concurrent_commit = sync
                     && carried_pages.is_empty()
                     && (engine_concurrent_commit() || raft_apply_batch_active());
+                // Where each page this write stages ends up, so the index can carry it. Filled
+                // by the append below, which is the first moment the log id exists.
+                let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
+                    Vec::new();
                 let append_result = if concurrent_commit {
                     self.wal_store
                         .append_for_group_commit(request.shard_id, command)
@@ -751,12 +755,30 @@ impl TemporalEngine {
                                     record.sequence,
                                     &self.wal_store,
                                 );
+                                // Same fact, written down where it survives this process.
+                                wal_resident_updates.extend(record.staged_pages.iter().map(
+                                    |page| {
+                                        (
+                                            page.object_id,
+                                            crate::engine::state::WalResidentPage {
+                                                log_id,
+                                                sequence: record.sequence,
+                                            },
+                                        )
+                                    },
+                                ));
                             }
                             None
                         })
                 };
                 match append_result {
                     Ok(deferred_seq) => {
+                        // The index carries where each staged page landed, so a reload can hand
+                        // the mapping back rather than leaving the address unresolvable until a
+                        // full replay re-derives the page.
+                        for (object_id, placement) in wal_resident_updates.drain(..) {
+                            shard.wal_resident_pages.insert(object_id, placement);
+                        }
                         // In concurrent-commit mode remember the reserved sequence; its durable
                         // barrier is awaited after the `shards` lock is dropped (below). The ack
                         // is returned strictly AFTER that barrier succeeds -- never before.

@@ -34,6 +34,14 @@ pub(super) struct ContextDirtyEntry {
     pub(super) mark_count: u64,
 }
 
+/// Where a WAL-resident page's bytes are: the log id of the record carrying it, and that
+/// record's sequence (which is what log reclaim reasons about).
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct WalResidentPage {
+    pub(super) log_id: u64,
+    pub(super) sequence: u64,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
     /// On-disk shape of this index. 0 means "written before the stamp existed".
@@ -49,6 +57,18 @@ pub(super) struct ShardState {
     /// both maps correctly through insert_context_event_views.
     #[serde(default)]
     pub(super) index_format_version: u32,
+    /// Pages whose only durable copy is a WAL record, and which record holds each one.
+    ///
+    /// The resolver's table is process-local, so after a restart it is empty: the served index
+    /// still points at a synthetic address and nothing can turn it back into bytes until a full
+    /// replay re-derives the page. Recording the log id HERE means the mapping travels with the
+    /// index that depends on it, and a reload hands it straight back.
+    ///
+    /// A stale entry costs a miss, never wrong bytes. The resolver reads the record at that log
+    /// id and looks for the object inside it, so a reclaimed record or a superseded page simply
+    /// is not found, and the read falls through exactly as it did before this existed.
+    #[serde(default)]
+    pub(super) wal_resident_pages: BTreeMap<u64, WalResidentPage>,
     /// Deadlines, kept in key order so a sweep can resume from its cursor and look at the
     /// window rather than at everything.
     pub(super) expires_at_ms: BTreeMap<String, u64>,

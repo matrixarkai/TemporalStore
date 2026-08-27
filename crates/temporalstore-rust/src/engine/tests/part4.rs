@@ -3956,6 +3956,112 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
     );
 }
 
+/// A page that lives only in a WAL record must have its location written down where the index
+/// keeps it, not only in a table this process happens to hold.
+///
+/// The address in the served index is synthetic -- a counter, not a position -- so on its own it
+/// cannot be turned back into bytes. The resolver's table can, but it starts empty after a
+/// restart, which is why the location has to travel with the index that depends on it.
+#[test]
+fn a_wal_resident_page_records_where_it_lives_in_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+
+    assert_eq!(
+        engine.wal_resident_page_count(1),
+        0,
+        "nothing is in the log yet"
+    );
+
+    let value = b"only-durable-copy-is-the-record".to_vec();
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "logged".to_string(),
+                    value: value.clone(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    assert!(
+        engine.wal_resident_page_count(1) > 0,
+        "the index must carry where the page went"
+    );
+
+    // Take the shard down and back up: the resolver's table is dropped, so what comes back has
+    // to come from the index.
+    engine.cache().invalidate_shard(1).unwrap();
+    engine.unload_shard(1);
+    engine.load_shard(1);
+
+    assert!(
+        engine.wal_resident_page_count(1) > 0,
+        "the location has to survive the reload, or it was never durable"
+    );
+    let read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "logged".to_string(),
+        },
+    });
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    std::env::remove_var("TS_HOT_PAGE_SPILL");
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes { value: Some(value) },
+        "an acked write must read back after the reload"
+    );
+}
+
+/// With the feature off, nothing is recorded -- the index does not grow for stores that put no
+/// pages in the log.
+#[test]
+fn a_store_that_puts_no_pages_in_the_log_carries_no_locations() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    std::env::set_var("TS_BLOCK_IN_WAL", "0");
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "plain".to_string(),
+                    value: b"v".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+    assert_eq!(engine.wal_resident_page_count(1), 0);
+}
+
 /// What waiting before a dump saves, and what the wait costs.
 ///
 /// A bucket is dumped, dirtied again by the very next write, and dumped again. Letting the log
