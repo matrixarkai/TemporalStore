@@ -637,6 +637,29 @@ INLINE_VECTOR_OWNER_BY_REF_TYPE = {
 }
 
 
+
+# `embedding_meta` is the embedding record copied wholesale minus a few keys, so it inherits
+# whatever the record happened to carry. Two of those are a routing blob:
+# `canonical_storage_route(storage_options)` is a pure function of the options beside it, and the
+# options are themselves already on the owning record.
+#
+# Measured by walking the page segments over 300 ingests: `embedding_meta.storage_route` cost
+# 3.93 KB per add and `embedding_meta.storage_options` 2.55 KB -- together 63% of everything
+# `embedding_meta` cost, and 13x the `vector` the metadata exists to describe (0.78 KB).
+#
+# Nothing reads either one. Every consumer of `embedding_meta` takes the source aggregates that
+# budgeting and recovery need; a search for a read of the nested route or options finds none. The
+# record's own top-level `storage_route` is kept and already slimmed to its placement half by
+# `slim_persisted_storage_route`, which is where a reader that wants placement looks.
+_EMBEDDING_META_SKIP = (
+    "record_type",
+    "ref_type",
+    "ref_hash",
+    "vector",
+    "storage_route",
+    "storage_options",
+)
+
 def fold_embedding_records(
     records: list[Json],
     resolve_owner=None,
@@ -698,7 +721,7 @@ def fold_embedding_records(
         meta = {
             key: value
             for key, value in record.items()
-            if key not in ("record_type", "ref_type", "ref_hash", "vector")
+            if key not in _EMBEDDING_META_SKIP
             and value not in (None, "", [], {})
         }
         if meta:
