@@ -535,7 +535,7 @@ impl TemporalEngine {
                 let mut publish_targets = shard
                     .strings
                     .iter()
-                    .filter(|(_, address)| address.page_slab_id == HOT_PAGE_SLAB_ID)
+                    .filter(|(_, address)| crate::wal_record::is_wal_resident(address.page_slab_id))
                     .map(|(key, address)| {
                         (PublishTarget::String { key: key.clone() }, address.clone())
                     })
@@ -546,7 +546,7 @@ impl TemporalEngine {
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
-                                (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
+                                crate::wal_record::is_wal_resident(address.page_slab_id).then(|| {
                                     (
                                         PublishTarget::Hash {
                                             key: key.clone(),
@@ -564,7 +564,7 @@ impl TemporalEngine {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
                     if let Some(address) = shard.strings.get(key) {
-                        if address.page_slab_id == HOT_PAGE_SLAB_ID {
+                        if crate::wal_record::is_wal_resident(address.page_slab_id) {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
                                 address.clone(),
@@ -573,7 +573,7 @@ impl TemporalEngine {
                     }
                     if let Some(fields) = shard.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
-                            (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
+                            crate::wal_record::is_wal_resident(address.page_slab_id).then(|| {
                                 (
                                     PublishTarget::Hash {
                                         key: key.clone(),
