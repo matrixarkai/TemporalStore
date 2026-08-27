@@ -16,6 +16,7 @@ import select
 import shutil
 import socket
 import subprocess
+import functools
 import hashlib
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -1753,31 +1754,52 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     return dedupe_entities(entities)
 
 
+_PATCH_CORRECTION_RE = re.compile(
+    r"\b(?:correction|correct|wrong|updated|changed)[:\s]+([^.;!?]+?)\s+(?:instead\s+of|not)\s+([^.;!?]+)",
+    flags=re.IGNORECASE,
+)
+_PATCH_PREFERENCE_RE = re.compile(
+    r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]+?)\s+(?:now|instead\s+of|not)\s+([^.;!?]+)",
+    flags=re.IGNORECASE,
+)
+_PATCH_NEGATIVE_RE = re.compile(
+    r"\b(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]+)",
+    flags=re.IGNORECASE,
+)
+
+
+@functools.lru_cache(maxsize=4)
+def _whole_text_patch_scans(text: str):
+    """The three scans that read the WHOLE document, done once per document.
+
+    `infer_entity_field_patches` is called once per extracted entity, and each call used to run
+    these three searches across the entire text. The entity count grows with the document, so the
+    work grew as its square: a 256 KB markdown ingest spent ~33 seconds here, against ~1.2 s for a
+    JSON document of the same size that produced far fewer entities.
+
+    None of the three depend on the entity -- only on the text. Which patch is *kept* still depends
+    on `entity_type`, and that check is unchanged; this only stops recomputing the same three
+    answers. The cache is keyed on the text itself and holds four entries, which is enough for one
+    ingest to reuse its own document while never pinning more than a handful.
+    """
+    return (
+        _PATCH_CORRECTION_RE.search(text),
+        _PATCH_PREFERENCE_RE.search(text),
+        _PATCH_NEGATIVE_RE.search(text),
+    )
+
+
 def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[Json]:
     patches: list[Json] = []
-    correction = re.search(
-        r"\b(?:correction|correct|wrong|updated|changed)[:\s]+([^.;!?]+?)\s+(?:instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
+    correction, preference, negative_preference = _whole_text_patch_scans(text)
     if correction:
         replace = clean_patch_value(correction.group(1))
         search = clean_patch_value(correction.group(2))
         patches.append(entity_patch(search, replace))
-    preference = re.search(
-        r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]+?)\s+(?:now|instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
     if entity_type == "preference" and preference:
         replace = clean_patch_value(preference.group(1))
         search = clean_patch_value(preference.group(2))
         patches.append(entity_patch(search, replace))
-    negative_preference = re.search(
-        r"\b(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
     if entity_type == "preference" and negative_preference and not patches:
         patches.append(entity_patch("", "avoid " + clean_patch_value(negative_preference.group(1))))
     evolving_entity_types = {
