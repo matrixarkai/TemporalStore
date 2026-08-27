@@ -44,7 +44,7 @@ mod cluster_snapshot;
 mod production_runtime;
 mod local_wal;
 pub(crate) mod follower_pipeline;
-mod wal_proto;
+pub(crate) mod wal_proto;
 mod cluster_meta;
 mod cluster_meta_inner;
 mod cluster_inner;
