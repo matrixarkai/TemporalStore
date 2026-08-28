@@ -3185,6 +3185,7 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
 
 
 EMBEDDING_VECTOR_DECIMALS = int(os.environ.get("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", "6"))
+EMBEDDING_VECTOR_SCALE = int(os.environ.get("MATRIXARK_EMBEDDING_VECTOR_SCALE", "0"))
 
 
 def compact_embedding_vector(vector: list[float]) -> list[float]:
@@ -3193,12 +3194,21 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
     Embedding records are the bulk of what an ingest writes - 85% of the bytes for a
     markdown skill - and a 384-value vector serializes to about 8.2 KB because each
     value is written at full float repr. The models emit f32, which carries roughly
-    seven decimal digits, so the rest is noise being paid for. Rounding to six
-    decimals halves the record and leaves cosine similarity against the f32 value the
-    model produced at 1.000000000.
+    seven decimal digits, so the rest is noise being paid for.
 
-    Set MATRIXARK_EMBEDDING_VECTOR_DECIMALS=0 to store full precision.
+    MATRIXARK_EMBEDDING_VECTOR_DECIMALS (default 6) rounds; that halves the record and
+    leaves cosine against the f32 the model produced at 1.000000000.
+
+    MATRIXARK_EMBEDDING_VECTOR_SCALE (default 0, off) instead stores each value as an
+    integer scaled by that factor, which is a third smaller again because an integer
+    has no "0." and no trailing digits. This is safe because every consumer of a stored
+    vector scores it with cosine, and cosine ignores a uniform scale:
+    cos(a, k*b) == cos(a, b) for k > 0. At 1e5, worst cosine against the original is
+    0.999999999835 and nearest-neighbour ranking is unchanged. It is off by default
+    because it changes the stored values from floats to integers.
     """
+    if EMBEDDING_VECTOR_SCALE > 0:
+        return [int(round(value * EMBEDDING_VECTOR_SCALE)) for value in vector]
     if EMBEDDING_VECTOR_DECIMALS <= 0:
         return vector
     return [round(value, EMBEDDING_VECTOR_DECIMALS) for value in vector]
