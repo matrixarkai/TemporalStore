@@ -3228,13 +3228,24 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
     memory is per-record bookkeeping and barely moves with payload size (-5% across a
     56% smaller record). Reduce record COUNT to reduce memory.
 
+    A cosine number close to 1 is NOT sufficient evidence here. int8 scores 0.99992
+    against the original vector, which looks harmless, but the margins between competing
+    near-neighbours in a real corpus are smaller than that error. Measured over 500
+    candidate chunks from one document with six CN/EN queries, against the float
+    ranking:
+
+        scale=100000   top-1 correct 6/6   exact top-10 order 6/6   overlap 10.0/10
+        int8           top-1 correct 1/6   exact top-10 order 0/6   overlap  4.8/10
+
+    int8 loses half the top-10. An earlier six-vector probe showed ranking preserved
+    and was simply too small to reorder anything. Prefer scale=100000, which is
+    exact on this test and still 67.9% of the float size.
+
     Modes, in precedence order:
       MATRIXARK_EMBEDDING_VECTOR_INT8=1   each vector scaled by its own max magnitude
-                                          into [-127, 127]. Smallest. Worst cosine
-                                          against the original 0.99995; ranking and
-                                          top-1 unchanged on a CN/EN probe set. The
-                                          per-vector factor never has to be stored,
-                                          because cosine normalises it away.
+                                          into [-127, 127]. Smallest, but it CHANGES
+                                          RANKING on a realistic candidate set and is
+                                          not recommended for retrieval - see below.
       MATRIXARK_EMBEDDING_VECTOR_SCALE=N  integers scaled by N. At 1e5 the worst
                                           cosine is 1.000000000.
       MATRIXARK_EMBEDDING_VECTOR_DECIMALS rounded floats, default 6.
