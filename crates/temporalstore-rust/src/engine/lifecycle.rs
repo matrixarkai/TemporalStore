@@ -1138,6 +1138,104 @@ impl TemporalEngine {
             .and_then(|shard| shard.strings.get(key).cloned())
     }
 
+    /// Write every in-process-only page into the block store, so the index can travel.
+    ///
+    /// A synthetic address names a page inside a WAL record or in memory. It resolves here and
+    /// nowhere else, so an index carrying one is not portable: a checkpoint uploads the slabs the
+    /// block store HAS, and a synthetic slab is not among them.
+    ///
+    /// Called before a checkpoint exports the index. Returns how many were materialised, so a
+    /// caller can tell the difference between "none needed it" and "it did not run".
+    pub fn materialize_synthetic_pages(&self, shard_id: ShardId) -> usize {
+        let addresses: Vec<(String, crate::block_store::BlockAddress)> = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            let Some(shard) = shards.get(&shard_id) else {
+                return 0;
+            };
+            shard
+                .strings
+                .iter()
+                .filter(|(_, address)| {
+                    crate::wal_record::is_wal_resident(address.page_slab_id)
+                })
+                .map(|(key, address)| (key.clone(), address.clone()))
+                .collect()
+        };
+        let mut moved = 0usize;
+        for (key, address) in addresses {
+            // Read it the way a reader here would -- through the registry that still works in
+            // this process -- and write it where anyone can find it.
+            let Some(bytes) = super::read_page_bytes(&self.cache, &self.page_store, shard_id, &address)
+            else {
+                continue;
+            };
+            let object_id = super::stable_page_object_id(shard_id, "string", &key, None);
+            let Ok(durable) = super::append_value(
+                &self.cache,
+                &self.page_store,
+                shard_id,
+                &bytes,
+                Some(object_id),
+                address.routing_bucket,
+                false,
+            ) else {
+                continue;
+            };
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                shard.strings.insert(key.clone(), durable.clone());
+                super::upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "string",
+                    &key,
+                    None,
+                    durable,
+                    true,
+                );
+            }
+            moved += 1;
+        }
+        moved
+    }
+
+    /// How many addresses in the served index name a slab that is not a file.
+    ///
+    /// A synthetic slab id means the bytes are inside a WAL record or in memory, resolvable only
+    /// through this process's registry. A checkpoint uploads the slabs the block store HAS, so an
+    /// address like this cannot travel: it names a place that does not exist anywhere else.
+    pub(crate) fn synthetic_address_count_for_test(&self, shard_id: ShardId) -> usize {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return 0;
+        };
+        let mut count = 0usize;
+        let mut check = |address: &crate::block_store::BlockAddress| {
+            if crate::wal_record::is_wal_resident(address.page_slab_id) {
+                count += 1;
+            }
+        };
+        for address in shard.strings.values() {
+            check(address);
+        }
+        for fields in shard.hashes.values() {
+            for address in fields.values() {
+                check(address);
+            }
+        }
+        for series in shard.features.values() {
+            for address in series.values() {
+                check(address);
+            }
+        }
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for page in bucket.page_index.values() {
+                check(&page.address);
+            }
+        }
+        count
+    }
+
     /// How many WAL-resident page locations this shard's index is carrying.
     ///
     /// The point of the map is that it is part of the index rather than process state, so a
