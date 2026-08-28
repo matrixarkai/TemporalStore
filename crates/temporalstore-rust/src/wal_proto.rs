@@ -120,6 +120,32 @@ fn address_from_proto(address: v1::WalBlockAddress) -> BlockAddress {
         sha256: address.checksum,
     }
 }
+/// The numeric key a component is carrying, if it is carrying one.
+///
+/// Returns the stored key and, for a context event, the entry id packed beside it. Anything whose
+/// component is genuinely text -- a hash field, a hex-encoded set member, a packed zset score --
+/// returns None and keeps its string.
+fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option<u64>)> {
+    let component = component?;
+    match kind {
+        "context_event" => {
+            if component.len() != 32 {
+                return None;
+            }
+            let (stored, entry) = component.split_at(16);
+            Some((
+                u64::from_str_radix(stored, 16).ok()?,
+                Some(u64::from_str_radix(entry, 16).ok()?),
+            ))
+        }
+        "feature" | "context_index" | "context_audit" | "context_child" | "context_summary"
+        | "context_compression" | "control_counter" | "control_change" => {
+            Some((component.parse::<u64>().ok()?, None))
+        }
+        _ => None,
+    }
+}
+
 
 pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
     v1::EngineWalItem {
@@ -133,7 +159,16 @@ pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
         deleted: item.deleted,
         meta_log: item.meta,
         block_log: false,
-        component: item.component.clone(),
+        // A component that IS a number travels as one. What stays in `component` is what the
+        // field is actually for: a hash field, a set member, a packed score.
+        component: match numeric_component(&item.kind, item.component.as_deref()) {
+            Some(_) => None,
+            None => item.component.clone(),
+        },
+        timestamp_ms: numeric_component(&item.kind, item.component.as_deref()).map(|(key, _)| key),
+        entry_id: numeric_component(&item.kind, item.component.as_deref()).and_then(|(_, id)| id),
+        // A removal with no component is the whole object, which is now said rather than implied.
+        object_deleted: item.deleted && item.component.is_none(),
         block: item.address.as_ref().map(address_to_proto),
         value: item.value.clone(),
         // The engine names more kinds than the enum does, and the name is what the apply path
@@ -147,7 +182,12 @@ pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
     WalOutcomeItem {
         kind: item.kind_name.unwrap_or_default(),
         object_key: item.object_key.unwrap_or_default(),
-        component: item.component,
+        // Prefer the numeric fields; fall back to the string a record written before this carries.
+        component: match (item.timestamp_ms, item.entry_id) {
+            (Some(stored), Some(entry)) => Some(format!("{stored:016x}{entry:016x}")),
+            (Some(stored), None) => Some(stored.to_string()),
+            (None, _) => item.component,
+        },
         object_id: item.object_id.unwrap_or_default(),
         routing_bucket: item.routing_bucket.unwrap_or_default(),
         address: item.block.map(address_from_proto),
@@ -181,6 +221,9 @@ fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::Engin
             value: Some(serde_json::to_vec(&metadata.items).map_err(|err| err.to_string())?),
             kind_name: Some(String::from("__verbatim_items")),
             routing_bucket: None,
+            timestamp_ms: None,
+            entry_id: None,
+            object_deleted: false,
         }]
     };
     Ok(v1::EngineWalMetadata {

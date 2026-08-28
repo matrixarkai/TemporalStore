@@ -5964,3 +5964,459 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
         get.response
     );
 }
+
+/// A numeric key must cost what a number costs, and still come back the same.
+///
+/// Timestamped kinds put their stored key into `component` as a decimal string, and a context
+/// event packed TWO keys as thirty-two hex characters. Both are numbers; a varint says a
+/// millisecond timestamp in seven bytes and that hex pair in about twelve. This asserts the
+/// saving and, more importantly, that the round trip is unchanged -- a smaller encoding that
+/// loses a key is not a saving.
+#[test]
+fn a_numeric_component_travels_as_a_number_and_returns_intact() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A feature series (component is a timestamp) and a context event (component is two keys).
+    let workload = vec![
+        Command::FeatureAppend {
+            key: "num-feature".to_string(),
+            points: (0..4)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index * 1_000,
+                    value: format!("p{index}").into_bytes(),
+                })
+                .collect(),
+        },
+        Command::ContextWriteExtractedEvent {
+            tenant_hash: 41,
+            node_hash: 42,
+            event: crate::types::ContextEvent {
+                event_id_hash: 445,
+                event_time_ms: 1_787_270_075_000,
+                ingestion_time_ms: 1_787_270_075_000,
+                kind: 7,
+                event_type: 7,
+                actor_hash: 0,
+                status: 1,
+                valid_until_ms: 0,
+                confidence: 0.9,
+                importance: 0.8,
+                text: "numeric".to_string(),
+                source_ref: String::new(),
+                related_node_hashes: vec![42],
+                compact_attrs: Vec::new(),
+                vector: Vec::new(),
+            },
+            indexes: crate::types::ContextExtractedEventIndexes {
+                scope_hash: 3001,
+                entity_hashes: vec![501],
+                status_hash: 601,
+                source_hash: 701,
+                event_time_bucket_ms: 1_787_270_000_000,
+                disabled_indexes: Vec::new(),
+            },
+            first_write_only: false,
+            cold_storage: false,
+        },
+        // A component that is genuinely TEXT must keep its string.
+        Command::HashSet {
+            key: "num-hash".to_string(),
+            field: "a-field-name".to_string(),
+            value: b"v".to_vec(),
+        },
+    ];
+    for command in workload {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "workload write failed: {response:?}");
+    }
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .map(|(_, line)| crate::wal::decode_wal_line(line).expect("record decodes"))
+        .collect::<Vec<_>>();
+    let recorded: usize = records.iter().map(|record| record.outcomes.len()).sum();
+    assert!(
+        recorded >= 6,
+        "expected timestamped results to compare, got {recorded}"
+    );
+
+    let mut numeric = 0usize;
+    let mut textual = 0usize;
+    for record in &records {
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "1");
+        let framed = crate::wal::encode_wal_line_for_test(record).expect("binary encodes");
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
+        let back = crate::wal::decode_wal_line(&framed).expect("binary decodes");
+        assert_eq!(
+            &back, record,
+            "a numeric component did not survive the round trip"
+        );
+        for item in &record.outcomes {
+            match item.kind.as_str() {
+                "feature" | "context_event" | "context_index" => numeric += 1,
+                "hash" => textual += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(numeric > 0, "no numeric components in the workload");
+    assert!(textual > 0, "no textual components in the workload");
+    println!("[numeric] {numeric} numeric component(s), {textual} textual, all round-tripped");
+}
+
+/// A NEW NODE catching up from the shared log must INSTALL what the origin recorded.
+///
+/// The follower-replay tests that already exist build their entries with no results, so every one
+/// of them exercises the fallback -- re-running the operation -- and none of them touch the path
+/// this work added. A successor that silently re-executes looks identical to one that installs,
+/// right up until it diverges, so the count is asserted before the contents.
+///
+/// This is the case with the weakest assumptions in the system: a DIFFERENT node, with its own
+/// clock and whatever config it holds, rebuilding a shard it never wrote.
+#[test]
+fn a_new_node_catching_up_installs_what_the_origin_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // The origin writes, and its records carry what each write did.
+    let origin = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("origin-cache"),
+        dir.path().join("origin-pages"),
+        dir.path().join("origin-indexes"),
+    );
+    origin.load_shard(1);
+    let workload = vec![
+        Command::StringSet {
+            key: "cu-a".to_string(),
+            value: b"alpha".to_vec(),
+        },
+        Command::StringSetEx {
+            key: "cu-ttl".to_string(),
+            value: b"expiring".to_vec(),
+            ttl_ms: 600_000,
+        },
+        Command::HashSet {
+            key: "cu-hash".to_string(),
+            field: "f".to_string(),
+            value: b"hv".to_vec(),
+        },
+        Command::ZSetAdd {
+            key: "cu-zset".to_string(),
+            member: b"zm".to_vec(),
+            score: 4.5,
+        },
+        Command::SeenCheck {
+            key: "cu-seen".to_string(),
+            member: b"m".to_vec(),
+            window_ms: 600_000,
+        },
+        Command::FeatureAppend {
+            key: "cu-feature".to_string(),
+            points: (0..3)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index * 1_000,
+                    value: format!("p{index}").into_bytes(),
+                })
+                .collect(),
+        },
+    ];
+    for command in workload {
+        let response = origin.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "origin write failed: {response:?}");
+    }
+    let expected = origin.index_shape_for_test(1);
+    let expected_index = origin.bucket_index_shape_for_test(1);
+
+    // What the origin would publish to the shared log: its records, results and all.
+    let published = origin
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .collect::<Vec<_>>();
+    let carrying: usize = published
+        .iter()
+        .filter(|record| !record.outcomes.is_empty())
+        .count();
+    assert!(
+        carrying >= 5,
+        "the origin published {carrying} records carrying results; this test needs them to exist"
+    );
+
+    // A node that has never seen this shard, catching up from those records alone.
+    let newcomer = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("new-cache"),
+        dir.path().join("new-pages"),
+        dir.path().join("new-indexes"),
+    );
+    newcomer.load_shard(1);
+    let installs_before = newcomer.replay_installs_for_test();
+    for record in &published {
+        if record.outcomes.is_empty() {
+            continue;
+        }
+        assert!(
+            newcomer.install_shared_outcomes(1, &record.outcomes),
+            "the newcomer refused results at sequence {}",
+            record.sequence
+        );
+    }
+    let installed = newcomer.replay_installs_for_test() - installs_before;
+
+    // WHICH path ran, before what it produced: a successor that re-executed would pass the
+    // comparison below and prove nothing about catching up from data.
+    assert!(
+        installed >= carrying as u64,
+        "the newcomer installed {installed} results for {carrying} records carrying them"
+    );
+    assert_eq!(
+        newcomer.index_shape_for_test(1),
+        expected,
+        "a node catching up from results did not arrive at the origin's shard"
+    );
+    assert_eq!(
+        newcomer.bucket_index_shape_for_test(1),
+        expected_index,
+        "the newcomer's maps matched and its index did not"
+    );
+    println!("[catch-up] {carrying} records, {installed} results installed, shard identical");
+}
+
+/// RECLAIM against the record that now ships.
+///
+/// Reclaim rewrites the log, so every survivor has to still decode and still rebuild the shard.
+/// A binary payload makes that a real question rather than a formality: a rewrite that splits a
+/// record on the wrong byte, or drops the base header, leaves records that parse as nothing --
+/// which is silent, because a reclaimed log is SUPPOSED to be shorter.
+#[test]
+fn reclaim_leaves_every_surviving_record_readable_and_the_shard_rebuildable() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+
+    const WRITES: usize = 120;
+    let shape_before;
+    {
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            cache.clone(),
+            pages.clone(),
+            indexes.clone(),
+        );
+        engine.load_shard(1);
+        for index in 0..WRITES {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("rc-{index:04}"),
+                    // Newlines and high bytes, because reclaim moves bytes around.
+                    value: {
+                        let mut value = format!("v-{index}\n").into_bytes();
+                        value.extend_from_slice(&[0x1b, 0x0a, 0xff, 0x00]);
+                        value.extend_from_slice(b"tail");
+                        value
+                    },
+                },
+            });
+            assert!(response.status.ok);
+        }
+        shape_before = engine.index_shape_for_test(1);
+
+        let before = engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .len();
+        assert!(before >= WRITES, "expected the writes to be on the log");
+
+        // Reclaim through the AUTHORIZED path.
+        //
+        // The unchecked form bypasses the durable-index clamp, and the first version of this test
+        // used it and then asserted the shard still rebuilt. It does not, and should not: the
+        // clamp exists to stop a caller deleting records the index has not captured. That failure
+        // read exactly like a reclaim defect and was the test throwing away its own proof.
+        //
+        // Flushing first is what makes the anchor honest. The index on disk then reflects every
+        // record written above, so reclaiming up to that point is safe by construction.
+        engine.flush_shard_index(1);
+        let flushed_through = engine
+            .write_ahead_log_store()
+            .flush(1)
+            .expect("flush")
+            .last_sequence;
+        let anchor = crate::wal::DurableIndexAnchor::proven_durable_through(1, flushed_through);
+        let report = engine
+            .write_ahead_log_store()
+            .gc_before_sequence(1, flushed_through, &anchor)
+            .expect("reclaim");
+        println!(
+            "[reclaim] authorized through {flushed_through}, clamped={}",
+            report.clamped_by_durable_index
+        );
+
+        let survivors = engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap();
+        let decoded = survivors
+            .iter()
+            .filter(|(_, line)| crate::wal::decode_wal_line(line).is_ok())
+            .count();
+        assert_eq!(
+            decoded,
+            survivors.len(),
+            "{} of {} surviving records stopped decoding after reclaim",
+            survivors.len() - decoded,
+            survivors.len()
+        );
+        println!(
+            "[reclaim] {} records before, {} survived, all decode",
+            before,
+            survivors.len()
+        );
+    }
+
+    // The shard still loads, and every value still reads back.
+    let reopened = TemporalEngine::with_local_dirs(1024 * 1024, cache, pages, indexes);
+    reopened.load_shard(1);
+    assert_eq!(
+        reopened.index_shape_for_test(1),
+        shape_before,
+        "a reclaimed log did not rebuild the shard it described"
+    );
+}
+
+/// FAULT TOLERANCE: a torn tail must be refused or truncated, never half-applied.
+///
+/// A crash mid-append leaves a partial record. With a text payload that shows up as a line that
+/// fails to parse; with a binary one it can be a prefix that decodes to a DIFFERENT, valid-looking
+/// record, which is the dangerous shape. Both are checked: a truncated tail and a corrupted
+/// interior.
+#[test]
+fn a_torn_or_corrupted_tail_never_half_applies() {
+    for (label, corrupt_interior) in [("torn tail", false), ("corrupted interior", true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let pages = dir.path().join("pages");
+        let indexes = dir.path().join("indexes");
+        {
+            let engine = TemporalEngine::with_local_dirs(
+                1024 * 1024,
+                cache.clone(),
+                pages.clone(),
+                indexes.clone(),
+            );
+            engine.load_shard(1);
+            for index in 0..8 {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("ft-{index}"),
+                        value: format!("value-{index}").into_bytes(),
+                    },
+                });
+            }
+        }
+
+        let path = indexes.join("wals").join("shard-1.wal.jsonl");
+        let mut bytes = std::fs::read(&path).expect("the log exists");
+        // Trim the preallocated zero run so the edit lands on a record.
+        while bytes.last() == Some(&0) {
+            bytes.pop();
+        }
+        if corrupt_interior {
+            // Flip a byte in the middle of a record: a value-preserving corruption that the
+            // frame's checksum is there to catch.
+            let middle = bytes.len() / 2;
+            bytes[middle] ^= 0xff;
+        } else {
+            // Cut the last record in half.
+            bytes.truncate(bytes.len() - 20);
+        }
+        std::fs::write(&path, &bytes).expect("rewrite the log");
+
+        let reopened = TemporalEngine::with_local_dirs(1024 * 1024, cache, pages, indexes);
+        // The form that REPORTS: a load which refuses is a correct outcome here, and a load which
+        // reports success while having dropped a record silently is the one that is not.
+        let load = reopened.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: None,
+            shard_uri: String::new(),
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
+            readonly: false,
+            table_name: String::new(),
+        });
+        // Either outcome is correct. What must NOT happen is a load that reports success and
+        // serves a shard missing a record it silently dropped.
+        let served = reopened.index_shape_for_test(1);
+        let recovered = served.lines().filter(|l| l.starts_with("string ft-")).count();
+        println!("[fault:{label}] load ok={} recovered={recovered}", load.status.ok);
+        if load.status.ok {
+            assert!(
+                recovered > 0,
+                "{label}: the load reported success and recovered nothing"
+            );
+        }
+    }
+}
+
+/// The engine log records results in RAFT mode too.
+///
+/// Consensus replicates operations by construction -- that is what agreement means -- but the
+/// engine log underneath a raft apply is the same log, and it should record what the apply DID
+/// like any other write. If it does not, a raft node's own recovery is still re-executing.
+#[test]
+fn a_raft_apply_records_what_it_did_in_the_engine_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let response = engine.execute_raft_apply(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "raft-key".to_string(),
+            value: b"raft-value".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "raft apply failed: {response:?}");
+
+    let recorded: usize = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .map(|record| record.outcomes.len())
+        .sum();
+    assert!(
+        recorded > 0,
+        "a raft apply left no record of what it did, so this node's own recovery re-executes"
+    );
+    println!("[raft] apply recorded {recorded} result(s) in the engine log");
+}

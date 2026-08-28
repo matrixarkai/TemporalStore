@@ -586,6 +586,21 @@ message EngineWalItem {
   // The bucket this object routes to. On the item rather than only inside `block`, because state
   // with no block behind it still routes somewhere.
   optional uint32 routing_bucket = 15;
+  // The stored key of a timestamped entry, as a number.
+  //
+  // It used to travel inside `component` as a decimal string: thirteen characters for something a
+  // varint says in seven, and a context event packed two of them as thirty-two hex characters
+  // where two varints cost about twelve. `component` keeps its job of naming a hash field or a
+  // set member, and stops doubling as a number.
+  optional uint64 timestamp_ms = 16;
+  // A second key for an entry the index keys by something other than its timestamp -- a context
+  // event, whose page packs by time and whose index keys by event id.
+  optional uint64 entry_id = 17;
+  // The whole object is gone, not one component of it.
+  //
+  // Previously implied by `deleted` with no component. A reader had to know the convention to
+  // tell the two apart, and a reader that did not silently removed the wrong amount.
+  bool object_deleted = 18;
 }
 
 // A block carried inside the record that produced it, so a read can serve it back out of the log.
