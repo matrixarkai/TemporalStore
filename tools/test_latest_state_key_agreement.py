@@ -43,30 +43,32 @@ def _resolved(module_name):
 
 
 class LatestStateKeyAgreementCase(unittest.TestCase):
-    def test_only_one_module_implements_it(self):
-        """core_compact must delegate, not carry a second body that can drift.
+    def test_only_one_file_implements_it(self):
+        """Exactly one file may carry a real body; the rest must delegate.
 
-        A delegating wrapper is fine. A second real implementation is not -- that is what
-        shipped, and because both copies were self-consistent nothing failed; only the write
-        path silently took the one that gave pipeline tasks no identity.
+        A second body is what shipped: both copies were self-consistent, so nothing failed --
+        the write path just silently resolved the one that gave pipeline tasks no identity.
+
+        This reads the source FILES rather than imported objects on purpose. Keying by
+        `fn.__module__` breaks in a shared test process, where the same file can be imported as
+        both `X` and `tools.X` and one function then looks like two.
         """
-        import inspect
-
-        bodies = {}
-        for name in MODULES:
-            fn = _resolved(name)
-            if fn is None:
+        tools_dir = Path(__file__).resolve().parent
+        with_body = []
+        for path in sorted(tools_dir.glob("matrixark_*.py")):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            at = text.find("def latest_context_state_key(")
+            if at < 0:
                 continue
-            try:
-                src = inspect.getsource(fn)
-            except (OSError, TypeError):
-                continue
-            # A real implementation branches on record_type; a delegate just calls through.
-            if "record_type ==" in src:
-                bodies[fn.__module__] = len(src)  # a re-export is the same object, not a copy
+            # The body runs to the next top-level def; a real one branches on record_type.
+            nxt = text.find("\ndef ", at + 1)
+            body = text[at:nxt if nxt > 0 else len(text)]
+            if "record_type ==" in body:
+                with_body.append(path.name)
         self.assertEqual(
-            ["matrixark_mcp_serving_records"], sorted(bodies),
-            "more than one module carries a real body for latest_context_state_key: %r" % (bodies,),
+            ["matrixark_mcp_serving_records.py"], with_body,
+            "latest_context_state_key must have exactly one real implementation; found %r"
+            % (with_body,),
         )
 
     def test_every_module_agrees_on_every_sample(self):
