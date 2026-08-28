@@ -47,6 +47,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 # 8504 of them, four per chunk. append() is defined as append_many([record]), so the
 # records can be gathered and handed over in batches without changing what is written
 # or the order it is written in.
+DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
+    "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING", "1"
+) not in {"0", "false", "False", ""}
+
 RESOURCE_APPEND_BATCH_RECORDS = int(
     os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "512")
 )
@@ -156,18 +160,24 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
-        pending_records.append(
-            resource_record_builders.context_embedding_record(
-                embedding_type="resource_chunk",
-                ref_type="resource_chunk",
-                ref_hash=chunk.chunk_hash,
-                node_hash=node_hash,
-                node_path=node_path,
-                vector=vector,
-                scope=resource_record_scope,
-                updated_at_ms=envelope["ingestion_time_ms"],
+        # A skill chunk used to store the SAME vector twice, once as embedding_type
+        # resource_chunk and once as skill_section, with the same ref_hash. Retrieval keys
+        # its vector map on ref_hash ALONE and both land in it, so the second copy only ever
+        # overwrote the first with an identical value - about 37% of what a skill ingest
+        # writes, for nothing. Skills now store the skill_section copy only.
+        if skill_hash is None or not DEDUPE_SKILL_CHUNK_EMBEDDING:
+            pending_records.append(
+                resource_record_builders.context_embedding_record(
+                    embedding_type="resource_chunk",
+                    ref_type="resource_chunk",
+                    ref_hash=chunk.chunk_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    vector=vector,
+                    scope=resource_record_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
-        )
         if skill_hash is not None:
             pending_records.append(
                 resource_record_builders.context_embedding_record(
