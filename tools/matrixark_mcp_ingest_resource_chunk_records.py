@@ -18,6 +18,7 @@ try:
         metadata_index_terms,
         ordered_unique,
         serving_resource_metadata,
+        secondary_index_budget_summary,
         source_locator_from_ref,
         take_secondary_index_terms,
     )
@@ -31,6 +32,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         metadata_index_terms,
         ordered_unique,
         serving_resource_metadata,
+        secondary_index_budget_summary,
         source_locator_from_ref,
         take_secondary_index_terms,
     )
@@ -221,9 +223,16 @@ def append_resource_chunk_records(
         if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
             pending_records = _flush_pending_records(adapter, pending_records)
     pending_records = _flush_pending_records(adapter, pending_records)
+    # index_dropped_by_cap_count only counts terms lost to the PER-CHUNK term cap, which is
+    # applied before the per-operation budget. The budget is what actually truncates a large
+    # document: at its default of 128 records per ingest call, a 2,011-chunk document offers
+    # 10,055 candidate terms and writes 128, and every count above reported that as no drop.
+    # Report the budget alongside them so the truncation is visible to the caller.
+    budget_summary = secondary_index_budget_summary(secondary_index_budget)
     return {
         "resource_chunk_hashes": resource_chunk_hashes,
         "index_candidate_count": index_candidate_count,
         "index_write_count": index_write_count,
         "index_dropped_by_cap_count": index_dropped_by_cap_count,
+        "index_budget": budget_summary,
     }
