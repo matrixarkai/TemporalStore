@@ -3184,6 +3184,26 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
     return [list(item or []) for item in results]
 
 
+EMBEDDING_VECTOR_DECIMALS = int(os.environ.get("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", "6"))
+
+
+def compact_embedding_vector(vector: list[float]) -> list[float]:
+    """Drop float digits the encoder never produced.
+
+    Embedding records are the bulk of what an ingest writes - 85% of the bytes for a
+    markdown skill - and a 384-value vector serializes to about 8.2 KB because each
+    value is written at full float repr. The models emit f32, which carries roughly
+    seven decimal digits, so the rest is noise being paid for. Rounding to six
+    decimals halves the record and leaves cosine similarity against the f32 value the
+    model produced at 1.000000000.
+
+    Set MATRIXARK_EMBEDDING_VECTOR_DECIMALS=0 to store full precision.
+    """
+    if EMBEDDING_VECTOR_DECIMALS <= 0:
+        return vector
+    return [round(value, EMBEDDING_VECTOR_DECIMALS) for value in vector]
+
+
 def embedding_model_name() -> str:
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
