@@ -52,6 +52,20 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 # 8504 of them, four per chunk. append() is defined as append_many([record]), so the
 # records can be gathered and handed over in batches without changing what is written
 # or the order it is written in.
+# One record per (term, chunk) makes complete lexical coverage cost more than the content:
+# 152,108 postings and 62.1 MB for a 1.5 MB document, 41.3x amplification, over only 160
+# DISTINCT terms. The read path already expands a ref_hashes LIST
+# (context_index_ref_hashes checks it before the singular fields), so one record per term
+# carrying its posting list needs no reader change and measures 3.05 MB, 2.03x.
+# keywords_for_text defaults to 12 terms, which covers only a chunk's opening: a needle at
+# 97% through a 215-token chunk matched 0 of its keywords at 12 and all 8 at 200. Complete
+# coverage needs roughly 76 per chunk, which is only affordable with posting lists.
+INDEX_KEYWORD_LIMIT = int(os.environ.get("MATRIXARK_INDEX_KEYWORD_LIMIT", "12"))
+
+INDEX_POSTING_LISTS = os.environ.get(
+    "MATRIXARK_INDEX_POSTING_LISTS", "0"
+) not in {"0", "false", "False", ""}
+
 DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
     "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING", "1"
 ) not in {"0", "false", "False", ""}
@@ -97,6 +111,7 @@ def append_resource_chunk_records(
 ) -> Json:
     resource_chunk_hashes: list[int] = []
     pending_records: list = []
+    index_postings: dict = {}
     index_candidate_count = 0
     index_write_count = 0
     index_dropped_by_cap_count = 0
@@ -202,7 +217,10 @@ def append_resource_chunk_records(
         # what gets indexed no longer depends on what happens to be stored.
         index_metadata = chunk.metadata
         if not index_metadata.get("keywords"):
-            index_metadata = {**index_metadata, "keywords": keywords_for_text(chunk.text)}
+            index_metadata = {
+                **index_metadata,
+                "keywords": keywords_for_text(chunk.text, limit=INDEX_KEYWORD_LIMIT),
+            }
         raw_chunk_index_terms = (
             [
                 context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
@@ -229,6 +247,9 @@ def append_resource_chunk_records(
         chunk_index_terms = take_secondary_index_terms(chunk_index_terms, secondary_index_budget)
         for index_name in chunk_index_terms:
             index_write_count += 1
+            if INDEX_POSTING_LISTS:
+                index_postings.setdefault(index_name, []).append(chunk.chunk_hash)
+                continue
             pending_records.append(
                 resource_record_builders.resource_chunk_index_record(
                     index_name=index_name,
@@ -242,6 +263,24 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
+        if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
+            pending_records = _flush_pending_records(adapter, pending_records)
+    for index_name, chunk_hashes in index_postings.items():
+        record = resource_record_builders.resource_chunk_index_record(
+            index_name=index_name,
+            ref_type="skill_section" if skill_hash is not None else "resource_chunk",
+            chunk_hash=chunk_hashes[0],
+            resource_hash=resource_manifest_hash if skill_hash is None else skill_hash,
+            source_locator="",
+            node_hash=node_hash,
+            node_path=node_path,
+            scope=resource_record_scope,
+            updated_at_ms=envelope["ingestion_time_ms"],
+        )
+        # The reader takes ref_hashes ahead of the singular fields, so this one record
+        # stands in for every posting of the term.
+        record["ref_hashes"] = chunk_hashes
+        pending_records.append(record)
         if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
             pending_records = _flush_pending_records(adapter, pending_records)
     pending_records = _flush_pending_records(adapter, pending_records)
