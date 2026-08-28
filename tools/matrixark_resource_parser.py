@@ -39,6 +39,7 @@ DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUN
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
 DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
+DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
 DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
 
 
@@ -123,8 +124,38 @@ def infer_resource_type(raw_uri: str, resource_type: str | None = None) -> str:
     return aliases.get(kind, kind)
 
 
+_CJK_CLASS = "぀-ヿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ"
+_LATIN_RUN_RE = re.compile(r"[A-Za-z0-9_]+")
+_CJK_CHAR_RE = re.compile("[" + _CJK_CLASS + "]")
+_OTHER_SYMBOL_RE = re.compile("[^" + _CJK_CLASS + r"\sA-Za-z0-9_]")
+CJK_AWARE_TOKENS = os.environ.get("MATRIXARK_RESOURCE_CJK_TOKENS", "1") not in {"0", "false", "False", ""}
+_SPLIT_SPAN_RE = re.compile(
+    "[" + _CJK_CLASS + r"]|[A-Za-z0-9_]+|[^" + _CJK_CLASS + r"\sA-Za-z0-9_]+"
+)
+
+
+def _span_weight(span_text: str) -> float:
+    if _CJK_CHAR_RE.match(span_text):
+        return 0.75
+    if _LATIN_RUN_RE.fullmatch(span_text):
+        return 1.1
+    return 1.3 * max(1, len(span_text))
+
+
 def token_estimate(text: str) -> int:
-    return max(1, len(re.findall(r"[A-Za-z0-9_]+", text)))
+    """Estimate LLM tokens for mixed CJK/Latin text.
+
+    Counting only ``[A-Za-z0-9_]+`` runs undercounts Chinese by ~37x (a pure-CJK
+    sentence scores 1), which silently blows any ``max_context_tokens`` budget on
+    a CJK corpus. Coefficients calibrated against the multilingual MiniLM
+    tokenizer: median estimate/actual 1.00 over a mixed CN/EN sample.
+    """
+    if not CJK_AWARE_TOKENS:
+        return max(1, len(_LATIN_RUN_RE.findall(text)))
+    latin = len(_LATIN_RUN_RE.findall(text))
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    other = len(_OTHER_SYMBOL_RE.findall(text))
+    return max(1, int(1.1 * latin + 0.75 * cjk + 1.3 * other))
 
 
 def slugify(value: str) -> str:
@@ -271,6 +302,7 @@ def parse_resource(
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
     max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
     max_inline_text_chars: int | None = None,
+    pack_markdown_sections: bool | None = None,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
 
@@ -308,6 +340,11 @@ def parse_resource(
         max_directory_depth=max_directory_depth,
         max_inline_text_chars=max_inline_text_chars,
     )
+
+    if pack_markdown_sections is None:
+        pack_markdown_sections = DEFAULT_MD_PACK_SECTIONS
+    if pack_markdown_sections and kind in {"md", "skill"}:
+        units = _pack_markdown_units(units, max_chunk_tokens)
 
     chunks: list[ParsedResourceChunk] = []
     version = resource_version or resource_content_version(raw_uri_text, units)
@@ -509,6 +546,60 @@ def _markdown_units(text: str) -> list[Json]:
             }
         )
     return units
+
+
+def _pack_markdown_units(units: list[Json], max_chunk_tokens: int) -> list[Json]:
+    """Merge consecutive small markdown sections up to the chunk token budget.
+
+    ``_markdown_units`` emits one unit per heading, so a document made of many
+    short sections produces many chunks far below ``max_chunk_tokens``. Packing
+    adjacent siblings keeps each chunk near the budget without splitting a
+    section across chunks. The pack keeps the first section's heading and
+    records every heading it covers, so citations stay resolvable.
+    """
+    if not units:
+        return units
+    packed: list[Json] = []
+    current: Json | None = None
+    current_tokens = 0
+    joiner = chr(10) + chr(10)
+    for unit in units:
+        if unit.get("unit_kind") != "markdown_section":
+            if current is not None:
+                packed.append(current)
+                current = None
+                current_tokens = 0
+            packed.append(unit)
+            continue
+        tokens = token_estimate(str(unit.get("text", "")))
+        if tokens >= max_chunk_tokens:
+            if current is not None:
+                packed.append(current)
+                current = None
+                current_tokens = 0
+            packed.append(unit)
+            continue
+        parent = tuple(unit.get("heading_path", [])[:-1])
+        if current is not None:
+            same_parent = tuple(current.get("_pack_parent", ())) == parent
+            if same_parent and current_tokens + tokens <= max_chunk_tokens:
+                current["text"] = current["text"] + joiner + str(unit.get("text", ""))
+                current["line_end"] = unit.get("line_end", current.get("line_end"))
+                current["packed_headings"].append(unit.get("heading", ""))
+                current["packed_sections"] = len(current["packed_headings"])
+                current_tokens += tokens
+                continue
+            packed.append(current)
+        current = dict(unit)
+        current["_pack_parent"] = parent
+        current["packed_headings"] = [unit.get("heading", "")]
+        current["packed_sections"] = 1
+        current_tokens = tokens
+    if current is not None:
+        packed.append(current)
+    for unit in packed:
+        unit.pop("_pack_parent", None)
+    return packed
 
 
 def _split_simple_front_matter(text: str) -> tuple[Json, str]:
@@ -1059,16 +1150,26 @@ def _split_text(
 
 
 def _split_text_by_tokens(text: str, max_chunk_tokens: int, overlap_tokens: int) -> list[str]:
-    spans = [(match.start(), match.end()) for match in re.finditer(r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_]+", text)]
-    if len(spans) <= max_chunk_tokens:
+    spans = [(match.start(), match.end()) for match in _SPLIT_SPAN_RE.finditer(text)]
+    # Weight each span the way token_estimate does, so a piece that fits
+    # max_chunk_tokens spans also fits max_chunk_tokens estimated tokens.
+    weights = [_span_weight(text[a:b]) for a, b in spans]
+    cumulative = [0.0]
+    for w in weights:
+        cumulative.append(cumulative[-1] + w)
+    if cumulative[-1] <= max_chunk_tokens:
         return [text]
     pieces: list[str] = []
     start_token = 0
     while start_token < len(spans):
-        end_token = min(len(spans), start_token + max_chunk_tokens)
+        budget = cumulative[start_token] + max_chunk_tokens
+        end_token = start_token + 1
+        while end_token < len(spans) and cumulative[end_token + 1] <= budget:
+            end_token += 1
+        end_token = min(len(spans), max(end_token, start_token + 1))
         if end_token < len(spans):
             boundary = _token_boundary(text, spans, start_token, end_token)
-            if boundary > start_token + max_chunk_tokens // 2:
+            if cumulative[boundary] - cumulative[start_token] > max_chunk_tokens / 2:
                 end_token = boundary
         start_char = spans[start_token][0]
         end_char = spans[end_token - 1][1]
