@@ -41,6 +41,8 @@ DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
 DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
 DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
+DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"))
+EMBEDDING_TEXT_PREFIX_SHARE = float(os.environ.get("MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE", "0.2"))
 DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
 
 
@@ -229,7 +231,66 @@ def keywords_for_text(text: str, limit: int = 12) -> list[str]:
     return out
 
 
-def build_embedding_text(text: str, metadata: Json, source_ref: str) -> str:
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Trim text to roughly max_tokens estimated tokens, on a span boundary."""
+    if max_tokens <= 0:
+        return ""
+    spans = [(m.start(), m.end()) for m in _SPLIT_SPAN_RE.finditer(text)]
+    if not spans:
+        return text
+    used = 0.0
+    for index, (start, end) in enumerate(spans):
+        used += _span_weight(text[start:end])
+        if used > max_tokens:
+            return text[: spans[index][0]].strip()
+    return text
+
+
+def build_embedding_text(
+    text: str,
+    metadata: Json,
+    source_ref: str,
+    max_tokens: int | None = None,
+) -> str:
+    """Build the text handed to the encoder for a chunk.
+
+    The encoder has a fixed input window (128 tokens for the multilingual MiniLM
+    used here) and silently truncates past it. Emitting every metadata field
+    first spent that whole window on the header: measured on markdown, the prefix
+    was 123 of 128 tokens and only 2.8% of the chunk's own content reached the
+    model, so chunks were matched on their heading/path/keyword header rather
+    than on what they say.
+
+    So the content leads, and a compact locating prefix is allowed only a small
+    slice of the window. ``max_tokens=0`` restores the unbounded field dump.
+    """
+    if max_tokens is None:
+        max_tokens = DEFAULT_EMBEDDING_TEXT_MAX_TOKENS
+    if max_tokens <= 0:
+        return _build_embedding_text_unbounded(text, metadata, source_ref)
+
+    prefix_budget = max(8, int(max_tokens * EMBEDDING_TEXT_PREFIX_SHARE))
+    locators: list[str] = []
+    heading_path = metadata.get("heading_path")
+    if isinstance(heading_path, list) and heading_path:
+        locators.append(" / ".join(str(item) for item in heading_path if str(item).strip()))
+    else:
+        for key in ("heading", "title", "document_title", "relative_path"):
+            value = metadata.get(key)
+            if value:
+                locators.append(str(value))
+                break
+    columns = metadata.get("columns")
+    if isinstance(columns, list) and columns:
+        locators.append(", ".join(str(item) for item in columns if str(item).strip()))
+    prefix = _truncate_to_tokens(compact_ws(" | ".join(locators)), prefix_budget)
+    body_budget = max_tokens - (token_estimate(prefix) if prefix else 0)
+    body = _truncate_to_tokens(compact_ws(text), body_budget)
+    return compact_ws(prefix + chr(10) + body) if prefix else compact_ws(body)
+
+
+def _build_embedding_text_unbounded(text: str, metadata: Json, source_ref: str) -> str:
+
     fields: list[str] = []
     for key in [
         "document_title",
