@@ -256,15 +256,13 @@ impl SingleNodeMeta {
             .values()
             .map(|location| (location.shard_id, location.server_addr.clone()))
             .collect::<BTreeMap<_, _>>();
-        let shard_tables = state
-            .shards
-            .keys()
-            .filter_map(|shard_id| {
-                let table = table_for_shard(&state, *shard_id)?;
-                Some((
-                    *shard_id,
+        let shard_tables = shard_owning_tables(&state)
+            .into_iter()
+            .map(|(shard_id, table)| {
+                (
+                    shard_id,
                     table_key(&table.info.namespace, &table.info.table_name),
-                ))
+                )
             })
             .collect::<BTreeMap<_, _>>();
         plan_meta_retention(

@@ -6089,6 +6089,77 @@ mod tests {
     }
 
     #[test]
+    fn the_learned_shard_index_answers_what_the_scan_answered() {
+        // The index exists because asking every table which shard it owns, once
+        // per shard, cost shards times tables on a background round. It is only
+        // worth having if it says the same thing -- including for two tables
+        // whose ranges overlap, which the scan resolved by table map order.
+        use crate::meta::topology_helpers::{shard_owning_tables, table_for_shard};
+
+        for overlapping in [false, true] {
+            let meta = SingleNodeMeta::default();
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: "ns".to_string()
+                })
+                .status
+                .ok);
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+
+            // "a" owns 100..108. "b" owns 108..116, or 104..112 when the ranges
+            // are made to overlap.
+            let second_first = if overlapping { 104 } else { 108 };
+            for (name, first) in [("a", 100u64), ("b", second_first)] {
+                assert!(meta
+                    .add_table(AddTableRequest {
+                        namespace: "ns".to_string(),
+                        table_name: name.to_string(),
+                        first_shard_id: first,
+                        shard_count: 8,
+                        replica_count: 1,
+                        partition_version: 0,
+                        serving_options: TableServingOptions::default(),
+                    })
+                    .status
+                    .ok);
+            }
+            // Registered shards across both ranges, and two that no table owns.
+            for shard_id in [100u64, 103, 104, 107, 108, 111, 115, 200, 99] {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+
+            let state = meta.inner.read().expect("meta lock poisoned");
+            let learned = shard_owning_tables(&state);
+            for shard_id in state.shards.keys() {
+                let scanned = table_for_shard(&state, *shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                let indexed = learned
+                    .get(shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                assert_eq!(
+                    indexed, scanned,
+                    "shard {shard_id} resolved differently (overlapping={overlapping})"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
