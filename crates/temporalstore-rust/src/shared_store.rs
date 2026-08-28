@@ -980,6 +980,19 @@ where
         // (bucket_dump_manifest_methods) which fsyncs pages+WAL before recording slab ids. Without
         // this a relaxed (bulk) writer could enumerate a slab whose tail bytes are not yet on disk,
         // uploading a torn page or racing a not-yet-durable slab into the checkpoint.
+        // Make the index PORTABLE before exporting it. A page that lives in a WAL record or in
+        // memory is named by a slab that is not a file, resolvable only through this process's
+        // registry -- so an index carrying one names a place the restoring node cannot reach, and
+        // that read returns nothing with no error. Materialising them first means the index names
+        // only slabs this checkpoint actually uploads.
+        let materialised = engine.materialize_synthetic_pages(shard_id);
+        if materialised > 0 {
+            tracing::info!(
+                shard_id,
+                pages = materialised,
+                "materialised in-process-only pages so the checkpoint index can travel"
+            );
+        }
         block_store.sync_durable()?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);

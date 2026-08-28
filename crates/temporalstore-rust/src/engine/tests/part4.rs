@@ -6770,3 +6770,179 @@ fn a_read_is_answered_from_memory_before_disk_and_the_counters_say_which() {
         "promotion did not stick: {second_reads} reads on the second pass against {cold_reads} on the first"
     );
 }
+
+/// Does the served index ever hold an address only THIS process can resolve?
+///
+/// Two slab ids are synthetic: one means "the page is inside a WAL record", the other means "the
+/// page is in memory". Neither is a file in the block store. Both are resolved through a registry
+/// that is process-local -- a static map in this process, keyed by a pointer to this process's
+/// block store.
+///
+/// That is fine for a restart, which rebuilds the registry from the index. It is not obviously
+/// fine for a NEW NODE: a checkpoint uploads the slabs the block store actually has, and a
+/// synthetic slab is not one of them. An index entry naming one would arrive somewhere it can
+/// never be resolved -- and would read as nothing, with no error.
+///
+/// This measures whether the served index contains such addresses at all, and under what settings.
+/// It asserts nothing about the answer: the point is to establish the fact before deciding what to
+/// do about it.
+#[test]
+fn how_many_served_addresses_only_this_process_can_resolve() {
+    // Every combination that could put a page somewhere other than the block store: the log-in-
+    // record path, the reserve-only append that skips staging, and asynchronous writes whose
+    // pages are buffered rather than written.
+    let cases: Vec<(&str, &str, &str, bool)> = vec![
+        ("default", "1", "1", false),
+        ("log-in-record OFF", "0", "1", false),
+        ("group-commit OFF", "1", "0", false),
+        ("async writes", "1", "1", true),
+        ("async + group-commit OFF", "1", "0", true),
+    ];
+    for (label, block_in_wal, concurrent, async_storage) in cases {
+        std::env::set_var("TS_BLOCK_IN_WAL", block_in_wal);
+        std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", concurrent);
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        if async_storage {
+            assert!(
+                engine
+                    .set_config(SetConfigRequest {
+                        shard_id: 1,
+                        config: Config {
+                            version: 2,
+                            async_storage: true,
+                            ..Config::default()
+                        },
+                    })
+                    .ok
+            );
+        }
+        for index in 0..24 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("syn-{index:03}"),
+                    value: vec![b'v'; 128],
+                },
+            });
+        }
+
+        let synthetic = engine.synthetic_address_count_for_test(1);
+        let resident = engine.wal_resident_page_count(1);
+        println!(
+            "[synthetic] {label}: {synthetic} served address(es) resolvable only in-process, {resident} log-resident page(s) tracked"
+        );
+
+        // And after a flush, which is what a checkpoint exports.
+        engine.flush_shard_index(1);
+        let after_flush = engine.synthetic_address_count_for_test(1);
+        println!("[synthetic] {label}: {after_flush} after the index is flushed");
+
+        // If any exist, say whether a value behind one still READS -- in this process it should,
+        // because the registry is right here. The question a checkpoint raises is whether it
+        // would read anywhere else, and that is what the count above is for.
+        if after_flush > 0 {
+            let probe = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "syn-000".to_string(),
+                },
+            });
+            println!(
+                "[synthetic] {label}: in-process read {}",
+                if matches!(probe.response, CommandResponse::Bytes { value: Some(_) }) {
+                    "served"
+                } else {
+                    "EMPTY"
+                }
+            );
+        }
+        std::env::remove_var("TS_BLOCK_IN_WAL");
+        std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
+    }
+}
+
+/// A checkpoint's index must name only places the checkpoint can carry.
+///
+/// An asynchronous write leaves its page in a WAL record or in memory, named by a synthetic slab
+/// id that is not a file. It serves here, through a registry local to this process. A checkpoint
+/// uploads the slabs the block store HAS, so a synthetic one is never uploaded, and a node
+/// restoring that index holds addresses it can never resolve -- reads that return nothing, with no
+/// error anywhere.
+///
+/// So the pages are materialised before the index is exported. This asserts the property that
+/// makes a checkpoint portable: after materialising, ZERO addresses in the served index name a
+/// slab that is not a file -- and every value still reads.
+#[test]
+fn a_checkpoint_index_names_no_place_only_this_process_can_reach() {
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    for index in 0..24 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("pt-{index:03}"),
+                value: format!("portable-{index}").into_bytes(),
+            },
+        });
+        assert!(response.status.ok);
+    }
+
+    let before = engine.synthetic_address_count_for_test(1);
+    assert!(
+        before > 0,
+        "this test needs async writes to produce in-process-only addresses, and got none"
+    );
+
+    let moved = engine.materialize_synthetic_pages(1);
+    let after = engine.synthetic_address_count_for_test(1);
+    println!("[portable] {before} in-process-only address(es), {moved} materialised, {after} left");
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+
+    assert_eq!(
+        after, 0,
+        "the index still names {after} place(s) a restoring node could not reach"
+    );
+
+    // And every value still reads, which is the half a page move can break.
+    for index in 0..24 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("pt-{index:03}"),
+            },
+        });
+        let want = format!("portable-{index}").into_bytes();
+        match response.response {
+            CommandResponse::Bytes { value: Some(got) } => {
+                assert_eq!(got, want, "pt-{index:03} came back changed after materialising")
+            }
+            other => panic!("pt-{index:03} stopped reading after materialising: {other:?}"),
+        }
+    }
+}
