@@ -2422,7 +2422,8 @@ fn wal_bulk_relaxed_durability() -> bool {
 /// on-disk length is still exactly what we last left it (`verified_len_by_shard`) -- an O(1)
 /// `metadata()` stat instead of the O(n) scan. Safe because (a) the append lock is cross-process, so
 /// any external appender changes the length and forces the full scan, and (b) we only ever append
-/// complete framed lines, so a length match rules out a torn tail. Default OFF, byte-identical to
+/// complete framed lines, so a length match rules out a torn tail. Default ON; set the variable
+/// to 0 for behaviour byte-identical to
 /// the unconditional-scan path when off. Mirrors the warm-cache fast path already used by
 /// `index_log::append_delta` and `append_replayed_record`.
 fn wal_fast_append_seq() -> bool {

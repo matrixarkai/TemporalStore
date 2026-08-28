@@ -246,7 +246,8 @@ fn raft_leader_ready_barrier_on() -> bool {
 /// S2: snapshot the engine STATE IMAGE (exported index + page slabs) instead of every committed
 /// log entry. When on, `create_snapshot` captures an opaque image at the leader's applied index
 /// and drops the replayable entries, so a far-behind follower installs in O(state) rather than
-/// replaying O(total history); install reconstructs state from the image. Default OFF -> the
+/// replaying O(total history); install reconstructs state from the image. Default ON; set the
+/// variable to 0 for the
 /// snapshot still carries entries and behavior is byte-identical.
 fn raft_snapshot_state_image_on() -> bool {
     // Default ON since the restore path learned to install images and compaction proved to
@@ -260,7 +261,8 @@ fn raft_snapshot_state_image_on() -> bool {
 /// changed since the last persist. Driven purely by whether hard_state / log / membership /
 /// snapshot / fences changed, so it can never skip a persist that Raft safety requires -- only the
 /// volatile `pipeline_state` + `read_safety_state` (match/next index, inflight/queue depths,
-/// read-index accounting counters) are excluded from the change check. Default OFF -> every call
+/// read-index accounting counters) are excluded from the change check. Default ON; set the
+/// variable to 0 so every call
 /// fsyncs exactly as before (byte-identical).
 fn raft_wal_coalesce_on() -> bool {
     raft_env_flag_default_on("TS_RAFT_WAL_COALESCE")
@@ -268,7 +270,8 @@ fn raft_wal_coalesce_on() -> bool {
 
 /// P2 (in-order propose): hold a per-cluster serialize lock across the append+replicate+commit
 /// critical section of `propose_distributed_one` so concurrent proposals reach followers in log
-/// order and never trigger a `prev_log` mismatch + full-deadline stall. Default OFF.
+/// order and never trigger a `prev_log` mismatch + full-deadline stall. Default ON; set the
+/// variable to 0 to restore the prior behaviour.
 fn raft_propose_serialize_on() -> bool {
     raft_env_flag_default_on("TS_RAFT_PROPOSE_SERIALIZE")
 }
