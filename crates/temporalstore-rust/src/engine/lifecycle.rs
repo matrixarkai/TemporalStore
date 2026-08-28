@@ -642,9 +642,54 @@ impl TemporalEngine {
         shard_id: ShardId,
         outcomes: &[crate::wal::WalOutcomeItem],
     ) -> bool {
-        if outcomes.iter().any(|item| !self.apply_outcome_item(shard_id, item)) {
+        self.install_shared_outcomes_with_blocks(shard_id, outcomes, &[])
+    }
+
+    /// Install results, materialising any blocks the entry carried.
+    ///
+    /// A result names an address in the ORIGIN's block store. On a successor that address means
+    /// nothing unless the block store is shared, so an entry that carries its blocks has them
+    /// written here and the LOCAL address installed instead. Without this a successor installs a
+    /// perfect index over bytes it does not have: every read of the tail returns nothing, and no
+    /// error is raised anywhere.
+    pub fn install_shared_outcomes_with_blocks(
+        &self,
+        shard_id: ShardId,
+        outcomes: &[crate::wal::WalOutcomeItem],
+        carried: &[crate::wal::StagedPage],
+    ) -> bool {
+        let mut localised = Vec::with_capacity(outcomes.len());
+        for item in outcomes {
+            let mut item = item.clone();
+            if let (Some(address), Some(page)) = (
+                item.resolved_address(),
+                carried.iter().find(|page| page.object_id == item.object_id),
+            ) {
+                if self.page_store.read(&address).is_err() {
+                    // The bytes are not here, and the entry brought them. Write them and install
+                    // where they landed LOCALLY.
+                    if let Ok(local) = super::append_value(
+                        &self.cache,
+                        &self.page_store,
+                        shard_id,
+                        &page.bytes,
+                        Some(item.object_id),
+                        Some(item.routing_bucket),
+                        false,
+                    ) {
+                        item.address = Some(local);
+                    }
+                }
+            }
+            localised.push(item);
+        }
+        if localised
+            .iter()
+            .any(|item| !self.apply_outcome_item(shard_id, item))
+        {
             return false;
         }
+        let outcomes = &localised[..];
         self.replay_installs.fetch_add(
             outcomes.len() as u64,
             std::sync::atomic::Ordering::Relaxed,

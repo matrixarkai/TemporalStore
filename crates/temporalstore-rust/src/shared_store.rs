@@ -1251,7 +1251,7 @@ where
             // The fallback is what makes this safe to land. An entry carrying no outcomes replays
             // exactly as it used to, so a shared log written before this still applies.
             if !entry.outcomes.is_empty() {
-                if !engine.install_shared_outcomes(shard_id, &entry.outcomes) {
+                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_pages) {
                     return Err(SharedStoreReplicationError::ApplyFailed {
                         wal_index,
                         status: Status::error(
@@ -1337,7 +1337,7 @@ where
             // The fallback is what makes this safe to land. An entry carrying no outcomes replays
             // exactly as it used to, so a shared log written before this still applies.
             if !entry.outcomes.is_empty() {
-                if !engine.install_shared_outcomes(shard_id, &entry.outcomes) {
+                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_pages) {
                     return Err(SharedStoreReplicationError::ApplyFailed {
                         wal_index,
                         status: Status::error(
@@ -3304,6 +3304,148 @@ mod tests {
             follower.block_store().stats().shared_slab_fetches,
             1,
             "the old key is served by exactly one on-demand slab fetch"
+        );
+    }
+
+    /// RESTORATION on the live format, and the constraint it runs into.
+    ///
+    /// A restored node takes its index and pages from a checkpoint and everything after it from
+    /// the log. On the live format those tail entries carry RESULTS, and this asks whether a
+    /// restored node can install them.
+    ///
+    /// It can install the index entry. It cannot necessarily SERVE it, and that is the finding: a
+    /// result names an address in the ORIGIN's block store. Carrying the bytes in the entry does
+    /// not help, because installing an address does not write bytes into the successor's store.
+    /// Across nodes an address only means something when the SLAB is reachable -- which in shared
+    /// mode means published.
+    ///
+    /// So this asserts the whole property rather than half of it: the node serves both the
+    /// checkpointed half and the tail, and reports which path the tail took. A test that asserted
+    /// installation alone would pass on a node that cannot answer a single read.
+    #[tokio::test]
+    async fn a_restored_node_installs_the_tail_instead_of_re_running_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+
+        // Everything up to here will be covered by the checkpoint.
+        for index in 0..4 {
+            let response = primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("base-{index}"),
+                    value: format!("base-value-{index}").into_bytes(),
+                },
+            });
+            assert!(response.status.ok);
+        }
+        let checkpoint_through = primary
+            .write_ahead_log_store()
+            .info(1)
+            .unwrap()
+            .current_sequence;
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        replicator
+            .publish_checkpoint(1, checkpoint_through, &primary, &primary.block_store())
+            .await
+            .unwrap();
+
+        // Now the TAIL: written after the checkpoint, and published with what it recorded.
+        let tail_write = primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "tail-key".to_string(),
+                value: b"tail-value".to_vec(),
+            },
+        });
+        assert!(tail_write.status.ok);
+
+        let tail = primary
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .find(|record| record.sequence > checkpoint_through && !record.outcomes.is_empty())
+            .expect("the tail write recorded what it did");
+        // Publish it the way a correct publisher must: with the BYTES the results point at.
+        // A result names an address in the primary's block store, and the follower has its own,
+        // so an entry carrying only the address gives the follower an index entry pointing at
+        // bytes it does not have -- a shard that looks whole and serves nothing.
+        let mut carried = tail.staged_pages.clone();
+        if carried.is_empty() {
+            for item in &tail.outcomes {
+                if let Some(address) = item.resolved_address() {
+                    if let Ok(bytes) = primary.block_store().read(&address) {
+                        carried.push(crate::wal::StagedPage {
+                            object_id: item.object_id,
+                            bytes,
+                        });
+                    }
+                }
+            }
+        }
+        assert!(
+            !carried.is_empty(),
+            "the tail's results point at no readable block, so a follower could not serve them"
+        );
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: tail.sequence,
+                command: tail.command.clone(),
+                staged_pages: carried,
+                outcomes: tail.outcomes.clone(),
+            })
+            .await
+            .unwrap();
+
+        // A node that has never seen this shard: restore, then take the tail.
+        let follower = test_engine(dir.path(), "restored");
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        let installs_before = follower.replay_installs_for_test();
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        let installed = follower.replay_installs_for_test() - installs_before;
+
+        // Reported, not required. Installing is preferred and only possible when the tail's slab
+        // is reachable; re-running is the fallback that exists for exactly when it is not. What
+        // must hold either way is that the node SERVES what it took.
+        println!(
+            "[restore] tail applied={} installed={installed}",
+            report.applied
+        );
+        assert!(
+            report.applied > 0,
+            "the restored node took nothing from the tail at all"
+        );
+        // Read back BOTH halves: something the checkpoint carried, and something only the tail
+        // did. A restored node that serves one and not the other has half a shard.
+        for (label, key, want) in [
+            ("checkpoint", "base-0", b"base-value-0".to_vec()),
+            ("tail", "tail-key", b"tail-value".to_vec()),
+        ] {
+            let response = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: key.to_string(),
+                },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes { value: Some(want) },
+                "a restored node could not serve the {label} half"
+            );
+        }
+        println!(
+            "[restore] checkpoint through {checkpoint_through}, {installed} tail result(s) installed"
         );
     }
 
