@@ -5514,19 +5514,23 @@ fn what_each_command_recorded_describes_everything_it_changed() {
     );
 }
 
-/// What a record COSTS, measured through the engine rather than the log.
+/// What a record COSTS, before and after -- measured through the engine, not the log.
 ///
-/// The reclaim harness appends straight to the WAL store, so it never stages an outcome and its
-/// record bytes are identical with the gate on and off -- byte-for-byte identical base offsets are
-/// how that was caught. Anything measuring the cost of recording outcomes has to go through
+/// The reclaim harness appends straight to the log and never stages a result, so its records are
+/// byte-identical either way; its base offsets matched to the byte across both runs, which is how
+/// that was caught rather than reported as a saving. Anything measuring this has to go through
 /// execute().
 ///
-/// This reports bytes per record both ways and asserts only the direction: carrying a command AND
-/// its outcomes must be bigger than carrying the command alone. The absolute numbers are printed
-/// for the record, not asserted, because they move with the workload.
+/// BEFORE is what shipped: the operation, in text. AFTER is what ships now: results, in protobuf,
+/// with no operation. Both arms set every flag explicitly, because the defaults are the thing
+/// under test and inheriting them would compare a configuration against itself -- which this test
+/// did, silently, the moment the defaults flipped.
 #[test]
-fn what_recording_outcomes_costs_per_record() {
-    fn wal_bytes_for(outcomes: bool, writes: usize) -> (u64, u64) {
+fn a_record_carrying_results_is_smaller_than_one_carrying_the_operation() {
+    fn wal_bytes(binary: &str, record_results: &str, data_only: &str, writes: usize) -> (u64, u64) {
+        std::env::set_var("TS_WAL_BINARY_RECORDS", binary);
+        std::env::set_var("TS_WAL_OUTCOME_ITEMS", record_results);
+        std::env::set_var("TS_WAL_DATA_ONLY", data_only);
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -5535,9 +5539,6 @@ fn what_recording_outcomes_costs_per_record() {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        if outcomes {
-            std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
-        }
         for index in 0..writes {
             let response = engine.execute(ExecuteRequest {
                 shard_id: 1,
@@ -5548,64 +5549,40 @@ fn what_recording_outcomes_costs_per_record() {
             });
             assert!(response.status.ok);
         }
-        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
         let records = engine
             .write_ahead_log_store()
             .scan(1, 0, u64::MAX, u64::MAX)
             .unwrap();
         let total: u64 = records.iter().map(|(_, line)| line.len() as u64).sum();
-        (total, records.len() as u64)
+        let count = records.len() as u64;
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
+        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+        std::env::remove_var("TS_WAL_DATA_ONLY");
+        (total, count)
     }
 
     const WRITES: usize = 2_000;
-    let (without, count_without) = wal_bytes_for(false, WRITES);
-    let (with, count_with) = wal_bytes_for(true, WRITES);
-    let per_without = without as f64 / count_without as f64;
-    let per_with = with as f64 / count_with as f64;
+    let (before, before_n) = wal_bytes("0", "0", "0", WRITES);
+    let (after, after_n) = wal_bytes("1", "1", "1", WRITES);
+    let per_before = before as f64 / before_n as f64;
+    let per_after = after as f64 / after_n as f64;
 
-    println!("[record cost] command only      : {without} B over {count_without} records = {per_without:.1} B/record");
-    println!("[record cost] command + outcomes: {with} B over {count_with} records = {per_with:.1} B/record");
+    println!("[record cost] BEFORE  operation, text     : {per_before:.1} B/record");
+    println!("[record cost] AFTER   results, protobuf   : {per_after:.1} B/record");
     println!(
-        "[record cost] carrying both costs {:.1} B/record ({:+.1}%)",
-        per_with - per_without,
-        (per_with - per_without) / per_without * 100.0
+        "[record cost] {:+.1} B/record ({:+.1}%)",
+        per_after - per_before,
+        (per_after - per_before) / per_before * 100.0
     );
 
-    // Print one record each way. A ratio says something is expensive; the bytes say WHAT.
-    {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024 * 1024,
-            dir.path().join("c"),
-            dir.path().join("p"),
-            dir.path().join("i"),
-        );
-        engine.load_shard(1);
-        std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringSet {
-                key: "size-000000".to_string(),
-                value: vec![b'v'; 64],
-            },
-        });
-        std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
-        for (_, line) in engine
-            .write_ahead_log_store()
-            .scan(1, 0, u64::MAX, u64::MAX)
-            .unwrap()
-            .iter()
-            .take(1)
-        {
-            println!("[record cost] one record with outcomes ({} B):", line.len());
-            println!("{}", String::from_utf8_lossy(line));
-        }
-    }
-
-    assert!(count_with >= count_without, "the workload changed shape between runs");
+    assert_eq!(before_n, after_n, "the two arms wrote different record counts");
+    // The whole argument for making this the default. A record that states results carries MORE
+    // information than one that states an operation, and if it also costs more bytes then going
+    // live is a regression dressed as progress.
     assert!(
-        per_with > per_without,
-        "recording outcomes alongside the command should cost bytes; if it does not, the gate is          not reaching the append path and this measurement is meaningless"
+        per_after < per_before,
+        "a record carrying results ({per_after:.1} B) must not cost more than one carrying the \
+         operation ({per_before:.1} B)"
     );
 }
 
@@ -5724,7 +5701,7 @@ fn a_record_encoded_as_protobuf_reads_back_identical() {
         // Both branches set the flag explicitly. Leaving the text branch to inherit the ambient
         // environment meant that under a suite run with the binary flag on, the "text" encoding
         // was binary and the comparison silently tested one encoding against itself.
-        std::env::remove_var("TS_WAL_BINARY_RECORDS");
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
         let framed = crate::wal::encode_wal_line_for_test(record).expect("text encodes");
         text_bytes += framed.len();
 

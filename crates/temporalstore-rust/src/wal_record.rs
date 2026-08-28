@@ -312,10 +312,10 @@ mod tests {
             let record = WriteAheadLogRecord {
                 shard_id: 1,
                 sequence: 1,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: key.to_string(),
                     value: value.clone(),
-                },
+                }),
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,
@@ -428,10 +428,10 @@ mod tests {
             let record = WriteAheadLogRecord {
                 shard_id: 1,
                 sequence: 1,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "scale-key-000000000".to_string(),
                     value: vec![118u8; value_len],
-                },
+                }),
                 metadata: Some(WriteAheadLogRecordMetadata {
                     version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
                     timestamp_ms: 1_787_270_070_192,

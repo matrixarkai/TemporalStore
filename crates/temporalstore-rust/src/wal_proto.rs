@@ -81,9 +81,12 @@ fn unescape_newlines(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// its first byte says it is -- so turning it on and off again leaves a log that still reads end
 /// to end.
 pub(crate) fn binary_records_enabled() -> bool {
+    // Default ON. Reading never consults this -- a payload is decoded by what its first byte says
+    // it is -- so a log written across the flip reads end to end in either direction, and turning
+    // it off again is not a one-way door.
     std::env::var("TS_WAL_BINARY_RECORDS")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
 }
 
 fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
@@ -215,12 +218,15 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let message = v1::EngineWalRecord {
         shard_id: record.shard_id,
         sequence: record.sequence,
-        command: Some(v1::WalCommand {
-            kind: Some(
-                crate::raft::wal_proto::command_to_proto(&record.command)
-                    .map_err(|err| err.to_string())?,
-            ),
-        }),
+        command: match record.command.as_ref() {
+            Some(command) => Some(v1::WalCommand {
+                kind: Some(
+                    crate::raft::wal_proto::command_to_proto(command)
+                        .map_err(|err| err.to_string())?,
+                ),
+            }),
+            None => None,
+        },
         metadata: record
             .metadata
             .as_ref()
@@ -250,13 +256,13 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     let unescaped = unescape_newlines(&payload[1..])?;
     let message =
         v1::EngineWalRecord::decode(unescaped.as_slice()).map_err(|err| err.to_string())?;
-    let command = message
-        .command
-        .and_then(|command| command.kind)
-        .ok_or_else(|| String::from("engine wal record carried no command"))
-        .and_then(|kind| {
-            crate::raft::wal_proto::command_from_proto(kind).map_err(|err| err.to_string())
-        })?;
+    // Absent is a legitimate record now, not a malformed one: it carries results instead.
+    let command = match message.command.and_then(|command| command.kind) {
+        Some(kind) => Some(
+            crate::raft::wal_proto::command_from_proto(kind).map_err(|err| err.to_string())?,
+        ),
+        None => None,
+    };
     Ok(WriteAheadLogRecord {
         shard_id: message.shard_id,
         sequence: message.sequence,

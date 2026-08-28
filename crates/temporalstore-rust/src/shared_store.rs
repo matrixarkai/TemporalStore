@@ -90,7 +90,13 @@ pub struct SharedStoreWalEntry {
     pub shard_id: ShardId,
     #[serde(rename = "wal_index")]
     pub wal_index: u64,
-    pub command: Command,
+    /// The operation, for an entry that cannot say what it DID.
+    ///
+    /// Absent once the entry carries results, exactly as in the engine record it comes from. An
+    /// entry published before results existed still carries one, and a successor still replays it
+    /// by re-running it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Command>,
     /// The pages this write produced, carried beside the command that produced them.
     ///
     /// A command is not always enough to rebuild what it wrote. A page can be DERIVED state --
@@ -696,7 +702,7 @@ where
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         let key = self.wal_blob_key(entry.shard_id);
-        let command_metadata = wal_command_metadata(&entry.command)?;
+        let command_metadata = wal_command_metadata(entry.command.as_ref())?;
         let frame = encode_wal_proto_frame(&entry)?;
         let receipt = self
             .append_blob_with_retry(&key, Bytes::from(frame))
@@ -792,7 +798,7 @@ where
         for entry in entries {
             let frame = encode_wal_proto_frame(entry)?;
             frame_lengths.push(frame.len() as u64);
-            command_metadata.push(wal_command_metadata(&entry.command)?);
+            command_metadata.push(wal_command_metadata(entry.command.as_ref())?);
             wal_payload.extend_from_slice(&frame);
         }
         let receipt = self
@@ -1262,11 +1268,17 @@ where
             // command would otherwise substitute this node's reconstruction for the bytes that
             // were actually acked -- identical for a plain value, and not necessarily so for
             // derived state.
+            let Some(command) = entry.command else {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index,
+                    status: Status::error(
+                        "shared_wal_entry_empty",
+                        "entry carries neither results nor an operation; refusing rather than skipping a durable write",
+                    ),
+                });
+            };
             let response = engine.execute_with_carried_pages(
-                ExecuteRequest {
-                    shard_id,
-                    command: entry.command,
-                },
+                ExecuteRequest { shard_id, command },
                 entry.staged_pages,
             );
             if !response.status.ok {
@@ -1342,11 +1354,17 @@ where
             // command would otherwise substitute this node's reconstruction for the bytes that
             // were actually acked -- identical for a plain value, and not necessarily so for
             // derived state.
+            let Some(command) = entry.command else {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index,
+                    status: Status::error(
+                        "shared_wal_entry_empty",
+                        "entry carries neither results nor an operation; refusing rather than skipping a durable write",
+                    ),
+                });
+            };
             let response = engine.execute_with_carried_pages(
-                ExecuteRequest {
-                    shard_id,
-                    command: entry.command,
-                },
+                ExecuteRequest { shard_id, command },
                 entry.staged_pages,
             );
             if !response.status.ok {
@@ -1399,9 +1417,19 @@ where
                         ),
                     ))
                 })?;
+            // Neither results nor an operation: refusing beats skipping a durable write.
+            let Some(command) = read.entry.command else {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index: *wal_index,
+                    status: Status::error(
+                        "shared_wal_entry_empty",
+                        "entry carries neither results nor an operation",
+                    ),
+                });
+            };
             let response = engine.execute(ExecuteRequest {
                 shard_id,
-                command: read.entry.command,
+                command,
             });
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
@@ -2212,7 +2240,7 @@ where
         let entry = SharedStoreWalEntry {
             shard_id,
             wal_index,
-            command,
+            command: Some(command),
         
                         staged_pages: Vec::new(),
                                 outcomes: Vec::new(),
@@ -2462,9 +2490,20 @@ struct WalCommandMetadata {
     encoding: u32,
 }
 
+/// Describe the operation an entry carries, for the offset sidecar.
+///
+/// An entry carrying results has no operation to describe, and this sidecar exists to say how the
+/// operation was encoded. Empty is the honest answer rather than a fabricated one.
 fn wal_command_metadata(
-    command: &Command,
+    command: Option<&Command>,
 ) -> Result<WalCommandMetadata, SharedStoreReplicationError> {
+    let Some(command) = command else {
+        return Ok(WalCommandMetadata {
+            byte_size: 0,
+            sha256: sha256_hex(&[]),
+            encoding: WAL_COMMAND_ENCODING_JSON_SERDE,
+        });
+    };
     let (command_payload, command_encoding) = match command_to_sdk_proto(command) {
         Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
         None => (
@@ -2482,12 +2521,13 @@ fn wal_command_metadata(
 fn encode_wal_proto_frame(
     entry: &SharedStoreWalEntry,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    let (command_payload, command_encoding) = match command_to_sdk_proto(&entry.command) {
-        Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-        None => (
-            serde_json::to_vec(&entry.command)?,
-            WAL_COMMAND_ENCODING_JSON_SERDE,
-        ),
+    let (command_payload, command_encoding) = match entry.command.as_ref() {
+        // No operation to carry: the entry states results instead.
+        None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
+        Some(command) => match command_to_sdk_proto(command) {
+            Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
+            None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
+        },
     };
     let frame = SharedStoreWalFrameProto {
         shard_id: entry.shard_id,
@@ -2588,7 +2628,7 @@ fn decode_wal_proto_frame_exact(
     Ok(SharedStoreWalEntry {
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
-        command,
+        command: Some(command),
         outcomes: frame
             .items
             .into_iter()
@@ -2895,10 +2935,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -3119,9 +3159,9 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::CommonDelete {
+                command: Some(Command::CommonDelete {
                     key: "gone".to_string(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -3210,10 +3250,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -3297,10 +3337,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -3567,10 +3607,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -3673,10 +3713,10 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value: key.as_bytes().to_vec(),
-                    },
+                    }),
                 
                                        staged_pages: Vec::new(),
                                                        outcomes: Vec::new(),
@@ -3731,10 +3771,10 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value,
-                    },
+                    }),
                 
                                        staged_pages: Vec::new(),
                                                        outcomes: Vec::new(),
@@ -3982,10 +4022,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -4101,10 +4141,10 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value: key.as_bytes().to_vec(),
-                    },
+                    }),
                 
                                        staged_pages: Vec::new(),
                                                        outcomes: Vec::new(),
@@ -4159,10 +4199,10 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value,
-                    },
+                    }),
                 
                                        staged_pages: Vec::new(),
                                                        outcomes: Vec::new(),
@@ -4209,10 +4249,10 @@ mod tests {
         let entry = SharedStoreWalEntry {
             shard_id: 1,
             wal_index: 1,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
-            },
+            }),
             staged_pages: vec![crate::wal::StagedPage {
                 object_id: 77,
                 bytes: b"derived-page-bytes".to_vec(),
@@ -4241,10 +4281,10 @@ mod tests {
         let entry = SharedStoreWalEntry {
             shard_id: 1,
             wal_index: 1,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
-            },
+            }),
             staged_pages: Vec::new(),
                     outcomes: Vec::new(),
         };
@@ -4464,10 +4504,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "gap".to_string(),
                     value: b"v".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -4854,10 +4894,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 1,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "k".to_string(),
                     value: b"v".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -4907,10 +4947,10 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 1,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "retry".to_string(),
                     value: b"ok".to_vec(),
-                },
+                }),
             
                                    staged_pages: Vec::new(),
                                                outcomes: Vec::new(),
@@ -4966,10 +5006,10 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: format!("k{wal_index}"),
                         value: vec![wal_index as u8],
-                    },
+                    }),
                 
                                        staged_pages: Vec::new(),
                                                        outcomes: Vec::new(),
@@ -5036,10 +5076,10 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value,
-                    },
+                    }),
                 
                                        staged_pages: Vec::new(),
                                                        outcomes: Vec::new(),

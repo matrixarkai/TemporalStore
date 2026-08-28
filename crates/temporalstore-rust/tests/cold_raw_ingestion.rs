@@ -29,6 +29,10 @@ fn cold_event(event_id_hash: u64, event_time_ms: u64, text: &str) -> ContextEven
 
 #[test]
 fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
+    // Keep the OPERATION in each record: the assertions below read it, and a record carrying
+    // results does not carry one. It has to be set before the writes, not before the reads --
+    // the records are already on disk by then.
+    std::env::set_var("TS_WAL_DATA_ONLY", "0");
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
@@ -104,19 +108,23 @@ fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
         .map(|record| serde_json::from_slice::<WriteAheadLogRecord>(&record.data).unwrap())
         .collect::<Vec<_>>();
     assert_eq!(wal_records.len(), 4);
+    // This asserts on the OPERATION, which a record carries only when it is not carrying results
+    // instead. `cold_storage` decides whether a write populates the cache -- it is a property of
+    // how the write was made, not of what it did, so no recorded result mentions it. The test opts
+    // out of the data-only default at the top of the file for exactly that reason.
     assert!(wal_records.iter().take(3).all(|record| matches!(
         record.command,
-        Command::ContextWriteEvent {
+        Some(Command::ContextWriteEvent {
             cold_storage: true,
             ..
-        }
+        })
     )));
     assert!(matches!(
         wal_records.last().unwrap().command,
-        Command::ContextWriteExtractedEvent {
+        Some(Command::ContextWriteExtractedEvent {
             cold_storage: true,
             ..
-        }
+        })
     ));
     assert_eq!(engine.cache().stats().puts, cache_puts_before);
 
