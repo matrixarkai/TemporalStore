@@ -5846,3 +5846,144 @@ fn binary_records_survive_a_reload_through_a_real_log_file() {
         }
     }
 }
+
+/// Recording results must not cost a write its place in the group-commit queue.
+///
+/// It used to. Anything a record had to CARRY forced the staged append branch, and outcomes were
+/// treated as one of those things -- so turning recording on turned coalescing off, and every
+/// concurrent writer paid its own fsync. That was the strongest argument for keeping the gate off,
+/// and it was a property of the plumbing rather than of durability: a staged page needs its
+/// address back-patched once the record's log id exists, and an outcome does not.
+///
+/// Asserts fewer fsyncs than writes with recording ON. Not a ratio -- the point is that coalescing
+/// ENGAGES, and on a loaded machine how much it wins varies.
+#[test]
+fn recording_results_still_coalesces_fsyncs() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    const WRITERS: usize = 8;
+    const PER_WRITER: usize = 25;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    engine.load_shard(1);
+    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "1");
+
+    let syncs_before = engine.write_ahead_log_store().stats(1).syncs;
+    let acked = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(Barrier::new(WRITERS));
+    let mut handles = Vec::with_capacity(WRITERS);
+    for writer in 0..WRITERS {
+        let engine = Arc::clone(&engine);
+        let acked = Arc::clone(&acked);
+        let gate = Arc::clone(&gate);
+        handles.push(std::thread::spawn(move || {
+            gate.wait();
+            for index in 0..PER_WRITER {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("gc-{writer}-{index}"),
+                        value: b"v".to_vec(),
+                    },
+                });
+                if response.status.ok {
+                    acked.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    let syncs = engine.write_ahead_log_store().stats(1).syncs - syncs_before;
+    let writes = acked.load(Ordering::Relaxed);
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
+
+    println!("[coalescing] writes={writes} fdatasyncs={syncs} while recording results");
+    assert_eq!(writes, WRITERS * PER_WRITER, "every write must ack");
+    assert!(
+        syncs < writes as u64,
+        "recording results cost the coalescing: {syncs} fsyncs for {writes} writes"
+    );
+
+    // And every acked write is still readable, which is the half a coalescing change can break.
+    for writer in 0..WRITERS {
+        for index in 0..PER_WRITER {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("gc-{writer}-{index}"),
+                },
+            });
+            assert!(
+                matches!(response.response, CommandResponse::Bytes { value: Some(ref v) } if v == b"v"),
+                "gc-{writer}-{index} did not read back"
+            );
+        }
+    }
+}
+
+/// Does a write that stages a log-resident block keep it when it takes the group-commit branch?
+///
+/// The branch predicate tests the pages the CALLER handed in, not the ones the write staged
+/// itself, and both gates default on -- so on the face of it a staged block could be dropped. This
+/// settles it by looking rather than by reading the predicate, because the answer decides whether
+/// anything needs fixing before the recording flip.
+#[test]
+fn a_group_commit_write_keeps_the_block_it_staged() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "bw-key".to_string(),
+            value: b"staged".to_vec(),
+        },
+    });
+    assert!(response.status.ok);
+    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
+
+    let carried: usize = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+        .map(|record| record.staged_pages.len())
+        .sum();
+    println!(
+        "[block-in-wal] group-commit write: {} block(s) carried, index holds {}",
+        carried,
+        engine.wal_resident_page_count(1)
+    );
+
+    // Whatever the answer, the value must read back -- that is the property that matters.
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "bw-key".to_string(),
+        },
+    });
+    assert!(
+        matches!(get.response, CommandResponse::Bytes { value: Some(ref v) } if v == b"staged"),
+        "a group-commit write did not read back: {:?}",
+        get.response
+    );
+}

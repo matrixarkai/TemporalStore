@@ -104,6 +104,17 @@ pub struct SharedStoreWalEntry {
     /// before this field existed still loads.
     #[serde(default)]
     pub staged_pages: Vec<crate::wal::StagedPage>,
+    /// What this write DID, so a successor can install results instead of re-running operations.
+    ///
+    /// Carrying pages was the same idea reached halfway: a page is derived state the command
+    /// cannot rebuild, so the pages travelled beside the command. These finish the thought. A
+    /// successor that installs them needs no clock of its own, no eviction config from the
+    /// original node, and no assumption that re-executing here lands where it landed there.
+    ///
+    /// `serde(default)` and skipped when empty, so an entry written before this reads back
+    /// unchanged and replays exactly as it used to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<crate::wal::WalOutcomeItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -396,6 +407,17 @@ struct SharedStoreWalFrameProto {
     /// empty, so both directions stay readable across the change.
     #[prost(message, repeated, tag = "7")]
     staged_pages: Vec<SharedStoreStagedPageProto>,
+    /// What the write DID, in the SAME message the engine log uses.
+    ///
+    /// Not a shared-store item type: the shared log needs a destination, not a schema. Carrying
+    /// the engine's item means a successor installs exactly what the origin recorded, with no
+    /// conversion in between to disagree about.
+    ///
+    /// Tag 8, same compatibility shape as tag 7. Without it this path would carry the command and
+    /// silently drop the results, which is worse than not carrying them at all -- the successor
+    /// would re-execute and look correct.
+    #[prost(message, repeated, tag = "8")]
+    items: Vec<crate::sdk::v1::EngineWalItem>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -1215,6 +1237,27 @@ where
             if wal_index <= after_wal_index {
                 continue;
             }
+            // An entry that says what its write DID is installed, not re-executed. Re-executing
+            // reproduces the write only if everything that influenced it is reproduced too, and on
+            // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
+            // a different clock, and whatever config it happens to hold.
+            //
+            // The fallback is what makes this safe to land. An entry carrying no outcomes replays
+            // exactly as it used to, so a shared log written before this still applies.
+            if !entry.outcomes.is_empty() {
+                if !engine.install_shared_outcomes(shard_id, &entry.outcomes) {
+                    return Err(SharedStoreReplicationError::ApplyFailed {
+                        wal_index,
+                        status: Status::error(
+                            "shared_wal_outcome_refused",
+                            "a recorded outcome could not be installed; refusing to serve a shard missing it",
+                        ),
+                    });
+                }
+                report.applied += 1;
+                report.last_wal_index = wal_index;
+                continue;
+            }
             // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
             // command would otherwise substitute this node's reconstruction for the bytes that
             // were actually acked -- identical for a plain value, and not necessarily so for
@@ -1273,6 +1316,27 @@ where
                     expected,
                     actual: wal_index,
                 });
+            }
+            // An entry that says what its write DID is installed, not re-executed. Re-executing
+            // reproduces the write only if everything that influenced it is reproduced too, and on
+            // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
+            // a different clock, and whatever config it happens to hold.
+            //
+            // The fallback is what makes this safe to land. An entry carrying no outcomes replays
+            // exactly as it used to, so a shared log written before this still applies.
+            if !entry.outcomes.is_empty() {
+                if !engine.install_shared_outcomes(shard_id, &entry.outcomes) {
+                    return Err(SharedStoreReplicationError::ApplyFailed {
+                        wal_index,
+                        status: Status::error(
+                            "shared_wal_outcome_refused",
+                            "a recorded outcome could not be installed; refusing to serve a shard missing it",
+                        ),
+                    });
+                }
+                report.applied += 1;
+                report.last_wal_index = wal_index;
+                continue;
             }
             // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
             // command would otherwise substitute this node's reconstruction for the bytes that
@@ -2151,7 +2215,8 @@ where
             command,
         
                         staged_pages: Vec::new(),
-                    };
+                                outcomes: Vec::new(),
+        };
         match self.mode {
             SharedStoreStorageMode::Sync if self.group_commit => {
                 self.group_commit_write(entry).await
@@ -2439,6 +2504,11 @@ fn encode_wal_proto_frame(
                 bytes: page.bytes.clone(),
             })
             .collect(),
+        items: entry
+            .outcomes
+            .iter()
+            .map(crate::wal_proto::item_to_proto)
+            .collect(),
     };
     let mut encoded = frame.encode_to_vec();
     let mut out = Vec::with_capacity(4 + encoded.len());
@@ -2519,6 +2589,11 @@ fn decode_wal_proto_frame_exact(
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
         command,
+        outcomes: frame
+            .items
+            .into_iter()
+            .map(crate::wal_proto::item_from_proto)
+            .collect(),
         staged_pages: frame
             .staged_pages
             .into_iter()
@@ -2826,7 +2901,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -3048,7 +3124,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -3139,7 +3216,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -3225,7 +3303,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -3494,7 +3573,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -3599,7 +3679,8 @@ mod tests {
                     },
                 
                                        staged_pages: Vec::new(),
-                                   })
+                                                       outcomes: Vec::new(),
+                })
                 .await
                 .unwrap();
         }
@@ -3656,7 +3737,8 @@ mod tests {
                     },
                 
                                        staged_pages: Vec::new(),
-                                   })
+                                                       outcomes: Vec::new(),
+                })
                 .await
                 .unwrap();
         }
@@ -3906,7 +3988,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -4024,7 +4107,8 @@ mod tests {
                     },
                 
                                        staged_pages: Vec::new(),
-                                   })
+                                                       outcomes: Vec::new(),
+                })
                 .await
                 .unwrap();
         }
@@ -4081,7 +4165,8 @@ mod tests {
                     },
                 
                                        staged_pages: Vec::new(),
-                                   })
+                                                       outcomes: Vec::new(),
+                })
                 .await
                 .unwrap();
         }
@@ -4132,6 +4217,7 @@ mod tests {
                 object_id: 77,
                 bytes: b"derived-page-bytes".to_vec(),
             }],
+                    outcomes: Vec::new(),
         };
         replicator.publish_wal_entry(entry.clone()).await.unwrap();
 
@@ -4160,6 +4246,7 @@ mod tests {
                 value: b"v".to_vec(),
             },
             staged_pages: Vec::new(),
+                    outcomes: Vec::new(),
         };
         let mut legacy = serde_json::to_value(&entry).unwrap();
         legacy
@@ -4383,7 +4470,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -4772,7 +4860,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
 
@@ -4824,7 +4913,8 @@ mod tests {
                 },
             
                                    staged_pages: Vec::new(),
-                               })
+                                               outcomes: Vec::new(),
+            })
             .await
             .unwrap();
     }
@@ -4882,7 +4972,8 @@ mod tests {
                     },
                 
                                        staged_pages: Vec::new(),
-                                   })
+                                                       outcomes: Vec::new(),
+                })
                 .await
                 .unwrap();
         }
@@ -4951,7 +5042,8 @@ mod tests {
                     },
                 
                                        staged_pages: Vec::new(),
-                                   })
+                                                       outcomes: Vec::new(),
+                })
                 .await
                 .unwrap();
             append_receipts.push(receipt.expect("protobuf append blob should return offsets"));
