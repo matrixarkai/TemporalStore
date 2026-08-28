@@ -244,22 +244,53 @@ def resource_content_version(raw_uri: str, units: list[Json]) -> str:
     return digest.hexdigest()[:16]
 
 
+CJK_KEYWORD_BIGRAMS = os.environ.get("MATRIXARK_RESOURCE_CJK_KEYWORDS", "1") not in {"0", "false", "False", ""}
+_CJK_RUN_RE = re.compile("[" + _CJK_CLASS + "]{2,}")
+
+
 def keywords_for_text(text: str, limit: int = 12) -> list[str]:
+    """Keywords for the secondary index.
+
+    Latin runs alone leave Chinese text with NO keywords, so on a CJK corpus the keyword
+    index — the part of the secondary index carrying any selectivity — indexes nothing.
+    Chinese has no spaces to split on, so CJK runs contribute overlapping character
+    bigrams, which a lexical index can match without a segmenter.
+
+    The two are interleaved rather than concatenated. Taking Latin first and stopping at
+    the limit lets a few English words in a mixed passage exhaust the quota, leaving the
+    Chinese half of the same chunk unindexed — which is what happened before.
+    """
     stop = {
         "the", "and", "for", "that", "with", "from", "this", "will", "are", "was", "were", "has", "have",
         "should", "into", "when", "where", "what", "which", "your", "their", "about", "after", "before",
     }
+    latin: list[str] = []
     seen: set[str] = set()
-    out: list[str] = []
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", text.lower()):
         if token in stop or token in seen:
             continue
         seen.add(token)
-        out.append(token)
-        if len(out) >= limit:
-            break
+        latin.append(token)
+    cjk: list[str] = []
+    if CJK_KEYWORD_BIGRAMS:
+        for run in _CJK_RUN_RE.findall(text):
+            for index in range(len(run) - 1):
+                bigram = run[index : index + 2]
+                if bigram in seen:
+                    continue
+                seen.add(bigram)
+                cjk.append(bigram)
+    out: list[str] = []
+    for index in range(max(len(latin), len(cjk))):
+        if index < len(latin):
+            out.append(latin[index])
+            if len(out) >= limit:
+                return out
+        if index < len(cjk):
+            out.append(cjk[index])
+            if len(out) >= limit:
+                return out
     return out
-
 
 def _truncate_to_tokens(text: str, max_tokens: int) -> str:
     """Trim text to roughly max_tokens estimated tokens, on a span boundary."""
