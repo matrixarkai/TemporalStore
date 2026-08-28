@@ -40,6 +40,7 @@ DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLIN
 DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
 DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
+DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
 DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
 
 
@@ -303,6 +304,7 @@ def parse_resource(
     max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
     max_inline_text_chars: int | None = None,
     pack_markdown_sections: bool | None = None,
+    slim_chunk_metadata_fields: bool | None = None,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
 
@@ -341,6 +343,8 @@ def parse_resource(
         max_inline_text_chars=max_inline_text_chars,
     )
 
+    if slim_chunk_metadata_fields is None:
+        slim_chunk_metadata_fields = DEFAULT_SLIM_CHUNK_METADATA
     if pack_markdown_sections is None:
         pack_markdown_sections = DEFAULT_MD_PACK_SECTIONS
     if pack_markdown_sections and kind in {"md", "skill"}:
@@ -391,6 +395,8 @@ def parse_resource(
             metadata["parse_warnings"] = normalize_parse_warnings(metadata)
             metadata["raw_storage_policy"] = "raw_uri_only"
             metadata["raw_bytes_stored"] = False
+            if slim_chunk_metadata_fields:
+                metadata = slim_chunk_metadata(metadata)
             chunk_hash = (
                 chunk_hash_base + len(chunks)
                 if chunk_hash_base is not None
@@ -600,6 +606,51 @@ def _pack_markdown_units(units: list[Json], max_chunk_tokens: int) -> list[Json]
     for unit in packed:
         unit.pop("_pack_parent", None)
     return packed
+
+
+
+
+# Fields a served chunk actually needs: enough to retrieve it, cite it, order it
+# within its document, and detect that its content changed. Everything else is
+# recomputable from the text or from the resource manifest.
+SLIM_CHUNK_METADATA_FIELDS = frozenset({
+    "resource_type",
+    "resource_version",
+    "chunk_index",
+    "unit_index",
+    "split_index",
+    "content_hash",
+    "citation",
+    "token_count",
+    "heading",
+    "heading_slug",
+    "line_start",
+    "line_end",
+    "page",
+    "page_number",
+    "slide_number",
+    "record_index",
+    "record_start",
+    "record_end",
+    "row_index",
+    "row_range",
+    "unit_kind",
+    "packed_sections",
+    "parse_warnings",
+    "supersedes_chunk_hash",
+})
+
+
+def slim_chunk_metadata(metadata: Json) -> Json:
+    """Drop metadata that is duplicated, derivable, or constant.
+
+    ``embedding_text`` alone is ~67% of a chunk's metadata: it is a second copy
+    of the chunk text enriched for the encoder, and it is only needed while the
+    vector is being produced. ``keywords`` feeds a lexical posting list that a
+    vector index already covers. Both are recomputed on demand via
+    ``build_embedding_text`` / ``keywords_for_text`` when a caller wants them.
+    """
+    return {key: value for key, value in metadata.items() if key in SLIM_CHUNK_METADATA_FIELDS}
 
 
 def _split_simple_front_matter(text: str) -> tuple[Json, str]:
