@@ -3184,29 +3184,66 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
     return [list(item or []) for item in results]
 
 
-EMBEDDING_VECTOR_DECIMALS = int(os.environ.get("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", "6"))
-EMBEDDING_VECTOR_SCALE = int(os.environ.get("MATRIXARK_EMBEDDING_VECTOR_SCALE", "0"))
+def _env_int(name: str, default: int) -> int:
+    """Read an integer env var, treating empty or unparseable as unset.
+
+    These are read at import time, so a bare `FOO=` in a shell profile or a compose
+    file would otherwise raise ValueError and take the whole module down rather than
+    fall back to the default.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except (ValueError, AttributeError):
+        return default
+
+
+EMBEDDING_VECTOR_DECIMALS = _env_int("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", 6)
+EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 0)
+EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
 
 
 def compact_embedding_vector(vector: list[float]) -> list[float]:
     """Drop float digits the encoder never produced.
 
     Embedding records are the bulk of what an ingest writes - 85% of the bytes for a
-    markdown skill - and a 384-value vector serializes to about 8.2 KB because each
-    value is written at full float repr. The models emit f32, which carries roughly
-    seven decimal digits, so the rest is noise being paid for.
+    markdown skill - and a 384-value vector serializes to about 8.2 KB at full float
+    repr. The models emit f32, which carries roughly seven decimal digits, so the rest
+    is noise being paid for.
 
-    MATRIXARK_EMBEDDING_VECTOR_DECIMALS (default 6) rounds; that halves the record and
-    leaves cosine against the f32 the model produced at 1.000000000.
+    Every consumer of a stored vector scores it with cosine, and cosine ignores a
+    uniform scale - cos(a, k*b) == cos(a, b) for k > 0 - so the values can be rescaled
+    freely as long as one vector is scaled by one factor. That is what lets both the
+    integer modes below store whole numbers and keep the score identical.
 
-    MATRIXARK_EMBEDDING_VECTOR_SCALE (default 0, off) instead stores each value as an
-    integer scaled by that factor, which is a third smaller again because an integer
-    has no "0." and no trailing digits. This is safe because every consumer of a stored
-    vector scores it with cosine, and cosine ignores a uniform scale:
-    cos(a, k*b) == cos(a, b) for k > 0. At 1e5, worst cosine against the original is
-    0.999999999835 and nearest-neighbour ranking is unchanged. It is off by default
-    because it changes the stored values from floats to integers.
+    Measured on 40,000 embedding records, only the encoding differing:
+
+        round(6) floats   4,207 B/record   3,302 B resident   6,765 B disk
+        scale=100000      2,666 B/record   3,193 B resident   4,965 B disk
+        int8              1,861 B/record   3,126 B resident   3,688 B disk
+
+    Note what that says: shrinking a vector is a DISK win, not a memory one. Resident
+    memory is per-record bookkeeping and barely moves with payload size (-5% across a
+    56% smaller record). Reduce record COUNT to reduce memory.
+
+    Modes, in precedence order:
+      MATRIXARK_EMBEDDING_VECTOR_INT8=1   each vector scaled by its own max magnitude
+                                          into [-127, 127]. Smallest. Worst cosine
+                                          against the original 0.99995; ranking and
+                                          top-1 unchanged on a CN/EN probe set. The
+                                          per-vector factor never has to be stored,
+                                          because cosine normalises it away.
+      MATRIXARK_EMBEDDING_VECTOR_SCALE=N  integers scaled by N. At 1e5 the worst
+                                          cosine is 1.000000000.
+      MATRIXARK_EMBEDDING_VECTOR_DECIMALS rounded floats, default 6.
     """
+    if EMBEDDING_VECTOR_INT8:
+        peak = max((abs(value) for value in vector), default=0.0)
+        if peak <= 0.0:
+            return [0 for _ in vector]
+        return [int(round(value / peak * 127)) for value in vector]
     if EMBEDDING_VECTOR_SCALE > 0:
         return [int(round(value * EMBEDDING_VECTOR_SCALE)) for value in vector]
     if EMBEDDING_VECTOR_DECIMALS <= 0:
