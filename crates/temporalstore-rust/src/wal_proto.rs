@@ -118,7 +118,7 @@ fn address_from_proto(address: v1::WalBlockAddress) -> BlockAddress {
     }
 }
 
-fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
+pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
     v1::EngineWalItem {
         item_kind: 0,
         model: 0,
@@ -140,7 +140,7 @@ fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
     }
 }
 
-fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
+pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
     WalOutcomeItem {
         kind: item.kind_name.unwrap_or_default(),
         object_key: item.object_key.unwrap_or_default(),

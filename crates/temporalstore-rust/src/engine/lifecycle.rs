@@ -632,6 +632,26 @@ impl TemporalEngine {
     /// a caller can fall back rather than silently skipping state. Kinds are being brought over
     /// one at a time, each gated on an equivalence test, because an apply that quietly drops a
     /// kind rebuilds a shard that is subtly wrong -- which is worse than one that refuses.
+    /// Install everything a shared-log entry recorded, or refuse the lot.
+    ///
+    /// Partial application is the failure this exists to prevent: a successor that installs four
+    /// of five items serves a shard that looks whole and is not. Refusing sends the caller back to
+    /// re-executing, which is worse but honest.
+    pub fn install_shared_outcomes(
+        &self,
+        shard_id: ShardId,
+        outcomes: &[crate::wal::WalOutcomeItem],
+    ) -> bool {
+        if outcomes.iter().any(|item| !self.apply_outcome_item(shard_id, item)) {
+            return false;
+        }
+        self.replay_installs.fetch_add(
+            outcomes.len() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        true
+    }
+
     pub(super) fn apply_outcome_item(
         &self,
         shard_id: ShardId,

@@ -1301,6 +1301,9 @@ fn publish_shard_checkpoint(
             shard_id,
             wal_index: record.sequence,
             command: record.command,
+            // What the write did travels with it. A successor installs these rather than
+            // re-running the command against its own clock and its own config.
+            outcomes: record.outcomes,
             // The local record already carries whatever pages this write produced, and a
             // page can be derived state that the command alone cannot rebuild. Mirroring
             // the command without them would publish a history a successor could not

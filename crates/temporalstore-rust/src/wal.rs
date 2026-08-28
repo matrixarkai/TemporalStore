@@ -1013,10 +1013,18 @@ impl LocalWriteAheadLogStore {
     /// writers (see `group_commit_sync`). Mirrors the byte-append half of
     /// `append_with_sync`'s group branch, minus the in-line barrier call. The caller MUST
     /// await `commit_barrier(shard_id, record.sequence)` before acking a synchronous write.
+    /// Append without the durable barrier, carrying what the write recorded.
+    ///
+    /// Outcomes were kept off this path on the assumption that anything a record must CARRY forces
+    /// the staged branch. That is true of staged pages, whose addresses are back-patched once the
+    /// log id exists. It is not true of outcomes: their addresses are already resolved by the time
+    /// they are staged, so they travel in the record like any other field -- and keeping them out
+    /// cost every write its place in the group-commit queue for no durability reason.
     pub fn append_for_group_commit(
         &self,
         shard_id: ShardId,
         command: Command,
+        outcomes: Vec<WalOutcomeItem>,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
@@ -1034,7 +1042,7 @@ impl LocalWriteAheadLogStore {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
             staged_pages: Vec::new(),
-            outcomes: Vec::new(),
+            outcomes,
         };
         // sync=false: write the bytes, defer the fdatasync to `commit_barrier`. Same as the
         // group branch of append_with_sync. `last_flushed_sequence` is NOT advanced here (the
@@ -6051,6 +6059,7 @@ mod tests {
                         key: format!("k{index:06}"),
                         value: vec![118u8; 64],
                     },
+                    Vec::new(),
                 )
                 .unwrap()
                 .sequence;
