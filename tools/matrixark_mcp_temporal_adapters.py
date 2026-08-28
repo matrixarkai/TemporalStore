@@ -2492,6 +2492,61 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return None
         return {str(v) for v in values}
 
+    def _lookup_persisted_event_members_many(self, event_ids: list[str]) -> dict[str, set[str]]:
+        """Read many membership entries in one round trip.
+
+        Every entry lives under the same hash key, so a single ``batch_hget`` replaces one read
+        per event. An id the batch response does not answer for is read singly rather than
+        treated as absent -- treating it as absent would let a partial response overwrite a
+        persisted member set with a SMALLER one, and membership is cumulative across the async
+        pipeline. Absent stays absent (omitted from the result), matching the single-key
+        contract that the caller reads with ``or set()``.
+        """
+        found: dict[str, set[str]] = {}
+        wanted = [str(event_id) for event_id in event_ids]
+        if not wanted:
+            return found
+        key = self._event_members_hash_key()
+        entries = [{"key": key, "field": event_id} for event_id in wanted]
+        try:
+            rows = self._client.batch_hget(entries)
+        except Exception:  # noqa: BLE001 - never let a backend read break the write path
+            rows = []
+        raw_by_field: dict[str, str] = {}
+        for index, row in enumerate(rows if isinstance(rows, list) else []):
+            field = ""
+            raw = ""
+            if isinstance(row, dict):
+                field = str(row.get("field") or "")
+                raw = str(row.get("value") or "")
+            elif isinstance(row, str):
+                raw = row
+            if not field and index < len(entries):
+                field = str(entries[index]["field"])
+            if field:
+                raw_by_field[field] = raw
+        for event_id in wanted:
+            if event_id in raw_by_field:
+                members = self._decode_event_members(raw_by_field[event_id])
+            else:
+                # Not answered by the batch: read it singly rather than assume absent.
+                members = self._lookup_persisted_event_members(event_id)
+            if members is not None:
+                found[event_id] = members
+        return found
+
+    @staticmethod
+    def _decode_event_members(raw: str) -> set[str] | None:
+        if not raw:
+            return None
+        try:
+            values = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(values, list):
+            return None
+        return {str(v) for v in values}
+
     def _persist_event_members(self, event_id: str, member_ids: set[str]) -> None:
         try:
             self._hset_with_backoff(
@@ -2534,10 +2589,27 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                     continue
                 for source_id in provenance:
                     additions.setdefault(str(source_id), set()).update(identity_ids)
+        existing_by_event = self._lookup_persisted_event_members_many(list(additions))
+        pending: list[tuple[str, set[str]]] = []
         for event_id, new_members in additions.items():
-            existing = self._lookup_persisted_event_members(event_id) or set()
+            existing = existing_by_event.get(str(event_id)) or set()
             merged = existing | new_members
             if merged != existing:
+                pending.append((str(event_id), merged))
+        if not pending:
+            return
+        entries = [
+            {
+                "key": self._event_members_hash_key(),
+                "field": event_id,
+                "value": json.dumps(sorted(str(m) for m in merged), separators=(",", ":")),
+            }
+            for event_id, merged in pending
+        ]
+        try:
+            self._client.batch_hset(entries)
+        except Exception:  # noqa: BLE001 - best-effort, same as the single-key write it replaces
+            for event_id, merged in pending:
                 self._persist_event_members(event_id, merged)
 
     def __init__(

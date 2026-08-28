@@ -310,5 +310,118 @@ class EnginePersistenceMethodsCase(unittest.TestCase):
         self.assertEqual({str(anchor), str(entity)}, members)
 
 
+class BatchedMembershipWriteThroughCase(unittest.TestCase):
+    """The batched read/write path, which the FakeClient above never reaches.
+
+    That client exposes only hget/hset, so `batch_hget`/`batch_hset` raise AttributeError,
+    the adapter falls back to per-key access, and the batched code is never executed. A
+    client that DOES batch is therefore the only way these lines are covered.
+    """
+
+    def _engine_stub(self, answer_fields=None):
+        import matrixark_mcp_temporal_adapters as eng
+
+        class BatchingFakeClient:
+            def __init__(self):
+                self.store: dict[tuple[str, str], str] = {}
+                self.batch_gets = 0
+                self.batch_sets = 0
+                self.single_gets = 0
+                self.single_sets = 0
+
+            def hset(self, key, field, value):
+                self.single_sets += 1
+                self.store[(key, field)] = value
+
+            def hget(self, key, field):
+                self.single_gets += 1
+                return self.store.get((key, field), "")
+
+            def batch_hget(self, entries):
+                self.batch_gets += 1
+                rows = []
+                for entry in entries:
+                    key, field = str(entry.get("key")), str(entry.get("field"))
+                    # answer_fields=None means answer everything (the normal case).
+                    if answer_fields is not None and field not in answer_fields:
+                        continue
+                    rows.append({"key": key, "field": field,
+                                 "value": self.store.get((key, field), "")})
+                return rows
+
+            def batch_hset(self, entries):
+                self.batch_sets += 1
+                for entry in entries:
+                    self.store[(str(entry.get("key")), str(entry.get("field")))] = str(
+                        entry.get("value"))
+
+        obj = object.__new__(eng.MatrixArkTemporalStoreDirectAdapter)
+        obj._storage_prefix = "matrixark:mcp"
+        obj._client = BatchingFakeClient()
+        obj._hset_with_backoff = lambda key, field, value: obj._client.hset(key, field, value)
+        obj._invalidate_event_member_index = lambda: None
+        return obj, eng
+
+    def _records(self, anchor, entity):
+        return [
+            {"record_type": "context_event", "event_id_hash": anchor},
+            {"record_type": "context_entity", "entity_hash": entity,
+             "source_event_ids": [anchor]},
+        ]
+
+    def test_batch_path_is_taken_and_membership_matches(self):
+        obj, _eng = self._engine_stub()
+        anchor, entity = 700, 800
+        obj._maintain_event_membership_after_append(self._records(anchor, entity))
+        self.assertEqual({str(anchor), str(entity)},
+                         obj._lookup_persisted_event_members(str(anchor)))
+        # The whole point of the change: batched, not per-key.
+        self.assertEqual(1, obj._client.batch_gets)
+        self.assertEqual(1, obj._client.batch_sets)
+        self.assertEqual(0, obj._client.single_sets)
+
+    def test_one_round_trip_each_regardless_of_event_count(self):
+        obj, _eng = self._engine_stub()
+        records = []
+        for i in range(25):
+            records.extend(self._records(1000 + i, 2000 + i))
+        obj._maintain_event_membership_after_append(records)
+        self.assertEqual(1, obj._client.batch_gets)
+        self.assertEqual(1, obj._client.batch_sets)
+        for i in range(25):
+            self.assertEqual({str(1000 + i), str(2000 + i)},
+                             obj._lookup_persisted_event_members(str(1000 + i)))
+
+    def test_membership_is_cumulative_across_appends(self):
+        obj, _eng = self._engine_stub()
+        anchor = 700
+        obj._maintain_event_membership_after_append(self._records(anchor, 800))
+        obj._maintain_event_membership_after_append([
+            {"record_type": "context_entity", "entity_hash": 900,
+             "source_event_ids": [anchor]},
+        ])
+        self.assertEqual({"700", "800", "900"},
+                         obj._lookup_persisted_event_members(str(anchor)))
+
+    def test_partial_batch_response_cannot_shrink_a_member_set(self):
+        """A field the batch does not answer for must be read singly, not assumed absent.
+
+        Assuming absent would union new members onto an EMPTY set and write back a smaller
+        set than what is stored -- silently losing membership, which a later delete needs.
+        """
+        obj, _eng = self._engine_stub(answer_fields=set())  # batch answers nothing
+        anchor = 700
+        obj._maintain_event_membership_after_append(self._records(anchor, 800))
+        before = obj._lookup_persisted_event_members(str(anchor))
+        self.assertEqual({"700", "800"}, before)
+        # Second append, with the batch still refusing to answer for this field.
+        obj._maintain_event_membership_after_append([
+            {"record_type": "context_entity", "entity_hash": 900,
+             "source_event_ids": [anchor]},
+        ])
+        self.assertEqual({"700", "800", "900"},
+                         obj._lookup_persisted_event_members(str(anchor)))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
