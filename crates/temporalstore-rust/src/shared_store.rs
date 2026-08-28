@@ -3320,6 +3320,119 @@ mod tests {
         );
     }
 
+    /// OBJECT-STORE MODE: two followers from one origin must agree, and both must serve.
+    ///
+    /// One follower proves the path works. Two prove it is deterministic: installing the same
+    /// results on two nodes that never wrote them has to land in the same place, or a read is
+    /// answered differently depending on which replica took it -- which is the failure a single
+    /// follower can never show.
+    ///
+    /// Both are also checked for SERVING rather than for shape. A node whose maps agree and whose
+    /// addresses do not resolve passes every comparison and answers nothing, which is exactly the
+    /// defect that a restored node had.
+    #[tokio::test]
+    async fn two_followers_of_one_origin_agree_and_both_serve() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "origin");
+        primary.load_shard(1);
+
+        let workload: Vec<(String, Vec<u8>)> = (0..10)
+            .map(|index| {
+                (
+                    format!("tf-{index:02}"),
+                    format!("two-followers-{index:02}").into_bytes(),
+                )
+            })
+            .collect();
+        for (key, value) in &workload {
+            let response = primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            });
+            assert!(response.status.ok);
+        }
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let published: Vec<_> = primary
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .filter(|record| !record.outcomes.is_empty())
+            .collect();
+        assert!(
+            published.len() >= workload.len(),
+            "expected a record per write carrying results, got {}",
+            published.len()
+        );
+        for record in &published {
+            // Carry the blocks the results point at: a follower has its own block store, and an
+            // address alone names a place it cannot reach.
+            let mut carried = record.staged_pages.clone();
+            if carried.is_empty() {
+                for item in &record.outcomes {
+                    if let Some(address) = item.resolved_address() {
+                        if let Ok(bytes) = primary.block_store().read(&address) {
+                            carried.push(crate::wal::StagedPage {
+                                object_id: item.object_id,
+                                bytes,
+                            });
+                        }
+                    }
+                }
+            }
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index: record.sequence,
+                    command: record.command.clone(),
+                    staged_pages: carried,
+                    outcomes: record.outcomes.clone(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let mut served = Vec::new();
+        for role in ["follower-a", "follower-b"] {
+            let follower = test_engine(dir.path(), role);
+            follower.load_shard(1);
+            let before = follower.replay_installs_for_test();
+            let report = replicator.replay_wal(1, 0, &follower).await.unwrap();
+            let installed = follower.replay_installs_for_test() - before;
+            assert!(
+                report.applied > 0,
+                "{role} took nothing from the shared log"
+            );
+
+            let mut answers = Vec::new();
+            for (key, value) in &workload {
+                let response = follower.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: key.clone() },
+                });
+                match response.response {
+                    CommandResponse::Bytes { value: Some(got) } => {
+                        assert_eq!(&got, value, "{role} served the wrong bytes for {key}");
+                        answers.push(got);
+                    }
+                    other => panic!("{role} could not serve {key}: {other:?}"),
+                }
+            }
+            println!("[two-followers] {role}: applied={} installed={installed}", report.applied);
+            served.push(answers);
+        }
+
+        assert_eq!(
+            served[0], served[1],
+            "the two followers answered the same reads differently"
+        );
+    }
+
     /// RESTORATION on the live format, and the constraint it runs into.
     ///
     /// A restored node takes its index and pages from a checkpoint and everything after it from

@@ -212,6 +212,41 @@ pub(super) fn min_registered_sequence(
         .min()
 }
 
+/// How many registrations this shard is holding.
+///
+/// The registry resolves a synthetic address to the record carrying its bytes, and it is process
+/// static: one entry per distinct object, held until the shard unloads. A test needs to see the
+/// count to say anything about whether it grows with the log.
+pub(super) fn registration_count(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+) -> usize {
+    let Ok(map) = registry().lock() else {
+        return 0;
+    };
+    let owner = block_store.store_id();
+    map.keys()
+        .filter(|(store_id, shard, _)| *store_id == owner && *shard == shard_id)
+        .count()
+}
+
+/// Retire one object's registration.
+///
+/// Called when its page stops being log-resident -- materialised into the block store, so the
+/// index now names a real slab. Keeping it would pin the WAL retention floor to a record nothing
+/// needs, which is not a leak of bytes but of RECLAIM: the floor is the lowest live registration,
+/// so one stale entry holds the whole log.
+pub(super) fn deregister(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+) {
+    if let Ok(mut map) = registry().lock() {
+        map.remove(&(block_store.store_id(), shard_id, object_id));
+    }
+}
+
+
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
 /// re-derives whatever it needs.
 pub(super) fn clear_shard(block_store: &crate::block_store::LocalBlockStore, shard_id: ShardId) {

@@ -1237,6 +1237,71 @@ fn fetch_indexed_payload_values(
     Ok((values, shards_touched))
 }
 
+/// Read named fields of one record shard, without paying for the rest of it.
+///
+/// Deliberately NOT used by the sweep paths. There, whole-shard reads are the right call and the
+/// comment on `fetch_indexed_payload_values` explains why: a named-field read costs about half a
+/// millisecond per field and never warms, while a shard snapshot is read once and then kept
+/// current by the write runtimes, so a repeated sweep pays nothing after the first. Narrowing
+/// those measurably made them slower.
+///
+/// The purge is the opposite case, and measurably so. It names a handful of fields the locator
+/// already identified, and it MUTATES those shards immediately after, which invalidates any
+/// snapshot it would have populated -- so the snapshot is pure cost. Measured deleting an
+/// identical freshly-created memory (same closure: 4 ids, 96 records scanned, 5 fields rewritten)
+/// on two stores: 41.7 ms against a 20 MB store, 385.7 ms against a 249 MB one. Identical work,
+/// nine times the time, because a shard on the larger store is full and the whole thing was being
+/// decoded to reach five fields.
+fn fetch_shard_fields(
+    engine: &TemporalEngine,
+    key: String,
+    fields: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    if fields.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    // An already-cached snapshot is free and current, so prefer it when one happens to be in hand.
+    if let Ok(cache) = hgetall_snapshot_cache().lock() {
+        if let Some(cached) = cache.get(&key) {
+            let mut subset = BTreeMap::new();
+            for field in fields {
+                if let Some(value) = cached.get(field) {
+                    subset.insert(field.clone(), value.clone());
+                }
+            }
+            return Ok(subset);
+        }
+    }
+    let response = engine.execute_durable(ExecuteRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        command: Command::HashMultiGet {
+            key,
+            fields: fields.to_vec(),
+        },
+    });
+    if !response.status.ok {
+        return Err(format!(
+            "{}: {}",
+            response.status.code, response.status.message
+        ));
+    }
+    match response.response {
+        CommandResponse::Values { values } => {
+            let mut decoded = BTreeMap::new();
+            for (field, value) in fields.iter().zip(values.into_iter()) {
+                let Some(bytes) = value else { continue };
+                let text = String::from_utf8(bytes)
+                    .map_err(|error| format!("stored value is not UTF-8: {error}"))?;
+                if !text.is_empty() {
+                    decoded.insert(field.clone(), text);
+                }
+            }
+            Ok(decoded)
+        }
+        other => Err(format!("unexpected response for hmget: {other:?}")),
+    }
+}
+
 fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, String>, String> {
     if let Ok(cache) = hgetall_snapshot_cache().lock() {
         if let Some(cached) = cache.get(&key) {
@@ -2501,13 +2566,16 @@ fn delete_records_by_ids(
     for (shard, only_fields) in visit {
         stats.shards_scanned += 1;
         let key = format!("{}:{}", record_hash_key, shard);
-        let shard_map = hgetall_map(engine, key.clone())?;
+        // With located fields, read exactly those. Without them (no locator coverage) the whole
+        // shard is genuinely needed, because the walk is the fallback that finds the records the
+        // locator could not name.
         let entries: Vec<(String, String)> = if only_fields.is_empty() {
-            shard_map.into_iter().collect()
+            hgetall_map(engine, key.clone())?.into_iter().collect()
         } else {
+            let found = fetch_shard_fields(engine, key.clone(), &only_fields)?;
             only_fields
                 .into_iter()
-                .filter_map(|field| shard_map.get(&field).map(|value| (field, value.clone())))
+                .filter_map(|field| found.get(&field).map(|value| (field, value.clone())))
                 .collect()
         };
         for (field, value) in entries {

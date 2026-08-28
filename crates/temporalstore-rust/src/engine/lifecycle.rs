@@ -1181,22 +1181,35 @@ impl TemporalEngine {
             ) else {
                 continue;
             };
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                shard.strings.insert(key.clone(), durable.clone());
-                super::upsert_bucket_index_page(
-                    shard,
-                    shard_id,
-                    "string",
-                    &key,
-                    None,
-                    durable,
-                    true,
-                );
+            {
+                let mut shards = self.shards.write().expect("engine lock poisoned");
+                if let Some(shard) = shards.get_mut(&shard_id) {
+                    shard.strings.insert(key.clone(), durable.clone());
+                    super::upsert_bucket_index_page(
+                        shard,
+                        shard_id,
+                        "string",
+                        &key,
+                        None,
+                        durable,
+                        true,
+                    );
+                    // The index no longer names a synthetic slab for this object, so nothing can
+                    // resolve through its record any more.
+                    shard.wal_resident_pages.remove(&object_id);
+                }
             }
+            // Retire the registration too. It is what pins the WAL retention floor, and a floor
+            // held by a page that is now in the block store stops reclaim for no reason.
+            super::block_in_wal::deregister(&self.page_store, shard_id, object_id);
             moved += 1;
         }
         moved
+    }
+
+    /// How many log-resident registrations this shard holds.
+    pub(crate) fn registration_count_for_test(&self, shard_id: ShardId) -> usize {
+        super::block_in_wal::registration_count(&self.page_store, shard_id)
     }
 
     /// How many addresses in the served index name a slab that is not a file.

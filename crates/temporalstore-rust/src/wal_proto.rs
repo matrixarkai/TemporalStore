@@ -88,6 +88,63 @@ pub(crate) fn binary_records_enabled() -> bool {
         .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
         .unwrap_or(true)
 }
+/// The kinds common enough to be worth a code rather than a string on every item.
+///
+/// Order is the wire contract: a code means the same kind forever. A kind missing from this list
+/// travels as its name, which is what keeps the list from having to be exhaustive.
+const KIND_CODES: &[&str] = &[
+    "string",
+    "hash",
+    "set",
+    "list",
+    "zset",
+    "feature",
+    "object",
+    "seen",
+    "bucket",
+    "context_event",
+    "context_index",
+    "context_audit",
+    "context_child",
+    "context_summary",
+    "context_compression",
+    "context_node",
+    "context_entity",
+    "control_state",
+    "control_counter",
+    "control_change",
+    "control_selection",
+];
+
+fn kind_code(kind: &str) -> Option<u32> {
+    KIND_CODES
+        .iter()
+        .position(|known| *known == kind)
+        .map(|index| index as u32 + 1)
+}
+
+fn kind_from_code(code: u32) -> Option<&'static str> {
+    if code == 0 {
+        return None;
+    }
+    KIND_CODES.get(code as usize - 1).copied()
+}
+
+/// The digest itself, not its hex transcription.
+fn checksum_to_raw(hex: &str) -> Option<Vec<u8>> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).ok())
+        .collect()
+}
+
+fn checksum_from_raw(raw: &[u8]) -> String {
+    raw.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 
 fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
     v1::WalBlockAddress {
@@ -103,7 +160,12 @@ fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
         routing_bucket: None,
         generation: address.generation,
         band_id: address.band_id,
-        checksum: address.sha256.clone(),
+        // The digest, not its transcription. Half the bytes, same value.
+        checksum: None,
+        checksum_raw: address
+            .sha256
+            .as_deref()
+            .and_then(checksum_to_raw),
     }
 }
 
@@ -117,7 +179,12 @@ fn address_from_proto(address: v1::WalBlockAddress) -> BlockAddress {
         routing_bucket: address.routing_bucket,
         generation: address.generation,
         band_id: address.band_id,
-        sha256: address.checksum,
+        // Prefer the digest; fall back to the hex a record written before it carries.
+        sha256: address
+            .checksum_raw
+            .as_deref()
+            .map(checksum_from_raw)
+            .or(address.checksum),
     }
 }
 /// The numeric key a component is carrying, if it is carrying one.
@@ -148,6 +215,15 @@ fn numeric_component(kind: &str, component: Option<&str>) -> Option<(u64, Option
 
 
 pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
+    let block = item.address.as_ref().map(|address| {
+        let mut encoded = address_to_proto(address);
+        // The item already says this. Repeating it costs a full varint on every item whose page
+        // belongs to one object, which is every kind that is not timestamped.
+        if encoded.object_id == Some(item.object_id) {
+            encoded.object_id = None;
+        }
+        encoded
+    });
     v1::EngineWalItem {
         item_kind: 0,
         model: 0,
@@ -169,18 +245,28 @@ pub(crate) fn item_to_proto(item: &WalOutcomeItem) -> v1::EngineWalItem {
         entry_id: numeric_component(&item.kind, item.component.as_deref()).and_then(|(_, id)| id),
         // A removal with no component is the whole object, which is now said rather than implied.
         object_deleted: item.deleted && item.component.is_none(),
-        block: item.address.as_ref().map(address_to_proto),
+        block,
         value: item.value.clone(),
         // The engine names more kinds than the enum does, and the name is what the apply path
         // dispatches on, so it is carried literally rather than squeezed through a lossy mapping.
-        kind_name: Some(item.kind.clone()),
+        // A known kind travels as a code; anything else keeps its name.
+        kind_name: match kind_code(&item.kind) {
+            Some(_) => None,
+            None => Some(item.kind.clone()),
+        },
+        kind_code: kind_code(&item.kind),
         routing_bucket: Some(item.routing_bucket),
     }
 }
 
 pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
     WalOutcomeItem {
-        kind: item.kind_name.unwrap_or_default(),
+        kind: item
+            .kind_code
+            .and_then(kind_from_code)
+            .map(str::to_string)
+            .or(item.kind_name)
+            .unwrap_or_default(),
         object_key: item.object_key.unwrap_or_default(),
         // Prefer the numeric fields; fall back to the string a record written before this carries.
         component: match (item.timestamp_ms, item.entry_id) {
@@ -190,7 +276,16 @@ pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
         },
         object_id: item.object_id.unwrap_or_default(),
         routing_bucket: item.routing_bucket.unwrap_or_default(),
-        address: item.block.map(address_from_proto),
+        address: item.block.map(|block| {
+            let object_id = item.object_id.unwrap_or_default();
+            let mut address = address_from_proto(block);
+            // Absent means "the same as the item's", which is the only thing it can mean: the
+            // encoder omits it exactly when they match, and it is never otherwise unset.
+            if address.object_id.is_none() {
+                address.object_id = Some(object_id);
+            }
+            address
+        }),
         value: item.value,
         ttl: item.ttl_ms,
         deleted: item.deleted,
@@ -220,6 +315,7 @@ fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::Engin
             block: None,
             value: Some(serde_json::to_vec(&metadata.items).map_err(|err| err.to_string())?),
             kind_name: Some(String::from("__verbatim_items")),
+            kind_code: None,
             routing_bucket: None,
             timestamp_ms: None,
             entry_id: None,

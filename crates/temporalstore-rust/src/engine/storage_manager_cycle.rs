@@ -28,6 +28,9 @@ impl TemporalEngine {
         request: StorageManagerCycleRequest,
     ) -> StorageManagerCycleReport {
         let cycle_started_unix_ms = now_ms();
+        // The same instant, on the clock that cannot be adjusted. The pair is deliberate: one
+        // says when, the other says how long.
+        let cycle_started_at = std::time::Instant::now();
         // Each stage is timed from the end of the previous one, so the durations tile the cycle
         // instead of overlapping it. Read and restart in the same expression, exactly once per
         // stage, where that stage's report is built.
@@ -989,7 +992,8 @@ impl TemporalEngine {
                 .sum(),
             ..StorageManagerStageReport::default()
         });
-        let phase_executor = StorageManagerPhaseExecutor::new(cycle_started_unix_ms);
+        let phase_executor =
+            StorageManagerPhaseExecutor::new(cycle_started_unix_ms, cycle_started_at);
         let round_duration_ms = phase_executor.annotate_reports(
             &mut stages,
             &errors,

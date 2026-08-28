@@ -547,7 +547,10 @@ message WalBlockAddress {
   optional uint32 routing_bucket = 6;
   optional uint64 generation = 7;
   optional uint64 band_id = 8;
+  // Field 9 is the hex form, kept readable for records written before field 10 existed. New
+  // records write the digest itself: thirty-two bytes rather than sixty-four characters.
   optional string checksum = 9;
+  optional bytes checksum_raw = 10;
 }
 
 // WHAT A WRITE DID, which is what lets a log carry data instead of operations.
@@ -580,9 +583,12 @@ message EngineWalItem {
   WalBlockAddress block = 12;
   // The bytes themselves, for state that has no block behind it.
   optional bytes value = 13;
-  // The kind as the engine names it, when the enums above cannot say it precisely. The enums
-  // stay for consumers that switch on them; this is what the engine round-trips on.
+  // The kind as the engine names it. Repeated on every item, so the common ones travel as
+  // `kind_code` below and this is left empty; a kind the code does not cover still travels
+  // whole, because the engine names more of them than any list here should try to freeze.
   optional string kind_name = 14;
+  // A small code for a kind this schema knows. Zero means "read kind_name instead".
+  optional uint32 kind_code = 19;
   // The bucket this object routes to. On the item rather than only inside `block`, because state
   // with no block behind it still routes somewhere.
   optional uint32 routing_bucket = 15;
