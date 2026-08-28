@@ -6,6 +6,7 @@ use super::*;
 
 impl ProxyService {
     pub fn info(&self) -> ProxyInfo {
+        self.sync_client_stats();
         let options = self.options();
         ProxyInfo {
             status: Status::ok(),
@@ -17,6 +18,7 @@ impl ProxyService {
     }
 
     pub fn heartbeat_report(&self) -> ProxyHeartbeatReport {
+        self.sync_client_stats();
         let options = self.options();
         ProxyHeartbeatReport {
             status: Status::ok(),
@@ -128,6 +130,7 @@ impl ProxyService {
     }
 
     pub fn policy_report(&self) -> ProxyPolicyReport {
+        self.sync_client_stats();
         let options = self.options();
         let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
         let (inflight_total, inflight_writes) = self.inflight_snapshot();
