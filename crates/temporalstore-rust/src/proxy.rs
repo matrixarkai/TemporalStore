@@ -952,6 +952,14 @@ struct ProxyInner {
     /// so a lock there costs nothing worth removing.
     execute_requests: std::sync::atomic::AtomicU64,
     batch_execute_requests: std::sync::atomic::AtomicU64,
+    /// `topology_check_interval_ms`, mirrored so the request path can read it without
+    /// taking the options lock.
+    ///
+    /// After the counters became atomics this was the last lock left on the common path:
+    /// every request took a read lock and cloned an Arc to fetch one u64 that changes only
+    /// when an operator pushes a config. Kept in step by `update_options_report`, which is
+    /// the single place the running options are replaced.
+    topology_check_interval_ms: std::sync::atomic::AtomicU64,
     topology_checks_skipped: std::sync::atomic::AtomicU64,
     bad_requests: std::sync::atomic::AtomicU64,
     context_ingest_requests: std::sync::atomic::AtomicU64,
@@ -969,6 +977,8 @@ struct ProxyInner {
 
 impl ProxyService {
     pub fn new(options: ProxyOptions) -> Self {
+        // Read before the options move into the Arc below.
+        let topology_check_interval_ms = options.topology_check_interval_ms;
         Self {
             inner: Arc::new(ProxyInner {
                 client: RwLock::new(proxy_client_from_options(&options)),
@@ -982,6 +992,9 @@ impl ProxyService {
                 last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
                 execute_requests: std::sync::atomic::AtomicU64::new(0),
                 batch_execute_requests: std::sync::atomic::AtomicU64::new(0),
+                topology_check_interval_ms: std::sync::atomic::AtomicU64::new(
+                    topology_check_interval_ms,
+                ),
                 topology_checks_skipped: std::sync::atomic::AtomicU64::new(0),
                 bad_requests: std::sync::atomic::AtomicU64::new(0),
                 context_ingest_requests: std::sync::atomic::AtomicU64::new(0),
@@ -1238,6 +1251,13 @@ impl ProxyService {
             .last_client_stats
             .write()
             .expect("proxy client stats lock poisoned") = ClientStats::default();
+        // Before the options move into the Arc: the request path reads this without a
+        // lock, so it has to be updated wherever the running options are replaced. This is
+        // that one place.
+        self.inner.topology_check_interval_ms.store(
+            options.topology_check_interval_ms,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         *self
             .inner
             .options
@@ -1540,13 +1560,31 @@ impl ProxyService {
     }
 
     fn invalidate_cached_routes_if_meta_changed(&self) {
-        // One `client()` for the whole call. It takes a read lock and clones an Arc, and
-        // this runs on every request, so asking twice doubled that for nothing.
-        let client = self.client();
-        if client.route_cache_size() == 0 {
+        // The cheap question first, but only as a question. Nearly every request arrives
+        // inside the interval and leaves here, and asking for the client is a read lock and
+        // an Arc clone while counting the route cache takes the cache's own lock -- both
+        // were paid by every request on its way to finding out there was nothing to do.
+        //
+        // The slot is claimed below, not here, and that ordering is load-bearing. Claiming
+        // it before the empty-cache check means a proxy with no routes yet burns the slot,
+        // no check is then due for a whole interval after its routes appear, and under
+        // topology churn it keeps serving routes it should have dropped -- reads come back
+        // empty. That is measured, not theoretical: it is what
+        // `proxy_multi_proxy_converges_under_topology_churn_stale_cache_and_recovery`
+        // reports when the claim happens too early.
+        if !self.topology_check_due_now() {
+            self.inner
+                .topology_checks_skipped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        if !self.topology_check_is_due() {
+        let client = self.client();
+        if client.route_cache_size() == 0 {
+            // Nothing to invalidate, and deliberately no slot consumed: the first request
+            // that does have routes must still find a check due.
+            return;
+        }
+        if !self.claim_topology_check() {
             self.inner
                 .topology_checks_skipped
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1716,8 +1754,17 @@ impl ProxyService {
     /// Claims the slot as a side effect, so concurrent requests do not all decide they are
     /// due and issue the same round-trip. Losing that race means skipping a check that
     /// another thread is making right now, which is the correct outcome.
-    fn topology_check_is_due(&self) -> bool {
-        let interval = self.options().topology_check_interval_ms;
+    /// Whether a topology check is due, without claiming it.
+    ///
+    /// Split from the claim so the request path can ask the cheap question -- a load --
+    /// before paying for a client handle or the route-cache lock, and still leave the slot
+    /// for whoever actually does the work. Answering yes here does not entitle the caller
+    /// to the check; `claim_topology_check` does.
+    fn topology_check_due_now(&self) -> bool {
+        let interval = self
+            .inner
+            .topology_check_interval_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
         if interval == 0 {
             return true;
         }
@@ -1728,6 +1775,23 @@ impl ProxyService {
             .load(std::sync::atomic::Ordering::Relaxed);
         // `now < last` only if the wall clock went backwards; treat that as due rather than
         // locking the check out until the clock catches up.
+        !(last != 0 && now >= last && now.saturating_sub(last) < interval)
+    }
+
+    /// Take the check slot if it is still there. One caller wins per interval.
+    fn claim_topology_check(&self) -> bool {
+        let interval = self
+            .inner
+            .topology_check_interval_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if interval == 0 {
+            return true;
+        }
+        let now = now_ms();
+        let last = self
+            .inner
+            .last_topology_check_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
         if last != 0 && now >= last && now.saturating_sub(last) < interval {
             return false;
         }
@@ -1904,6 +1968,49 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pushed_topology_check_interval_reaches_the_request_path() {
+        // The interval is mirrored outside the options lock so the request path can read
+        // it without taking one. A mirror that is not updated when the options are
+        // replaced is worse than the lock it saved: the proxy would go on checking at the
+        // old cadence, an operator's config push would appear to be accepted, and nothing
+        // anywhere would say the two disagreed.
+        let proxy = scoped_proxy(ProxyOptions {
+            topology_check_interval_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+
+        // Claim once so the interval is actually in play; after that a minute must pass.
+        assert!(proxy.claim_topology_check(), "the first check is due");
+        assert!(
+            !proxy.topology_check_due_now(),
+            "a minute has not passed, so no check is due"
+        );
+
+        // Turn the interval off. Every check is due at zero, which is the escape hatch
+        // operators use to restore per-request checking.
+        let mut pushed = (*proxy.options()).clone();
+        pushed.topology_check_interval_ms = 0;
+        let report = proxy.update_options_report(pushed);
+        assert!(report.applied, "the push must be applied: {report:?}");
+
+        assert!(
+            proxy.topology_check_due_now(),
+            "interval 0 means every check is due -- if this fails the mirror kept the old \
+             value and the proxy is still checking on a cadence the operator replaced"
+        );
+
+        // And back the other way, so this cannot pass by the mirror being stuck at zero.
+        let mut restored = (*proxy.options()).clone();
+        restored.topology_check_interval_ms = 60_000;
+        let report = proxy.update_options_report(restored);
+        assert!(report.applied, "the second push must be applied: {report:?}");
+        assert!(
+            !proxy.topology_check_due_now(),
+            "with the interval restored, the check claimed at the top of this test is still              inside it, so nothing is due -- a mirror stuck at the pushed zero would say due              here, which is what makes this the reverse-direction check"
+        );
+    }
 
     /// Per-request bookkeeping under CONCURRENCY, measured per function.
     ///
