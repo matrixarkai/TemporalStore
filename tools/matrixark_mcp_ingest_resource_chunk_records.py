@@ -4,6 +4,7 @@
 """Resource/skill chunk record append helpers for MatrixArk local ingest."""
 
 from __future__ import annotations
+import os
 
 from typing import Any
 
@@ -40,6 +41,28 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_records as resource_record_builders
 
 
+# One append per record meant one backend write per record: a 2126-chunk skill emits
+# 8504 of them, four per chunk. append() is defined as append_many([record]), so the
+# records can be gathered and handed over in batches without changing what is written
+# or the order it is written in.
+RESOURCE_APPEND_BATCH_RECORDS = int(
+    os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "512")
+)
+
+
+def _flush_pending_records(adapter: Any, pending: list) -> list:
+    """Hand the gathered records to the adapter and start a fresh batch."""
+    if not pending:
+        return pending
+    append_many = getattr(adapter, "append_many", None)
+    if callable(append_many):
+        append_many(pending)
+    else:
+        for record in pending:
+            adapter.append(record)
+    return []
+
+
 def append_resource_chunk_records(
     adapter: Any,
     *,
@@ -62,6 +85,7 @@ def append_resource_chunk_records(
     secondary_index_budget: Json,
 ) -> Json:
     resource_chunk_hashes: list[int] = []
+    pending_records: list = []
     index_candidate_count = 0
     index_write_count = 0
     index_dropped_by_cap_count = 0
@@ -73,7 +97,7 @@ def append_resource_chunk_records(
         chunk_debug_metadata = debug_resource_metadata(chunk.metadata)
         chunk_resource_hash = resource_manifest_hash if skill_hash is None else skill_hash
         if skill_hash is not None:
-            adapter.append(
+            pending_records.append(
                 resource_record_builders.skill_section_record(
                     import_task_hash=resource_import_task_hash,
                     skill_hash=skill_hash,
@@ -92,7 +116,7 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
-        adapter.append(
+        pending_records.append(
             resource_record_builders.resource_chunk_record(
                 import_task_hash=resource_import_task_hash,
                 chunk_hash=chunk.chunk_hash,
@@ -112,7 +136,7 @@ def append_resource_chunk_records(
             )
         )
         if chunk_debug_metadata:
-            adapter.append(
+            pending_records.append(
                 resource_record_builders.resource_chunk_debug_record(
                     ref_type="skill_section" if skill_hash is not None else "resource_chunk",
                     chunk_hash=chunk.chunk_hash,
@@ -130,7 +154,7 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
-        adapter.append(
+        pending_records.append(
             resource_record_builders.context_embedding_record(
                 embedding_type="resource_chunk",
                 ref_type="resource_chunk",
@@ -143,7 +167,7 @@ def append_resource_chunk_records(
             )
         )
         if skill_hash is not None:
-            adapter.append(
+            pending_records.append(
                 resource_record_builders.context_embedding_record(
                     embedding_type="skill_section",
                     ref_type="skill_section",
@@ -181,7 +205,7 @@ def append_resource_chunk_records(
         chunk_index_terms = take_secondary_index_terms(chunk_index_terms, secondary_index_budget)
         for index_name in chunk_index_terms:
             index_write_count += 1
-            adapter.append(
+            pending_records.append(
                 resource_record_builders.resource_chunk_index_record(
                     index_name=index_name,
                     ref_type="skill_section" if skill_hash is not None else "resource_chunk",
@@ -194,6 +218,9 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
+        if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
+            pending_records = _flush_pending_records(adapter, pending_records)
+    pending_records = _flush_pending_records(adapter, pending_records)
     return {
         "resource_chunk_hashes": resource_chunk_hashes,
         "index_candidate_count": index_candidate_count,
