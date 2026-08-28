@@ -6160,6 +6160,107 @@ mod tests {
     }
 
     #[test]
+    fn a_tombstone_with_no_stamp_is_still_left_alone() {
+        // Retention starts from the drop stamps now instead of walking every
+        // resource. That is the same set only because a tombstone with no stamp
+        // is never collected -- it predates the stamps, and treating it as
+        // infinitely old would forget the whole history on the first round after
+        // an upgrade. The scan used to produce it as a candidate for the planner
+        // to reject; starting from the stamps it is simply not a candidate, and
+        // the outcome has to stay identical.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for name in ["stamped", "unstamped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                    first_shard_id: if name == "stamped" { 10 } else { 20 },
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .delete_table(DeleteTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Take the stamp away from one of them, which is what an upgrade from
+        // before the stamps existed leaves behind.
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            let key = dropped_key("table", &table_key("ns", "unstamped"));
+            assert!(state.dropped_since_ms.remove(&key).is_some());
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(
+            report.plan.tables,
+            vec![table_key("ns", "stamped")],
+            "the stamped tombstone is collected and the unstamped one is not"
+        );
+
+        let remaining = meta
+            .list_tables()
+            .tables
+            .into_iter()
+            .map(|table| table.table_name)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec!["unstamped".to_string()]);
+    }
+
+    #[test]
+    fn a_stamp_for_a_resource_that_is_gone_is_not_reported_as_a_purge() {
+        // The round starts from the drop stamps, so a stamp left behind for a
+        // resource that is no longer in the state would become a candidate, and
+        // the round would report forgetting something that was already gone --
+        // the plan is what the metrics and the operator read.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            state
+                .dropped_since_ms
+                .insert(dropped_key("table", &table_key("ns", "vanished")), 1);
+            state
+                .dropped_since_ms
+                .insert(dropped_key("server", "node-gone"), 1);
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert!(
+            report.plan.is_empty(),
+            "reported purging resources that were not there: {:?}",
+            report.plan
+        );
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
