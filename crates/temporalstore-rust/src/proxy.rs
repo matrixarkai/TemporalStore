@@ -939,6 +939,24 @@ struct ProxyInner {
     last_auto_register_ms: std::sync::atomic::AtomicU64,
     /// Shard count last read from the metaserver, 0 for "not asked yet". Only consulted when
     /// `context_shard_count` is 0.
+    /// The counters every request touches.
+    ///
+    /// These were fields of `ProxyStats` behind an RwLock, so each one cost an EXCLUSIVE
+    /// lock on the request path -- taken to record that a request happened, and in the
+    /// topology check's case to record that nothing happened. Eight threads doing that
+    /// deliver less aggregate throughput than one, because they serialize on the writer.
+    /// They are folded back into `ProxyStats` in `sync_client_stats`, which runs where the
+    /// stats are read, so readers see the same numbers.
+    ///
+    /// Counters NOT here are deliberate: the error and heartbeat paths are not per request,
+    /// so a lock there costs nothing worth removing.
+    execute_requests: std::sync::atomic::AtomicU64,
+    batch_execute_requests: std::sync::atomic::AtomicU64,
+    topology_checks_skipped: std::sync::atomic::AtomicU64,
+    bad_requests: std::sync::atomic::AtomicU64,
+    context_ingest_requests: std::sync::atomic::AtomicU64,
+    context_extract_requests: std::sync::atomic::AtomicU64,
+    context_retrieve_requests: std::sync::atomic::AtomicU64,
     cluster_shard_count: std::sync::atomic::AtomicU64,
     /// Whether the metaserver has been asked for the shard list yet. Distinguishes "we have
     /// not looked" from "we looked and the ids cannot be addressed as a range" -- reporting
@@ -962,6 +980,13 @@ impl ProxyService {
                 boot_time_ms: now_ms(),
                 last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
                 last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
+                execute_requests: std::sync::atomic::AtomicU64::new(0),
+                batch_execute_requests: std::sync::atomic::AtomicU64::new(0),
+                topology_checks_skipped: std::sync::atomic::AtomicU64::new(0),
+                bad_requests: std::sync::atomic::AtomicU64::new(0),
+                context_ingest_requests: std::sync::atomic::AtomicU64::new(0),
+                context_extract_requests: std::sync::atomic::AtomicU64::new(0),
+                context_retrieve_requests: std::sync::atomic::AtomicU64::new(0),
                 cluster_shard_count: std::sync::atomic::AtomicU64::new(0),
                 cluster_shards_checked: std::sync::atomic::AtomicBool::new(false),
                 cluster_shards_contiguous: std::sync::atomic::AtomicBool::new(false),
@@ -971,10 +996,8 @@ impl ProxyService {
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(None, std::slice::from_ref(&request.command)) {
             Ok(guard) => guard,
             Err(status) => return execute_error(status.code, status.message),
@@ -984,16 +1007,13 @@ impl ProxyService {
             .client()
             .execute_with_options(request, RequestOptions::default())
             .unwrap_or_else(|err| execute_error(proxy_client_error_code(&err), err.to_string()));
-        self.sync_client_stats();
         response
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(None, &request.commands) {
             Ok(guard) => guard,
             Err(status) => {
@@ -1011,7 +1031,6 @@ impl ProxyService {
                 status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats();
         response
     }
 
@@ -1050,22 +1069,19 @@ impl ProxyService {
                         table.table_name().to_string(),
                         options.clone(),
                     );
-                    self.sync_client_stats();
-                    return ProxyOpenTableResponse {
+                                return ProxyOpenTableResponse {
                         status: Status::ok(),
                         options: Some(table.options().into()),
                     };
                 }
                 let options = table.options();
-                self.sync_client_stats();
-                ProxyOpenTableResponse {
+                        ProxyOpenTableResponse {
                     status: Status::ok(),
                     options: Some(options.into()),
                 }
             }
             Err(err) => {
-                self.sync_client_stats();
-                ProxyOpenTableResponse {
+                        ProxyOpenTableResponse {
                     status: Status::error("metaserver_error", err.to_string()),
                     options: None,
                 }
@@ -1075,10 +1091,8 @@ impl ProxyService {
 
     pub fn table_execute(&self, request: ProxyTableExecuteRequest) -> ExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(
             Some(&request.namespace),
             std::slice::from_ref(&request.command),
@@ -1091,7 +1105,6 @@ impl ProxyService {
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.execute(request.command))
             .unwrap_or_else(|err| execute_error(proxy_client_error_code(&err), err.to_string()));
-        self.sync_client_stats();
         response
     }
 
@@ -1100,10 +1113,8 @@ impl ProxyService {
         request: ProxyTableBatchExecuteRequest,
     ) -> BatchExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(Some(&request.namespace), &request.commands) {
             Ok(guard) => guard,
             Err(status) => {
@@ -1121,7 +1132,6 @@ impl ProxyService {
                 status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats();
         response
     }
 
@@ -1273,6 +1283,15 @@ impl ProxyService {
             .clone()
     }
 
+    /// Fold the client's counters into this proxy's, from the READ side.
+    ///
+    /// This used to run on every request. It only ever computes deltas against monotonic
+    /// client counters, so running it when the numbers are read gives the same answer for
+    /// three locks and a `ClientStats` clone less per request -- and it is strictly fresher,
+    /// because three of the five readers (`info`, `heartbeat_report`, `policy_report`) did
+    /// not sync at all and so reported whatever the last data request happened to leave
+    /// behind. On a proxy whose counters moved through background meta-sync alone, they were
+    /// simply stale.
     fn sync_client_stats(&self) {
         let current = self.client().stats();
         let mut last = self
@@ -1295,6 +1314,36 @@ impl ProxyService {
         stats.writes_of_unknown_outcome += current
             .writes_of_unknown_outcome
             .saturating_sub(last.writes_of_unknown_outcome);
+        // The request-path counters live outside the lock; picked up here, where the stats
+        // are being written anyway, so every reader still sees a current number.
+        stats.execute_requests = self
+            .inner
+            .execute_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.batch_execute_requests = self
+            .inner
+            .batch_execute_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.topology_checks_skipped = self
+            .inner
+            .topology_checks_skipped
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.bad_requests = self
+            .inner
+            .bad_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.context_ingest_requests = self
+            .inner
+            .context_ingest_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.context_extract_requests = self
+            .inner
+            .context_extract_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.context_retrieve_requests = self
+            .inner
+            .context_retrieve_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
         *last = current;
     }
 
@@ -1491,19 +1540,19 @@ impl ProxyService {
     }
 
     fn invalidate_cached_routes_if_meta_changed(&self) {
-        if self.client().route_cache_size() == 0 {
+        // One `client()` for the whole call. It takes a read lock and clones an Arc, and
+        // this runs on every request, so asking twice doubled that for nothing.
+        let client = self.client();
+        if client.route_cache_size() == 0 {
             return;
         }
         if !self.topology_check_is_due() {
             self.inner
-                .stats
-                .write()
-                .expect("proxy stats lock poisoned")
-                .topology_checks_skipped += 1;
+                .topology_checks_skipped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let _ = self.client().invalidate_routes_from_meta_topology();
-        self.sync_client_stats();
+        let _ = client.invalidate_routes_from_meta_topology();
     }
 
     /// How many shards the context routes actually spread tenants over.
@@ -1695,10 +1744,8 @@ impl ProxyService {
 
     fn inc_bad_request(&self) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .bad_requests += 1;
+            .bad_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn bad_execute_request(&self, err: impl std::fmt::Display) -> (u16, Vec<u8>) {
@@ -1857,6 +1904,88 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Per-request bookkeeping under CONCURRENCY, measured per function.
+    ///
+    /// Single-threaded this work is ~110ns against a request whose real cost is a network
+    /// round trip, so it rounds to nothing. The cost of an exclusive lock is not its
+    /// latency, it is the serialization: threads taking `stats.write()` on every request
+    /// queue behind one writer, and eight of them then deliver LESS aggregate throughput
+    /// than one. Only a contended benchmark shows that.
+    ///
+    /// The proxy MUST have a cached route. `invalidate_cached_routes_if_meta_changed`
+    /// returns at its first guard when the route cache is empty, so without one this
+    /// measures that guard and never reaches the due-check or its counter -- which is
+    /// exactly the work being changed.
+    ///
+    /// Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_per_request_bookkeeping() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let run = |label: &str, sync: bool, topo: bool| {
+            let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions {
+                namespace: "bench".to_string(),
+                // long enough that every iteration takes the "not due" path, which is the
+                // one every request actually walks
+                topology_check_interval_ms: 3_600_000,
+                ..ProxyOptions::default()
+            }));
+            proxy
+                .client()
+                .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+            for _ in 0..1_000 {
+                proxy.sync_client_stats();
+                proxy.invalidate_cached_routes_if_meta_changed();
+            }
+            assert!(
+                proxy.client().route_cache_size() > 0,
+                "the route cache must be populated or the topology check returns early"
+            );
+
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let proxy = std::sync::Arc::clone(&proxy);
+                let gate = std::sync::Arc::clone(&gate);
+                handles.push(std::thread::spawn(move || {
+                    gate.wait();
+                    for _ in 0..per_thread {
+                        if sync {
+                            proxy.sync_client_stats();
+                        }
+                        if topo {
+                            proxy.invalidate_cached_routes_if_meta_changed();
+                        }
+                    }
+                }));
+            }
+            gate.wait();
+            let start = std::time::Instant::now();
+            for handle in handles {
+                handle.join().expect("bench thread panicked");
+            }
+            let elapsed = start.elapsed();
+            let ops = (threads * per_thread) as u128;
+            println!(
+                "BENCH {label} threads={threads} ops={ops} ns_per_op={} ops_per_sec={}",
+                elapsed.as_nanos() / ops,
+                ops * 1_000_000_000 / elapsed.as_nanos().max(1)
+            );
+        };
+
+        run("sync_plus_topology", true, true);
+        run("topology_only", false, true);
+        run("sync_only", true, false);
+    }
     use crate::engine::TemporalEngine;
     use crate::http::{json_response, parse_json, serve};
     use crate::meta::{

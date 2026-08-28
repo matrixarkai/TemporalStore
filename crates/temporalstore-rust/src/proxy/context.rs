@@ -255,10 +255,8 @@ impl ProxyService {
     /// is one datanode write regardless of message count.
     pub(super) fn context_ingest(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .context_ingest_requests += 1;
+            .context_ingest_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit_context(&request.scope, true) {
             Ok(guard) => guard,
             Err(response) => return response,
@@ -321,10 +319,8 @@ impl ProxyService {
     /// `raw_event` records for the scope and extract those.
     pub(super) fn context_extract(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .context_extract_requests += 1;
+            .context_extract_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit_context(&request.scope, true) {
             Ok(guard) => guard,
             Err(response) => return response,
@@ -403,10 +399,8 @@ impl ProxyService {
     /// Forward a `ContextRetrieveRequest` to the owning datanode.
     pub(super) fn context_retrieve(&self, request: ProxyContextRetrieveRequest) -> (u16, Vec<u8>) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .context_retrieve_requests += 1;
+            .context_retrieve_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit_context(&request.scope, false) {
             Ok(guard) => guard,
             Err(response) => return response,
