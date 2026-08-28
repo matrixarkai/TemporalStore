@@ -49,6 +49,21 @@ fn table_owns_shard(table: &TableMetaInfo, shard_id: ShardId) -> bool {
 /// per-shard scan still decides, because it resolves them by table map order and
 /// that is the behaviour to keep.
 pub(super) fn shard_owning_tables(state: &MetaState) -> BTreeMap<ShardId, &TableRecord> {
+    // Learning the ranges costs a pass over the tables and a sort; the scan
+    // costs a pass over the tables per shard. So the index only pays once there
+    // are more shards than the log of the table count -- with a handful of
+    // shards registered and a large table map, which is what a metaserver looks
+    // like just after a restart, building it would be the more expensive way to
+    // answer.
+    let table_count = state.tables.len();
+    let log_tables = (usize::BITS - table_count.leading_zeros()) as usize;
+    if state.shards.len() <= log_tables {
+        return state
+            .shards
+            .keys()
+            .filter_map(|shard_id| Some((*shard_id, table_for_shard(state, *shard_id)?)))
+            .collect();
+    }
     let tables_in_order = state.tables.values().collect::<Vec<_>>();
     let mut ranges = tables_in_order
         .iter()
