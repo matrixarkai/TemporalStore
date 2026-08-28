@@ -42,6 +42,20 @@ DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_REC
 DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
 DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
 DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"))
+# Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
+# 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
+# 204 records and 8.9 MB. It had no knob, so no deployment could reach it.
+DEFAULT_MAX_CHUNK_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240"))
+DEFAULT_OVERLAP_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_TOKENS", "24"))
+# Both caps bind, whichever is hit first. Deriving the character cap from the
+# token cap keeps raising one from being silently cancelled by the other.
+DEFAULT_MAX_CHUNK_CHARS = int(
+    os.environ.get(
+        "MATRIXARK_RESOURCE_MAX_CHUNK_CHARS",
+        str(1400 if DEFAULT_MAX_CHUNK_TOKENS <= 240 else DEFAULT_MAX_CHUNK_TOKENS * 8),
+    )
+)
+DEFAULT_OVERLAP_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_CHARS", "120"))
 EMBEDDING_TEXT_PREFIX_SHARE = float(os.environ.get("MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE", "0.2"))
 DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
 
@@ -352,10 +366,10 @@ def parse_resource(
     *,
     resource_type: str | None = None,
     text: str | None = None,
-    max_chunk_chars: int = 1400,
-    overlap_chars: int = 120,
-    max_chunk_tokens: int = 240,
-    overlap_tokens: int = 24,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+    overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+    max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+    overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
     chunk_hash_base: int | None = None,
     resource_version: str | None = None,
     supersedes_chunk_hashes: dict[str, int] | None = None,
