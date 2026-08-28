@@ -6946,3 +6946,229 @@ fn a_checkpoint_index_names_no_place_only_this_process_can_reach() {
         }
     }
 }
+
+/// Where the bytes of a live record actually go.
+///
+/// Not a gate -- a census. Every optimisation so far came from looking at one encoded record and
+/// asking which field was paying for itself, and two of my guesses about that were wrong. So this
+/// prints the record and the size of each part, and asserts nothing.
+#[test]
+fn what_a_live_record_is_made_of() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // A spread of kinds, because the question is whether a rule holds for ALL of them. The last
+    // time two identifiers looked interchangeable they were, for strings, and diverged for every
+    // timestamped kind.
+    for command in [
+        Command::StringSet {
+            key: "size-000000".to_string(),
+            value: vec![b'v'; 64],
+        },
+        Command::HashSet {
+            key: "cen-hash".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        },
+        Command::FeatureAppend {
+            key: "cen-feature".to_string(),
+            points: (0..2)
+                .map(|index| crate::types::FeaturePoint {
+                    timestamp_ms: 1_787_270_070_000 + index * 1_000,
+                    value: b"p".to_vec(),
+                })
+                .collect(),
+        },
+        Command::SeenCheck {
+            key: "cen-seen".to_string(),
+            member: b"m".to_vec(),
+            window_ms: 60_000,
+        },
+    ] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+    }
+
+    // Does address.object_id EVER differ from the item's, or go absent? That decides whether it
+    // can be dropped from the wire and rebuilt.
+    let mut same = 0usize;
+    let mut differ = 0usize;
+    let mut absent = 0usize;
+    let mut no_address = 0usize;
+    for (_, line) in engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+    {
+        let record = crate::wal::decode_wal_line(&line).expect("decodes");
+        for item in &record.outcomes {
+            match item.resolved_address().map(|a| a.object_id) {
+                None => no_address += 1,
+                Some(None) => absent += 1,
+                Some(Some(id)) if id == item.object_id => same += 1,
+                Some(Some(_)) => differ += 1,
+            }
+        }
+    }
+    println!("[census] address object_id: {same} same, {differ} differ, {absent} absent, {no_address} item(s) with no address");
+
+    for (_, line) in engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .unwrap()
+        .iter()
+        .take(1)
+    {
+        let record = crate::wal::decode_wal_line(line).expect("decodes");
+        println!("[census] framed record: {} B", line.len());
+        println!("[census] items: {}", record.outcomes.len());
+        for item in &record.outcomes {
+            println!(
+                "[census]   kind={} key={} ({} B) object_id={} bucket={}",
+                item.kind,
+                item.object_key,
+                item.object_key.len(),
+                item.object_id,
+                item.routing_bucket
+            );
+            if let Some(address) = item.resolved_address() {
+                println!(
+                    "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} band={:?} digest={} chars",
+                    address.page_slab_id,
+                    address.offset,
+                    address.length,
+                    address.page_id,
+                    address.object_id,
+                    address.generation,
+                    address.band_id,
+                    address.sha256.as_deref().map(str::len).unwrap_or(0),
+                );
+                println!(
+                    "[census]   item.object_id == address.object_id? {}",
+                    address.object_id == Some(item.object_id)
+                );
+            }
+        }
+        if let Some(metadata) = &record.metadata {
+            println!(
+                "[census] metadata: version={} timestamp={} batch={:?}",
+                metadata.version, metadata.timestamp_ms, metadata.batch_id
+            );
+        }
+        println!("[census] carries an operation: {}", record.command.is_some());
+    }
+}
+
+/// Does the log-resident registry shrink when the pages it names become durable?
+///
+/// The registry maps a synthetic address to the record holding its bytes. It is process-static and
+/// keyed per object, so it grows with the number of distinct objects a shard writes that way. The
+/// index's own copy of that mapping IS pruned on a dump -- the comment there says dropping those
+/// entries is what keeps it from growing with the log.
+///
+/// The registry is a second copy of the same knowledge, and it matters twice: it holds memory, and
+/// `min_registered_sequence` pins the WAL retention floor to the LOWEST registration -- so an entry
+/// for a page that is already durable would hold the floor down and stop reclaim, not just cost
+/// bytes.
+///
+/// Measured, not asserted, until the numbers say which.
+#[test]
+fn what_the_log_resident_registry_holds_after_a_dump() {
+    std::env::set_var("TS_BLOCK_IN_WAL", "1");
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    const WRITES: usize = 48;
+    for index in 0..WRITES {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("rg-{index:03}"),
+                value: vec![b'v'; 96],
+            },
+        });
+    }
+
+    let registered = engine.registration_count_for_test(1);
+    let resident = engine.wal_resident_page_count(1);
+    println!("[registry] after {WRITES} async writes: {registered} registration(s), {resident} index entr(ies)");
+
+    // A dump makes those pages durable and prunes the INDEX's copy. What happens to the registry?
+    engine.flush_shard_index(1);
+    let after_flush = engine.registration_count_for_test(1);
+    let resident_after = engine.wal_resident_page_count(1);
+    println!("[registry] after a flush: {after_flush} registration(s), {resident_after} index entr(ies)");
+
+    let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    let after_cycle = engine.registration_count_for_test(1);
+    let resident_cycle = engine.wal_resident_page_count(1);
+    println!(
+        "[registry] after a storage cycle ({} stages): {after_cycle} registration(s), {resident_cycle} index entr(ies)",
+        cycle.stages.len()
+    );
+
+    // The registrations pin the WAL retention floor, deliberately: while a page lives ONLY in a
+    // record, truncating that record turns an acked write into a missing read. The question is
+    // what happens once the page is somewhere else.
+    let info = engine.write_ahead_log_store().info(1).unwrap();
+    println!(
+        "[registry] log: start={} current={} -- reclaim cannot pass the oldest registration",
+        info.start_sequence, info.current_sequence
+    );
+
+    let moved = engine.materialize_synthetic_pages(1);
+    let after_materialise = engine.registration_count_for_test(1);
+    let synthetic_left = engine.synthetic_address_count_for_test(1);
+    println!(
+        "[registry] after materialising: {moved} page(s) moved, {after_materialise} registration(s) left, {synthetic_left} synthetic address(es) left"
+    );
+    std::env::remove_var("TS_BLOCK_IN_WAL");
+
+    // Whatever the counts, every value must still read -- a registry that shrank too far would
+    // show up here rather than as a number.
+    let mut served = 0usize;
+    for index in 0..WRITES {
+        if matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("rg-{index:03}")
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: Some(_) }
+        ) {
+            served += 1;
+        }
+    }
+    println!("[registry] {served}/{WRITES} still served");
+    assert_eq!(served, WRITES, "a value stopped reading");
+}

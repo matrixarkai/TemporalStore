@@ -157,12 +157,24 @@ pub(super) fn annotate_storage_manager_admin_stage_fields(
 #[derive(Debug, Clone)]
 pub(super) struct StorageManagerPhaseExecutor {
     round_started_unix_ms: u64,
+    /// Monotonic start, for the DURATION.
+    ///
+    /// The unix millisecond above says WHEN the round began and is comparable across processes.
+    /// It cannot say how LONG the round took: the clock behind it is adjustable, and an
+    /// adjustment mid-round is indistinguishable from work -- which showed up as a round whose
+    /// reported duration was shorter than the stages inside it.
+    ///
+    /// Passed in rather than captured here, because this executor is constructed at the END of a
+    /// cycle. Capturing it here measures the finish and reports a round of zero, which is how the
+    /// first version of this fix was caught.
+    round_started_at: std::time::Instant,
 }
 
 impl StorageManagerPhaseExecutor {
-    pub(super) fn new(round_started_unix_ms: u64) -> Self {
+    pub(super) fn new(round_started_unix_ms: u64, round_started_at: std::time::Instant) -> Self {
         Self {
             round_started_unix_ms,
+            round_started_at,
         }
     }
 
@@ -172,7 +184,7 @@ impl StorageManagerPhaseExecutor {
         errors: &[String],
         retention_blockers: usize,
     ) -> u64 {
-        let round_duration_ms = now_ms().saturating_sub(self.round_started_unix_ms);
+        let round_duration_ms = self.round_started_at.elapsed().as_millis() as u64;
         annotate_storage_manager_admin_stage_fields(
             stages,
             self.round_started_unix_ms,
