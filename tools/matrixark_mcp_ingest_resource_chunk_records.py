@@ -38,6 +38,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 try:
+    from tools.matrixark_resource_parser import keywords_for_text
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_resource_parser import keywords_for_text
+
+try:
     from tools import matrixark_mcp_ingest_resource_records as resource_record_builders
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_records as resource_record_builders
@@ -191,12 +196,19 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
+        # metadata_index_terms reads keywords OUT OF the stored metadata, and slim chunk
+        # metadata drops that field - which silently removed the entire content keyword index,
+        # the only part of it with any selectivity. Derive them from the chunk text instead, so
+        # what gets indexed no longer depends on what happens to be stored.
+        index_metadata = chunk.metadata
+        if not index_metadata.get("keywords"):
+            index_metadata = {**index_metadata, "keywords": keywords_for_text(chunk.text)}
         raw_chunk_index_terms = (
             [
                 context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
                 context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
             ]
-            + metadata_index_terms(chunk.metadata)
+            + metadata_index_terms(index_metadata)
             + (
                 [context_index_name("skill_name", skill_name)]
                 + [context_index_name("skill_trigger", trigger) for trigger in skill_metadata.get("triggers", [])]
