@@ -4,6 +4,18 @@
 //! Prometheus metrics rendering for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// TS_METRICS_MAX_SLOT_SERIES: how many routing slots may emit per-slot series on one shard.
+///
+/// A routing slot is derived per key, so per-slot metrics scale with record count rather than
+/// with topology. Past this many slots the per-slot detail is dropped in favour of the shard
+/// totals, which are emitted unconditionally.
+fn max_slot_series_per_shard() -> usize {
+    std::env::var("TS_METRICS_MAX_SLOT_SERIES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(1024)
+}
+
 impl TemporalEngine {
     pub fn prometheus_metrics(&self) -> String {
         let mut out = String::new();
@@ -39,10 +51,6 @@ impl TemporalEngine {
             "# HELP temporalstore_wal_bytes_total Write-ahead log appended bytes by shard.\n",
         );
         out.push_str("# TYPE temporalstore_wal_bytes_total counter\n");
-        out.push_str("# HELP temporalstore_wal_records_total Legacy alias for temporalstore_wal_records_total.\n");
-        out.push_str("# TYPE temporalstore_wal_records_total counter\n");
-        out.push_str("# HELP temporalstore_wal_bytes_total Legacy alias for temporalstore_wal_bytes_total.\n");
-        out.push_str("# TYPE temporalstore_wal_bytes_total counter\n");
         out.push_str(
             "# HELP temporalstore_object_manager_objects Logical hot objects tracked by shard.\n",
         );
@@ -59,6 +67,8 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_storage_slot_bytes gauge\n");
         out.push_str("# HELP temporalstore_storage_slot_dirty_objects Dirty objects by shard and routing slot.\n");
         out.push_str("# TYPE temporalstore_storage_slot_dirty_objects gauge\n");
+        out.push_str("# HELP temporalstore_storage_slot_series_omitted Routing slots on this shard when per-slot series were suppressed by TS_METRICS_MAX_SLOT_SERIES.\n");
+        out.push_str("# TYPE temporalstore_storage_slot_series_omitted gauge\n");
         out.push_str("# HELP temporalstore_block_store_operations_total Canonical block-store operation counters by shard.\n");
         out.push_str("# TYPE temporalstore_block_store_operations_total counter\n");
         out.push_str("# HELP temporalstore_block_store_band_bytes Canonical block-store band bytes by shard and kind.\n");
@@ -444,18 +454,6 @@ impl TemporalEngine {
             );
             push_metric(
                 &mut out,
-                "temporalstore_wal_records_total",
-                &[("shard_id", stats.shard_id.to_string())],
-                stats.write_ahead_log.writes,
-            );
-            push_metric(
-                &mut out,
-                "temporalstore_wal_bytes_total",
-                &[("shard_id", stats.shard_id.to_string())],
-                stats.write_ahead_log.bytes_written,
-            );
-            push_metric(
-                &mut out,
                 "temporalstore_object_manager_objects",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.object_count as u64,
@@ -478,7 +476,29 @@ impl TemporalEngine {
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.dirty_bucket_count as u64,
             );
-            for summary in self.bucket_storage_summaries(stats.shard_id) {
+            // One routing slot is derived per key, so these are four series per RECORD: measured
+            // 20,140 sample lines and 1.6 MB at 5k records, 240,140 lines and 18.9 MB at 60k, with
+            // the scrape already at 460 ms. A few million records would build a multi-gigabyte
+            // response on every poll. Past the cap the per-slot detail is dropped and the slot
+            // count is reported instead; the shard totals emitted above already carry the aggregate.
+            // A routing slot is derived per key, so these are four series per RECORD, not per
+            // topology: measured 20,140 sample lines and 1.6 MB at 5k records, 240,140 lines and
+            // 18.9 MB at 60k. A few million records would build a multi-gigabyte response on every
+            // scrape. Past the cap the per-slot detail is dropped and the slot count is reported
+            // instead; the shard totals emitted above already carry the aggregate. Note
+            // object_manager.routing_bucket_count is the shard's routing RANGE (u32::MAX), not the
+            // number of occupied slots, so the occupied count has to come from the summaries.
+            let slot_summaries = self.bucket_storage_summaries(stats.shard_id);
+            let max_slot_series = max_slot_series_per_shard();
+            if slot_summaries.len() > max_slot_series {
+                push_metric(
+                    &mut out,
+                    "temporalstore_storage_slot_series_omitted",
+                    &[("shard_id", stats.shard_id.to_string())],
+                    slot_summaries.len() as u64,
+                );
+            }
+            for summary in slot_summaries.iter().take(max_slot_series) {
                 push_metric(
                     &mut out,
                     "temporalstore_storage_slot_page_refs",
