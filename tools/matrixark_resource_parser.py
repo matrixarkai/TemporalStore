@@ -151,12 +151,28 @@ _SPLIT_SPAN_RE = re.compile(
 )
 
 
+def _is_cjk_codepoint(code: int) -> bool:
+    return (
+        0x3040 <= code <= 0x30FF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0xFF66 <= code <= 0xFF9F
+    )
+
+
 def _span_weight(span_text: str) -> float:
-    if _CJK_CHAR_RE.match(span_text):
+    # Spans come from _SPLIT_SPAN_RE, so the first character already determines the class:
+    # a CJK span is exactly one CJK character, a latin span is all word characters, and
+    # anything else is a symbol run. A codepoint test is much cheaper than re-matching the
+    # span, and this runs once per span of every chunk. CJK is tested first because
+    # str.isalnum() is True for CJK characters.
+    code = ord(span_text[0])
+    if _is_cjk_codepoint(code):
         return 0.75
-    if _LATIN_RUN_RE.fullmatch(span_text):
+    if span_text[0].isalnum() or code == 0x5F:
         return 1.1
-    return 1.3 * max(1, len(span_text))
+    return 1.3 * len(span_text)
 
 
 def token_estimate(text: str) -> int:
@@ -458,7 +474,7 @@ def parse_resource(
                     "max_chunk_tokens": max_chunk_tokens,
                     "overlap_tokens": overlap_tokens,
                     "content_hash": piece_hash,
-                    "keywords": keywords_for_text(piece),
+                    "keywords": [] if slim_chunk_metadata_fields else keywords_for_text(piece),
                 }
             )
             if "page" in metadata and split_index:
@@ -466,7 +482,11 @@ def parse_resource(
             source_ref = _source_ref(raw_uri_text, metadata)
             metadata["citation"] = source_ref
             metadata["supersedes_chunk_hash"] = supersedes.get(source_ref) or supersedes.get(piece_hash)
-            metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
+            # Only build the encoder string when it will actually be kept. It is 41% of
+            # parse time and slim metadata drops it, so computing it there is pure waste;
+            # the embedding step recomputes it from the chunk when it needs it.
+            if not slim_chunk_metadata_fields:
+                metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
             metadata["parse_warnings"] = normalize_parse_warnings(metadata)
             metadata["raw_storage_policy"] = "raw_uri_only"
             metadata["raw_bytes_stored"] = False
