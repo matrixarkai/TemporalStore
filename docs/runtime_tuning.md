@@ -70,6 +70,47 @@ TEMPORALSTORE_BLOCKCACHE_SSD_PATH=/mnt/ssd-cache/temporalstore \
 bash tools/run_ssd_blockcache_smoke_ubuntu22.sh
 ```
 
+## Routing Slot Range (the largest lever on resident memory)
+
+| Environment variable | Default | Meaning |
+| --- | ---: | --- |
+| `TS_SHARD_START_ROUTING_SLOT` | `0` | First routing slot this shard owns. |
+| `TS_SHARD_END_ROUTING_SLOT` | `4294967295` | Last routing slot this shard owns. |
+
+A routing slot is derived by hashing the key, so with the full `u32` range every
+key lands in a slot of its own and each one materializes a `BucketNode` carrying
+its own page index and object sets. All of that per-slot machinery is then paid
+**per record**. Counted in-process at 20,000 records, `bucket_map` held 20,000
+slots — one per record.
+
+Narrowing the range makes records share slots. Measured on 40,000 records, a
+4-CPU node, resident memory sampled after the writes drained:
+
+| `TS_SHARD_END_ROUTING_SLOT` | slots | resident / record (256 B values) | resident / record (1.2 KB values) | disk / record |
+| --- | ---: | ---: | ---: | ---: |
+| default | 4294967295 | 5552 B | 5843 B | unchanged |
+| `1023` | 1024 | **3071 B** | **3195 B** | unchanged |
+| `255` | 256 | 3049 B | — | unchanged |
+
+**About 45% less resident memory at no cost on disk**, and the benefit plateaus by
+1024 slots, so there is little reason to go narrower. For a store of 4 million
+records that is roughly 24 GB against 13 GB.
+
+```bash
+TS_SHARD_START_ROUTING_SLOT=0 \
+TS_SHARD_END_ROUTING_SLOT=1023 \
+matrixark_rust_datanode
+```
+
+**Set this before the first ingest.** Slot ids are durable — a bucket dump
+manifest records the `slot_ids` it covers — so changing the range on a populated
+store remaps keys to different slots. On a fresh store it is safe: sampled reads
+returned no missing and no mismatched values after the writes, after a dump, and
+after a restart that recovered from the on-disk artifacts.
+
+The range also bounds how finely slots can be divided between shards, so keep it
+comfortably above the shard count you expect to grow into.
+
 ## Why This Matters
 
 The earlier 10 MB/256 MB constants changed performance behavior:
@@ -78,5 +119,7 @@ The earlier 10 MB/256 MB constants changed performance behavior:
 - Too-large blobs can delay persistence and make recovery streams heavier.
 - Replicator loop and batch sizes trade CPU for secondary freshness.
 - Blockcache capacity should match the actual memory and SSD budget of the node.
+- The routing slot range decides how many records share a slot, and the per-slot
+  structures are what resident memory is mostly made of.
 
 Use environment variables per run, then record the exact values with the benchmark result folder.
