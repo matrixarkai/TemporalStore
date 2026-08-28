@@ -1511,10 +1511,10 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
         wal.append_replayed_record(WriteAheadLogRecord {
             shard_id: 1,
             sequence: seq,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: format!("k{seq}"),
                 value: b"v".to_vec(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),

@@ -225,8 +225,19 @@ pub struct WriteAheadLogRecord {
     pub shard_id: ShardId,
     #[serde(rename = "q", alias = "sequence")]
     pub sequence: u64,
-    #[serde(rename = "c", alias = "command")]
-    pub command: Command,
+    /// The operation this write performed, for a record that cannot say what it DID.
+    ///
+    /// Absent once a record carries its results, which is the point: replaying an operation
+    /// reproduces state only if everything that influenced it is reproduced too, and a record that
+    /// states results needs none of that. Present on every record written before results existed,
+    /// and on any write that still records nothing, so both replay exactly as they always did.
+    #[serde(
+        rename = "c",
+        alias = "command",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub command: Option<Command>,
     #[serde(
         rename = "m",
         alias = "metadata",
@@ -276,6 +287,49 @@ pub fn wal_outcome_strict() -> bool {
         .unwrap_or(false)
 }
 
+/// TS_WAL_DATA_ONLY: stop writing the operation into a record that already states its results.
+///
+/// Default ON. Carrying both is strictly bigger for no benefit -- the results are what replay
+/// installs, and the operation is consulted only when there are none. Set to a falsey value to
+/// keep writing both, which is what a consumer reading records directly would want.
+pub fn wal_data_only_enabled() -> bool {
+    std::env::var("TS_WAL_DATA_ONLY")
+        .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
+}
+
+/// What a record should carry as its operation, given what it recorded and what is behind it.
+///
+/// A result names where a block LANDED. Installing it reproduces the write only if a reader can
+/// then FIND that block, and there are two ways it cannot.
+///
+/// An asynchronous write leaves its block buffered, so a crash can leave a record whose result
+/// points at bytes that were never written. And a write whose block travels INSIDE the record --
+/// the log-resident path -- needs that block registered against the record's log id before any
+/// read can resolve it, which the write path does and installing an address does not.
+///
+/// So results replace the operation only for a synchronous write whose block went to the block
+/// store: durable, and findable without anything else having to happen. Everything else keeps its
+/// operation and recovers by re-running it, exactly as before.
+///
+/// Both halves were found the same way: a recovery test failing 8 runs in 12 against 0 in 12 on
+/// the code before this, measured interleaved on one machine because an uncontrolled comparison
+/// had already told me the opposite once.
+///
+/// Extending data-only to carried blocks means registering them during replay, which is a change
+/// to the install path rather than to this rule.
+pub(crate) fn record_command(
+    command: Command,
+    outcomes: &[WalOutcomeItem],
+    blocks_are_recoverable: bool,
+) -> Option<Command> {
+    if outcomes.is_empty() || !wal_data_only_enabled() || !blocks_are_recoverable {
+        Some(command)
+    } else {
+        None
+    }
+}
+
 
 /// TS_WAL_OUTCOME_ITEMS: also record what a write DID, beside the command that did it.
 ///
@@ -292,13 +346,16 @@ pub fn wal_outcome_strict() -> bool {
 /// payoff only arrives when replay switches to the outcomes and the command comes out. The flip
 /// belongs with that change, not before it.
 pub fn wal_outcome_items_enabled() -> bool {
-    matches!(
+    // Default ON. Recording stopped costing the group-commit coalescing once results travelled
+    // through the reserve-only append, and recovery prefers installing them over re-running an
+    // operation wherever it has them. The variable now opts OUT.
+    !matches!(
         std::env::var("TS_WAL_OUTCOME_ITEMS")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -964,7 +1021,9 @@ impl LocalWriteAheadLogStore {
                 shard_id,
                 sequence: seq,
                 metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-                command,
+                // Durable AND in the block store: the two conditions under which installing an
+                // address is enough on its own.
+                command: record_command(command, &outcomes, sync && staged_pages.is_empty()),
                 staged_pages,
                 outcomes,
             };
@@ -1040,7 +1099,9 @@ impl LocalWriteAheadLogStore {
             shard_id,
             sequence: seq,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-            command,
+            // This path exists to coalesce the fsync of a SYNCHRONOUS write, so the blocks behind
+            // these results are durable by the time the barrier this record waits on returns.
+            command: record_command(command, &outcomes, true),
             staged_pages: Vec::new(),
             outcomes,
         };
@@ -1137,7 +1198,8 @@ impl LocalWriteAheadLogStore {
                     shard_id,
                     sequence: seq,
                     metadata: Some(metadata),
-                    command,
+                    // No results on this path, so the operation is what replay has.
+                    command: Some(command),
                     staged_pages: Vec::new(),
                     outcomes: Vec::new(),
                 };
@@ -1862,21 +1924,36 @@ impl LocalWriteAheadLogStore {
         let (_, header_len) = read_wal_base(&path)?;
         let mut file = File::open(&path)?;
         file.seek(SeekFrom::Start(header_len))?;
-        let reader = BufReader::new(file);
+        let mut reader = BufReader::new(file);
         let mut start_sequence = 0_u64;
         let mut current_sequence = 0_u64;
         let mut records = 0_usize;
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        // Read BYTE lines, not String lines.
+        //
+        // `lines()` yields a String and therefore demands valid UTF-8 of every record. That held
+        // for as long as every payload was text, and it fails on the first binary record with
+        // "stream did not contain valid UTF-8" -- before the decoder, which handles both
+        // encodings, ever gets to look at it. Escaping the newline out of a binary payload keeps
+        // records SPLITTABLE; it cannot make arbitrary bytes valid UTF-8, and nothing should
+        // require them to be.
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            if line.is_empty() {
                 continue;
             }
             // The records may end before the file does: a trailing zeros run is preallocated
             // room, not a record, and it always comes last.
-            if line.bytes().all(|byte| byte == 0) {
+            if line.iter().all(|byte| *byte == 0) {
                 break;
             }
-            let record = decode_wal_line(line.as_bytes())?;
+            let record = decode_wal_line(&line)?;
             if start_sequence == 0 {
                 start_sequence = record.sequence;
             }
@@ -3071,6 +3148,9 @@ mod tests {
 
     #[test]
     fn wal_interior_corruption_is_fatal_not_silent_truncation() {
+        // Pins the TEXT encoding: the corruption this injects is a line that fails to parse
+        // as a document, which is a text-shaped fault by construction.
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for i in 0..4 {
@@ -3109,6 +3189,10 @@ mod tests {
             restarted.scan(1, 0, u64::MAX, u64::MAX).is_err(),
             "interior WAL corruption must be fatal, not silently truncated to the last good record"
         );
+    
+        // Unpin it: this variable is process-global, and leaving it set makes every
+        // test that runs after this one inherit an encoding it never asked for.
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     #[test]
@@ -3161,10 +3245,10 @@ mod tests {
         let make = |sequence: u64, key: &str| WriteAheadLogRecord {
             shard_id: 3,
             sequence,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: key.to_string(),
                 value: b"v".to_vec(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -3355,7 +3439,7 @@ mod tests {
             shard_id: 3,
             sequence: 8,
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
-            command,
+            command: Some(command),
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
         };
@@ -4035,10 +4119,10 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 1,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: Vec::new(),
-            },
+            }),
             metadata: None,
             staged_pages: vec![StagedPage {
                 object_id: 7,
@@ -4076,10 +4160,10 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 3,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: b"v".to_vec(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -4147,6 +4231,9 @@ mod tests {
     /// between two shapes measured together rather than as absolute figures.
     #[test]
     fn payload_shape_footprint_and_latency() {
+        // Pins the TEXT encoding: this test is about the shape of a text payload, which the
+        // binary one does not have. It asserts a property of that encoding, not of the log.
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
         fn run(array_shape: bool, value_len: usize, records: u64) -> (u64, f64) {
             crate::bytes_serde::set_array_shape_for_measurement(array_shape);
             let dir = tempfile::tempdir().unwrap();
@@ -4205,6 +4292,10 @@ mod tests {
         }
         // Leave the process on the default for whatever test runs next.
         crate::bytes_serde::set_array_shape_for_measurement(false);
+    
+        // Unpin it: this variable is process-global, and leaving it set makes every
+        // test that runs after this one inherit an encoding it never asked for.
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     /// What is left in a small record once the payload stops being the problem.
@@ -4278,10 +4369,10 @@ mod tests {
         assert_eq!(record.sequence, 7);
         assert_eq!(
             record.command,
-            Command::StringSet {
+            Some(Command::StringSet {
                 key: "k".to_string(),
                 value: b"hi".to_vec(),
-            }
+            })
         );
         let metadata = record.metadata.expect("the metadata block should load");
         assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
@@ -4311,10 +4402,10 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 3,
             sequence: 11,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "round-trip".to_string(),
                 value: vec![0u8, 127, 255],
-            },
+            }),
             metadata: Some(WriteAheadLogRecordMetadata {
                 version: WRITE_AHEAD_LOG_FORMAT_VERSION,
                 timestamp_ms: 42,
@@ -4649,10 +4740,10 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 9,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: all_bytes.clone(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -4672,14 +4763,14 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 3,
-            command: Command::HashMultiSet {
+            command: Some(Command::HashMultiSet {
                 key: "k".to_string(),
                 entries: vec![
                     ("first".to_string(), vec![1u8; 600]),
                     ("second".to_string(), vec![2u8; 600]),
                     ("third".to_string(), vec![3u8; 600]),
                 ],
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -4695,10 +4786,10 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 4,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: newlines.clone(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -4715,12 +4806,15 @@ mod tests {
     /// A record with nothing worth carrying is written exactly as it was before.
     #[test]
     fn a_record_with_no_payload_is_unchanged_on_disk() {
+        // Pins the TEXT encoding: this test is about the shape of a text payload, which the
+        // binary one does not have. It asserts a property of that encoding, not of the log.
+        std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 5,
-            command: Command::StringGet {
+            command: Some(Command::StringGet {
                 key: "k".to_string(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -4731,6 +4825,10 @@ mod tests {
             serde_json::to_vec(&record).unwrap(),
             "a record that carries nothing must be byte-identical to the document"
         );
+    
+        // Unpin it: this variable is process-global, and leaving it set makes every
+        // test that runs after this one inherit an encoding it never asked for.
+        std::env::remove_var("TS_WAL_BINARY_RECORDS");
     }
 
     /// Records written before payloads were carried still load.
@@ -4744,10 +4842,10 @@ mod tests {
         let decoded = decode_wal_line(&framed).unwrap();
         assert_eq!(
             decoded.command,
-            Command::StringSet {
+            Some(Command::StringSet {
                 key: "k".to_string(),
                 value: b"hi".to_vec(),
-            }
+            })
         );
     }
 
@@ -4757,10 +4855,10 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 8,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: "k".to_string(),
                 value: vec![7u8; 900],
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
@@ -4801,7 +4899,7 @@ mod tests {
         assert_eq!(scanned.len(), payloads.len(), "every record should be there");
         for (index, (_, line)) in scanned.iter().enumerate() {
             let record = decode_wal_line(line).unwrap();
-            match record.command {
+            match record.command.expect("a record built with an operation still carries one") {
                 Command::StringSet { value, .. } => {
                     assert_eq!(value, payloads[index], "record {index} came back changed")
                 }
@@ -4884,7 +4982,7 @@ mod tests {
                 .position(|byte| *byte == b'\n')
                 .map_or(bytes.len(), |at| at + 1);
             let record = decode_wal_line(&bytes[..end]).unwrap();
-            match record.command {
+            match record.command.expect("a record built with an operation still carries one") {
                 Command::StringSet { value: found, .. } => {
                     assert_eq!(&found, value, "log id {log_id} resolved to the wrong record")
                 }

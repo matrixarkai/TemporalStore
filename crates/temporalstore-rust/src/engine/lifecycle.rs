@@ -1264,10 +1264,18 @@ impl TemporalEngine {
             // recovery reconstructs the identical absolute deadlines the leader logged
             // (resolve-then-log) instead of extending every recently-SETEX'd key.
             set_replay_clock_ms(record.metadata.as_ref().map(|meta| meta.timestamp_ms));
-            let response = self.execute(ExecuteRequest {
-                shard_id,
-                command: record.command,
-            });
+            // Neither results nor an operation. Refusing is the only honest answer: replaying it
+            // as nothing would serve a shard missing a durable write and report success.
+            let Some(command) = record.command else {
+                return Err(Status::error(
+                    "wal_replay_record_empty",
+                    format!(
+                        "WAL record at sequence {} carries neither results nor an operation; refusing load rather than skipping a durable write",
+                        record.sequence
+                    ),
+                ));
+            };
+            let response = self.execute(ExecuteRequest { shard_id, command });
             if !response.status.ok {
                 return Err(Status::error(
                     "wal_replay_failed",
@@ -1583,7 +1591,7 @@ mod batch_truncation_tests {
         WriteAheadLogRecord {
             shard_id: 1,
             sequence: seq,
-            command,
+            command: Some(command),
             metadata: Some(metadata),
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
