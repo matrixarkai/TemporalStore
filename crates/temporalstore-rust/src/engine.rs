@@ -44,7 +44,10 @@ pub(crate) mod eviction_sampler;
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
 mod storage_bucket_internals;
-pub use storage_bucket_internals::{live_page_scan_entries, reset_live_page_scan_entries};
+pub use storage_bucket_internals::{
+    bucket_page_index_visits, live_page_scan_entries, reset_bucket_page_index_visits,
+    reset_live_page_scan_entries,
+};
 mod compaction;
 mod storage_reporting;
 mod hashing;

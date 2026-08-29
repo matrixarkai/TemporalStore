@@ -3499,6 +3499,71 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     }
 }
 
+/// Bucket maintenance must not make a write cost more as the store grows.
+///
+/// `update_bucket_layout` rebuilds a bucket's whole object set from `page_index`, and the
+/// per-object dirty-state clear walks every bucket in the shard. Both are `O(pages)` and both sit
+/// inside loops, so the write path can be quadratic in the corpus while every individual function
+/// still looks cheap.
+///
+/// Counted, not timed: the number is work done, so the test cannot pass by running on a fast
+/// machine, and it reports per-write cost so growth is visible rather than implied.
+#[test]
+fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
+    fn visits_per_write(object_count: usize) -> (u64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Fill to the target corpus size first; only the writes AFTER the reset are measured.
+        for index in 0..object_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("bucket-maint-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        const MEASURED_WRITES: usize = 20;
+        crate::engine::reset_bucket_page_index_visits();
+        for index in 0..MEASURED_WRITES {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("bucket-maint-measured-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let visited = crate::engine::bucket_page_index_visits();
+        (visited, visited as f64 / MEASURED_WRITES as f64)
+    }
+
+    let (small_total, small_each) = visits_per_write(200);
+    let (large_total, large_each) = visits_per_write(800);
+
+    println!(
+        "
+  200 objects -> {small_total:>9} page-index visits for 20 writes ({small_each:>9.1} per write)
+           800 objects -> {large_total:>9} page-index visits for 20 writes ({large_each:>9.1} per write)
+           growth: {:.2}x cost for 4x the corpus
+",
+        if small_each > 0.0 { large_each / small_each } else { 0.0 }
+    );
+
+    // 4x the corpus must not cost materially more PER WRITE. Allowed a little slack for
+    // bucket-fill effects; a linear-in-corpus path shows up here as ~4x and fails loudly.
+    assert!(
+        large_each <= small_each * 1.5 + 1.0,
+        "per-write bucket maintenance grew with the store: {small_each:.1} -> {large_each:.1}          visits/write for 200 -> 800 objects"
+    );
+}
+
 /// Eviction cost must track how many victims are wanted, not how much the shard holds.
 ///
 /// Measured with the live-page scan counter rather than a clock, so the number is the work done

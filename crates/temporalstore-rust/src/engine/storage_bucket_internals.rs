@@ -754,6 +754,29 @@ pub fn reset_live_page_scan_entries() {
     LIVE_PAGE_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Running total of bucket `page_index` entries visited by the bucket-maintenance walks.
+///
+/// Distinct from [`LIVE_PAGE_SCAN_ENTRIES`], which counts materialized live-page entries. This
+/// one counts the cheaper-looking `bucket.page_index.values()` passes -- `update_bucket_layout`
+/// and the per-object dirty-state clear. Each is `O(pages in the bucket)` and they run inside
+/// loops over buckets, so their cost is a product, not a sum, and does not show up in any single
+/// obvious place.
+static BUCKET_PAGE_INDEX_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bucket `page_index` entries visited since the last reset.
+pub fn bucket_page_index_visits() -> u64 {
+    BUCKET_PAGE_INDEX_VISITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the bucket-visit counter. For tests measuring one operation's maintenance volume.
+pub fn reset_bucket_page_index_visits() {
+    BUCKET_PAGE_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn note_bucket_page_visits(count: usize) {
+    BUCKET_PAGE_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let entries = if !shard.bucket_index.bucket_map.is_empty() {
         collect_bucket_index_live_page_entries(shard)
@@ -1408,6 +1431,7 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 }
 
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
+    note_bucket_page_visits(bucket.page_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
         .page_index
         .values()
@@ -1467,6 +1491,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     }
     shard.dirty_objects.remove(object_key);
     for bucket in shard.bucket_index.bucket_map.values_mut() {
+        note_bucket_page_visits(bucket.page_index.len());
         let mut touched = false;
         for page in bucket.page_index.values_mut() {
             if page.object_key == object_key {
@@ -1475,6 +1500,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             }
         }
         if touched {
+            note_bucket_page_visits(bucket.page_index.len());
             bucket.dirty = bucket
                 .page_index
                 .values()
