@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
@@ -272,7 +273,9 @@ pub(super) struct CoreIndex {
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
-pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
+/// Keyed by the page-ref string. `Arc<str>` so the object lookups below can hold the same
+/// allocation instead of each storing its own copy of the same key.
+pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
 pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
 pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
 
@@ -280,7 +283,8 @@ pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageL
 pub(super) struct PageLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: String,
+    /// Shares the `page_index` map key's allocation rather than copying it.
+    pub(super) page_ref_key: Arc<str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -289,7 +293,8 @@ pub(super) struct ComponentPageLookupRef {
     pub(super) component: Option<String>,
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: String,
+    /// Shares the `page_index` map key's allocation rather than copying it.
+    pub(super) page_ref_key: Arc<str>,
 }
 
 /// Rust-native core index mirroring the shape:
