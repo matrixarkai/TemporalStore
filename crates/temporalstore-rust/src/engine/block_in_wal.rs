@@ -288,18 +288,26 @@ pub(super) fn read_page(
         }
     }
     // Adaptive pread: most records terminate well inside 128KB, so try that first and escalate
-    // only when the line does not end in the chunk -- a fixed 1MB upper bound makes every
+    // only when the record does not end in the chunk -- a fixed 1MB upper bound makes every
     // point read cost a megabyte of I/O.
+    //
+    // Where the record ends is asked of the FRAME, not guessed from a newline. Looking for one
+    // is right only while a record cannot contain the byte it ends with: a length-framed record
+    // carries 0x0A freely, so `contains` answers yes on the first payload that holds one and the
+    // split then cuts the record in half. The frame reader says "not all here yet" for exactly
+    // the case the newline probe was approximating, so escalation reads better than it did.
     let mut record = None;
     for size in [128u64 << 10, 1 << 20, u64::MAX] {
         let bytes = store.read_at_log_id(shard_id, log_id, size).ok()??;
-        let complete = bytes.contains(&10u8) || (bytes.len() as u64) < size;
-        if !complete {
-            continue;
+        match crate::log_framing::next_frame(&bytes) {
+            Ok(Some((consumed, _))) => {
+                record = decode_wal_line(&bytes[..consumed]).ok();
+                break;
+            }
+            // The record declares more bytes than this window holds: read a bigger one.
+            Ok(None) => continue,
+            Err(_) => return None,
         }
-        let line = bytes.split(|byte| *byte == 10u8).next()?;
-        record = decode_wal_line(line).ok();
-        break;
     }
     let record = record?;
     let pages = record.staged_pages;

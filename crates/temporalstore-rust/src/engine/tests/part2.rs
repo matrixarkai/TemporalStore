@@ -1042,23 +1042,36 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
 
     // Simulate the lost commit marker: drop the last WAL line (batch_index == batch_size).
     let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
-    // Read as BYTES. A record is newline-delimited but not necessarily text -- the binary
-    // encoding is valid UTF-8 only by accident -- and a test that edits the log has no business
-    // assuming which encoding wrote it.
+    // Read as BYTES and walk the records by their FRAMES, not by newlines. A record is only a
+    // "line" while the frame ends with one; once it declares its own length the payload carries
+    // 0x0A freely, and splitting on that byte cuts records in half -- which makes this test
+    // build a log no writer would ever produce and then assert on how recovery handles it.
+    // Asking the frame where each record ends works whichever frame wrote it.
     let contents = std::fs::read(&wal_path).expect("wal file should exist");
-    // Under preallocation the file ends in a zeros reservation; the records are the non-zero
-    // lines, and the commit marker is the last of THOSE -- popping blindly would drop the
-    // reservation and leave the marker standing.
-    let mut lines: Vec<&[u8]> = contents
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty() && !line.iter().all(|byte| *byte == 0))
-        .collect();
-    assert!(lines.len() >= 4, "expected keep + 3 batch records, got {}", lines.len());
-    lines.pop(); // drop the batch commit-marker record
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0usize;
+    while at < contents.len() {
+        // The preallocated zeros reservation trails the records and is not one of them.
+        if contents[at] == 0 {
+            break;
+        }
+        match crate::log_framing::next_frame(&contents[at..]) {
+            Ok(Some((consumed, _))) if consumed > 0 => {
+                spans.push((at, at + consumed));
+                at += consumed;
+            }
+            _ => break,
+        }
+    }
+    assert!(
+        spans.len() >= 4,
+        "expected keep + 3 batch records, got {}",
+        spans.len()
+    );
+    spans.pop(); // drop the batch commit-marker record
     let mut truncated = Vec::new();
-    for line in lines {
-        truncated.extend_from_slice(line);
-        truncated.push(b'\n');
+    for (start, end) in spans {
+        truncated.extend_from_slice(&contents[start..end]);
     }
     std::fs::write(&wal_path, truncated).expect("rewrite wal");
 
