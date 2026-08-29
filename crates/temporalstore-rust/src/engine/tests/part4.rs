@@ -3741,6 +3741,120 @@ fn bucket_runtime_flags_match_full_sweep() {
     );
 }
 
+/// Does `dirty_objects` say anything the pages' own `dirty` flags do not?
+///
+/// It holds a `String` per record -- 19 B of key at this key length, plus a String header and a
+/// BTreeSet node each -- and nothing drains it during a pure ingest: only the publish path or a
+/// storage-manager cycle clears it. At 4.7M records that is several hundred MB held in a set the
+/// ingest never releases. It is also the set whose per-entry iteration made the heartbeat
+/// shard-sized.
+///
+/// Each `PageIndex` already carries `dirty`. If the two agree, the set is derivable from the
+/// pages and its per-record String is duplicated state. If they disagree, it is carrying
+/// something the flags cannot express, and this test says exactly what -- which is the part worth
+/// knowing before anyone tries to remove it.
+///
+/// A report, not a threshold: it prints the comparison and asserts only that the workload
+/// produced something to compare.
+#[test]
+fn dirty_objects_versus_the_pages_own_dirty_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "dirty-duplication".to_string(),
+                shard_uri: "local://dirty-duplication/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..100 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dd-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        if index % 5 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("dd-{}", index / 3),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let pages_marked_dirty: std::collections::BTreeSet<String> = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.values())
+        .filter(|page| page.dirty)
+        .map(|page| page.object_key.clone())
+        .collect();
+    let any_page_at_all: std::collections::BTreeSet<String> = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.values())
+        .map(|page| page.object_key.clone())
+        .collect();
+
+    let in_set_not_flagged: Vec<&String> = shard
+        .dirty_objects
+        .iter()
+        .filter(|k| !pages_marked_dirty.contains(*k))
+        .collect();
+    let flagged_not_in_set: Vec<&String> = pages_marked_dirty
+        .iter()
+        .filter(|k| !shard.dirty_objects.contains(*k))
+        .collect();
+    let in_set_with_no_page: usize = shard
+        .dirty_objects
+        .iter()
+        .filter(|k| !any_page_at_all.contains(*k))
+        .count();
+
+    assert!(
+        !shard.dirty_objects.is_empty(),
+        "workload left nothing in dirty_objects to compare"
+    );
+    println!(
+        "
+  dirty_objects: {}
+  pages with dirty=true: {}
+           in the set but no page flagged dirty: {}
+           a page flagged dirty but not in the set: {}
+           in the set with NO live page at all: {}
+",
+        shard.dirty_objects.len(),
+        pages_marked_dirty.len(),
+        in_set_not_flagged.len(),
+        flagged_not_in_set.len(),
+        in_set_with_no_page,
+    );
+    if let Some(sample) = in_set_not_flagged.first() {
+        println!("  e.g. in the set, no dirty page: {sample}");
+    }
+}
+
 /// Is `object_page_lookup` derivable from `object_component_lookup`?
 ///
 /// Seven structures hold one entry per record, and container overhead across seven separate
