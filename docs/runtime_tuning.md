@@ -138,30 +138,46 @@ together and the smallest wins, so raise or lower them as a set:
 Measured over 200 sampled chunks, with resident memory projected at the measured
 ~2.7 KB per record for a 10,000-document corpus:
 
-| cap | records / doc | terms indexed | tail term reachable | 10k-doc records | projected resident |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| `12` | 1555 | 9.4% | 59% | 15.6M | 39 GB |
-| `25` | 1768 | 19.4% | 76% | 17.7M | 44 GB |
-| `50` | 2412 | 38.1% | 91% | 24.1M | 61 GB |
-| `100` | 4640 | 75.4% | 98% | 46.4M | 117 GB |
-| `200` | 4708 | 100.0% | 98% | 47.1M | 118 GB |
-| `400` | 4708 | 100.0% | 98% | 47.1M | 118 GB |
+| cap | records / doc | terms indexed | 10k-doc records | projected resident |
+| ---: | ---: | ---: | ---: | ---: |
+| `12` | 1555 | 9.4% | 15.6M | 39 GB |
+| `25` | 1768 | 19.4% | 17.7M | 44 GB |
+| `50` | 2412 | 38.1% | 24.1M | 61 GB |
+| `100` | 4640 | 75.4% | 46.4M | 117 GB |
+| `200` | 4708 | 100.0% | 47.1M | 118 GB |
+| `400` | 4708 | 100.0% | 47.1M | 118 GB |
 
-Two columns because they answer different questions. *Terms indexed* is the share
-of a chunk's distinct terms that are searchable at all. *Tail term reachable* is
-whether a phrase in the last tenth of a chunk can be found — the case that makes
-large chunks worth using, since the encoder's 128-token window embeds only the
-first fraction of a 1000-token chunk.
+Coverage is **position-dependent**, and that decides the choice. Keywords are taken
+in document order, so a lower cap keeps the start of a chunk and drops the end.
+Planting a distinctive phrase at four depths in each of 121 chunks and asking
+whether it appears in an emitted index record:
 
-**Do not set these above 100.** Coverage of the tail saturates there: `200` and
-`400` cost the same memory as `100` and find nothing more. Going from `100` to
-`50` halves resident memory for seven points of tail recall, which is usually the
-right trade for a large corpus. The `12` default is cheap but reaches only 59% of
-tails, which is why specific-phrase lookups miss on long chunks.
+| cap | 10% in | 50% in | 90% in | 97% in |
+| ---: | ---: | ---: | ---: | ---: |
+| `12` | 17% | 6% | 0% | 0% |
+| `25` | 30% | 12% | 9% | 3% |
+| `50` | 98% | 12% | 12% | 12% |
+| `100` | 100% | 99% | 64% | 36% |
+| `200` | 100% | 100% | 100% | 100% |
+
+**`100` is the worst choice on this curve.** It costs 117 GB against 118 GB for
+`200` — within a percent — and finds only 36% of phrases near the end of a chunk
+where `200` finds all of them. Either pay for `200` and index everything, or drop
+to `50` or the `12` default and accept that only the opening of each chunk is
+searchable. There is no useful middle.
+
+That matters most exactly where large chunks are used: the encoder's 128-token
+window embeds only the first fraction of a 1000-token chunk, so the keyword index
+is the *only* way to reach the rest of it.
 
 ```bash
-MATRIXARK_INDEX_KEYWORD_LIMIT=50 MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK=50 MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK=50 MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD=50 MATRIXARK_INDEX_POSTING_LISTS=1 matrixark_rust_datanode
+# Index everything: every phrase reachable, ~118 GB resident for 10k documents.
+MATRIXARK_INDEX_KEYWORD_LIMIT=200 MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK=200 MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK=200 MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD=200 MATRIXARK_INDEX_POSTING_LISTS=1 matrixark_rust_datanode
 ```
+
+To halve the memory instead, use `50` across all four — accepting that only the
+opening of each chunk is searchable. Do not stop at `100`: it pays `200`'s memory
+for a third of its reach.
 
 Keep `MATRIXARK_INDEX_POSTING_LISTS=1` whenever coverage is raised: it stores one
 record per term carrying its posting list instead of one per (term, chunk), which
