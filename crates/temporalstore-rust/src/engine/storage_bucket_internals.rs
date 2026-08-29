@@ -2175,3 +2175,154 @@ pub(super) fn validate_bucket_ownership_index(
     }
     validation
 }
+
+
+#[cfg(test)]
+mod bucket_layout_tests {
+    use super::*;
+    use crate::block_store::BlockAddress;
+
+    fn address() -> BlockAddress {
+        BlockAddress {
+            page_slab_id: 0,
+            offset: 0,
+            length: 0,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            generation: None,
+            band_id: None,
+            sha256: None,
+        }
+    }
+
+    fn page(object_id: u64, deleted: bool) -> PageIndex {
+        PageIndex {
+            object_key: format!("k{object_id}"),
+            model_id: "m".to_string(),
+            component: None,
+            object_id,
+            address: address(),
+            dirty: false,
+            deleted,
+            log_backed: false,
+        }
+    }
+
+    /// A bucket whose pages carry the given (object id, deleted) pairs, with `stored` already
+    /// recorded as the live-object index.
+    fn bucket(pages: &[(u64, bool)], stored: &[u64]) -> BucketNode {
+        let mut node = BucketNode::default();
+        for (i, (object_id, deleted)) in pages.iter().enumerate() {
+            node.page_index
+                .insert(format!("p{i}"), page(*object_id, *deleted));
+        }
+        node.object_index = stored.iter().copied().collect();
+        node
+    }
+
+    /// The set a from-scratch rebuild produces, and what it does with it. This is the behaviour
+    /// the buffered path has to match exactly.
+    fn expected(node: &BucketNode) -> (ObjectIndex, BucketLayoutState) {
+        let live: BTreeSet<u64> = node
+            .page_index
+            .values()
+            .filter(|page| !page.deleted)
+            .map(|page| page.object_id)
+            .collect();
+        let mut index = node.object_index.clone();
+        if !live.is_empty() {
+            index = live;
+        } else if !node.page_index.is_empty() {
+            index.clear();
+        }
+        let layout = classify_bucket_layout(index.len(), node.page_index.len());
+        (index, layout)
+    }
+
+    fn check(pages: &[(u64, bool)], stored: &[u64]) {
+        let mut node = bucket(pages, stored);
+        let (want_index, want_layout) = expected(&node);
+        let mut scratch = Vec::new();
+        update_bucket_layout_with(&mut node, &mut scratch);
+        assert_eq!(
+            node.object_index, want_index,
+            "object index differs for pages={pages:?} stored={stored:?}"
+        );
+        assert_eq!(
+            node.layout, want_layout,
+            "layout differs for pages={pages:?} stored={stored:?}"
+        );
+    }
+
+    #[test]
+    fn buffered_update_matches_a_full_rebuild() {
+        // No pages at all: the index is left alone, which is not the same as clearing it.
+        check(&[], &[]);
+        check(&[], &[7, 8]);
+        // The ordinary case, and the case the write path now keeps correct in advance.
+        check(&[(1, false), (2, false), (3, false)], &[]);
+        check(&[(1, false), (2, false), (3, false)], &[1, 2, 3]);
+        // Pages arriving out of order still produce a sorted set.
+        check(&[(9, false), (2, false), (5, false)], &[2, 5, 9]);
+        // Duplicate live ids collapse to one element.
+        check(&[(4, false), (4, false), (4, false)], &[4]);
+        // Some deleted, some live.
+        check(&[(1, true), (2, false), (3, true)], &[1, 2, 3]);
+        // Every page deleted, but pages exist: the index is cleared.
+        check(&[(1, true), (2, true)], &[1, 2]);
+        // Stored index is stale in both directions.
+        check(&[(1, false), (2, false)], &[5, 6, 7]);
+        check(&[(1, false)], &[]);
+        // Stale, and the SAME SIZE as the correct set -- a length check alone would keep it.
+        check(&[(1, false), (2, false)], &[1, 99]);
+        check(&[(1, false), (2, false)], &[98, 99]);
+        check(&[(5, false)], &[6]);
+    }
+
+    #[test]
+    fn same_length_different_contents_is_not_mistaken_for_unchanged() {
+        // The stored index has exactly as many ids as the live pages produce, and shares one of
+        // them, so any shortcut that compares only sizes concludes "unchanged" and leaves 99 in
+        // place. The correct set is {1, 2}.
+        let mut node = bucket(&[(1, false), (2, false)], &[1, 99]);
+        let mut scratch = Vec::new();
+        update_bucket_layout_with(&mut node, &mut scratch);
+        assert_eq!(
+            node.object_index,
+            [1, 2].into_iter().collect::<ObjectIndex>(),
+            "a stored index of the same size but different contents must be replaced"
+        );
+    }
+
+    #[test]
+    fn a_stale_extra_id_beside_a_duplicate_is_not_mistaken_for_unchanged() {
+        // Two live pages sharing an id, and a stored index holding that id plus a stale one. Every
+        // live id IS present in the stored index and the counts DO match (2 pages, 2 stored), so a
+        // shortcut built on those two facts would leave the stale id in place. The correct set is
+        // {1}, and this must produce it.
+        let mut node = bucket(&[(1, false), (1, false)], &[1, 99]);
+        let mut scratch = Vec::new();
+        update_bucket_layout_with(&mut node, &mut scratch);
+        assert_eq!(node.object_index, [1].into_iter().collect::<ObjectIndex>());
+        assert_eq!(node.layout, classify_bucket_layout(1, 2));
+    }
+
+    #[test]
+    fn the_buffer_is_reusable_across_buckets() {
+        // The sweep carries one buffer over every bucket, so a leftover from the previous bucket
+        // must not leak into the next one.
+        let mut scratch = Vec::new();
+        let mut first = bucket(&[(1, false), (2, false)], &[]);
+        update_bucket_layout_with(&mut first, &mut scratch);
+        assert_eq!(first.object_index, [1, 2].into_iter().collect::<ObjectIndex>());
+
+        let mut second = bucket(&[(7, false)], &[]);
+        update_bucket_layout_with(&mut second, &mut scratch);
+        assert_eq!(second.object_index, [7].into_iter().collect::<ObjectIndex>());
+
+        let mut third = bucket(&[(3, true)], &[3]);
+        update_bucket_layout_with(&mut third, &mut scratch);
+        assert!(third.object_index.is_empty());
+    }
+}
