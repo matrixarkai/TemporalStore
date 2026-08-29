@@ -3741,6 +3741,100 @@ fn bucket_runtime_flags_match_full_sweep() {
     );
 }
 
+/// The flat per-write cost holds only while a batch touches a SMALL SHARE of the buckets.
+///
+/// This is the limitation the sibling tests cannot see, because they run at the default routing
+/// range where every key lands in its own bucket: a write touches one bucket of many, the
+/// targeted refresh skips the rest, and cost is flat.
+///
+/// Narrow the range -- `TS_SHARD_END_ROUTING_SLOT=1023`, the setting that cuts resident memory
+/// 45% and the one to run in production -- and there are only 1024 buckets. A batch of any size
+/// hashes across essentially all of them, so there is nothing to skip: the targeted path visits
+/// the same pages as the sweep and the guard correctly hands the work back to the sweep, which is
+/// `O(total pages)` per batch. Bucket maintenance is therefore STILL linear per write there.
+///
+/// Measured end to end at 1023 slots, five equal 40k-record phases: 6.3s -> 14.9s while every
+/// byte written stayed flat (index log 1.02x, WAL 1.01x). At the default range the same run grows
+/// 1.64x. The remedy is not to choose a path but to stop rescanning: keep each bucket's live-page
+/// count, dirty-page count and minimum TTL incrementally, so refreshing a bucket is O(1) and the
+/// range stops mattering.
+///
+/// This test PINS the current behaviour so the limitation is visible and a future fix has
+/// something to flip, rather than living only in a commit message.
+#[test]
+fn bucket_maintenance_is_still_linear_at_a_narrow_routing_range() {
+    fn visits_per_write(object_count: usize) -> f64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        // The range travels on the load request, NOT the environment: the datanode binary reads
+        // TS_SHARD_*_ROUTING_SLOT and puts it here. Setting those vars around a bare
+        // `load_shard` leaves the shard on the u32::MAX default, and this test then silently
+        // measures the wide range and agrees with its sibling -- which is exactly what the first
+        // version of it did.
+        assert!(
+            engine
+                .load_shard_with(crate::control::LoadShardRequest {
+                    shard_id: 1,
+                    table_name: "narrow-routing".to_string(),
+                    shard_uri: "local://narrow-routing/1".to_string(),
+                    start_routing_bucket: 0,
+                    end_routing_bucket: 63,
+                    readonly: false,
+                    load_version: 1,
+                    local_node_id: Some(1),
+                })
+                .status
+                .ok
+        );
+        for index in 0..object_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("narrow-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        const MEASURED_WRITES: usize = 20;
+        crate::engine::reset_bucket_page_index_visits();
+        for index in 0..MEASURED_WRITES {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("narrow-measured-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let visited = crate::engine::bucket_page_index_visits();
+        visited as f64 / MEASURED_WRITES as f64
+    }
+
+    let small = visits_per_write(200);
+    let large = visits_per_write(800);
+    println!(
+        "
+  64 routing slots:
+    200 objects -> {small:>8.1} page-index visits per write
+             800 objects -> {large:>8.1} page-index visits per write
+             growth: {:.2}x for 4x the corpus (flat would be 1.00)
+",
+        if small > 0.0 { large / small } else { 0.0 }
+    );
+
+    // Documents the gap rather than asserting it away: at a narrow range the cost still tracks
+    // the corpus. When per-bucket aggregates land this fails, and that is the point.
+    assert!(
+        large > small * 2.0,
+        "expected per-write cost to still grow with the corpus at 64 routing slots          ({small:.1} -> {large:.1}); if this now holds flat, the aggregate work landed and this          test should become an equality check"
+    );
+}
+
 /// Bucket maintenance must not make a write cost more as the store grows.
 ///
 /// `update_bucket_layout` rebuilds a bucket's whole object set from `page_index`, and the
