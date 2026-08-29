@@ -2043,6 +2043,7 @@ fn a_metrics_reap_collects_the_counters_it_says_it_did() {
     );
 }
 
+#[test]
 fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
     let dir = tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
