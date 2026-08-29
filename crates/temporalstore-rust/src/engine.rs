@@ -700,6 +700,19 @@ impl TemporalEngine {
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
             // commit). Page/index materialization stays deferred to dump.
+            // Drain what this execution recorded, on EVERY path -- not only the ones that go
+            // on to append. Staging happens during execution, but the append below is guarded,
+            // so any write that does not reach it left its items sitting in the thread's
+            // buffer for whatever wrote next on that thread to adopt as its own. Replay is the
+            // loud case: it re-executes commands with `replaying_wal()` true, stages an item
+            // for everything it re-applies, and appends none of it -- so the first write after
+            // a recovery inherited the recovery's items and recorded them as changes it had
+            // made itself. A later replay then installs them, and if one cannot be applied it
+            // aborts the whole shard load, taking unrelated keys down with it.
+            let mut staged_outcomes = block_in_wal::take_outcomes();
+            if !crate::wal::wal_outcome_items_enabled() {
+                staged_outcomes.clear();
+            }
             if write_command && !replaying_wal() {
                 // A write that changed the shard and recorded nothing cannot be replaced by its
                 // record. Off unless a sweep asks for it; when it is on, every existing test that
@@ -707,7 +720,7 @@ impl TemporalEngine {
                 // the mutating surface than a hand-listed fixture per command ever would.
                 if crate::wal::wal_outcome_items_enabled()
                     && crate::wal::wal_outcome_strict()
-                    && block_in_wal::staged_outcome_count() == 0
+                    && staged_outcomes.is_empty()
                 {
                     let rendered = format!("{command:?}");
                     let label = rendered
@@ -751,11 +764,7 @@ impl TemporalEngine {
                         .append_for_group_commit(
                             request.shard_id,
                             command,
-                            if crate::wal::wal_outcome_items_enabled() {
-                                block_in_wal::take_outcomes()
-                            } else {
-                                Vec::new()
-                            },
+                            std::mem::take(&mut staged_outcomes),
                         )
                         .map(|record| Some(record.sequence))
                 } else {
@@ -779,11 +788,7 @@ impl TemporalEngine {
                                 }
                                 std::mem::take(&mut carried_pages)
                             },
-                            if crate::wal::wal_outcome_items_enabled() {
-                                block_in_wal::take_outcomes()
-                            } else {
-                                Vec::new()
-                            },
+                            std::mem::take(&mut staged_outcomes),
                         )
                         .map(|(record, log_id)| {
                             // Point every page this record carries at the record, keyed on the

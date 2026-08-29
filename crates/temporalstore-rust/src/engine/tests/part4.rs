@@ -7172,3 +7172,158 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
     println!("[registry] {served}/{WRITES} still served");
     assert_eq!(served, WRITES, "a value stopped reading");
 }
+
+#[test]
+fn a_replay_leaves_nothing_staged_for_the_next_write_to_adopt() {
+    // Outcomes are staged during execution and taken at the append. Replay executes and does
+    // not append, so whatever it staged stayed on the thread -- and the next write on that
+    // thread appended a record carrying it, claiming changes it never made. Threads are
+    // reused, in a server across requests and here across tests, so "the next write" is
+    // routinely someone else entirely.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    for i in 0..4 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("key-{i}"),
+                value: b"value".to_vec(),
+            },
+        });
+    }
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+
+    assert_eq!(
+        crate::engine::block_in_wal::staged_outcome_count(),
+        0,
+        "a replay must leave nothing staged: whatever it leaves behind is adopted by the next \
+         write on this thread and recorded as that write's own doing"
+    );
+}
+
+#[test]
+fn an_async_write_is_never_lost_across_a_restart() {
+    // The symptom three separate tests kept showing: an async write is acknowledged, the log
+    // holds it, the shard loads with no error -- and the value is gone. Losing a write that way
+    // is a decision, not a crash: recovery picks a watermark and replays only past it, so a
+    // watermark chosen above a record skips it silently. This runs the whole cycle enough times
+    // to catch an intermittent one and reports the watermark it chose when it does.
+    for attempt in 0..120 {
+        let dir = tempfile::tempdir().unwrap();
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-a"),
+            &page_dir,
+            &index_dir,
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .set_config(SetConfigRequest {
+                    shard_id: 1,
+                    config: Config {
+                        version: 2,
+                        async_storage: true,
+                        ..Config::default()
+                    },
+                })
+                .ok
+        );
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"async-durable".to_vec(),
+            },
+        });
+        let before = engine.write_ahead_log_store().stats(1);
+        engine
+            .write_ahead_log_store()
+            .flush(1)
+            .expect("flush before the engine goes away");
+        drop(engine);
+
+        let restarted = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache-b"),
+            &page_dir,
+            &index_dir,
+        );
+        // Ask the successor what it can SEE before asking what it recovered. A load that
+        // refused, a log the successor cannot read, and a replay that read the record and
+        // applied nothing are three different defects that all look like one missing value.
+        let loaded = restarted.load_shard_with(LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: None,
+            shard_uri: String::new(),
+            start_routing_bucket: 0,
+            end_routing_bucket: u32::MAX,
+            readonly: false,
+            table_name: String::new(),
+        });
+        let seen = restarted.write_ahead_log_store().stats(1);
+        let installs = restarted.replay_installs_for_test();
+        let registrations = restarted.registration_count_for_test(1);
+        let synthetic = restarted.synthetic_address_count_for_test(1);
+        let got = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        let watermark =
+            crate::engine::lifecycle::LAST_REPLAY_WATERMARK.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            loaded.status.ok,
+            "attempt {attempt}: the successor refused the load: {:?}",
+            loaded.status
+        );
+        assert_eq!(
+            got.response,
+            CommandResponse::Bytes {
+                value: Some(b"async-durable".to_vec())
+            },
+            "attempt {attempt}: an acknowledged async write was lost across a restart. \
+             the writer left {} records up to sequence {}; the successor saw {} records up to \
+             sequence {}, replayed from watermark {watermark}, installed {} outcomes, holds              {} page registrations and {} unresolvable addresses",
+            before.writes,
+            before.last_sequence,
+            seen.writes,
+            seen.last_sequence,
+            installs,
+            registrations,
+            synthetic
+        );
+    }
+}

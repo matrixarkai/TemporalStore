@@ -2935,7 +2935,36 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     Ok((decode_wal_line(&line)?.sequence, good_offset))
 }
 
+/// Test-only override for the wall clock stamped onto a record. Recovery tests need records
+/// whose leader timestamps are OLD relative to restart, and the only honest way to get that
+/// is to state the timestamp: the alternative is sleeping for the difference and racing every
+/// other thread on the machine for it.
+///
+/// Process-wide rather than per-thread, and that is the whole point. A write does not promise
+/// to append on the thread that executed it -- group commit exists precisely so it does not --
+/// so a per-thread pin was applied or skipped depending on where the append happened to land,
+/// which made the record's timestamp real often enough to fail one run in twenty-five. Zero
+/// means unset; callers pin it only inside a guard that restores it.
+#[cfg(test)]
+static TEST_RECORD_CLOCK_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn set_test_record_clock_ms(clock_ms: Option<u64>) {
+    TEST_RECORD_CLOCK_MS.store(
+        clock_ms.unwrap_or(0),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
 fn current_time_ms() -> u64 {
+    #[cfg(test)]
+    {
+        let pinned = TEST_RECORD_CLOCK_MS.load(std::sync::atomic::Ordering::SeqCst);
+        if pinned != 0 {
+            return pinned;
+        }
+    }
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
