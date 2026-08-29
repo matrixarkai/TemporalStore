@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -636,7 +636,14 @@ struct ClientInner {
     options: ClientOptions,
     routes: Mutex<HashMap<ShardId, CachedRoute>>,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
-    tables: Mutex<HashMap<String, TableOptions>>,
+    /// Table options by "namespace/table".
+    ///
+    /// A reader-writer lock, not a mutex: every table-scoped request reads this at least
+    /// twice -- once to resolve the table and once for its options -- and writes happen
+    /// only when a table is opened, refreshed by the metaserver sync, or dropped. Under a
+    /// mutex those reads serialized against each other for no reason, which made resolving
+    /// a cached table the most expensive thing the proxy did per request.
+    tables: RwLock<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
     /// Topology version this client last heard from the metaserver.
@@ -752,7 +759,7 @@ impl TemporalStoreClient {
                 options,
                 routes: Mutex::default(),
                 backend_failures: Mutex::default(),
-                tables: Mutex::default(),
+                tables: RwLock::default(),
                 meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),
                 known_topology_version: AtomicU64::new(0),
@@ -771,7 +778,7 @@ impl TemporalStoreClient {
         let combine_name = table_combine_name(&namespace, &table_name);
         self.inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
             .insert(combine_name, options.clone());
         self.ensure_meta_sync_table_state(&namespace, &table_name);
@@ -810,7 +817,7 @@ impl TemporalStoreClient {
         let options = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .get(&table_combine_name(&namespace, &table_name))
             .cloned()?;
@@ -1001,7 +1008,7 @@ impl TemporalStoreTable {
         self.client
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .get(&table_combine_name(&self.namespace, &self.table_name))
             .cloned()

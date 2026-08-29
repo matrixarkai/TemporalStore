@@ -1980,6 +1980,67 @@ fn proxy_addr_port(addr: &str) -> u16 {
 mod tests {
     use super::*;
 
+    /// What looking up an already-cached table costs, per request, under contention.
+    ///
+    /// The proxy resolves a table on every table-scoped request. On the cache-HIT path --
+    /// which is the normal one -- it clones the namespace and table name so the miss path
+    /// can still own them, `cached_table` builds a third string for the map key, and
+    /// cloning the stored options allocates a fourth for the preferred location. Four
+    /// allocations, a mutex, and an Arc clone, to answer a question the cache already knows.
+    ///
+    /// Measured under threads because the mutex is shared; run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_cached_table_lookup() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        // Seed the cache directly; open_table inserts the options without needing a
+        // metaserver, which is what the hit path reads.
+        let _seeded = proxy
+            .client()
+            .open_table("ns", "tbl", crate::client::TableOptions::default());
+        assert!(
+            proxy.client().cached_table("ns", "tbl").is_some(),
+            "the cache must be warm or this measures the miss path"
+        );
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = std::sync::Arc::clone(&proxy);
+            let gate = std::sync::Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                gate.wait();
+                for _ in 0..per_thread {
+                    let table = proxy
+                        .table_for_request("ns".to_string(), "tbl".to_string())
+                        .expect("cached table");
+                    std::hint::black_box(&table);
+                }
+            }));
+        }
+        gate.wait();
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread panicked");
+        }
+        let elapsed = start.elapsed();
+        let ops = (threads * per_thread) as u128;
+        println!(
+            "BENCH cached_table_lookup threads={threads} ops={ops} ns_per_op={} ops_per_sec={}",
+            elapsed.as_nanos() / ops,
+            ops * 1_000_000_000 / elapsed.as_nanos().max(1)
+        );
+    }
+
     #[test]
     fn a_pushed_topology_check_interval_reaches_the_request_path() {
         // The interval is mirrored outside the options lock so the request path can read
