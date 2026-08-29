@@ -266,6 +266,14 @@ impl ProxyService {
         let session = scope_session(&request.scope);
         let key = rawlog_key(tenant_hash, &session);
         let now = now_ms();
+        // Kept inside 8 digits so the field stays fixed-width and lexicographic order
+        // remains arrival order. Wrapping needs a hundred million ingests AND a same-
+        // millisecond collision with the exact sequence a wrap apart.
+        let call = self
+            .inner
+            .context_ingest_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % 100_000_000;
 
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         for (idx, message) in request.messages.iter().enumerate() {
@@ -281,8 +289,11 @@ impl ProxyService {
                         message.role.clone()
                     }
                 });
-            // Field orders raw events by (timestamp, seq) so read-back is stable.
-            let field = format!("{timestamp_ms:020}:{idx:06}");
+            // Orders raw events by (timestamp, call, index within the call), all
+            // fixed-width so lexicographic order is arrival order. The call component is
+            // what stops two ingests in the same millisecond writing the same field and
+            // one silently overwriting the other; `{idx}` alone restarts at zero per call.
+            let field = format!("{timestamp_ms:020}:{call:08}:{idx:06}");
             let value = json!({
                 "record_type": "raw_event",
                 "role": message.role,
