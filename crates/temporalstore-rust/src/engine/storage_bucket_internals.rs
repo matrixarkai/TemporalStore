@@ -2364,6 +2364,41 @@ mod bucket_layout_tests {
     }
 
     #[test]
+    fn the_page_index_serializes_exactly_as_the_bare_map() {
+        let node = bucket(&[(1, false), (2, true), (3, false)], &[1, 3]);
+        let bare: PageIndexMap = node
+            .page_index
+            .iter()
+            .map(|(key, page)| (key.clone(), page.clone()))
+            .collect();
+        assert_eq!(
+            serde_json::to_string(&node.page_index).expect("wrapper encodes"),
+            serde_json::to_string(&bare).expect("map encodes"),
+            "the version must not reach the wire -- the record shape is a durable contract"
+        );
+    }
+
+    #[test]
+    fn a_page_index_read_back_has_derived_nothing_yet() {
+        let node = bucket(&[(1, false), (2, false)], &[1, 2]);
+        let encoded = serde_json::to_string(&node).expect("bucket encodes");
+        assert!(
+            !encoded.contains("layout_from_pages_version"),
+            "the derived-from version must not reach the wire"
+        );
+
+        let round: BucketNode = serde_json::from_str(&encoded).expect("bucket decodes");
+        assert_eq!(round.page_index.len(), 2, "pages survive the round trip");
+        assert_eq!(
+            round.layout_from_pages_version, None,
+            "a freshly loaded bucket has derived nothing, so the next sweep must recompute"
+        );
+        // And that is exactly what happens: the recorded version does not match the pages, so the
+        // check the sweep makes asks for a recompute.
+        assert_ne!(round.layout_from_pages_version, Some(round.page_index.version()));
+    }
+
+    #[test]
     fn the_buffer_is_reusable_across_buckets() {
         // The sweep carries one buffer over every bucket, so a leftover from the previous bucket
         // must not leak into the next one.
