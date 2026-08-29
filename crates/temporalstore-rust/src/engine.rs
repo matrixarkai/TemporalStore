@@ -3503,8 +3503,27 @@ fn object_manager_stats(
                 .iter()
                 .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
                 .collect::<BTreeSet<_>>();
-            for object_key in &shard.dirty_objects {
-                dirty_buckets.extend(bucket_index_target_buckets_for_object_key(shard, object_key));
+            // The loop below asks, per dirty object, which buckets hold its pages -- building a
+            // composite lookup key each time. `dirty_objects` grows with the ingest, and this
+            // runs on the heartbeat timer under the shard read lock, so it was the shard-sized
+            // work that made writes cost more as the store grew: profiling a running ingest
+            // showed `bucket_index_target_buckets_for_object_key` and `push_lookup_part` rising
+            // together with `RwLock::write_contended`.
+            //
+            // The answer is a set of bucket ids, so it cannot exceed the number of buckets. Once
+            // every bucket is already in it the loop cannot change the result, and during ingest
+            // that is the normal case -- `mark_async_dirty_object` marks an object's routing
+            // bucket dirty as it records the object, so the collect above already has them.
+            // Stopping there is exact, not an approximation.
+            let bucket_total = shard.bucket_index.bucket_map.len();
+            if dirty_buckets.len() < bucket_total {
+                for object_key in &shard.dirty_objects {
+                    dirty_buckets
+                        .extend(bucket_index_target_buckets_for_object_key(shard, object_key));
+                    if dirty_buckets.len() >= bucket_total {
+                        break;
+                    }
+                }
             }
             dirty_buckets.len()
         } else {

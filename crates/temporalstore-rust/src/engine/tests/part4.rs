@@ -3741,6 +3741,100 @@ fn bucket_runtime_flags_match_full_sweep() {
     );
 }
 
+/// The dirty-bucket count must equal the answer the unshortened scan would give.
+///
+/// The stats path counts dirty buckets by collecting the buckets already marked dirty and then
+/// asking, per dirty object, which buckets hold its pages. `dirty_objects` grows by one per
+/// record ingested and each pass builds a composite lookup key, so that loop was shard-sized work
+/// on the heartbeat timer, under the read lock writers need.
+///
+/// It now stops once every bucket is in the set, because the answer is a set of bucket ids and
+/// cannot grow past the bucket count. That is exact rather than approximate -- but "exact by
+/// argument" is what this test exists to check, by recomputing the count the long way and
+/// requiring equality.
+///
+/// Measured, 200k records in five equal phases at 1023 slots, growth of the last phase over the
+/// first with the heartbeat at 1s: 3.42/2.17 before, 1.14/0.93 after, against 0.84-0.94 with the
+/// heartbeat switched off entirely.
+#[test]
+fn dirty_bucket_count_matches_the_unshortened_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "dirty-bucket-count".to_string(),
+                shard_uri: "local://dirty-bucket-count/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    // Mixed enough that not every bucket ends up dirty: the short-circuit must not fire in the
+    // case where the loop still has something to contribute.
+    for index in 0..90 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dbc-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        if index % 4 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("dbc-{}", index / 3),
+                },
+            });
+        }
+    }
+
+    let reported = engine
+        .shard_stats(1)
+        .expect("shard 1 loaded")
+        .object_manager
+        .dirty_bucket_count;
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    // The same computation with no early exit.
+    let mut expected: std::collections::BTreeSet<u32> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
+        .collect();
+    for object_key in &shard.dirty_objects {
+        expected.extend(crate::engine::bucket_index_target_buckets_for_object_key(
+            shard, object_key,
+        ));
+    }
+    assert!(
+        !shard.bucket_index.bucket_map.is_empty(),
+        "workload produced no buckets"
+    );
+    assert_eq!(
+        reported,
+        expected.len(),
+        "dirty bucket count diverged from the unshortened scan: {reported} vs {}",
+        expected.len()
+    );
+    println!("
+  dirty buckets: reported {reported} == unshortened {}
+", expected.len());
+}
+
 /// The maintained page-ref total must equal the walk it replaced.
 ///
 /// The stats path reports that number and used to derive it by summing every set in
