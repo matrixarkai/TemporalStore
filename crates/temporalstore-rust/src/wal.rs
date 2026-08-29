@@ -3602,6 +3602,82 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
 
+    /// What the footer actually buys, on equivalent logs. Ignored: a measurement, not a gate.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_finding_the_tail_costs -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn what_finding_the_tail_costs() {
+        fn build(records: usize, footers: bool) -> (tempfile::TempDir, std::path::PathBuf) {
+            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
+            if footers {
+                std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
+            } else {
+                std::env::remove_var("TS_WAL_BLOCK_FOOTER");
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![b'v'; 1024],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let path = write_ahead_log_path(dir.path(), 1);
+            match previous {
+                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
+                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
+            }
+            (dir, path)
+        }
+
+        fn time_tail(path: &std::path::Path, footers: bool, rounds: u32) -> std::time::Duration {
+            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
+            if footers {
+                std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
+            } else {
+                std::env::remove_var("TS_WAL_BLOCK_FOOTER");
+            }
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                let _ = last_wal_sequence_in(path).unwrap();
+            }
+            let elapsed = started.elapsed() / rounds;
+            match previous {
+                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
+                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
+            }
+            elapsed
+        }
+
+        for records in [4_000usize, 16_000] {
+            let (_keep_a, with) = build(records, true);
+            let (_keep_b, without) = build(records, false);
+            let (_, end_with) = {
+                let _flag = FooterFlag::on();
+                last_wal_sequence_in(&with).unwrap()
+            };
+            let (_, end_without) = last_wal_sequence_in(&without).unwrap();
+            let footer = time_tail(&with, true, 20);
+            let walk = time_tail(&without, false, 20);
+            println!(
+                "  {records} records (~{} blocks)\n    footer {:>9.1} us\n    walk   {:>9.1} us\n    \
+                 ratio  {:>9.1}x",
+                end_without / WAL_BLOCK_BYTES,
+                footer.as_secs_f64() * 1e6,
+                walk.as_secs_f64() * 1e6,
+                walk.as_secs_f64() / footer.as_secs_f64().max(f64::MIN_POSITIVE),
+            );
+            assert!(end_with > 0 && end_without > 0);
+        }
+    }
+
     /// With blocks on, a scan has to walk past the footers between them. It did not: the first
     /// footer looked like the end of the log, so every record after the first block vanished
     /// from every reader that scans -- replay included.
