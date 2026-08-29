@@ -1441,6 +1441,10 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
 
 pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     let now = now_ms();
+    // Emptiness is a property of the shard, not of a bucket, so it is checked once here rather
+    // than per page. When nothing in the shard has an expiry, every lookup below would miss and
+    // the minimum over no values is `None` either way.
+    let any_expiry = !shard.expires_at_ms.is_empty();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         bucket.meta_loaded = true;
         bucket.loading = false;
@@ -1451,12 +1455,16 @@ pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
             .page_index
             .values()
             .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
-        bucket.ttl_ms = bucket
-            .page_index
-            .values()
-            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
-            .map(|expires_at| expires_at.saturating_sub(now))
-            .min();
+        bucket.ttl_ms = if any_expiry {
+            bucket
+                .page_index
+                .values()
+                .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
+                .map(|expires_at| expires_at.saturating_sub(now))
+                .min()
+        } else {
+            None
+        };
         update_bucket_layout(bucket);
     }
 }
