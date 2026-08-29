@@ -170,6 +170,30 @@ That matters most exactly where large chunks are used: the encoder's 128-token
 window embeds only the first fraction of a 1000-token chunk, so the keyword index
 is the *only* way to reach the rest of it.
 
+### Pair the cap with the chunk size
+
+The cap has to exceed the number of distinct terms in a chunk, and that number
+grows with the chunk. The same measurement across chunk sizes:
+
+| chunk tokens | cap | 10% in | 50% in | 90% in | 97% in | index terms |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 240 | `50` | 100% | 91% | 45% | 33% | 2738 |
+| 240 | `100` | 100% | 100% | 100% | 100% | 3761 |
+| 240 | `200` | 100% | 100% | 100% | 100% | 3761 |
+| 500 | `100` | 100% | 100% | 98% | 82% | 1784 |
+| 500 | `200` | 100% | 100% | 100% | 100% | 1855 |
+| 1000 | `100` | 100% | 99% | 64% | 36% | 972 |
+| 1000 | `200` | 100% | 100% | 100% | 100% | 1193 |
+
+A 240-token chunk is fully covered by `100` — raising it to `200` changes nothing
+because the chunk has no more terms to index. A 1000-token chunk needs `200`.
+
+**Larger chunks are the cheaper way to buy full reach.** Over the same source
+text, 1000-token chunks at `200` index 1193 terms where 240-token chunks at `100`
+index 3761 — about a third of the records for identical reach at every depth.
+With posting lists on, index records track distinct terms, so that ratio is the
+memory ratio. Prefer big chunks with a high cap over small chunks with a low one.
+
 ```bash
 # Index everything: every phrase reachable, ~118 GB resident for 10k documents.
 MATRIXARK_INDEX_KEYWORD_LIMIT=200 MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK=200 MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK=200 MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD=200 MATRIXARK_INDEX_POSTING_LISTS=1 matrixark_rust_datanode
