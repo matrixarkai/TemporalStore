@@ -684,10 +684,10 @@ impl TemporalEngine {
             // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
             // rebuilds the first-index once at the end, so deferring here is
             // correctness-preserving.
-            if !defer_bucket_index_reconstruct()
+            let rebuilt_bucket_index = !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
-                    || shard.bucket_index.bucket_map.is_empty())
-            {
+                    || shard.bucket_index.bucket_map.is_empty());
+            if rebuilt_bucket_index {
                 rebuild_bucket_first_index(
                     request.shard_id,
                     shard,
@@ -696,7 +696,15 @@ impl TemporalEngine {
                 );
             }
             if !defer_bucket_index_reconstruct() {
-                refresh_bucket_runtime_flags(shard);
+                if rebuilt_bucket_index {
+                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                    // changed no longer describes it; recompute everything.
+                    refresh_bucket_runtime_flags(shard);
+                } else {
+                    // Refresh only what this write touched. Sweeping the shard here cost
+                    // O(total pages) on EVERY write, which made ingestion quadratic in the corpus.
+                    refresh_pending_bucket_runtime_flags(shard);
+                }
             }
             // Every
             // write records a WAL entry before any page is written.

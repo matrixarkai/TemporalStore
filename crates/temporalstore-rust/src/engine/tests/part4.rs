@@ -3499,6 +3499,148 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     }
 }
 
+/// The per-write targeted refresh must leave the same flags as sweeping the whole shard.
+///
+/// The write path refreshes only the buckets it recorded as touched. That is only correct if a
+/// bucket nobody recorded genuinely cannot have changed, which is an argument about every site
+/// that mutates a bucket, `dirty_objects` or `expires_at_ms`. Rather than rest on the argument,
+/// this runs a mixed workload and then sweeps every bucket: if the targeted path ever misses one,
+/// the sweep moves it and the comparison fails, naming the bucket and the field.
+///
+/// `ttl_ms` is a countdown recomputed from the clock, so it is compared as present/absent rather
+/// than by value; every other flag is exact.
+#[test]
+fn bucket_runtime_flags_match_full_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A mix, so the comparison covers inserts, overwrites, hash fields, expiries and deletes
+    // rather than one shape of write.
+    for index in 0..120 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("flags-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("flags-hash-{}", index % 17),
+                field: format!("field-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 5 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("flags-str-{}", index / 2),
+                    value: vec![b'w'; 64],
+                },
+            });
+        }
+        if index % 7 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("flags-str-{index}"),
+                    ttl_ms: 60_000,
+                },
+            });
+        }
+        if index % 11 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("flags-str-{}", index / 3),
+                },
+            });
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct BucketFlags {
+        in_memory: bool,
+        deleted: bool,
+        dirty: bool,
+        has_ttl: bool,
+        layout: String,
+        object_index: Vec<u64>,
+        page_count: usize,
+    }
+
+    let capture = |engine: &TemporalEngine| -> std::collections::BTreeMap<u32, BucketFlags> {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| {
+                (
+                    *routing_bucket,
+                    BucketFlags {
+                        in_memory: bucket.in_memory,
+                        deleted: bucket.deleted,
+                        dirty: bucket.dirty,
+                        has_ttl: bucket.ttl_ms.is_some(),
+                        layout: format!("{:?}", bucket.layout),
+                        object_index: bucket.object_index.iter().copied().collect(),
+                        page_count: bucket.page_index.len(),
+                    },
+                )
+            })
+            .collect()
+    };
+
+    let after_targeted = capture(&engine);
+    {
+        let mut shards = engine.shards.write().expect("shards lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+    }
+    let after_full_sweep = capture(&engine);
+
+    assert!(
+        !after_targeted.is_empty(),
+        "workload produced no buckets, so the comparison would be vacuous"
+    );
+
+    let mut differences = Vec::new();
+    for (routing_bucket, targeted) in &after_targeted {
+        let swept = after_full_sweep
+            .get(routing_bucket)
+            .expect("the sweep cannot add or drop buckets");
+        if targeted != swept {
+            differences.push(format!(
+                "  bucket {routing_bucket}: targeted {targeted:?} != swept {swept:?}"
+            ));
+        }
+    }
+    assert!(
+        differences.is_empty(),
+        "the per-write targeted refresh left {} bucket(s) in a different state than a full sweep,          so a mutation site is not recording the bucket it touched:
+{}",
+        differences.len(),
+        differences.join("
+")
+    );
+    println!(
+        "
+  {} buckets compared; targeted refresh matches a full sweep on every flag
+",
+        after_targeted.len()
+    );
+}
+
 /// Bucket maintenance must not make a write cost more as the store grows.
 ///
 /// `update_bucket_layout` rebuilds a bucket's whole object set from `page_index`, and the

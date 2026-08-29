@@ -69,6 +69,23 @@ pub(super) struct ShardState {
     /// is not found, and the read falls through exactly as it did before this existed.
     #[serde(default)]
     pub(super) wal_resident_pages: BTreeMap<u64, WalResidentPage>,
+    /// Routing buckets whose derived runtime flags may be stale, so a write can refresh the
+    /// buckets it touched instead of sweeping the shard.
+    ///
+    /// `refresh_bucket_runtime_flags` recomputes `in_memory` / `deleted` / `dirty` / `ttl_ms` /
+    /// `layout` for EVERY bucket, and the single-write path called it on every write. Each bucket
+    /// costs `O(its pages)`, so the sweep is `O(total pages)` per write and ingestion is quadratic
+    /// in the corpus. Note that the routing-slot range does not soften this: fewer slots means
+    /// fewer, larger buckets and the same total page count.
+    ///
+    /// Recorded where the routing bucket is already known -- the bucket-index upsert, the removal
+    /// paths, and the async dirty mark -- rather than inferred from the key, because a stored
+    /// address may carry an explicit routing bucket that disagrees with `page_routing_bucket`.
+    ///
+    /// Not persisted: on load this is empty, and every load and recovery path already runs the
+    /// full sweep, so a fresh process starts from fully recomputed flags.
+    #[serde(skip)]
+    pub(super) buckets_pending_flag_refresh: BTreeSet<u32>,
     /// Deadlines, kept in key order so a sweep can resume from its cursor and look at the
     /// window rather than at everything.
     pub(super) expires_at_ms: BTreeMap<String, u64>,

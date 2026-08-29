@@ -838,6 +838,7 @@ pub(super) fn mark_async_dirty_object(
         });
     bucket.dirty = true;
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
+    note_bucket_flags_stale(shard, routing_bucket);
 }
 
 pub(super) fn rebuild_bucket_page_ownership(
@@ -1220,6 +1221,9 @@ pub(super) fn upsert_bucket_index_page(
         dirty,
         deleted: false,
     };
+    // Buckets whose pages this upsert disturbs. Collected while the bucket borrows are live and
+    // recorded once they end, so the per-write refresh can skip the rest of the shard.
+    let mut touched_buckets: Vec<u32> = Vec::new();
     let lookup_enabled = !shard.bucket_index.object_page_lookup.is_empty();
     let direct_page_refs = if lookup_enabled {
         shard
@@ -1244,6 +1248,7 @@ pub(super) fn upsert_bucket_index_page(
             let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&page_ref.routing_bucket) else {
                 continue;
             };
+            touched_buckets.push(page_ref.routing_bucket);
             let removed_object_id = bucket
                 .page_index
                 .remove(&page_ref.page_ref_key)
@@ -1260,8 +1265,9 @@ pub(super) fn upsert_bucket_index_page(
             }
         }
     } else if !lookup_enabled {
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
+        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter_mut() {
             note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.page_index.len());
+            touched_buckets.push(*routing_bucket);
             bucket.page_index.retain(|_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
@@ -1309,10 +1315,12 @@ pub(super) fn upsert_bucket_index_page(
         bucket.page_index
             .insert(page_ref_key.clone(), page_index.clone());
         update_bucket_layout(bucket);
+        touched_buckets.push(routing_bucket);
     }
     shard
         .bucket_index
         .insert_object_page_lookup(routing_bucket, page_ref_key, &page_index);
+    shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 
 pub(super) fn sync_bucket_index_object_pages(
@@ -1479,26 +1487,73 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
 }
 
+/// Note that a bucket's derived runtime flags may be stale.
+///
+/// Called where the routing bucket is already in hand. Recording it is cheap; the alternative --
+/// deriving it from the object key later -- is not sound, because a stored address may carry an
+/// explicit routing bucket that disagrees with `page_routing_bucket`.
+pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u32) {
+    shard.buckets_pending_flag_refresh.insert(routing_bucket);
+}
+
+/// Recompute one bucket's derived flags. The whole body of the sweep, for a single bucket.
+fn refresh_one_bucket_runtime_flags(
+    bucket: &mut BucketNode,
+    now: u64,
+    dirty_objects: &BTreeSet<String>,
+    expires_at_ms: &BTreeMap<String, u64>,
+) {
+    note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.page_index.len());
+    bucket.meta_loaded = true;
+    bucket.loading = false;
+    bucket.in_memory = !bucket.page_index.is_empty();
+    bucket.deleted =
+        !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
+    bucket.dirty |= bucket
+        .page_index
+        .values()
+        .any(|page| page.dirty || dirty_objects.contains(&page.object_key));
+    bucket.ttl_ms = bucket
+        .page_index
+        .values()
+        .filter_map(|page| expires_at_ms.get(&page.object_key).copied())
+        .map(|expires_at| expires_at.saturating_sub(now))
+        .min();
+    update_bucket_layout(bucket);
+}
+
+/// Refresh EVERY bucket in the shard. `O(total pages)`.
+///
+/// Correct everywhere and the right thing after a load, a recovery or a reconstruct, where the
+/// set of changed buckets is not known. On the per-write path use
+/// [`refresh_pending_bucket_runtime_flags`] instead -- this sweep on every write is what made
+/// ingestion quadratic in the corpus.
 pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     let now = now_ms();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
-        note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.page_index.len());
-        bucket.meta_loaded = true;
-        bucket.loading = false;
-        bucket.in_memory = !bucket.page_index.is_empty();
-        bucket.deleted =
-            !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
-        bucket.dirty |= bucket
-            .page_index
-            .values()
-            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
-        bucket.ttl_ms = bucket
-            .page_index
-            .values()
-            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
-            .map(|expires_at| expires_at.saturating_sub(now))
-            .min();
-        update_bucket_layout(bucket);
+        refresh_one_bucket_runtime_flags(bucket, now, &shard.dirty_objects, &shard.expires_at_ms);
+    }
+    // The sweep covered everything, so nothing is left outstanding.
+    shard.buckets_pending_flag_refresh.clear();
+}
+
+/// Refresh only the buckets recorded as touched, and clear the record.
+///
+/// Equivalent to the full sweep for the buckets that changed; an untouched bucket's flags are a
+/// function of its own pages plus the two shard-wide maps, and both of those are noted against the
+/// buckets they affect. `bucket_runtime_flags_match_full_sweep` in the engine tests checks that
+/// equivalence against a real workload rather than leaving it as an argument.
+pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
+    if shard.buckets_pending_flag_refresh.is_empty() {
+        return;
+    }
+    let now = now_ms();
+    let pending = std::mem::take(&mut shard.buckets_pending_flag_refresh);
+    for routing_bucket in pending {
+        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+            continue;
+        };
+        refresh_one_bucket_runtime_flags(bucket, now, &shard.dirty_objects, &shard.expires_at_ms);
     }
 }
 
