@@ -126,6 +126,13 @@ fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Optio
         if read == 0 {
             return Ok(None);
         }
+        // A delimited record that never reached its delimiter was an interrupted append.
+        // Returning it as a record hands the caller a fragment, which fails to decode and gets
+        // reported as corruption -- refusing a load that should simply cut the fragment away.
+        // `next_frame` applies exactly this rule to exactly these bytes; this agrees with it.
+        if !line.ends_with(b"\n") {
+            return Ok(None);
+        }
         return Ok(Some(line));
     }
     // Binary: marker, varint length, four checksum bytes, then exactly that many payload bytes.
@@ -5245,10 +5252,13 @@ mod tests {
                 .read_at_log_id(1, *log_id, 4096)
                 .unwrap()
                 .unwrap_or_else(|| panic!("log id {log_id} should still resolve"));
-            let end = bytes
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(bytes.len(), |at| at + 1);
+            // Where this record ends is the frame's answer, not the first newline's: a
+            // length-framed payload carries 0x0A itself, so the first one is usually inside the
+            // record and slicing there hands a decoder half a record.
+            let end = match crate::log_framing::next_frame(&bytes) {
+                Ok(Some((consumed, _))) if consumed > 0 => consumed,
+                _ => bytes.len(),
+            };
             let record = decode_wal_line(&bytes[..end]).unwrap();
             match record.command.expect("a record built with an operation still carries one") {
                 Command::StringSet { value: found, .. } => {
@@ -5438,10 +5448,13 @@ mod tests {
                 .read_at_log_id(1, *log_id, 4096)
                 .unwrap()
                 .unwrap_or_else(|| panic!("sequence {sequence} should have been kept"));
-            let end = bytes
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(bytes.len(), |at| at + 1);
+            // Where this record ends is the frame's answer, not the first newline's: a
+            // length-framed payload carries 0x0A itself, so the first one is usually inside the
+            // record and slicing there hands a decoder half a record.
+            let end = match crate::log_framing::next_frame(&bytes) {
+                Ok(Some((consumed, _))) if consumed > 0 => consumed,
+                _ => bytes.len(),
+            };
             assert_eq!(decode_wal_line(&bytes[..end]).unwrap().sequence, *sequence);
         }
 
@@ -5630,10 +5643,13 @@ mod tests {
                 .unwrap_or_else(|| {
                     panic!("sequence {sequence} is at or above the block-retention floor and was removed")
                 });
-            let end = bytes
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(bytes.len(), |at| at + 1);
+            // Where this record ends is the frame's answer, not the first newline's: a
+            // length-framed payload carries 0x0A itself, so the first one is usually inside the
+            // record and slicing there hands a decoder half a record.
+            let end = match crate::log_framing::next_frame(&bytes) {
+                Ok(Some((consumed, _))) if consumed > 0 => consumed,
+                _ => bytes.len(),
+            };
             assert_eq!(decode_wal_line(&bytes[..end]).unwrap().sequence, *sequence);
         }
         set_wal_segment_bytes_for_test(None);
@@ -5833,9 +5849,24 @@ mod tests {
             }
             assert_eq!(5, sequence_end);
             let path = dir.path().join("shard-1.wal.jsonl");
-            // Find where the records stop (the last newline) and plant garbage after it.
+            // Find where the records stop and plant garbage after it. The last newline answers
+            // that only for records delimited by one -- a length-framed payload carries 0x0A of
+            // its own, so the search lands inside a record and the garbage would overwrite half
+            // of it, testing something else entirely. Walk the frames to their end instead.
             let bytes = fs::read(&path).unwrap();
-            let record_end = bytes.iter().rposition(|byte| *byte == b'\n').unwrap() + 1;
+            let record_end = {
+                let mut at = data_start(&bytes);
+                while at < bytes.len() {
+                    if bytes[at] == 0 {
+                        break;
+                    }
+                    match crate::log_framing::next_frame(&bytes[at..]) {
+                        Ok(Some((consumed, _))) if consumed > 0 => at += consumed,
+                        _ => break,
+                    }
+                }
+                at
+            };
             {
                 use std::io::{Seek, Write};
                 let mut file = OpenOptions::new().write(true).open(&path).unwrap();
@@ -5873,8 +5904,21 @@ mod tests {
                 if name.starts_with("shard-1.wal.") && name.ends_with(".jsonl") && name != "shard-1.wal.jsonl" {
                     sealed += 1;
                     let bytes = fs::read(&path).unwrap();
-                    assert!(
-                        !bytes.is_empty() && *bytes.last().unwrap() == b'\n',
+                    assert!(!bytes.is_empty(), "a sealed piece must hold its records");
+                    // The property is that the piece ends AT its last record, with no
+                    // reservation left behind it. A trailing newline tested that only while a
+                    // record ended with one; walking the frames tests it for either format, and
+                    // tests it harder: the records must tile the file exactly.
+                    let mut at = data_start(&bytes);
+                    while at < bytes.len() {
+                        match crate::log_framing::next_frame(&bytes[at..]) {
+                            Ok(Some((consumed, _))) if consumed > 0 => at += consumed,
+                            _ => break,
+                        }
+                    }
+                    assert_eq!(
+                        at,
+                        bytes.len(),
                         "a sealed piece must end exactly at its last record, not in zeros"
                     );
                 }
