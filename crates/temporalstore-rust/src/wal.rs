@@ -2943,14 +2943,26 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
             record_end = record_end.saturating_add(raw.len() as u64);
             continue;
         }
-        // A record that will not decode here is a torn tail: everything before it stands, and
-        // the end of the good prefix is where it starts.
+        // A record that will not decode is one of two different things, and conflating them
+        // either loses committed data or refuses a load that should succeed. If nothing follows
+        // it, the append was interrupted -- a torn tail is not corruption, and everything before
+        // it stands. If bytes follow it, a complete record went bad while records around it are
+        // fine, which is interior corruption and must stay fatal.
         match decode_wal_line(&raw) {
             Ok(record) => {
                 last_sequence = last_sequence.max(record.sequence);
                 record_end = record_end.saturating_add(raw.len() as u64);
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                let at_end = {
+                    let buffered = reader.fill_buf()?;
+                    buffered.is_empty() || buffered.iter().all(|byte| *byte == 0)
+                };
+                if at_end {
+                    break;
+                }
+                return Err(err);
+            }
         }
     }
     Ok((last_sequence, record_end))
@@ -3734,20 +3746,30 @@ mod tests {
     }
 
     /// Byte offset at which each record starts, in order, past any base header.
+    /// Where each record starts. Walk the frames, do not hunt for newlines: a record ends where
+    /// its frame says it does, and a length-framed payload carries 0x0A of its own, so counting
+    /// newlines reports boundaries that were never boundaries. Works for either frame, which is
+    /// what a log written across a format change actually contains.
     fn record_offsets_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<usize> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
         let start = data_start(&bytes);
-        // Preallocated room ends the records early: nothing starts inside the zeros.
-        let end = bytes[start..]
-            .windows(1)
-            .rposition(|window| window[0] == b'\n')
-            .map(|index| start + index + 1)
-            .unwrap_or(bytes.len());
-        let mut offsets = vec![start];
-        for (index, byte) in bytes.iter().enumerate().take(end).skip(start) {
-            if *byte == b'\n' && index + 1 < end {
-                offsets.push(index + 1);
+        let mut offsets = Vec::new();
+        let mut at = start;
+        while at < bytes.len() {
+            // Preallocated room ends the records: nothing starts inside the zeros.
+            if bytes[at] == 0 {
+                break;
             }
+            match crate::log_framing::next_frame(&bytes[at..]) {
+                Ok(Some((consumed, _))) if consumed > 0 => {
+                    offsets.push(at);
+                    at += consumed;
+                }
+                _ => break,
+            }
+        }
+        if offsets.is_empty() {
+            offsets.push(start);
         }
         offsets
     }
@@ -3755,11 +3777,11 @@ mod tests {
     /// Bytes of the record starting at `offset`, including its newline.
     fn record_bytes_at(root: &std::path::Path, shard: ShardId, offset: usize) -> Vec<u8> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
-        let end = bytes[offset..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map(|index| offset + index + 1)
-            .unwrap_or(bytes.len());
+        // The frame says how far the record runs; a newline only marks the end of one kind.
+        let end = match crate::log_framing::next_frame(&bytes[offset..]) {
+            Ok(Some((consumed, _))) if consumed > 0 => offset + consumed,
+            _ => bytes.len(),
+        };
         bytes[offset..end].to_vec()
     }
 
@@ -4227,7 +4249,10 @@ mod tests {
                 .read_at_log_id(1, *log_id, 4096)
                 .unwrap()
                 .expect("a live log id must resolve");
-            let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
+            let (consumed, _) = crate::log_framing::next_frame(&bytes)
+                .unwrap()
+                .expect("a live log id must name a whole record");
+            let line = &bytes[..consumed];
             assert_eq!(decode_wal_line(line).unwrap().sequence, *sequence);
         }
     }
@@ -4260,7 +4285,10 @@ mod tests {
         for (log_id, sequence) in &reported {
             match store.read_at_log_id(1, *log_id, 4096).unwrap() {
                 Some(bytes) => {
-                    let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
+                    let (consumed, _) = crate::log_framing::next_frame(&bytes)
+                .unwrap()
+                .expect("a live log id must name a whole record");
+            let line = &bytes[..consumed];
                     assert_eq!(
                         decode_wal_line(line).unwrap().sequence,
                         *sequence,
@@ -4304,7 +4332,10 @@ mod tests {
             .read_at_log_id(1, log_id, 4096)
             .unwrap()
             .expect("the just-appended record must resolve");
-        let line = bytes.split(|byte| *byte == 10u8).next().unwrap();
+        let (consumed, _) = crate::log_framing::next_frame(&bytes)
+                .unwrap()
+                .expect("a live log id must name a whole record");
+            let line = &bytes[..consumed];
         assert_eq!(decode_wal_line(line).unwrap().sequence, record.sequence);
     }
 
@@ -4946,11 +4977,18 @@ mod tests {
             staged_pages: Vec::new(),
             outcomes: Vec::new(),
         };
-        let framed = crate::log_framing::encode_line(&encode_wal_payload(&record).unwrap());
-        assert!(
-            !framed[..framed.len() - 1].contains(&b'\n'),
-            "a record must not contain a newline, or every reader here loses the log"
-        );
+        // Encode with whichever frame is configured, so the payload's escaping and the frame
+        // that carries it are decided by the same thing. Pairing a raw payload with a frame that
+        // ends at a newline is a log no writer produces.
+        let framed = crate::log_framing::encode_record(&encode_wal_payload(&record).unwrap());
+        if !crate::log_framing::binary_frame_enabled() {
+            // Only a delimiter-terminated record needs this: it is the whole reason escaping
+            // exists. A length-framed record carries the byte freely and is read by its length.
+            assert!(
+                !framed[..framed.len() - 1].contains(&b'\n'),
+                "a delimited record must not contain the delimiter, or every reader loses the log"
+            );
+        }
         let decoded = decode_wal_line(&framed).unwrap();
         assert_eq!(decoded, record, "the payload changed on the way back");
     }
