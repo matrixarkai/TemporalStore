@@ -8530,3 +8530,115 @@ fn an_async_write_is_never_lost_across_a_restart() {
         );
     }
 }
+
+#[test]
+fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
+    // The log records what a write DID, not what it was asked to do -- and that now includes a
+    // write whose blocks travel inside its own record. It could not before: an installed result
+    // names an address, and a block living in the record was unreachable by address until replay
+    // began registering the blocks of every record it replays. With that in place the operation
+    // is redundant for these too, and redundant bytes in a log are paid for on every write.
+    //
+    // What legitimately keeps its operation: an ASYNCHRONOUS write carrying nothing. Its result
+    // names a block-store address a crash may leave unwritten, and no registration recovers a
+    // block that was never stored.
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+    for index in 0..8 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{index}"),
+                value: vec![b'v'; 256],
+            },
+        });
+    }
+    engine
+        .write_ahead_log_store()
+        .flush(1)
+        .expect("flush before reading the log back");
+
+    let records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log should read back");
+    let mut carrying_blocks = 0usize;
+    let mut carrying_blocks_with_command = 0usize;
+    for (_, line) in &records {
+        let record = crate::wal::decode_wal_line(line).expect("a record should decode");
+        if record.staged_pages.is_empty() {
+            continue;
+        }
+        carrying_blocks += 1;
+        if record.command.is_some() {
+            carrying_blocks_with_command += 1;
+        }
+    }
+    assert!(
+        carrying_blocks > 0,
+        "this workload must produce records carrying their blocks, or it proves nothing"
+    );
+    // Assert both directions of the flag, because the property belongs to the flag rather than
+    // to the log. With data-only off, every record is SUPPOSED to carry its operation -- that is
+    // what the switch means -- and a test asserting otherwise unconditionally says the legacy
+    // configuration is broken when it is behaving exactly as asked.
+    if crate::wal::wal_data_only_enabled() {
+        assert_eq!(
+            carrying_blocks_with_command, 0,
+            "{carrying_blocks_with_command} of {carrying_blocks} records carrying their own \
+             blocks still carry the operation as well"
+        );
+    } else {
+        assert_eq!(
+            carrying_blocks_with_command, carrying_blocks,
+            "with data-only off every record keeps its operation: {carrying_blocks_with_command} \
+             of {carrying_blocks} did"
+        );
+    }
+
+    // And the point of all of it: the shard still comes back.
+    drop(engine);
+    let restarted = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    for index in 0..8 {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("k{index}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![b'v'; 256])
+            },
+            "k{index} must survive a restart on results alone"
+        );
+    }
+}

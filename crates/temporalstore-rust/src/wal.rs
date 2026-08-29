@@ -389,16 +389,20 @@ pub fn wal_data_only_enabled() -> bool {
 /// the log-resident path -- needs that block registered against the record's log id before any
 /// read can resolve it, which the write path does and installing an address does not.
 ///
-/// So results replace the operation only for a synchronous write whose block went to the block
-/// store: durable, and findable without anything else having to happen. Everything else keeps its
-/// operation and recovers by re-running it, exactly as before.
+/// So results replace the operation when the block behind them can be found afterwards: a
+/// synchronous write whose block is already in the block store, or ANY write carrying its block
+/// inside the record, because replay now registers what it replays. What is left is the
+/// asynchronous write with nothing carried -- its result names a block-store address a crash may
+/// leave unwritten, and registering cannot conjure a block that was never stored. That one keeps
+/// its operation and recovers by re-running it.
 ///
 /// Both halves were found the same way: a recovery test failing 8 runs in 12 against 0 in 12 on
 /// the code before this, measured interleaved on one machine because an uncontrolled comparison
 /// had already told me the opposite once.
 ///
-/// Extending data-only to carried blocks means registering them during replay, which is a change
-/// to the install path rather than to this rule.
+/// The carried-block half of that measurement predates replay registering blocks. The rule tried
+/// then -- accepting carried blocks -- failed 5 runs in 12 precisely because nothing registered
+/// them on the way back in. That is now done, which is what makes the same rule correct.
 pub(crate) fn record_command(
     command: Command,
     outcomes: &[WalOutcomeItem],
@@ -1109,7 +1113,15 @@ impl LocalWriteAheadLogStore {
                 metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
                 // Durable AND in the block store: the two conditions under which installing an
                 // address is enough on its own.
-                command: record_command(command, &outcomes, sync && staged_pages.is_empty()),
+                // A carried block is findable after recovery now: replay registers the blocks
+                // of every record it replays, which is the one thing the rule below was waiting
+                // for. So a record carrying its own blocks can state results and drop the
+                // operation, the same as a synchronous write whose blocks are already durable.
+                //
+                // What still cannot: an ASYNCHRONOUS write with nothing carried. Its result names
+                // an address in the block store that a crash may leave unwritten, and no amount
+                // of registering helps a block that was never stored.
+                command: record_command(command, &outcomes, sync || !staged_pages.is_empty()),
                 staged_pages,
                 outcomes,
             };
@@ -1825,14 +1837,27 @@ impl LocalWriteAheadLogStore {
         // the size of the whole file.
         let mut source = File::open(&path)?;
         source.seek(SeekFrom::Start(header_len))?;
-        let mut reader = BufReader::new(source.take(record_end.saturating_sub(header_len)));
+        // Bounded by the cursor below rather than by `take`, because a Take is not seekable and
+        // stepping over a block's footer is a seek. the reclaim walk crosses blocks now.
+        let mut reader = BufReader::new(source);
+        let walk_until = record_end;
         let mut records_before = 0usize;
         let mut records_after = 0usize;
         let mut split = None;
         let mut cursor = header_len;
         loop {
-            let Some(line) = read_raw_record(&mut reader)? else {
+            if cursor >= walk_until {
                 break;
+            }
+            let Some(line) = read_raw_record(&mut reader)? else {
+                // Padding before a closed block's footer, or the end. The footer decides.
+                match block_is_closed(&mut reader, cursor, header_len, walk_until)? {
+                    Some(next) => {
+                        cursor = next;
+                        continue;
+                    }
+                    None => break,
+                }
             };
             let read = line.len();
             if read == 0 {
@@ -2039,10 +2064,20 @@ impl LocalWriteAheadLogStore {
         // encodings, ever gets to look at it. Escaping the newline out of a binary payload keeps
         // records SPLITTABLE; it cannot make arbitrary bytes valid UTF-8, and nothing should
         // require them to be.
+        let (_, info_header_len) = read_wal_base(&path)?;
+        let info_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let mut info_at = info_header_len;
         loop {
             let Some(mut line) = read_raw_record(&mut reader)? else {
-                break;
+                match block_is_closed(&mut reader, info_at, info_header_len, info_len)? {
+                    Some(next) => {
+                        info_at = next;
+                        continue;
+                    }
+                    None => break,
+                }
             };
+            info_at = info_at.saturating_add(line.len() as u64);
             // Only a text record carries a trailing newline; a binary frame ends where its
             // declared length ends, and trimming it would take a byte of the payload.
             if line.first() != Some(&crate::log_framing::FRAME_MAGIC_V3) {
