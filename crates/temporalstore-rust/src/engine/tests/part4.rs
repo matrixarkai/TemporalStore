@@ -3741,6 +3741,108 @@ fn bucket_runtime_flags_match_full_sweep() {
     );
 }
 
+/// The maintained page-ref total must equal the walk it replaced.
+///
+/// The stats path reports that number and used to derive it by summing every set in
+/// `object_component_lookup` -- a walk over every object in the shard, run on the heartbeat timer
+/// while holding the shard read lock writers need. Measured on a 200k-record ingest in five equal
+/// phases: heartbeat at 1s, the last phase cost 3.0x the first and the datanode's own CPU grew
+/// 3.3-3.7x; heartbeat off, 0.84-0.94x. Turning the timer off removed the growth entirely, which
+/// is what identified the walk rather than the write path.
+///
+/// It is now kept as a running total, so it can drift instead of merely being slow. This drives
+/// inserts, superseding overwrites that remove page refs, hash fields with components, expiries
+/// and deletes, then compares the maintained value against the sum it is meant to equal.
+#[test]
+fn maintained_component_page_ref_total_matches_the_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "page-ref-total".to_string(),
+                shard_uri: "local://page-ref-total/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..140 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("tot-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("tot-hash-{}", index % 9),
+                field: format!("f-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 3 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("tot-str-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        if index % 6 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("tot-str-{index}"),
+                    ttl_ms: 60_000,
+                },
+            });
+        }
+        if index % 8 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("tot-str-{}", index / 4),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let walked: usize = shard
+        .bucket_index
+        .object_component_lookup
+        .values()
+        .map(std::collections::BTreeSet::len)
+        .sum();
+    let maintained = shard
+        .bucket_index
+        .object_component_page_refs
+        .expect("the total should be established once the lookup has been built");
+    assert!(walked > 0, "workload produced no component page refs to compare");
+    assert_eq!(
+        maintained, walked,
+        "maintained component page-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
+    );
+    println!("
+  component page refs: maintained {maintained} == walked {walked}
+");
+}
+
 /// Every bucket's `object_index` must already equal a from-scratch recompute.
 ///
 /// `update_bucket_layout` rebuilds that set by scanning all of a bucket's pages, with no

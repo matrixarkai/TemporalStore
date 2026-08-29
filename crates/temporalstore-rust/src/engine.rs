@@ -3390,12 +3390,17 @@ fn object_manager_stats(
             if !shard.bucket_index.object_component_lookup.is_empty() {
                 (
                     shard.bucket_index.object_component_lookup.len(),
-                    shard
-                        .bucket_index
-                        .object_component_lookup
-                        .values()
-                        .map(BTreeSet::len)
-                        .sum::<usize>(),
+                    // Maintained incrementally; the walk is the fallback for an index that has
+                    // been deserialized but not yet rebuilt. This runs on the heartbeat timer
+                    // under the shard read lock, so walking here shows up as write contention.
+                    shard.bucket_index.object_component_page_refs.unwrap_or_else(|| {
+                        shard
+                            .bucket_index
+                            .object_component_lookup
+                            .values()
+                            .map(BTreeSet::len)
+                            .sum::<usize>()
+                    }),
                     shard.dirty_objects.len(),
                 )
             } else {
