@@ -30,6 +30,18 @@ use crate::wal::{StagedPage, WalOutcomeItem, WriteAheadLogRecord, WriteAheadLogR
 /// this existed reads back unchanged.
 pub(crate) const BINARY_PAYLOAD_MARKER: u8 = 0xB7;
 
+/// Marker for a protobuf payload carrying NO escaping.
+///
+/// Escaping exists to keep a record free of the byte a line-oriented reader splits on. Inside a
+/// length-framed record nothing splits on anything, so the stuffing is pure cost -- and it is
+/// not small: protobuf writes field 1 as the tag byte 0x0A, so the payloads carrying the most
+/// fields are the ones paying the most for a delimiter no reader is looking for.
+///
+/// A separate marker rather than a flag read at decode time: which encoding a payload is in has
+/// to be a property of the payload, or a log written across a configuration change stops
+/// reading halfway through.
+pub(crate) const RAW_PAYLOAD_MARKER: u8 = 0xB8;
+
 /// Escapes a newline out of an encoded payload.
 ///
 /// The log is read with `reader.lines()`. A JSON payload can never contain a raw newline, so that
@@ -385,16 +397,28 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let mut encoded = Vec::with_capacity(message.encoded_len());
     message.encode(&mut encoded).map_err(|err| err.to_string())?;
     let mut out = Vec::with_capacity(encoded.len() + 8);
-    out.push(BINARY_PAYLOAD_MARKER);
-    out.extend_from_slice(&escape_newlines(&encoded));
+    if crate::log_framing::binary_frame_enabled() {
+        // The frame declares its own length, so the payload is written as produced.
+        out.push(RAW_PAYLOAD_MARKER);
+        out.extend_from_slice(&encoded);
+    } else {
+        out.push(BINARY_PAYLOAD_MARKER);
+        out.extend_from_slice(&escape_newlines(&encoded));
+    }
     Ok(out)
 }
 
 /// Decode a payload this module wrote. The caller has already checked the marker byte.
 pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
-    let unescaped = unescape_newlines(&payload[1..])?;
-    let message =
-        v1::EngineWalRecord::decode(unescaped.as_slice()).map_err(|err| err.to_string())?;
+    let body = &payload[1..];
+    let unescaped;
+    let bytes: &[u8] = if payload.first() == Some(&RAW_PAYLOAD_MARKER) {
+        body
+    } else {
+        unescaped = unescape_newlines(body)?;
+        unescaped.as_slice()
+    };
+    let message = v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())?;
     // Absent is a legitimate record now, not a malformed one: it carries results instead.
     let command = match message.command.and_then(|command| command.kind) {
         Some(kind) => Some(

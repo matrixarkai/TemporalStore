@@ -172,7 +172,9 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
     let payload = crate::log_framing::decode_line(line)?;
     // Which encoding a payload is in is a property of the payload, never of configuration: a log
     // written across a flag change still reads end to end.
-    if payload.first() == Some(&crate::wal_proto::BINARY_PAYLOAD_MARKER) {
+    if payload.first() == Some(&crate::wal_proto::BINARY_PAYLOAD_MARKER)
+        || payload.first() == Some(&crate::wal_proto::RAW_PAYLOAD_MARKER)
+    {
         return crate::wal_proto::decode(payload).map_err(|err| {
             WriteAheadLogError::Corruption(format!("engine wal record decode failed: {err}"))
         });
@@ -3199,6 +3201,57 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the two frames actually cost, measured on the file rather than argued from the
+    /// header sizes: same records, same store, one flag apart.
+    #[test]
+    fn what_each_frame_costs_on_disk() {
+        fn write_and_measure(binary: bool, dir: &std::path::Path) -> (u64, usize) {
+            let previous = std::env::var("TS_WAL_BINARY_FRAME").ok();
+            std::env::set_var("TS_WAL_BINARY_FRAME", if binary { "1" } else { "0" });
+            let store = LocalWriteAheadLogStore::new(dir);
+            let records = 200usize;
+            for index in 0..records {
+                store
+                    .append(
+                        1,
+                        Command::StringSet {
+                            // A realistic key and a value with the byte a line reader splits on,
+                            // because that byte is exactly what escaping charges for.
+                            key: format!("tenant/9/object/{index:06}/field"),
+                            value: format!("value-{index}\nsecond line\nthird").into_bytes(),
+                        },
+                    )
+                    .unwrap();
+            }
+            let path = write_ahead_log_path(dir, 1);
+            // Preallocated room is reservation, not records: measure what the records occupy.
+            let (_, record_end) = last_wal_sequence_in(&path).unwrap();
+            match previous {
+                Some(value) => std::env::set_var("TS_WAL_BINARY_FRAME", value),
+                None => std::env::remove_var("TS_WAL_BINARY_FRAME"),
+            }
+            (record_end, records)
+        }
+
+        let text_dir = tempfile::tempdir().unwrap();
+        let binary_dir = tempfile::tempdir().unwrap();
+        let (text_bytes, count) = write_and_measure(false, text_dir.path());
+        let (binary_bytes, _) = write_and_measure(true, binary_dir.path());
+
+        let text_per = text_bytes as f64 / count as f64;
+        let binary_per = binary_bytes as f64 / count as f64;
+        let saved = 100.0 * (text_per - binary_per) / text_per;
+        println!(
+            "  text   {text_bytes} bytes over {count} records = {text_per:.1} B/record\n  \
+             binary {binary_bytes} bytes over {count} records = {binary_per:.1} B/record\n  \
+             saved  {saved:.1}%"
+        );
+        assert!(
+            binary_bytes < text_bytes,
+            "the binary frame must not cost more: {binary_bytes} vs {text_bytes}"
+        );
+    }
     use crate::types::Command;
 
     #[test]
