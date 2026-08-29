@@ -956,6 +956,10 @@ struct WriteAheadLogInner {
     /// property of a log, so it is tracked per log.
     durable_active_bytes_by_shard: HashMap<ShardId, u64>,
     durable_sequence_by_shard: HashMap<ShardId, u64>,
+    /// Per shard, for TS_WAL_BLOCK_FOOTER: the offset and sequence of the last record that
+    /// STARTED in the block currently being filled. When that block closes, this is what its
+    /// footer records, and it is what a reopen reads instead of walking the log.
+    block_last_record_by_shard: HashMap<ShardId, (u64, u64)>,
     // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
     // this process last left it after its own append (or after a full reconcile scan), per shard.
     // On the next append the fast path stats the file: if the on-disk length still equals this,
@@ -999,6 +1003,7 @@ impl LocalWriteAheadLogStore {
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
+                block_last_record_by_shard: HashMap::new(),
                 durable_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
@@ -1505,7 +1510,23 @@ impl LocalWriteAheadLogStore {
                 // preallocated zero run that trails the records ends the loop from inside the
                 // reader: no frame can start with a zero byte.
                 let Some(line) = read_raw_record(&mut reader)? else {
-                    break;
+                    // a scan must cross block boundaries: the zeros here are either the padding
+                    // before a closed block's footer, with records continuing after it, or the
+                    // reservation past the end. The footer is what tells them apart, and reading
+                    // it wrong loses every record after the first boundary -- silently, because a
+                    // short log looks exactly like a log that is short.
+                    let physical = header_len.saturating_add(log_id.saturating_sub(base));
+                    match block_is_closed(&mut reader, physical, header_len, piece_len)? {
+                        Some(next_physical) => {
+                            // Log ids are byte positions in the log's history, so the bytes
+                            // stepped over have to be counted or every address after this block
+                            // moves.
+                            log_id =
+                                log_id.saturating_add(next_physical.saturating_sub(physical));
+                            continue;
+                        }
+                        None => break,
+                    }
                 };
                 let read = line.len();
                 if read == 0 {
@@ -2699,7 +2720,7 @@ fn append_record_locked(
     // the RESERVATION, so the metadata fallback would put the record after the zeros; and a
     // caller looping appends (the atomic batch) needs each write to advance the next one's
     // offset, which only holds if the cache is updated here, where the write happens.
-    let offset = match known_offset {
+    let mut offset = match known_offset {
         Some(offset) => offset,
         None => match inner.verified_len_by_shard.get(&record.shard_id) {
             Some(&record_end) if wal_preallocate_enabled() => record_end,
@@ -2719,6 +2740,38 @@ fn append_record_locked(
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
     let bytes = crate::log_framing::encode_record(&encode_wal_payload(record)?);
+    // Close the block if this record will not fit in what is left of it, and start the next.
+    //
+    // A record is never split across the boundary: the one that does not fit moves whole into
+    // the next block. That wastes the tail of a block -- bounded by the largest record -- and
+    // buys a reader that never has to reassemble anything, which is the trade a log makes when
+    // its own footer is the thing keeping recovery cheap.
+    let mut close_block_and_advance: Option<(u64, Vec<u8>)> = None;
+    if wal_block_footer_enabled() {
+        let (_, header_len) = cached_wal_base(inner, record.shard_id)?;
+        if offset >= header_len {
+            let relative = offset - header_len;
+            let index = block_of(relative);
+            let data_end = block_data_end(index);
+            if relative + bytes.len() as u64 > data_end {
+                // What this block ends up describing: the last record that STARTED in it.
+                let (last_offset, last_sequence) = inner
+                    .block_last_record_by_shard
+                    .get(&record.shard_id)
+                    .copied()
+                    .unwrap_or((offset, record.sequence.saturating_sub(1)));
+                let slot = encode_block_footer(
+                    index,
+                    (relative.saturating_sub(index * WAL_BLOCK_BYTES)) as u32,
+                    last_offset,
+                    last_sequence,
+                    0,
+                );
+                close_block_and_advance = Some((header_len + block_footer_at(index), slot));
+                offset = header_len + (index + 1) * WAL_BLOCK_BYTES;
+            }
+        }
+    }
     let prealloc = wal_preallocate_enabled();
     let mut file = if prealloc {
         // Positioned write, not O_APPEND: with a reservation, the physical end of the file is
@@ -2744,10 +2797,28 @@ fn append_record_locked(
         inner
             .prealloc_physical_by_shard
             .insert(record.shard_id, file.metadata()?.len());
+        if let Some((at, slot)) = close_block_and_advance.as_ref() {
+            file.seek(SeekFrom::Start(*at))?;
+            file.write_all(slot)?;
+        }
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(&bytes)?;
     } else {
+        if let Some((at, slot)) = close_block_and_advance.as_ref() {
+            // Without preallocation the file is opened for append, so the footer needs its own
+            // positioned handle: a footer belongs at a computed offset, never at the end.
+            let mut positioned = OpenOptions::new().write(true).open(&path)?;
+            positioned.seek(SeekFrom::Start(*at))?;
+            positioned.write_all(slot)?;
+            positioned.flush()?;
+        }
         file.write_all(&bytes)?;
+    }
+    if wal_block_footer_enabled() {
+        // Remember what this block will say when it closes.
+        inner
+            .block_last_record_by_shard
+            .insert(record.shard_id, (offset, record.sequence));
     }
     if sync {
         file.flush()?;
@@ -2932,6 +3003,73 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<(u64, u64), Wr
 /// have to be walked in order.
 ///
 /// The cost is the file rather than its last window, which is why the binary frame is opt-in.
+
+/// Step a walking reader over a block's footer slot when it reaches one.
+///
+/// Blocks make the record stream discontinuous, which every walker here assumed it was not: a
+/// footer sits between the last record of one block and the first of the next, and a reader that
+/// meets it sees bytes that are not a frame and concludes the log ended. It does not -- it
+/// continues in the next block. Returns the offset the reader should now be at.
+///
+/// This is the cost of a footer, and it is the reason the reference's readers know about blocks
+/// rather than treating a stream as a flat run of records.
+
+/// Whether the block holding `at` has been closed, i.e. its footer slot is written.
+///
+/// This is what tells zeros apart. A run of zeros inside a CLOSED block is the padding between
+/// its last record and its footer -- the records continue in the next block. The same zeros in
+/// the OPEN block are the preallocated reservation, and the records really have ended. Without
+/// the footer to distinguish them a walker stops at the first block boundary and reports a log
+/// a fraction of its real length, which is precisely what it did before this existed.
+fn block_is_closed<R: std::io::BufRead + std::io::Seek>(
+    reader: &mut R,
+    at: u64,
+    header_len: u64,
+    len: u64,
+) -> Result<Option<u64>, WriteAheadLogError> {
+    if !wal_block_footer_enabled() || at < header_len {
+        return Ok(None);
+    }
+    let index = block_of(at - header_len);
+    let slot_at = header_len + block_footer_at(index);
+    if slot_at + WAL_BLOCK_FOOTER_BYTES > len {
+        return Ok(None);
+    }
+    reader.seek(SeekFrom::Start(slot_at))?;
+    let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
+    if reader.read_exact(&mut slot).is_err() {
+        return Ok(None);
+    }
+    if decode_block_footer(&slot).is_none() {
+        return Ok(None);
+    }
+    let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
+    if next >= len {
+        return Ok(None);
+    }
+    reader.seek(SeekFrom::Start(next))?;
+    Ok(Some(next))
+}
+
+fn skip_block_footer_if_due<R: std::io::BufRead + std::io::Seek>(
+    reader: &mut R,
+    at: u64,
+    header_len: u64,
+) -> Result<u64, WriteAheadLogError> {
+    if !wal_block_footer_enabled() || at < header_len {
+        return Ok(at);
+    }
+    let relative = at - header_len;
+    let index = block_of(relative);
+    if relative < block_data_end(index) {
+        return Ok(at);
+    }
+    // At or past this block's data end: the rest of the block is its footer slot.
+    let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
+    reader.seek(SeekFrom::Start(next))?;
+    Ok(next)
+}
+
 fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     let (_, header_len) = read_wal_base(path)?;
     let file = File::open(path)?;
@@ -2943,7 +3081,22 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
     reader.seek(SeekFrom::Start(header_len))?;
     let mut last_sequence = 0u64;
     let mut record_end = header_len;
-    while let Some(raw) = read_raw_record(&mut reader)? {
+    loop {
+        record_end = skip_block_footer_if_due(&mut reader, record_end, header_len)?;
+        if record_end >= len {
+            break;
+        }
+        let Some(raw) = read_raw_record(&mut reader)? else {
+            // No record here. In a CLOSED block that means padding before its footer and the
+            // records go on in the next one; in the open block it means the end.
+            match block_is_closed(&mut reader, record_end, header_len, len)? {
+                Some(next) => {
+                    record_end = next;
+                    continue;
+                }
+                None => break,
+            }
+        };
         if raw.is_empty() {
             break;
         }
@@ -3051,13 +3204,21 @@ fn encode_block_footer(
         client_token: Vec::new(),
         truncated_offset: 0,
     };
-    let mut slot = footer.encode_to_vec();
+    let message = footer.encode_to_vec();
     assert!(
-        slot.len() as u64 <= WAL_BLOCK_FOOTER_BYTES,
-        "a block footer must fit its slot: {} > {}",
-        slot.len(),
+        message.len() as u64 + 2 <= WAL_BLOCK_FOOTER_BYTES,
+        "a block footer must fit its slot: {} + 2 > {}",
+        message.len(),
         WAL_BLOCK_FOOTER_BYTES
     );
+    // The slot says how long the message is, because the slot is a FIXED size and the message is
+    // not. Padding the message out to the slot and handing the whole thing to a decoder does not
+    // work: a trailing zero byte reads as field number 0, which is not a legal field, so every
+    // padded footer fails to decode and reads as absent. That failure is silent and total -- the
+    // footers were being written correctly and nothing could see any of them.
+    let mut slot = Vec::with_capacity(WAL_BLOCK_FOOTER_BYTES as usize);
+    slot.extend_from_slice(&(message.len() as u16).to_le_bytes());
+    slot.extend_from_slice(&message);
     slot.resize(WAL_BLOCK_FOOTER_BYTES as usize, 0);
     slot
 }
@@ -3066,10 +3227,14 @@ fn encode_block_footer(
 /// preallocated block looks like, and what a crash before the footer leaves.
 fn decode_block_footer(slot: &[u8]) -> Option<crate::storage_descriptor::BlockFooter> {
     use prost::Message;
-    if slot.iter().all(|byte| *byte == 0) {
+    if slot.len() < 2 || slot.iter().all(|byte| *byte == 0) {
         return None;
     }
-    let footer = crate::storage_descriptor::BlockFooter::decode(slot).ok()?;
+    let declared = u16::from_le_bytes([slot[0], slot[1]]) as usize;
+    if declared == 0 || 2 + declared > slot.len() {
+        return None;
+    }
+    let footer = crate::storage_descriptor::BlockFooter::decode(&slot[2..2 + declared]).ok()?;
     if footer.magic != WAL_BLOCK_FOOTER_MAGIC {
         return None;
     }
@@ -3110,11 +3275,93 @@ fn last_written_footer(
     }
 }
 
+
+/// What the last written footer knows: the highest sequence it covers, and the offset the still
+/// open block begins at. `None` when no block has closed yet -- a young log, or one whose first
+/// block is still filling.
+fn footer_tail_hint(path: &Path) -> Result<Option<(u64, u64)>, WriteAheadLogError> {
+    let (_, header_len) = read_wal_base(path)?;
+    let file = File::open(path)?;
+    let file_len = file.metadata()?.len();
+    let Some((index, footer)) = last_written_footer(&file, header_len, file_len)? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        footer.last_record_sequence,
+        header_len + (index + 1) * WAL_BLOCK_BYTES,
+    )))
+}
+
+/// The forward walk, started from a position a footer vouched for rather than from the top.
+fn last_wal_sequence_forward_from(
+    path: &Path,
+    from: u64,
+    known_sequence: u64,
+) -> Result<(u64, u64), WriteAheadLogError> {
+    let file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if from >= len {
+        return Ok((known_sequence, from.min(len)));
+    }
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(from))?;
+    let mut last_sequence = known_sequence;
+    let mut record_end = from;
+    let (_, header_len) = read_wal_base(path)?;
+    loop {
+        record_end = skip_block_footer_if_due(&mut reader, record_end, header_len)?;
+        if record_end >= len {
+            break;
+        }
+        let Some(raw) = read_raw_record(&mut reader)? else {
+            // No record here. In a CLOSED block that means padding before its footer and the
+            // records go on in the next one; in the open block it means the end.
+            match block_is_closed(&mut reader, record_end, header_len, len)? {
+                Some(next) => {
+                    record_end = next;
+                    continue;
+                }
+                None => break,
+            }
+        };
+        if raw.is_empty() {
+            break;
+        }
+        if raw.iter().all(|byte| byte.is_ascii_whitespace()) {
+            record_end = record_end.saturating_add(raw.len() as u64);
+            continue;
+        }
+        match decode_wal_line(&raw) {
+            Ok(record) => {
+                last_sequence = last_sequence.max(record.sequence);
+                record_end = record_end.saturating_add(raw.len() as u64);
+            }
+            Err(err) => {
+                let at_end = {
+                    let buffered = reader.fill_buf()?;
+                    buffered.is_empty() || buffered.iter().all(|byte| *byte == 0)
+                };
+                if at_end {
+                    break;
+                }
+                return Err(err);
+            }
+        }
+    }
+    Ok((last_sequence, record_end))
+}
+
 fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
     }
     if crate::log_framing::binary_frame_enabled() {
+        // The footer says where to start, so the walk covers the open block instead of the log.
+        if wal_block_footer_enabled() {
+            if let Some((sequence, from)) = footer_tail_hint(path)? {
+                return last_wal_sequence_forward_from(path, from, sequence);
+            }
+        }
         return last_wal_sequence_forward(path);
     }
     let (_, header_len) = read_wal_base(path)?;
@@ -3354,6 +3601,225 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// With blocks on, a scan has to walk past the footers between them. It did not: the first
+    /// footer looked like the end of the log, so every record after the first block vanished
+    /// from every reader that scans -- replay included.
+    #[test]
+    fn a_scan_returns_records_from_every_block_not_just_the_first() {
+        let _flag = FooterFlag::on();
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let records = 2_000usize;
+        for index in 0..records {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let path = write_ahead_log_path(dir.path(), 1);
+        let (_, record_end) = last_wal_sequence_in(&path).unwrap();
+        assert!(
+            record_end > 2 * WAL_BLOCK_BYTES,
+            "the workload must span several blocks or this proves nothing: {record_end}"
+        );
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(
+            scanned.len(),
+            records,
+            "a scan must return every record, not only the first block's"
+        );
+        // And each one still decodes: the offsets the scan reports have to name whole records.
+        let sequences: Vec<u64> = scanned
+            .iter()
+            .map(|(_, line)| decode_wal_line(line).unwrap().sequence)
+            .collect();
+        assert_eq!(sequences.first().copied(), Some(1));
+        assert_eq!(sequences.last().copied(), Some(records as u64));
+    }
+
+    /// Sets TS_WAL_BLOCK_FOOTER and restores it ON DROP, so a failing assertion cannot leave it
+    /// set for every test that runs afterwards. An earlier version of these tests restored the
+    /// flag on the success path only, and a panic in one of them turned two unrelated tests red.
+    struct FooterFlag(Option<String>);
+
+    impl FooterFlag {
+        fn on() -> Self {
+            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
+            std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
+            FooterFlag(previous)
+        }
+    }
+
+    impl Drop for FooterFlag {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
+                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
+            }
+        }
+    }
+
+    /// Not an assertion about behaviour -- a look at what the writer actually did, because the
+    /// agreement test only says the footer is absent, not why.
+    #[test]
+    fn what_the_footer_writer_actually_did() {
+        let _flag = FooterFlag::on();
+        // ~327 B a record here, so a few hundred fill ONE block. Cross several on purpose.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..2000 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let path = write_ahead_log_path(dir.path(), 1);
+        let bytes = std::fs::read(&path).unwrap();
+        let (_, header_len) = read_wal_base(&path).unwrap();
+        let (_, record_end) = last_wal_sequence_in(&path).unwrap();
+        let slot_at = (header_len + block_footer_at(0)) as usize;
+        let slot_written = bytes
+            .get(slot_at..slot_at + WAL_BLOCK_FOOTER_BYTES as usize)
+            .map(|slot| !slot.iter().all(|byte| *byte == 0))
+            .unwrap_or(false);
+        println!(
+            "  file {} bytes, header {header_len}, records end at {record_end}\n  \
+             block 0 footer slot at {slot_at}: {}\n  \
+             blocks the records span: {}",
+            bytes.len(),
+            if slot_written { "WRITTEN" } else { "still zeros" },
+            record_end / WAL_BLOCK_BYTES
+        );
+        assert!(
+            record_end > WAL_BLOCK_BYTES,
+            "the workload must cross a block boundary or this proves nothing: ended at \
+             {record_end}, block is {WAL_BLOCK_BYTES}"
+        );
+        assert!(
+            slot_written,
+            "records crossed a block boundary, so block 0's footer must have been written"
+        );
+    }
+
+    /// A footer is only worth having if it says what walking the log would have said. This
+    /// writes enough records to close several blocks, then compares the two answers on the very
+    /// same file: the fast path is otherwise just a faster way to be wrong.
+    #[test]
+    fn the_footer_and_the_walk_agree_about_where_the_log_ends() {
+        let _flag = FooterFlag::on();
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        // 128KiB blocks; a ~1KiB value closes several of them.
+        for index in 0..400 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let path = write_ahead_log_path(dir.path(), 1);
+
+        let hint = footer_tail_hint(&path).unwrap();
+        assert!(
+            hint.is_some(),
+            "several blocks were filled, so at least one footer must have been written"
+        );
+        let (footer_sequence, from) = hint.unwrap();
+
+        let with_footer = last_wal_sequence_in(&path).unwrap();
+        let without_footer = last_wal_sequence_forward(&path).unwrap();
+
+        assert_eq!(
+            with_footer, without_footer,
+            "the footer path and the full walk must agree: footer said {with_footer:?}, \
+             walking said {without_footer:?} (hint was sequence {footer_sequence} from {from})"
+        );
+        assert!(
+            from > 0,
+            "the walk should start after a closed block, not at the top"
+        );
+    }
+
+    /// The point of the footer is that finding the tail stops costing the file. Reading it must
+    /// therefore touch a bounded amount regardless of how much log precedes it.
+    #[test]
+    fn finding_the_tail_reads_a_block_not_the_log() {
+        let _flag = FooterFlag::on();
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..800 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let path = write_ahead_log_path(dir.path(), 1);
+        let (_, from) = footer_tail_hint(&path).unwrap().expect("a closed block");
+        // Measure to where the RECORDS end, not to the file's length: preallocation leaves
+        // megabytes of reservation past the last record and the walk stops at the records. An
+        // earlier version compared against the file and was measuring the reservation.
+        let (_, record_end) = last_wal_sequence_in(&path).unwrap();
+        let walked = record_end.saturating_sub(from);
+        assert!(
+            walked <= WAL_BLOCK_BYTES,
+            "the walk after the footer must be bounded by one block: {walked} bytes, from \
+             {from} to {record_end}"
+        );
+    }
+
+    /// A crash leaves the open block without its footer. Recovery must fall back to the last
+    /// footer that WAS written and walk from there -- never trust a slot that holds zeros.
+    #[test]
+    fn a_block_that_never_closed_falls_back_to_the_one_that_did() {
+        let _flag = FooterFlag::on();
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..400 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        drop(store);
+        let path = write_ahead_log_path(dir.path(), 1);
+        let expected = last_wal_sequence_forward(&path).unwrap();
+        let reopened = LocalWriteAheadLogStore::new(dir.path());
+        let seen = reopened.stats(1).last_sequence;
+        assert_eq!(
+            seen, expected.0,
+            "reopening must see every record the walk sees, footer or no footer"
+        );
+    }
 
     /// What each frame costs in TIME, not just bytes. Ignored by default: it is a measurement,
     /// and a timing assertion in the suite would be a flake generator.
