@@ -129,11 +129,11 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (None, Some(next)) => Some(next),
                 (existing, None) => existing,
             };
-            if !object.object_keys.contains(&page.object_key) {
-                object.object_keys.push(page.object_key.clone());
+            if !object.object_keys.iter().any(|key| key.as_str() == &*page.object_key) {
+                object.object_keys.push(page.object_key.to_string());
             }
-            if !object.model_ids.contains(&page.model_id) {
-                object.model_ids.push(page.model_id.clone());
+            if !object.model_ids.iter().any(|id| id.as_str() == &*page.model_id) {
+                object.model_ids.push(page.model_id.to_string());
             }
         }
     }

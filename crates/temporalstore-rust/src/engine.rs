@@ -2080,16 +2080,16 @@ fn collect_command_index_items(
             continue;
         };
         for (page_ref_key, page) in &bucket.page_index {
-            if !keys.contains(page.object_key.as_str()) {
+            if !keys.contains(&*page.object_key) {
                 continue;
             }
             items.push(crate::index_log::IndexItem {
                 kind: crate::index_log::IndexItemKind::Page,
                 routing_bucket,
                 page_ref_key: page_ref_key.to_string(),
-                object_key: page.object_key.clone(),
-                model_id: page.model_id.clone(),
-                component: page.component.clone(),
+                object_key: page.object_key.to_string(),
+                model_id: page.model_id.to_string(),
+                component: page.component.as_deref().map(str::to_string),
                 object_id: page.object_id,
                 page_id: page.address.page_id.unwrap_or(0),
                 address: Some(page.address.clone()),
@@ -2246,16 +2246,16 @@ fn fold_delta_page_items(
                 continue;
             };
             bucket.page_index.retain(|_, page| {
-                !(page.model_id == item.model_id
-                    && page.object_key == item.object_key
-                    && page.component == item.component)
+                !(*page.model_id == *item.model_id
+                    && *page.object_key == *item.object_key
+                    && page.component.as_deref() == item.component.as_deref())
             });
         }
     } else if !covered_keys.is_empty() {
         for bucket in bucket_index.bucket_map.values_mut() {
             bucket
                 .page_index
-                .retain(|_, page| !covered_keys.contains(&page.object_key));
+                .retain(|_, page| !covered_keys.contains(&*page.object_key));
         }
     }
     for item in items {
@@ -2278,9 +2278,9 @@ fn fold_delta_page_items(
         bucket.page_index.insert(
             Arc::<str>::from(item.page_ref_key.as_str()),
             PageIndex {
-                object_key: item.object_key.clone(),
-                model_id: item.model_id.clone(),
-                component: item.component.clone(),
+                object_key: intern_identity(&item.object_key),
+                model_id: intern_identity(&item.model_id),
+                component: item.component.as_deref().map(intern_identity),
                 object_id: item.object_id,
                 address,
                 dirty: false,
@@ -2887,7 +2887,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         };
         let mut deleted_object_ids = BTreeSet::new();
         bucket.page_index.retain(|_, page| {
-            if page.object_key == key {
+            if &*page.object_key == key {
                 deleted_object_ids.insert(page.object_id);
                 removed = true;
                 false
@@ -2981,8 +2981,8 @@ fn mark_bucket_index_page_deleted(
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         bucket.page_index.retain(|_, page| {
-            let matches = page.model_id == model_id
-                && page.object_key == key
+            let matches = &*page.model_id == model_id
+                && &*page.object_key == key
                 && page.component.as_deref() == component;
             if matches {
                 deleted_object_ids.insert(page.object_id);
@@ -3210,7 +3210,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         shard.bucket_index.bucket_map.values().any(|bucket| {
             bucket.page_index
                 .values()
-                .any(|page| page.object_key == key && !page.deleted)
+                .any(|page| &*page.object_key == key && !page.deleted)
         })
     } else {
         storage_model_kinds().iter().any(|kind| {
@@ -3226,7 +3226,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                             .get(&page_ref.routing_bucket)
                             .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
                             .map(|page| {
-                                !page.deleted && page.model_id == *kind && page.object_key == key
+                                !page.deleted && &*page.model_id == *kind && &*page.object_key == key
                             })
                             .unwrap_or(false)
                     })
@@ -3399,9 +3399,9 @@ fn object_manager_stats(
                     .iter()
                     .map(|page| {
                         (
-                            page.model_id.as_str(),
-                            page.object_key.as_str(),
-                            (page.model_id == "hash")
+                            &*page.model_id,
+                            &*page.object_key,
+                            (&*page.model_id == "hash")
                                 .then(|| page.component.as_deref())
                                 .flatten(),
                         )
@@ -3410,12 +3410,12 @@ fn object_manager_stats(
                     .len();
                 let bucket_dirty_object_count = live_pages
                     .iter()
-                    .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
+                    .filter(|page| page.dirty || shard.dirty_objects.contains(&*page.object_key))
                     .map(|page| {
                         (
-                            page.model_id.as_str(),
-                            page.object_key.as_str(),
-                            (page.model_id == "hash")
+                            &*page.model_id,
+                            &*page.object_key,
+                            (&*page.model_id == "hash")
                                 .then(|| page.component.as_deref())
                                 .flatten(),
                         )
@@ -3499,7 +3499,7 @@ fn object_manager_stats(
                 .filter(|bucket| {
                     bucket.dirty
                         || bucket.page_index.values().any(|page| {
-                            page.dirty || shard.dirty_objects.contains(&page.object_key)
+                            page.dirty || shard.dirty_objects.contains(&*page.object_key)
                         })
                 })
                 .count()

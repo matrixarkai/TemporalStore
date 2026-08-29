@@ -411,9 +411,9 @@ pub(super) fn storage_physical_index_report(
         bucket.last_dump_sequence = runtime_bucket.last_dump_sequence;
         for page in runtime_bucket.page_index.values() {
             let already_present = bucket.page_indexes.iter().any(|existing| {
-                existing.object_key == page.object_key
-                    && existing.model_id == page.model_id
-                    && existing.component == page.component
+                existing.object_key == *page.object_key
+                    && existing.model_id == *page.model_id
+                    && existing.component.as_deref() == page.component.as_deref()
                     && existing.page_slab_id == page.address.page_slab_id
                     && existing.offset == page.address.offset
             });
@@ -421,9 +421,9 @@ pub(super) fn storage_physical_index_report(
                 continue;
             }
             let mut page_index = StoragePhysicalPageIndex {
-                object_key: page.object_key.clone(),
-                model_id: page.model_id.clone(),
-                component: page.component.clone(),
+                object_key: page.object_key.to_string(),
+                model_id: page.model_id.to_string(),
+                component: page.component.as_deref().map(str::to_string),
                 routing_bucket: *routing_bucket,
                 page_slab_id: page.address.page_slab_id,
                 offset: page.address.offset,

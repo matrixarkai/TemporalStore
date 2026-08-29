@@ -852,9 +852,9 @@ pub(super) fn rebuild_bucket_page_ownership(
                 entry.address.offset
             )),
             PageIndex {
-                object_key: entry.object_key,
-                model_id: entry.kind,
-                component: entry.component,
+                object_key: intern_identity(&entry.object_key),
+                model_id: intern_identity(&entry.kind),
+                component: entry.component.as_deref().map(intern_identity),
                 object_id,
                 address: entry.address,
                 dirty: entry.dirty,
@@ -933,9 +933,9 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.page_index.values() {
             entries.push(LivePageEntry {
-                object_key: page.object_key.clone(),
-                kind: page.model_id.clone(),
-                component: page.component.clone(),
+                object_key: page.object_key.to_string(),
+                kind: page.model_id.to_string(),
+                component: page.component.as_deref().map(str::to_string),
                 address: page.address.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
@@ -1209,9 +1209,9 @@ pub(super) fn upsert_bucket_index_page(
     } else if !lookup_enabled {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.page_index.retain(|_, page| {
-                !(page.object_key == entry.object_key
-                    && page.model_id == entry.kind
-                    && page.component == entry.component)
+                !(*page.object_key == *entry.object_key
+                    && *page.model_id == *entry.kind
+                    && page.component.as_deref() == entry.component.as_deref())
             });
             if !bucket
                 .page_index
@@ -1225,9 +1225,9 @@ pub(super) fn upsert_bucket_index_page(
     }
     let page_ref_key = page_index_ref_key(&entry);
     let page_index = PageIndex {
-        object_key: entry.object_key,
-        model_id: entry.kind,
-        component: entry.component,
+        object_key: intern_identity(&entry.object_key),
+        model_id: intern_identity(&entry.kind),
+        component: entry.component.as_deref().map(intern_identity),
         object_id,
         address: entry.address,
         dirty: entry.dirty,
@@ -1297,7 +1297,7 @@ pub(super) fn sync_bucket_index_object_pages(
         };
         let before = bucket.page_index.len();
         bucket.page_index
-            .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
+            .retain(|_, page| !(&*page.model_id == kind && &*page.object_key == object_key));
         if bucket.page_index.len() != before {
             removed_any = true;
             touched_buckets.insert(routing_bucket);
@@ -1366,9 +1366,9 @@ pub(super) fn sync_bucket_index_object_pages(
         bucket.page_index.insert(
             page_index_ref_key(&entry),
             PageIndex {
-                object_key: entry.object_key,
-                model_id: entry.kind,
-                component: entry.component,
+                object_key: intern_identity(&entry.object_key),
+                model_id: intern_identity(&entry.kind),
+                component: entry.component.as_deref().map(intern_identity),
                 object_id,
                 address: entry.address,
                 dirty: entry.dirty,
@@ -1435,11 +1435,11 @@ pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
         bucket.dirty |= bucket
             .page_index
             .values()
-            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+            .any(|page| page.dirty || shard.dirty_objects.contains(&*page.object_key));
         bucket.ttl_ms = bucket
             .page_index
             .values()
-            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
+            .filter_map(|page| shard.expires_at_ms.get(&*page.object_key).copied())
             .map(|expires_at| expires_at.saturating_sub(now))
             .min();
         update_bucket_layout(bucket);
@@ -1471,7 +1471,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         let mut touched = false;
         for page in bucket.page_index.values_mut() {
-            if page.object_key == object_key {
+            if &*page.object_key == object_key {
                 page.dirty = false;
                 touched = true;
             }
@@ -1480,7 +1480,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             bucket.dirty = bucket
                 .page_index
                 .values()
-                .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+                .any(|page| page.dirty || shard.dirty_objects.contains(&*page.object_key));
             update_bucket_layout(bucket);
         }
     }
@@ -1537,9 +1537,9 @@ pub(super) fn rebuild_bucket_first_index(
         bucket.page_index.insert(
             page_index_ref_key(&entry),
             PageIndex {
-                object_key: entry.object_key,
-                model_id: entry.kind,
-                component: entry.component,
+                object_key: intern_identity(&entry.object_key),
+                model_id: intern_identity(&entry.kind),
+                component: entry.component.as_deref().map(intern_identity),
                 object_id,
                 address: entry.address,
                 dirty: page_dirty,
@@ -2102,7 +2102,7 @@ pub(super) fn validate_bucket_ownership_index(
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
                             && page.address.page_id == expected_page_id
-                            && page.model_id == entry.kind
+                            && *page.model_id == *entry.kind
                     })
             });
         if !bucket_page_present {

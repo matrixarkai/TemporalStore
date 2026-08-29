@@ -1884,7 +1884,7 @@ fn bucket_page_ownership_is_first_class_and_survives_reload() {
             && bucket.object_count == 2
             && bucket.dirty_generation >= 2
             && bucket.page_indexes.iter().all(|page| {
-                page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
+                &*page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
             })
     }));
     assert_eq!(
@@ -2289,8 +2289,8 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             page_index: [(
                 "string:k::1:0".into(),
                 PageIndex {
-                    object_key: "k".to_string(),
-                    model_id: "string".to_string(),
+                    object_key: "k".into(),
+                    model_id: "string".into(),
                     component: None,
                     object_id: 30,
                     address: BlockAddress {
@@ -2327,8 +2327,8 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "feature:k::2:0".into(),
                     PageIndex {
-                        object_key: "feature-key".to_string(),
-                        model_id: "feature".to_string(),
+                        object_key: "feature-key".into(),
+                        model_id: "feature".into(),
                         component: None,
                         object_id: 40,
                         address: BlockAddress {
@@ -2350,8 +2350,8 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "feature:k::2:4".into(),
                     PageIndex {
-                        object_key: "feature-key".to_string(),
-                        model_id: "feature".to_string(),
+                        object_key: "feature-key".into(),
+                        model_id: "feature".into(),
                         component: None,
                         object_id: 40,
                         address: BlockAddress {
@@ -2388,9 +2388,9 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "hash:k:a:3:0".into(),
                     PageIndex {
-                        object_key: "hash-key".to_string(),
-                        model_id: "hash".to_string(),
-                        component: Some("a".to_string()),
+                        object_key: "hash-key".into(),
+                        model_id: "hash".into(),
+                        component: Some("a".into()),
                         object_id: 50,
                         address: BlockAddress {
                             page_slab_id: 3,
@@ -2411,9 +2411,9 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "hash:k:b:3:1".into(),
                     PageIndex {
-                        object_key: "hash-key".to_string(),
-                        model_id: "hash".to_string(),
-                        component: Some("b".to_string()),
+                        object_key: "hash-key".into(),
+                        model_id: "hash".into(),
+                        component: Some("b".into()),
                         object_id: 51,
                         address: BlockAddress {
                             page_slab_id: 3,
