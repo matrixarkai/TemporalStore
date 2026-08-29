@@ -842,7 +842,7 @@ pub(super) fn rebuild_bucket_page_ownership(
                 }
             });
         bucket.object_index.insert(object_id);
-        bucket.page_index.insert(
+        bucket.page_index.mutate().insert(
             format!(
                 "{}:{}:{}:{}:{}",
                 entry.kind,
@@ -1196,7 +1196,7 @@ pub(super) fn upsert_bucket_index_page(
                 continue;
             };
             let removed_object_id = bucket
-                .page_index
+                .page_index.mutate()
                 .remove(&page_ref.page_ref_key)
                 .map(|page| page.object_id);
             if superseded_in_target_bucket {
@@ -1215,7 +1215,7 @@ pub(super) fn upsert_bucket_index_page(
         }
     } else if !lookup_enabled {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
-            bucket.page_index.retain(|_, page| {
+            bucket.page_index.mutate().retain(|_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
                     && page.component == entry.component)
@@ -1261,7 +1261,7 @@ pub(super) fn upsert_bucket_index_page(
         if !page_index.deleted {
             bucket.object_index.insert(object_id);
         }
-        bucket.page_index
+        bucket.page_index.mutate()
             .insert(page_ref_key.clone(), page_index.clone());
         // Not a full `update_bucket_layout` here on purpose. That walks every page in the bucket
         // and allocates a fresh BTreeSet of live object ids, and on this path the set is already
@@ -1311,7 +1311,7 @@ pub(super) fn sync_bucket_index_object_pages(
             continue;
         };
         let before = bucket.page_index.len();
-        bucket.page_index
+        bucket.page_index.mutate()
             .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
         if bucket.page_index.len() != before {
             removed_any = true;
@@ -1378,7 +1378,7 @@ pub(super) fn sync_bucket_index_object_pages(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
-        bucket.page_index.insert(
+        bucket.page_index.mutate().insert(
             page_index_ref_key(&entry),
             PageIndex {
                 object_key: entry.object_key,
@@ -1520,7 +1520,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     shard.dirty_objects.remove(object_key);
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         let mut touched = false;
-        for page in bucket.page_index.values_mut() {
+        for page in bucket.page_index.mutate().values_mut() {
             if page.object_key == object_key {
                 page.dirty = false;
                 touched = true;
@@ -1584,7 +1584,7 @@ pub(super) fn rebuild_bucket_first_index(
         }
         bucket.in_memory |= true;
         bucket.object_index.insert(object_id);
-        bucket.page_index.insert(
+        bucket.page_index.mutate().insert(
             page_index_ref_key(&entry),
             PageIndex {
                 object_key: entry.object_key,
@@ -2214,7 +2214,7 @@ mod bucket_layout_tests {
     fn bucket(pages: &[(u64, bool)], stored: &[u64]) -> BucketNode {
         let mut node = BucketNode::default();
         for (i, (object_id, deleted)) in pages.iter().enumerate() {
-            node.page_index
+            node.page_index.mutate()
                 .insert(format!("p{i}"), page(*object_id, *deleted));
         }
         node.object_index = stored.iter().copied().collect();

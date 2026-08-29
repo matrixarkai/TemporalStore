@@ -1860,7 +1860,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .bucket_index
             .bucket_map
             .values_mut()
-            .flat_map(|bucket| bucket.page_index.values_mut())
+            .flat_map(|bucket| bucket.page_index.mutate().values_mut())
             .find(|page| page.object_key == "owned")
             .expect("owned slot page");
         page.address.object_id = Some(page.object_id.wrapping_add(1));
@@ -1922,7 +1922,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_index
             .bucket_map
             .values_mut()
-            .flat_map(|bucket| bucket.page_index.values_mut())
+            .flat_map(|bucket| bucket.page_index.mutate().values_mut())
             .find(|page| page.object_key == "second")
             .expect("second slot page");
         second.address.object_id = Some(first_object_id);

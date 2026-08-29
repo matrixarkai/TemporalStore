@@ -273,6 +273,67 @@ pub(super) struct CoreIndex {
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
 pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
+
+/// A bucket's pages, carrying a version that changes whenever they do.
+///
+/// There is deliberately no `DerefMut`. Reads go through `Deref` and look exactly like reads of
+/// the map; anything that CHANGES the pages has to call `mutate()`, which bumps the version. That
+/// makes "I changed the pages but forgot to invalidate what was derived from them" a compile
+/// error rather than stale state discovered somewhere else entirely.
+///
+/// `serde(transparent)` keeps the on-disk shape identical to the bare map -- the version is
+/// derived state, not part of the record. A bucket read back from disk therefore starts at
+/// version 0 with nothing yet derived, so the first sweep after a load recomputes.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(super) struct VersionedPageIndex {
+    map: PageIndexMap,
+    #[serde(skip)]
+    version: u64,
+}
+
+impl std::ops::Deref for VersionedPageIndex {
+    type Target = PageIndexMap;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl VersionedPageIndex {
+    /// Changes whenever the pages change. Compare against a stored copy to tell whether anything
+    /// derived from the pages needs recomputing.
+    pub(super) fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Read-write access to the pages, bumping the version. Call it to change the pages, not to
+    /// read them -- a bump only costs a needless recompute, but it is still worth not doing.
+    pub(super) fn mutate(&mut self) -> &mut PageIndexMap {
+        self.version = self.version.wrapping_add(1);
+        &mut self.map
+    }
+}
+
+impl<'a> IntoIterator for &'a VersionedPageIndex {
+    type Item = (&'a String, &'a PageIndex);
+    type IntoIter = std::collections::btree_map::Iter<'a, String, PageIndex>;
+
+    /// Iterating by reference is a read, so it goes straight to the map. The only way to get at
+    /// it mutably remains `mutate()`.
+    fn into_iter(self) -> Self::IntoIter {
+        self.map.iter()
+    }
+}
+
+impl FromIterator<(String, PageIndex)> for VersionedPageIndex {
+    fn from_iter<I: IntoIterator<Item = (String, PageIndex)>>(iter: I) -> Self {
+        Self {
+            map: iter.into_iter().collect(),
+            version: 0,
+        }
+    }
+}
 pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
 pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
 
@@ -314,7 +375,14 @@ pub(super) struct BucketNode {
     #[serde(default, alias = "deleted_object_ids")]
     pub(super) deleted_object_index: ObjectIndex,
     #[serde(default, alias = "page_refs")]
-    pub(super) page_index: PageIndexMap,
+    pub(super) page_index: VersionedPageIndex,
+    /// The `page_index` version that `object_index` and `layout` were last computed from.
+    ///
+    /// Not serialized: a bucket that has just been loaded has derived nothing yet, and `None`
+    /// makes the first sweep after a load recompute rather than trusting a version number that
+    /// means nothing across a restart.
+    #[serde(skip)]
+    pub(super) layout_from_pages_version: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

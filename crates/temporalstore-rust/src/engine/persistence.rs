@@ -247,7 +247,7 @@ impl TemporalEngine {
         // resurrecting a stale persisted dirty flag.
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.dirty = false;
-            for page in bucket.page_index.values_mut() {
+            for page in bucket.page_index.mutate().values_mut() {
                 page.dirty = false;
             }
         }

@@ -2245,7 +2245,7 @@ fn fold_delta_page_items(
             let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
-            bucket.page_index.retain(|_, page| {
+            bucket.page_index.mutate().retain(|_, page| {
                 !(page.model_id == item.model_id
                     && page.object_key == item.object_key
                     && page.component == item.component)
@@ -2254,7 +2254,7 @@ fn fold_delta_page_items(
     } else if !covered_keys.is_empty() {
         for bucket in bucket_index.bucket_map.values_mut() {
             bucket
-                .page_index
+                .page_index.mutate()
                 .retain(|_, page| !covered_keys.contains(&page.object_key));
         }
     }
@@ -2275,7 +2275,7 @@ fn fold_delta_page_items(
                 ..BucketNode::default()
             });
         bucket.object_index.insert(item.object_id);
-        bucket.page_index.insert(
+        bucket.page_index.mutate().insert(
             item.page_ref_key.clone(),
             PageIndex {
                 object_key: item.object_key.clone(),
@@ -2886,7 +2886,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.page_index.retain(|_, page| {
+        bucket.page_index.mutate().retain(|_, page| {
             if page.object_key == key {
                 deleted_object_ids.insert(page.object_id);
                 removed = true;
@@ -2980,7 +2980,7 @@ fn mark_bucket_index_page_deleted(
         };
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
-        bucket.page_index.retain(|_, page| {
+        bucket.page_index.mutate().retain(|_, page| {
             let matches = page.model_id == model_id
                 && page.object_key == key
                 && page.component.as_deref() == component;
