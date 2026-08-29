@@ -3499,6 +3499,750 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     }
 }
 
+/// The same, for the batch path -- which is the one bulk ingest actually runs.
+///
+/// `batch_execute` swept every bucket once per batch rather than once per write. That is a much
+/// smaller constant than the per-write sweep, but the same `O(total pages)` shape, so a bulk
+/// import still paid for the whole corpus on every batch. Measured per BATCH, and the flags are
+/// compared against a full sweep for the same reason as the single-write case: a bucket left
+/// stale-false in `dirty` never gets flushed.
+#[test]
+fn batch_bucket_maintenance_does_not_grow_with_the_store() {
+    const BATCH: usize = 32;
+    const MEASURED_BATCHES: usize = 5;
+
+    fn visits_per_batch(object_count: usize) -> (f64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..object_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("batch-fill-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        crate::engine::reset_bucket_page_index_visits();
+        for batch in 0..MEASURED_BATCHES {
+            let commands = (0..BATCH)
+                .map(|item| Command::StringSet {
+                    key: format!("batch-measured-{batch}-{item}"),
+                    value: vec![b'v'; 64],
+                })
+                .collect();
+            engine.batch_execute(BatchExecuteRequest {
+                shard_id: 1,
+                commands,
+            });
+        }
+        let visited = crate::engine::bucket_page_index_visits();
+
+        // Same equivalence requirement as the single-write path: sweeping afterwards must not
+        // move anything the targeted refresh already settled.
+        let snapshot = |engine: &TemporalEngine| {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(id, bucket)| {
+                    (
+                        *id,
+                        (
+                            bucket.in_memory,
+                            bucket.deleted,
+                            bucket.dirty,
+                            format!("{:?}", bucket.layout),
+                            bucket.object_index.iter().copied().collect::<Vec<_>>(),
+                        ),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let before_sweep = snapshot(&engine);
+        {
+            let mut shards = engine.shards.write().expect("shards lock poisoned");
+            let shard = shards.get_mut(&1).expect("shard 1 loaded");
+            crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+        }
+        let after_sweep = snapshot(&engine);
+        assert_eq!(
+            before_sweep, after_sweep,
+            "batch targeted refresh disagreed with a full sweep at {object_count} objects"
+        );
+
+        (visited as f64 / MEASURED_BATCHES as f64, before_sweep.len())
+    }
+
+    let (small, small_buckets) = visits_per_batch(200);
+    let (large, large_buckets) = visits_per_batch(800);
+    println!(
+        "
+  200 objects -> {small:>9.1} page-index visits per {BATCH}-command batch ({small_buckets} buckets)
+           800 objects -> {large:>9.1} page-index visits per {BATCH}-command batch ({large_buckets} buckets)
+           growth: {:.2}x cost for 4x the corpus
+",
+        if small > 0.0 { large / small } else { 0.0 }
+    );
+
+    assert!(
+        large <= small * 1.5 + 1.0,
+        "per-batch bucket maintenance grew with the store: {small:.1} -> {large:.1}          visits/batch for 200 -> 800 objects"
+    );
+}
+
+/// The per-write targeted refresh must leave the same flags as sweeping the whole shard.
+///
+/// The write path refreshes only the buckets it recorded as touched. That is only correct if a
+/// bucket nobody recorded genuinely cannot have changed, which is an argument about every site
+/// that mutates a bucket, `dirty_objects` or `expires_at_ms`. Rather than rest on the argument,
+/// this runs a mixed workload and then sweeps every bucket: if the targeted path ever misses one,
+/// the sweep moves it and the comparison fails, naming the bucket and the field.
+///
+/// `ttl_ms` is a countdown recomputed from the clock, so it is compared as present/absent rather
+/// than by value; every other flag is exact.
+#[test]
+fn bucket_runtime_flags_match_full_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A mix, so the comparison covers inserts, overwrites, hash fields, expiries and deletes
+    // rather than one shape of write.
+    for index in 0..120 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("flags-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("flags-hash-{}", index % 17),
+                field: format!("field-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 5 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("flags-str-{}", index / 2),
+                    value: vec![b'w'; 64],
+                },
+            });
+        }
+        if index % 7 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("flags-str-{index}"),
+                    ttl_ms: 60_000,
+                },
+            });
+        }
+        if index % 11 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("flags-str-{}", index / 3),
+                },
+            });
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct BucketFlags {
+        in_memory: bool,
+        deleted: bool,
+        dirty: bool,
+        has_ttl: bool,
+        layout: String,
+        object_index: Vec<u64>,
+        page_count: usize,
+    }
+
+    let capture = |engine: &TemporalEngine| -> std::collections::BTreeMap<u32, BucketFlags> {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| {
+                (
+                    *routing_bucket,
+                    BucketFlags {
+                        in_memory: bucket.in_memory,
+                        deleted: bucket.deleted,
+                        dirty: bucket.dirty,
+                        has_ttl: bucket.ttl_ms.is_some(),
+                        layout: format!("{:?}", bucket.layout),
+                        object_index: bucket.object_index.iter().copied().collect(),
+                        page_count: bucket.page_index.len(),
+                    },
+                )
+            })
+            .collect()
+    };
+
+    let after_targeted = capture(&engine);
+    {
+        let mut shards = engine.shards.write().expect("shards lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+    }
+    let after_full_sweep = capture(&engine);
+
+    assert!(
+        !after_targeted.is_empty(),
+        "workload produced no buckets, so the comparison would be vacuous"
+    );
+
+    let mut differences = Vec::new();
+    for (routing_bucket, targeted) in &after_targeted {
+        let swept = after_full_sweep
+            .get(routing_bucket)
+            .expect("the sweep cannot add or drop buckets");
+        if targeted != swept {
+            differences.push(format!(
+                "  bucket {routing_bucket}: targeted {targeted:?} != swept {swept:?}"
+            ));
+        }
+    }
+    assert!(
+        differences.is_empty(),
+        "the per-write targeted refresh left {} bucket(s) in a different state than a full sweep,          so a mutation site is not recording the bucket it touched:
+{}",
+        differences.len(),
+        differences.join("
+")
+    );
+    println!(
+        "
+  {} buckets compared; targeted refresh matches a full sweep on every flag
+",
+        after_targeted.len()
+    );
+}
+
+/// The dirty-bucket count must equal the answer the unshortened scan would give.
+///
+/// The stats path counts dirty buckets by collecting the buckets already marked dirty and then
+/// asking, per dirty object, which buckets hold its pages. `dirty_objects` grows by one per
+/// record ingested and each pass builds a composite lookup key, so that loop was shard-sized work
+/// on the heartbeat timer, under the read lock writers need.
+///
+/// It now stops once every bucket is in the set, because the answer is a set of bucket ids and
+/// cannot grow past the bucket count. That is exact rather than approximate -- but "exact by
+/// argument" is what this test exists to check, by recomputing the count the long way and
+/// requiring equality.
+///
+/// Measured, 200k records in five equal phases at 1023 slots, growth of the last phase over the
+/// first with the heartbeat at 1s: 3.42/2.17 before, 1.14/0.93 after, against 0.84-0.94 with the
+/// heartbeat switched off entirely.
+#[test]
+fn dirty_bucket_count_matches_the_unshortened_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "dirty-bucket-count".to_string(),
+                shard_uri: "local://dirty-bucket-count/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    // Mixed enough that not every bucket ends up dirty: the short-circuit must not fire in the
+    // case where the loop still has something to contribute.
+    for index in 0..90 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dbc-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        if index % 4 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("dbc-{}", index / 3),
+                },
+            });
+        }
+    }
+
+    let reported = engine
+        .shard_stats(1)
+        .expect("shard 1 loaded")
+        .object_manager
+        .dirty_bucket_count;
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    // The same computation with no early exit.
+    let mut expected: std::collections::BTreeSet<u32> = shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
+        .collect();
+    for object_key in &shard.dirty_objects {
+        expected.extend(crate::engine::bucket_index_target_buckets_for_object_key(
+            shard, object_key,
+        ));
+    }
+    assert!(
+        !shard.bucket_index.bucket_map.is_empty(),
+        "workload produced no buckets"
+    );
+    assert_eq!(
+        reported,
+        expected.len(),
+        "dirty bucket count diverged from the unshortened scan: {reported} vs {}",
+        expected.len()
+    );
+    println!("
+  dirty buckets: reported {reported} == unshortened {}
+", expected.len());
+}
+
+/// The maintained page-ref total must equal the walk it replaced.
+///
+/// The stats path reports that number and used to derive it by summing every set in
+/// `object_component_lookup` -- a walk over every object in the shard, run on the heartbeat timer
+/// while holding the shard read lock writers need. Measured on a 200k-record ingest in five equal
+/// phases: heartbeat at 1s, the last phase cost 3.0x the first and the datanode's own CPU grew
+/// 3.3-3.7x; heartbeat off, 0.84-0.94x. Turning the timer off removed the growth entirely, which
+/// is what identified the walk rather than the write path.
+///
+/// It is now kept as a running total, so it can drift instead of merely being slow. This drives
+/// inserts, superseding overwrites that remove page refs, hash fields with components, expiries
+/// and deletes, then compares the maintained value against the sum it is meant to equal.
+#[test]
+fn maintained_component_page_ref_total_matches_the_walk() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "page-ref-total".to_string(),
+                shard_uri: "local://page-ref-total/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..140 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("tot-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("tot-hash-{}", index % 9),
+                field: format!("f-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 3 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("tot-str-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        if index % 6 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("tot-str-{index}"),
+                    ttl_ms: 60_000,
+                },
+            });
+        }
+        if index % 8 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("tot-str-{}", index / 4),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let walked: usize = shard
+        .bucket_index
+        .object_component_lookup
+        .values()
+        .map(std::collections::BTreeSet::len)
+        .sum();
+    let maintained = shard
+        .bucket_index
+        .object_component_page_refs
+        .expect("the total should be established once the lookup has been built");
+    assert!(walked > 0, "workload produced no component page refs to compare");
+    assert_eq!(
+        maintained, walked,
+        "maintained component page-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
+    );
+    println!("
+  component page refs: maintained {maintained} == walked {walked}
+");
+}
+
+/// Every bucket's `object_index` must already equal a from-scratch recompute.
+///
+/// `update_bucket_layout` rebuilds that set by scanning all of a bucket's pages, with no
+/// short-circuit -- it is the remaining guaranteed full pass in bucket maintenance, and the whole
+/// of what still scales with the corpus once the TTL pass is skipped.
+///
+/// The rebuild looks redundant: the mutation sites already maintain the set, inserting an
+/// object id when a page is added and removing it when the last live page for it goes. If that
+/// invariant genuinely holds, refreshing a bucket never needs the scan and can classify from the
+/// two lengths it already has.
+///
+/// This is the evidence for that "if". It runs a workload that exercises inserts, overwrites that
+/// supersede a page, hash fields, expiries and deletes, then recomputes the live-object set from
+/// each bucket's pages and requires it to match what is stored. A mutation site that fails to
+/// maintain the set shows up here as a named mismatch -- which is what makes dropping the scan
+/// safe rather than hopeful.
+#[test]
+fn bucket_object_index_already_matches_a_from_scratch_recompute() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "object-index-invariant".to_string(),
+                shard_uri: "local://object-index-invariant/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..150 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("inv-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("inv-hash-{}", index % 11),
+                field: format!("f-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 3 == 0 {
+            // Supersede an existing page: this is the path that removes page refs.
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("inv-str-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        if index % 7 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("inv-str-{index}"),
+                    ttl_ms: 60_000,
+                },
+            });
+        }
+        if index % 9 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("inv-str-{}", index / 4),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut checked = 0usize;
+    let mut mismatches = Vec::new();
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        let recomputed: std::collections::BTreeSet<u64> = bucket
+            .page_index
+            .values()
+            .filter(|page| !page.deleted)
+            .map(|page| page.object_id)
+            .collect();
+        // Mirrors update_bucket_layout: an empty live set over an empty page index leaves the
+        // stored set untouched, so only compare where the rebuild would actually assign.
+        if recomputed.is_empty() && bucket.page_index.is_empty() {
+            continue;
+        }
+        checked += 1;
+        let expected = if recomputed.is_empty() {
+            std::collections::BTreeSet::new()
+        } else {
+            recomputed
+        };
+        if bucket.object_index != expected {
+            mismatches.push(format!(
+                "  bucket {routing_bucket}: stored {:?} != recomputed {:?}",
+                bucket.object_index, expected
+            ));
+        }
+    }
+    assert!(checked > 0, "workload produced no buckets to check");
+    assert!(
+        mismatches.is_empty(),
+        "object_index is NOT maintained incrementally by {} of {checked} bucket(s), so the          layout rebuild is load-bearing and cannot be dropped:
+{}",
+        mismatches.len(),
+        mismatches.join("
+")
+    );
+    println!("
+  {checked} buckets: stored object_index matches a from-scratch recompute
+");
+}
+
+/// Per-write cost must be flat at a NARROW routing range too, not only a wide one.
+///
+/// This is the limitation the sibling tests cannot see, because they run at the default routing
+/// range where every key lands in its own bucket: a write touches one bucket of many, the
+/// targeted refresh skips the rest, and cost is flat.
+///
+/// Narrow the range -- `TS_SHARD_END_ROUTING_SLOT=1023`, the setting that cuts resident memory
+/// 45% and the one to run in production -- and there are only 1024 buckets. A batch of any size
+/// hashes across essentially all of them, so there is nothing to skip: the targeted path visits
+/// the same pages as the sweep and the guard correctly hands the work back to the sweep, which is
+/// `O(total pages)` per batch. Bucket maintenance is therefore STILL linear per write there.
+///
+/// Measured end to end at 1023 slots, five equal 40k-record phases: 6.3s -> 14.9s while every
+/// byte written stayed flat (index log 1.02x, WAL 1.01x). At the default range the same run grows
+/// 1.64x. The remedy is not to choose a path but to stop rescanning: keep each bucket's live-page
+/// count, dirty-page count and minimum TTL incrementally, so refreshing a bucket is O(1) and the
+/// range stops mattering.
+///
+/// Counted at 64 slots as each pass came off: 12.6 -> 39.0 (3.10x), then 8.4 -> 26.0 after
+/// skipping the TTL pass when nothing expires, then 4.2 -> 13.0 once the refresh classifies
+/// instead of rescanning, then flat once the upsert does too. Only the last changed the SHAPE,
+/// because rebuilding the live-object set is the one pass with no short-circuit: `deleted`
+/// stops at the first live page and `dirty` at the first dirty one, but that rebuild reads
+/// every page every time.
+#[test]
+fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
+    fn visits_per_write(object_count: usize) -> f64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        // The range travels on the load request, NOT the environment: the datanode binary reads
+        // TS_SHARD_*_ROUTING_SLOT and puts it here. Setting those vars around a bare
+        // `load_shard` leaves the shard on the u32::MAX default, and this test then silently
+        // measures the wide range and agrees with its sibling -- which is exactly what the first
+        // version of it did.
+        assert!(
+            engine
+                .load_shard_with(crate::control::LoadShardRequest {
+                    shard_id: 1,
+                    table_name: "narrow-routing".to_string(),
+                    shard_uri: "local://narrow-routing/1".to_string(),
+                    start_routing_bucket: 0,
+                    end_routing_bucket: 63,
+                    readonly: false,
+                    load_version: 1,
+                    local_node_id: Some(1),
+                })
+                .status
+                .ok
+        );
+        for index in 0..object_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("narrow-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        const MEASURED_WRITES: usize = 20;
+        crate::engine::reset_bucket_page_index_visits();
+        for index in 0..MEASURED_WRITES {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("narrow-measured-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let visited = crate::engine::bucket_page_index_visits();
+        visited as f64 / MEASURED_WRITES as f64
+    }
+
+    let small = visits_per_write(200);
+    let large = visits_per_write(800);
+    println!(
+        "
+  64 routing slots:
+    200 objects -> {small:>8.1} page-index visits per write
+    800 objects -> {large:>8.1} page-index visits per write
+"
+    );
+
+    // An absolute bound, not a ratio: the work is meant to be independent of the corpus, and a
+    // ratio is undefined once it reaches zero. 4x the objects must not buy more than a constant.
+    assert!(
+        large <= 2.0,
+        "per-write bucket maintenance should not scan pages at a narrow routing range, got {large:.1} visits/write at 800 objects (200 objects: {small:.1})"
+    );
+    assert!(
+        large <= small + 2.0,
+        "per-write bucket maintenance grew with the corpus at 64 routing slots: {small:.1} -> {large:.1} visits/write for 200 -> 800 objects"
+    );
+}
+
+/// Bucket maintenance must not make a write cost more as the store grows.
+///
+/// `update_bucket_layout` rebuilds a bucket's whole object set from `page_index`, and the
+/// per-object dirty-state clear walks every bucket in the shard. Both are `O(pages)` and both sit
+/// inside loops, so the write path can be quadratic in the corpus while every individual function
+/// still looks cheap.
+///
+/// Counted, not timed: the number is work done, so the test cannot pass by running on a fast
+/// machine, and it reports per-write cost so growth is visible rather than implied.
+#[test]
+fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
+    fn visits_per_write(object_count: usize) -> (u64, f64, (u64, u64, u64, u64)) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Fill to the target corpus size first; only the writes AFTER the reset are measured.
+        for index in 0..object_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("bucket-maint-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        const MEASURED_WRITES: usize = 20;
+        crate::engine::reset_bucket_page_index_visits();
+        crate::engine::bucket_visit_sites::reset();
+        for index in 0..MEASURED_WRITES {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("bucket-maint-measured-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let visited = crate::engine::bucket_page_index_visits();
+        let sites = crate::engine::bucket_visit_sites::snapshot();
+        (visited, visited as f64 / MEASURED_WRITES as f64, sites)
+    }
+
+    let (small_total, small_each, small_sites) = visits_per_write(200);
+    let (large_total, large_each, large_sites) = visits_per_write(800);
+
+    let per = |value: u64| value as f64 / 20.0;
+    println!(
+        "
+  200 objects -> {small_total:>9} visits for 20 writes ({small_each:>9.1} per write)
+           800 objects -> {large_total:>9} visits for 20 writes ({large_each:>9.1} per write)
+           growth: {:.2}x cost for 4x the corpus
+
+           per-write attribution      200 objects    800 objects
+             update_bucket_layout     {:>9.1}      {:>9.1}
+             clear_dirty (all bkts)   {:>9.1}      {:>9.1}
+             refresh_runtime_flags    {:>9.1}      {:>9.1}
+             remove (all bkts)        {:>9.1}      {:>9.1}
+",
+        if small_each > 0.0 { large_each / small_each } else { 0.0 },
+        per(small_sites.0), per(large_sites.0),
+        per(small_sites.1), per(large_sites.1),
+        per(small_sites.2), per(large_sites.2),
+        per(small_sites.3), per(large_sites.3),
+    );
+
+    // 4x the corpus must not cost materially more PER WRITE. Allowed a little slack for
+    // bucket-fill effects; a linear-in-corpus path shows up here as ~4x and fails loudly.
+    assert!(
+        large_each <= small_each * 1.5 + 1.0,
+        "per-write bucket maintenance grew with the store: {small_each:.1} -> {large_each:.1}          visits/write for 200 -> 800 objects"
+    );
+}
+
 /// Eviction cost must track how many victims are wanted, not how much the shard holds.
 ///
 /// Measured with the live-page scan counter rather than a clock, so the number is the work done

@@ -44,7 +44,10 @@ pub(crate) mod eviction_sampler;
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
 mod storage_bucket_internals;
-pub use storage_bucket_internals::{live_page_scan_entries, reset_live_page_scan_entries};
+pub use storage_bucket_internals::{
+    bucket_page_index_visits, bucket_visit_sites, live_page_scan_entries,
+    reset_bucket_page_index_visits, reset_live_page_scan_entries,
+};
 mod compaction;
 mod storage_reporting;
 mod hashing;
@@ -681,10 +684,10 @@ impl TemporalEngine {
             // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
             // rebuilds the first-index once at the end, so deferring here is
             // correctness-preserving.
-            if !defer_bucket_index_reconstruct()
+            let rebuilt_bucket_index = !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
-                    || shard.bucket_index.bucket_map.is_empty())
-            {
+                    || shard.bucket_index.bucket_map.is_empty());
+            if rebuilt_bucket_index {
                 rebuild_bucket_first_index(
                     request.shard_id,
                     shard,
@@ -693,7 +696,15 @@ impl TemporalEngine {
                 );
             }
             if !defer_bucket_index_reconstruct() {
-                refresh_bucket_runtime_flags(shard);
+                if rebuilt_bucket_index {
+                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                    // changed no longer describes it; recompute everything.
+                    refresh_bucket_runtime_flags(shard);
+                } else {
+                    // Refresh only what this write touched. Sweeping the shard here cost
+                    // O(total pages) on EVERY write, which made ingestion quadratic in the corpus.
+                    refresh_pending_bucket_runtime_flags(shard);
+                }
             }
             // Every
             // write records a WAL entry before any page is written.
@@ -3384,12 +3395,17 @@ fn object_manager_stats(
             if !shard.bucket_index.object_component_lookup.is_empty() {
                 (
                     shard.bucket_index.object_component_lookup.len(),
-                    shard
-                        .bucket_index
-                        .object_component_lookup
-                        .values()
-                        .map(BTreeSet::len)
-                        .sum::<usize>(),
+                    // Maintained incrementally; the walk is the fallback for an index that has
+                    // been deserialized but not yet rebuilt. This runs on the heartbeat timer
+                    // under the shard read lock, so walking here shows up as write contention.
+                    shard.bucket_index.object_component_page_refs.unwrap_or_else(|| {
+                        shard
+                            .bucket_index
+                            .object_component_lookup
+                            .values()
+                            .map(BTreeSet::len)
+                            .sum::<usize>()
+                    }),
                     shard.dirty_objects.len(),
                 )
             } else {
@@ -3492,8 +3508,27 @@ fn object_manager_stats(
                 .iter()
                 .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
                 .collect::<BTreeSet<_>>();
-            for object_key in &shard.dirty_objects {
-                dirty_buckets.extend(bucket_index_target_buckets_for_object_key(shard, object_key));
+            // The loop below asks, per dirty object, which buckets hold its pages -- building a
+            // composite lookup key each time. `dirty_objects` grows with the ingest, and this
+            // runs on the heartbeat timer under the shard read lock, so it was the shard-sized
+            // work that made writes cost more as the store grew: profiling a running ingest
+            // showed `bucket_index_target_buckets_for_object_key` and `push_lookup_part` rising
+            // together with `RwLock::write_contended`.
+            //
+            // The answer is a set of bucket ids, so it cannot exceed the number of buckets. Once
+            // every bucket is already in it the loop cannot change the result, and during ingest
+            // that is the normal case -- `mark_async_dirty_object` marks an object's routing
+            // bucket dirty as it records the object, so the collect above already has them.
+            // Stopping there is exact, not an approximation.
+            let bucket_total = shard.bucket_index.bucket_map.len();
+            if dirty_buckets.len() < bucket_total {
+                for object_key in &shard.dirty_objects {
+                    dirty_buckets
+                        .extend(bucket_index_target_buckets_for_object_key(shard, object_key));
+                    if dirty_buckets.len() >= bucket_total {
+                        break;
+                    }
+                }
             }
             dirty_buckets.len()
         } else {

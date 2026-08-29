@@ -69,6 +69,23 @@ pub(super) struct ShardState {
     /// is not found, and the read falls through exactly as it did before this existed.
     #[serde(default)]
     pub(super) wal_resident_pages: BTreeMap<u64, WalResidentPage>,
+    /// Routing buckets whose derived runtime flags may be stale, so a write can refresh the
+    /// buckets it touched instead of sweeping the shard.
+    ///
+    /// `refresh_bucket_runtime_flags` recomputes `in_memory` / `deleted` / `dirty` / `ttl_ms` /
+    /// `layout` for EVERY bucket, and the single-write path called it on every write. Each bucket
+    /// costs `O(its pages)`, so the sweep is `O(total pages)` per write and ingestion is quadratic
+    /// in the corpus. Note that the routing-slot range does not soften this: fewer slots means
+    /// fewer, larger buckets and the same total page count.
+    ///
+    /// Recorded where the routing bucket is already known -- the bucket-index upsert, the removal
+    /// paths, and the async dirty mark -- rather than inferred from the key, because a stored
+    /// address may carry an explicit routing bucket that disagrees with `page_routing_bucket`.
+    ///
+    /// Not persisted: on load this is empty, and every load and recovery path already runs the
+    /// full sweep, so a fresh process starts from fully recomputed flags.
+    #[serde(skip)]
+    pub(super) buckets_pending_flag_refresh: BTreeSet<u32>,
     /// Deadlines, kept in key order so a sweep can resume from its cursor and look at the
     /// window rather than at everything.
     pub(super) expires_at_ms: BTreeMap<String, u64>,
@@ -268,6 +285,22 @@ pub(super) struct CoreIndex {
     pub(super) object_page_lookup: ObjectPageLookup,
     #[serde(default)]
     pub(super) object_component_lookup: ObjectComponentLookup,
+    /// Running total of page refs across `object_component_lookup`, or `None` when not known.
+    ///
+    /// The stats path reports this number, and computing it as
+    /// `object_component_lookup.values().map(BTreeSet::len).sum()` walks every object in the
+    /// shard. That runs on a TIMER -- the server heartbeat, every 3s by default -- while holding
+    /// the shard read lock that writers need, so its cost grows with the store and lands on the
+    /// write path as lock contention. Measured on a 200k-record ingest in five equal phases: with
+    /// the heartbeat at 1s the last phase cost 3.0x the first and the datanode's own CPU grew
+    /// 3.3-3.7x; with the heartbeat off, 0.84-0.94x -- flat.
+    ///
+    /// Maintained by the two methods below, which are the only places the lookup is mutated, and
+    /// recomputed by `rebuild_object_page_lookup`. `None` means "not established yet" (a
+    /// freshly deserialized index, before any rebuild) and the reader falls back to the walk,
+    /// so a missing value costs time rather than correctness.
+    #[serde(skip)]
+    pub(super) object_component_page_refs: Option<usize>,
 }
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
@@ -342,6 +375,9 @@ pub(super) struct PageIndex {
 
 impl CoreIndex {
     pub(super) fn rebuild_object_page_lookup(&mut self) {
+        // The rebuild is already O(pages); establishing the total here costs nothing extra and
+        // is what lets the stats path stop walking the shard.
+        self.object_component_page_refs = Some(0);
         self.object_page_lookup.clear();
         self.object_component_lookup.clear();
         let refs = self
@@ -378,7 +414,8 @@ impl CoreIndex {
                 routing_bucket,
                 page_ref_key: page_ref_key.clone(),
             });
-        self.object_component_lookup
+        let added = self
+            .object_component_lookup
             .entry(object_component_lookup_key(
                 &page.model_id,
                 &page.object_key,
@@ -389,6 +426,11 @@ impl CoreIndex {
                 routing_bucket,
                 page_ref_key,
             });
+        if added {
+            if let Some(total) = self.object_component_page_refs.as_mut() {
+                *total = total.saturating_add(1);
+            }
+        }
     }
 
     pub(super) fn remove_object_page_lookup_entry(
@@ -401,7 +443,14 @@ impl CoreIndex {
             .remove(&object_page_lookup_key(model_id, object_key, component));
         let component_lookup_key = object_component_lookup_key(model_id, object_key);
         if let Some(component_refs) = self.object_component_lookup.get_mut(&component_lookup_key) {
+            let before = component_refs.len();
             component_refs.retain(|page_ref| page_ref.component.as_deref() != component);
+            let removed = before - component_refs.len();
+            if removed > 0 {
+                if let Some(total) = self.object_component_page_refs.as_mut() {
+                    *total = total.saturating_sub(removed);
+                }
+            }
             if component_refs.is_empty() {
                 self.object_component_lookup.remove(&component_lookup_key);
             }

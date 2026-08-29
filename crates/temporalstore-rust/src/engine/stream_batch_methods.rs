@@ -226,6 +226,9 @@ impl TemporalEngine {
             }
         }
         let mut mutated_any = false;
+        // Set if any command in this batch rebuilt the bucket index, which invalidates the
+        // per-batch record of touched buckets and forces the full sweep below.
+        let mut rebuilt_bucket_index = false;
         let mut wal_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
@@ -346,6 +349,9 @@ impl TemporalEngine {
                         start_routing_bucket,
                         end_routing_bucket,
                     );
+                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                    // this batch touched no longer describes it.
+                    rebuilt_bucket_index = true;
                 }
                 if write_command {
                     wal_commands.push(command_for_post_write);
@@ -357,7 +363,14 @@ impl TemporalEngine {
             });
         }
         if mutated_any {
-            refresh_bucket_runtime_flags(shard);
+            if rebuilt_bucket_index {
+                refresh_bucket_runtime_flags(shard);
+            } else {
+                // Refresh only the buckets this batch disturbed. The full sweep is
+                // O(total pages), so running it per batch left bulk ingest quadratic in the
+                // corpus -- with a smaller constant than the per-write sweep, but the same shape.
+                refresh_pending_bucket_runtime_flags(shard);
+            }
             // Every write records a WAL entry before any page is written. async_storage only
             // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
             // buffered, no fsync (a fire-and-forget commit).

@@ -754,6 +754,61 @@ pub fn reset_live_page_scan_entries() {
     LIVE_PAGE_SCAN_ENTRIES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Running total of bucket `page_index` entries visited by the bucket-maintenance walks.
+///
+/// Distinct from [`LIVE_PAGE_SCAN_ENTRIES`], which counts materialized live-page entries. This
+/// one counts the cheaper-looking `bucket.page_index.values()` passes -- `update_bucket_layout`
+/// and the per-object dirty-state clear. Each is `O(pages in the bucket)` and they run inside
+/// loops over buckets, so their cost is a product, not a sum, and does not show up in any single
+/// obvious place.
+static BUCKET_PAGE_INDEX_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bucket `page_index` entries visited since the last reset.
+pub fn bucket_page_index_visits() -> u64 {
+    BUCKET_PAGE_INDEX_VISITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the bucket-visit counter. For tests measuring one operation's maintenance volume.
+pub fn reset_bucket_page_index_visits() {
+    BUCKET_PAGE_INDEX_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn note_bucket_page_visits(count: usize) {
+    BUCKET_PAGE_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Per-site attribution for [`BUCKET_PAGE_INDEX_VISITS`], so a scaling result names the walk that
+/// caused it rather than leaving it to be inferred from arithmetic.
+pub mod bucket_visit_sites {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static LAYOUT: AtomicU64 = AtomicU64::new(0);
+    pub(super) static CLEAR_DIRTY: AtomicU64 = AtomicU64::new(0);
+    pub(super) static REFRESH_FLAGS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static REMOVE_ALL_BUCKETS: AtomicU64 = AtomicU64::new(0);
+
+    /// `(layout, clear_dirty, refresh_flags, remove_all_buckets)` visits since the last reset.
+    pub fn snapshot() -> (u64, u64, u64, u64) {
+        (
+            LAYOUT.load(Ordering::Relaxed),
+            CLEAR_DIRTY.load(Ordering::Relaxed),
+            REFRESH_FLAGS.load(Ordering::Relaxed),
+            REMOVE_ALL_BUCKETS.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn reset() {
+        for counter in [&LAYOUT, &CLEAR_DIRTY, &REFRESH_FLAGS, &REMOVE_ALL_BUCKETS] {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+fn note_site(site: &std::sync::atomic::AtomicU64, count: usize) {
+    site.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    note_bucket_page_visits(count);
+}
+
 pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let entries = if !shard.bucket_index.bucket_map.is_empty() {
         collect_bucket_index_live_page_entries(shard)
@@ -783,6 +838,7 @@ pub(super) fn mark_async_dirty_object(
         });
     bucket.dirty = true;
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
+    note_bucket_flags_stale(shard, routing_bucket);
 }
 
 pub(super) fn rebuild_bucket_page_ownership(
@@ -1165,6 +1221,9 @@ pub(super) fn upsert_bucket_index_page(
         dirty,
         deleted: false,
     };
+    // Buckets whose pages this upsert disturbs. Collected while the bucket borrows are live and
+    // recorded once they end, so the per-write refresh can skip the rest of the shard.
+    let mut touched_buckets: Vec<u32> = Vec::new();
     let lookup_enabled = !shard.bucket_index.object_page_lookup.is_empty();
     let direct_page_refs = if lookup_enabled {
         shard
@@ -1189,6 +1248,7 @@ pub(super) fn upsert_bucket_index_page(
             let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&page_ref.routing_bucket) else {
                 continue;
             };
+            touched_buckets.push(page_ref.routing_bucket);
             let removed_object_id = bucket
                 .page_index
                 .remove(&page_ref.page_ref_key)
@@ -1201,11 +1261,13 @@ pub(super) fn upsert_bucket_index_page(
                 {
                     bucket.object_index.remove(&removed_object_id);
                 }
-                update_bucket_layout(bucket);
+                classify_bucket_layout_in_place(bucket);
             }
         }
     } else if !lookup_enabled {
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
+        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter_mut() {
+            note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.page_index.len());
+            touched_buckets.push(*routing_bucket);
             bucket.page_index.retain(|_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
@@ -1218,7 +1280,7 @@ pub(super) fn upsert_bucket_index_page(
             {
                 bucket.object_index.remove(&object_id);
             }
-            update_bucket_layout(bucket);
+            classify_bucket_layout_in_place(bucket);
         }
     }
     let page_ref_key = page_index_ref_key(&entry);
@@ -1252,11 +1314,13 @@ pub(super) fn upsert_bucket_index_page(
         bucket.object_index.insert(object_id);
         bucket.page_index
             .insert(page_ref_key.clone(), page_index.clone());
-        update_bucket_layout(bucket);
+        classify_bucket_layout_in_place(bucket);
+        touched_buckets.push(routing_bucket);
     }
     shard
         .bucket_index
         .insert_object_page_lookup(routing_bucket, page_ref_key, &page_index);
+    shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 
 pub(super) fn sync_bucket_index_object_pages(
@@ -1407,7 +1471,22 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     }
 }
 
+/// Re-derive only the layout label, taking `object_index` as already correct.
+///
+/// `update_bucket_layout` rebuilds that set by scanning every page in the bucket. On the write
+/// path the scan is redundant: an insert has just added its object id and a removal has just
+/// dropped one, so the scan re-derives what is already stored -- and being the last pass without
+/// a short-circuit, it is the whole of what makes a write cost more as the store grows.
+///
+/// `bucket_object_index_already_matches_a_from_scratch_recompute` holds that invariant across
+/// inserts, superseding overwrites, expiries and deletes. Reconstruct paths, which build
+/// `bucket_map` from page entries where nothing maintained the set, keep the full rebuild.
+fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
+    bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
+}
+
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
+    note_site(&bucket_visit_sites::LAYOUT, bucket.page_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
         .page_index
         .values()
@@ -1422,25 +1501,141 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
 }
 
-pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
-    let now = now_ms();
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        bucket.meta_loaded = true;
-        bucket.loading = false;
-        bucket.in_memory = !bucket.page_index.is_empty();
-        bucket.deleted =
-            !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
-        bucket.dirty |= bucket
-            .page_index
-            .values()
-            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+/// Note that a bucket's derived runtime flags may be stale.
+///
+/// Called where the routing bucket is already in hand. Recording it is cheap; the alternative --
+/// deriving it from the object key later -- is not sound, because a stored address may carry an
+/// explicit routing bucket that disagrees with `page_routing_bucket`.
+pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u32) {
+    shard.buckets_pending_flag_refresh.insert(routing_bucket);
+}
+
+/// Recompute one bucket's derived flags. The whole body of the sweep, for a single bucket.
+///
+/// `rebuild_object_index` decides whether the live-object set is recomputed by scanning every
+/// page, or taken as already correct and only re-classified.
+///
+/// The mutation sites maintain that set themselves -- a page insert adds its object id, a removal
+/// drops the id once no live page carries it -- so on the write path the scan finds exactly what
+/// is already stored and is pure overhead. It is also the LAST guaranteed full pass in bucket
+/// maintenance (`deleted` and `dirty` both short-circuit; the TTL pass is skipped when nothing
+/// expires), so it is the whole of what still scales with the corpus.
+///
+/// The load, recovery and reconstruct paths are a different matter: they rebuild `bucket_map`
+/// from page entries, where the set has NOT been maintained and must be derived. Those keep the
+/// scan. `bucket_object_index_already_matches_a_from_scratch_recompute` is the evidence for
+/// dropping it everywhere else.
+fn refresh_one_bucket_runtime_flags(
+    bucket: &mut BucketNode,
+    now: u64,
+    dirty_objects: &BTreeSet<String>,
+    expires_at_ms: &BTreeMap<String, u64>,
+    rebuild_object_index: bool,
+) {
+    bucket.meta_loaded = true;
+    bucket.loading = false;
+    bucket.in_memory = !bucket.page_index.is_empty();
+    // `all` and `any` stop at the first page that decides the answer, so neither is a reliable
+    // full pass; during ingest the dirty check in particular answers on page one.
+    bucket.deleted =
+        !bucket.page_index.is_empty() && bucket.page_index.values().all(|page| page.deleted);
+    bucket.dirty |= bucket
+        .page_index
+        .values()
+        .any(|page| page.dirty || dirty_objects.contains(&page.object_key));
+    // The TTL is the one guaranteed full pass: a minimum has to look at every page, and each
+    // look is a map lookup keyed by the page's object key. When nothing in the shard has an
+    // expiry that whole pass is dead work -- the minimum over an empty selection is None, which
+    // is exactly what the field already holds. A store that never sets a TTL is the common case
+    // for bulk ingest, and this is where its per-bucket cost was going.
+    if expires_at_ms.is_empty() {
+        bucket.ttl_ms = None;
+    } else {
+        note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.page_index.len());
         bucket.ttl_ms = bucket
             .page_index
             .values()
-            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
+            .filter_map(|page| expires_at_ms.get(&page.object_key).copied())
             .map(|expires_at| expires_at.saturating_sub(now))
             .min();
+    }
+    if rebuild_object_index {
         update_bucket_layout(bucket);
+    } else {
+        bucket.layout =
+            classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
+    }
+}
+
+/// Refresh EVERY bucket in the shard. `O(total pages)`.
+///
+/// Correct everywhere and the right thing after a load, a recovery or a reconstruct, where the
+/// set of changed buckets is not known. On the per-write path use
+/// [`refresh_pending_bucket_runtime_flags`] instead -- this sweep on every write is what made
+/// ingestion quadratic in the corpus.
+pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
+    refresh_all_bucket_runtime_flags(shard, true);
+}
+
+/// The sweep, with the object-index rebuild made optional. See
+/// [`refresh_one_bucket_runtime_flags`] for when it can be skipped.
+fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index: bool) {
+    let now = now_ms();
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        refresh_one_bucket_runtime_flags(
+            bucket,
+            now,
+            &shard.dirty_objects,
+            &shard.expires_at_ms,
+            rebuild_object_index,
+        );
+    }
+    // The sweep covered everything, so nothing is left outstanding.
+    shard.buckets_pending_flag_refresh.clear();
+}
+
+/// Refresh only the buckets recorded as touched, and clear the record.
+///
+/// Equivalent to the full sweep for the buckets that changed; an untouched bucket's flags are a
+/// function of its own pages plus the two shard-wide maps, and both of those are noted against the
+/// buckets they affect. `bucket_runtime_flags_match_full_sweep` in the engine tests checks that
+/// equivalence against a real workload rather than leaving it as an argument.
+pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
+    if shard.buckets_pending_flag_refresh.is_empty() {
+        return;
+    }
+    // Refreshing bucket-by-bucket costs a map lookup each, where the full sweep is one ordered
+    // pass. That only pays while the touched set is a small share of the shard's buckets.
+    //
+    // It is not always small. With a wide routing range every key lands in its own bucket, so a
+    // batch touches a few hundred of millions and the targeted path wins outright. With a narrow
+    // range -- `TS_SHARD_END_ROUTING_SLOT=1023`, the setting that cuts resident memory 45% and is
+    // the one to run in production -- there are only 1024 buckets and a 500-command batch hashes
+    // across essentially all of them. The targeted path then visits exactly the same pages as the
+    // sweep and adds a lookup per bucket on top: measured 1.6-2.2x SLOWER over 200k and 400k
+    // records, in four runs out of four.
+    //
+    // So choose. Measured at default slots the targeted path is 1.3-2.7x faster; at 1023 slots
+    // this guard hands the work back to the sweep, which is where it belongs.
+    let bucket_count = shard.bucket_index.bucket_map.len();
+    if shard.buckets_pending_flag_refresh.len().saturating_mul(2) >= bucket_count {
+        // Still the write path, so the object-index scan stays off; only the traversal changes.
+        refresh_all_bucket_runtime_flags(shard, false);
+        return;
+    }
+    let now = now_ms();
+    let pending = std::mem::take(&mut shard.buckets_pending_flag_refresh);
+    for routing_bucket in pending {
+        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+            continue;
+        };
+        refresh_one_bucket_runtime_flags(
+            bucket,
+            now,
+            &shard.dirty_objects,
+            &shard.expires_at_ms,
+            false,
+        );
     }
 }
 
@@ -1467,6 +1662,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     }
     shard.dirty_objects.remove(object_key);
     for bucket in shard.bucket_index.bucket_map.values_mut() {
+        note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
         let mut touched = false;
         for page in bucket.page_index.values_mut() {
             if page.object_key == object_key {
@@ -1475,6 +1671,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             }
         }
         if touched {
+            note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
             bucket.dirty = bucket
                 .page_index
                 .values()
