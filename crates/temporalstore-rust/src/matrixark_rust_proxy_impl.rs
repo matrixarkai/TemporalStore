@@ -1648,10 +1648,27 @@ fn payload_record_types(value: &str) -> Vec<String> {
 /// Locations that no longer resolve (a field physically removed after a partial-cleanup path)
 /// are skipped: the caller re-decodes and re-filters everything it is handed, so a stale entry
 /// can cost a read but never change an answer.
+/// The newest `limit` locations, or all of them when there is no cap.
+///
+/// A location is "{shard:06}:{field}" with both parts zero-padded, so lexical order IS append
+/// order and the newest are the last. Sorting is not assumed of the input: the type index is read
+/// into a map whose iteration order is its own business, and a cap that trusted the wrong order
+/// would silently keep the OLDEST records instead -- a wrong answer rather than a slow one.
+fn newest_locations(mut locations: Vec<String>, limit: Option<usize>) -> Vec<String> {
+    match limit {
+        Some(limit) if locations.len() > limit => {
+            locations.sort();
+            locations.split_off(locations.len() - limit)
+        }
+        _ => locations,
+    }
+}
+
 fn type_index_payloads(
     engine: &TemporalEngine,
     record_hash_key: &str,
     allowed_types: &HashSet<String>,
+    newest_by_type: Option<&BTreeMap<String, usize>>,
 ) -> Result<Option<(Vec<String>, u64)>, String> {
     let ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
     if ready.trim() != "1" {
@@ -1659,9 +1676,23 @@ fn type_index_payloads(
     }
     let mut locations: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for record_type in allowed_types {
-        for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
-            locations.insert(location);
-        }
+        // Per-type cap, the same rule the pinned-scope path applies: a location is
+        // "{shard:06}:{field}" with both parts zero-padded, so lexical order IS append order and
+        // the newest N are the last N. A type with no cap keeps every position it had.
+        //
+        // Without this, a scan that carries a cap but no scope lands here and cap the type index
+        // ignores it -- so a caller asking for one record of a type is handed every record of
+        // that type, and what it pays grows with the store.
+        let limit = newest_by_type
+            .and_then(|caps| caps.get(record_type))
+            .copied()
+            .filter(|limit| *limit > 0);
+        let of_type: Vec<String> =
+            hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                .into_iter()
+                .map(|(location, _)| location)
+                .collect();
+        locations.extend(newest_locations(of_type, limit));
     }
     // BTreeSet order is lexical: shard6 then the zero-padded record field = append order.
     let (values, shards_touched) =
@@ -2052,9 +2083,12 @@ fn scan_matrixark_candidates(
         && !allowed_types.is_empty()
         && count > 0
     {
-        if let Some((values, shards_touched)) =
-            type_index_payloads(engine, &record_hash_key, &allowed_types)?
-        {
+        if let Some((values, shards_touched)) = type_index_payloads(
+            engine,
+            &record_hash_key,
+            &allowed_types,
+            command.newest_by_type.as_ref(),
+        )? {
             payload_values = values;
             placement_partitions_touched = shards_touched;
             type_index_used = true;
@@ -7093,5 +7127,46 @@ mod tests {
             Some(1),
             "bob still retrievable after recovery: {bob_result}"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod scan_cap_tests {
+    use super::newest_locations;
+
+    fn at(shard: u32, field: u32) -> String {
+        format!("{shard:06}:{field:06}")
+    }
+
+    #[test]
+    fn no_cap_keeps_everything() {
+        let all = vec![at(0, 2), at(0, 1), at(0, 3)];
+        let kept = newest_locations(all.clone(), None);
+        assert_eq!(kept.len(), all.len());
+    }
+
+    #[test]
+    fn a_cap_keeps_the_newest_by_append_order() {
+        // Deliberately out of order on the way in: the index is read from a map, and a cap that
+        // assumed sorted input would keep the wrong records rather than merely too many.
+        let all = vec![at(0, 3), at(0, 1), at(1, 0), at(0, 2)];
+        assert_eq!(newest_locations(all.clone(), Some(2)), vec![at(0, 3), at(1, 0)]);
+        assert_eq!(newest_locations(all.clone(), Some(1)), vec![at(1, 0)]);
+    }
+
+    #[test]
+    fn a_cap_larger_than_the_set_keeps_all_of_it() {
+        let all = vec![at(0, 1), at(0, 2)];
+        assert_eq!(newest_locations(all.clone(), Some(9)).len(), 2);
+        assert_eq!(newest_locations(all.clone(), Some(2)).len(), 2);
+    }
+
+    #[test]
+    fn shard_order_beats_field_order() {
+        // A later shard is always newer, even when its field number is smaller -- the shard part
+        // leads the key, which is why zero-padding both parts matters.
+        let all = vec![at(0, 999), at(1, 1)];
+        assert_eq!(newest_locations(all, Some(1)), vec![at(1, 1)]);
     }
 }
