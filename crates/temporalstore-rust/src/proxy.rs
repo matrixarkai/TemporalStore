@@ -962,6 +962,16 @@ struct ProxyInner {
     topology_check_interval_ms: std::sync::atomic::AtomicU64,
     topology_checks_skipped: std::sync::atomic::AtomicU64,
     bad_requests: std::sync::atomic::AtomicU64,
+    /// Distinguishes one context ingest from another within the same millisecond.
+    ///
+    /// Raw events are stored in a hash whose FIELD carries their order, and the field used
+    /// to be `{timestamp}:{index within this call}`. The index restarts at zero every call
+    /// and the timestamp falls back to a single `now` for the whole call, so two ingests
+    /// for one session in the same millisecond produced the same field names -- and the
+    /// write is an upsert keyed by field, so the second silently replaced the first's
+    /// messages. Extraction then replayed fewer messages than were ingested, with nothing
+    /// reporting a loss.
+    context_ingest_sequence: std::sync::atomic::AtomicU64,
     context_ingest_requests: std::sync::atomic::AtomicU64,
     context_extract_requests: std::sync::atomic::AtomicU64,
     context_retrieve_requests: std::sync::atomic::AtomicU64,
@@ -997,6 +1007,7 @@ impl ProxyService {
                 ),
                 topology_checks_skipped: std::sync::atomic::AtomicU64::new(0),
                 bad_requests: std::sync::atomic::AtomicU64::new(0),
+                context_ingest_sequence: std::sync::atomic::AtomicU64::new(0),
                 context_ingest_requests: std::sync::atomic::AtomicU64::new(0),
                 context_extract_requests: std::sync::atomic::AtomicU64::new(0),
                 context_retrieve_requests: std::sync::atomic::AtomicU64::new(0),
@@ -6091,6 +6102,84 @@ mod tests {
             after.client.route_refreshes > before.client.route_refreshes,
             "the context path must re-resolve after the shard moves, refreshes stayed at {}",
             after.client.route_refreshes
+        );
+    }
+
+    #[test]
+    fn two_ingests_at_the_same_timestamp_keep_both_sets_of_messages() {
+        use crate::context_workflow::ContextIngestExtractReport;
+
+        // Raw events live in a hash whose FIELD carries their order, and the write is an
+        // upsert keyed by that field. The field used to be `{timestamp}:{index in call}`:
+        // the index restarts at zero every call, so two ingests carrying the same
+        // timestamp produced the same field names and the second silently replaced the
+        // first's messages. Extraction replays those records, so it saw two messages where
+        // four had been ingested, and nothing anywhere reported a loss.
+        //
+        // Both calls pin the SAME timestamp, which is what makes this deterministic rather
+        // than a race on whether two requests land inside one millisecond.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_context_server(test_addr(18_408), engine.clone());
+        start_meta(test_addr(18_409), test_addr(18_408));
+        wait_for_http(&test_addr(18_409));
+        wait_for_http(&test_addr(18_408));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_409),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        let pinned = 1_723_456_789_000u64;
+        let ingest = |first: &str, second: &str| {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "scope": {"tenant_id": "team-beta", "account_id": "acct_7"},
+                "messages": [
+                    {"role": "user", "content": first, "timestamp_ms": pinned},
+                    {"role": "assistant", "content": second, "timestamp_ms": pinned}
+                ]
+            }))
+            .unwrap();
+            let (code, body) = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body,
+            });
+            assert_eq!(code, 200, "ingest must be accepted");
+            let response = parse_json::<crate::types::ExecuteResponse>(&body).unwrap();
+            assert!(response.status.ok, "ingest status: {:?}", response.status);
+        };
+
+        ingest("first call message one", "first call message two");
+        ingest("second call message one", "second call message two");
+
+        // Commit with no messages replays the buffer and extracts what it finds.
+        let commit = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-beta", "account_id": "acct_7"}
+        }))
+        .unwrap();
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/extract".to_string(),
+            body: commit,
+        });
+        assert_eq!(code, 200);
+        let report = parse_json::<ContextIngestExtractReport>(&body).unwrap();
+        assert!(report.status.ok, "extract status: {:?}", report.status);
+        assert_eq!(
+            report.accepted, 4,
+            "four messages were ingested across two calls at the same timestamp; seeing \
+             two means the second call's fields collided with the first's and overwrote \
+             them: {report:?}"
         );
     }
 
