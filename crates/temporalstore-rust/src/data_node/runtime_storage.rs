@@ -781,9 +781,22 @@ impl DataNodeRuntime {
         let handle = thread::spawn(move || {
             let mut round = 0u64;
             let mut current_backoff_ms = options.initial_backoff_ms;
-            // A cycle whose completion outlived the short wait below. Its report is collected
+            // Cycles whose completion outlived the short wait below. Their reports are collected
             // on a later tick instead of being thrown away -- see the comment at the wait.
-            let mut uncollected_cycle_job: Option<u64> = None;
+            //
+            // A LIST, not a single slot. With one slot the report was lost every time: the
+            // top-of-tick poll saw the cycle still running, the cycle finished later in that same
+            // tick, `has_pending` then went false so a new cycle was submitted, and submitting
+            // overwrote the slot before anything polled the finished job again. Every cycle was
+            // abandoned exactly one tick before it completed, so `last_completed_cycle` stayed
+            // None forever and every derived figure -- bytes reclaimed, pressure after, WAL and
+            // index-log floors -- stayed at zero while the manager was doing real work.
+            //
+            // Bounded by `has_pending_storage_manager`, which allows only one cycle in flight per
+            // shard, so this holds a couple of entries at most; the cap is a backstop, not a
+            // budget.
+            let mut uncollected_cycle_jobs: Vec<u64> = Vec::new();
+            const MAX_UNCOLLECTED_CYCLE_JOBS: usize = 64;
             loop {
                 let delay_ms =
                     storage_manager_runtime_delay_ms(&options, round, current_backoff_ms);
@@ -822,16 +835,32 @@ impl DataNodeRuntime {
                 // do. Any cycle that actually dumped buckets or reclaimed WAL outlived the
                 // budget and had its report dropped, so the reported dirty-bucket count,
                 // selected buckets and reclaim floors sat at zero while the manager was busy.
-                if let Some(job_id) = uncollected_cycle_job {
-                    if let Some(cycle) =
-                        wait_for_storage_manager_cycle_completion(&runtime, job_id, 0)
-                    {
-                        let mut report = thread_report
-                            .lock()
-                            .expect("storage manager runtime report lock poisoned");
-                        apply_storage_manager_cycle_to_runtime_report(&mut report, cycle);
-                        uncollected_cycle_job = None;
+                if !uncollected_cycle_jobs.is_empty() {
+                    let mut still_running = Vec::with_capacity(uncollected_cycle_jobs.len());
+                    for job_id in std::mem::take(&mut uncollected_cycle_jobs) {
+                        match runtime.job_status(job_id) {
+                            Some(status) if status.finished_at_ms.is_some() => {
+                                // Finished: collect the report if it carried one, and stop
+                                // tracking either way so a job that finished without a usable
+                                // output cannot pin a slot forever.
+                                if let Some(DataNodeTaskOutput::StorageManager(response)) =
+                                    status.output
+                                {
+                                    let mut report = thread_report
+                                        .lock()
+                                        .expect("storage manager runtime report lock poisoned");
+                                    apply_storage_manager_cycle_to_runtime_report(
+                                        &mut report,
+                                        response.report,
+                                    );
+                                }
+                            }
+                            Some(_) => still_running.push(job_id),
+                            // Gone from the jobs map (pruned): nothing left to collect.
+                            None => {}
+                        }
                     }
+                    uncollected_cycle_jobs = still_running;
                 }
                 let should_submit = !runtime
                     .inner
@@ -885,7 +914,10 @@ impl DataNodeRuntime {
                             .expect("storage manager runtime report lock poisoned");
                         apply_storage_manager_cycle_to_runtime_report(&mut report, cycle);
                     } else {
-                        uncollected_cycle_job = Some(submitted.job_id);
+                        if uncollected_cycle_jobs.len() >= MAX_UNCOLLECTED_CYCLE_JOBS {
+                            uncollected_cycle_jobs.remove(0);
+                        }
+                        uncollected_cycle_jobs.push(submitted.job_id);
                     }
                 }
             }

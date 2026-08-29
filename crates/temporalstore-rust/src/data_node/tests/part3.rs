@@ -2194,6 +2194,103 @@ fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
 
 // shared-corpus: storage_manager_continuous_background_runtime
 #[test]
+fn storage_manager_runtime_collects_the_report_of_a_cycle_that_outlived_its_wait() {
+    // A completed cycle's report must reach the runtime report even when the cycle takes longer
+    // than the short in-loop wait.
+    //
+    // It did not. The loop tracked the outstanding cycle in a single slot: the top-of-tick poll
+    // saw the cycle still running, the cycle finished later in that same tick, `has_pending` then
+    // went false so a new cycle was submitted, and submitting OVERWROTE the slot before anything
+    // polled the finished job again. Every cycle was abandoned exactly one tick before it
+    // completed. Measured on the unfixed code: 432 collection attempts across 45 cycles, 47 of
+    // which finished with a valid report, and not one was ever collected.
+    //
+    // The visible cost is that `last_completed_cycle` stays None forever, and with it every
+    // derived figure -- bytes reclaimed, pressure after, the WAL and index-log floors -- reads
+    // zero while the storage manager is doing real work. That is the operator's evidence that
+    // reclaim ran, and reclaim is the only thing that recovers the disk growth from repeated
+    // dumps.
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert!(
+        runtime
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 9,
+                table_name: "storage-manager-collect".to_string(),
+                shard_uri: "local://storage-manager-collect/9".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..32 {
+        runtime.execute(ExecuteRequest {
+            shard_id: 9,
+            command: Command::StringSet {
+                key: format!("collect-{index}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let manager = runtime.start_storage_manager_runtime(StorageManagerRuntimeOptions {
+        // A 5ms interval against cycles that take far longer is the case that broke: the wait
+        // budget is tied to the interval, so essentially every cycle outlives it.
+        interval_ms: 5,
+        jitter_percent: 50,
+        initial_backoff_ms: 3,
+        max_backoff_ms: 40,
+        request: StorageManagerCycleRequest {
+            shard_id: 9,
+            max_dump_buckets_per_round: 3,
+            enable_prepare: true,
+            enable_wal_reclaim: true,
+            enable_evict: true,
+            enable_page_reclaim: true,
+            enable_index_gc: true,
+            ..StorageManagerCycleRequest::default()
+        },
+        controller: RequestController { timeout_ms: 30_000 },
+    });
+
+    wait_until(Duration::from_secs(15), || {
+        manager.report().last_completed_cycle.is_some()
+    });
+    let report = manager.report();
+    manager.stop();
+
+    assert!(
+        report.rounds_submitted >= 1,
+        "expected at least one submitted cycle, got {report:?}"
+    );
+    assert!(
+        report.last_completed_cycle.is_some(),
+        "a finished cycle's report was never collected: {report:?}"
+    );
+    assert_eq!(
+        report.submit_failures, 0,
+        "cycles should submit cleanly: {report:?}"
+    );
+}
+
+#[test]
 fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags() {
     let dir = tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
