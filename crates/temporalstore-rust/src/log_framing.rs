@@ -63,25 +63,33 @@ pub(crate) const FRAME_MAGIC: &[u8] = FRAME_MAGIC_V2;
 /// legacy unframed record is a JSON document starting with `{`.
 pub(crate) const FRAME_MAGIC_V3: u8 = 0xB3;
 
-/// Whether new records are written with the binary frame.
+/// Whether new records are written with the binary frame. DEFAULT ON.
 ///
-/// OPT-IN, and the reason is worth stating: a length-framed record cannot be found by scanning
-/// BACKWARD. The tail scan that locates a log's last record looks for the final newline, which
-/// works only while every record ends with one -- a binary payload has no trailing delimiter and
-/// contains 0x0A bytes of its own, so a reverse search lands inside a payload. Walking forward
-/// finds the tail correctly but reads the whole file, and with TS_PHASE1_FLAT off that scan runs
-/// on EVERY append, which would turn ingest quadratic.
+/// The cost this removes is not the newline byte, it is what a delimiter forces on everything
+/// that reads: a reader scanning for `\n` cannot be handed a payload containing one, so every
+/// binary record had to be stuffed on the way in and unstuffed on the way out -- two full copies
+/// of each record, plus a byte for every 0x0A and 0x1B inside it. Measured over 200 records:
+/// 102.3 -> 84.8 bytes each, and `what_each_frame_costs_on_disk` keeps that honest.
 ///
-/// Making this the default therefore needs O(1) tail discovery -- last record offset and
-/// sequence recorded as the log is written, rather than searched for afterwards.
+/// The one thing length framing takes away is the ability to find a log's tail by scanning
+/// BACKWARD: a length prefix is only readable from in front of the record it describes, so the
+/// tail has to be walked to. That walk reads the file, which would be ruinous if it ran per
+/// append -- and it does not: TS_PHASE1_FLAT resolves the sequence from the warm cache plus a
+/// length stat, leaving the walk for a cold open. (A log format that frames by length usually
+/// records where its last record is as it writes, which bounds even that; the descriptors for
+/// it exist in `storage_descriptor` and are not yet wired.)
+///
+/// Off (`TS_WAL_BINARY_FRAME=0`) writes the delimited frame again. Reading never depends on this
+/// flag: which frame a record uses is a property of the record, so a log holding both -- which
+/// is what an upgrade leaves -- reads end to end either way.
 pub(crate) fn binary_frame_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("TS_WAL_BINARY_FRAME")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 

@@ -2501,8 +2501,10 @@ fn wal_bulk_relaxed_durability() -> bool {
 /// on-disk length is still exactly what we last left it (`verified_len_by_shard`) -- an O(1)
 /// `metadata()` stat instead of the O(n) scan. Safe because (a) the append lock is cross-process, so
 /// any external appender changes the length and forces the full scan, and (b) we only ever append
-/// complete framed lines, so a length match rules out a torn tail. Default OFF, byte-identical to
-/// the unconditional-scan path when off. Mirrors the warm-cache fast path already used by
+/// complete framed records, so a length match rules out a torn tail. DEFAULT ON (the comment here
+/// said OFF long after the code said otherwise, and a stale default in a comment is worse than no
+/// comment: it was read as fact while deciding whether another gate could be turned on).
+/// Byte-identical to the unconditional-scan path when off. Mirrors the warm-cache fast path already used by
 /// `index_log::append_delta` and `append_replayed_record`.
 fn wal_fast_append_seq() -> bool {
     wal_env_flag_default_on("TS_PHASE1_FLAT")
@@ -6040,10 +6042,13 @@ mod tests {
         // And every earlier address still resolves to the record it was handed out for.
         for (sequence, earlier) in &written {
             if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
-                let end = bytes
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map_or(bytes.len(), |at| at + 1);
+                // The frame says where this record ends. The first newline does not: a
+                // length-framed payload carries 0x0A itself, so slicing there hands the
+                // decoder half a record.
+                let end = match crate::log_framing::next_frame(&bytes) {
+                    Ok(Some((consumed, _))) if consumed > 0 => consumed,
+                    _ => bytes.len(),
+                };
                 assert_eq!(
                     decode_wal_line(&bytes[..end]).unwrap().sequence,
                     *sequence,
@@ -6183,10 +6188,13 @@ mod tests {
         // And every address handed out before the crash still resolves to its own record.
         for (sequence, earlier) in &written {
             if let Some(bytes) = reopened.read_at_log_id(1, *earlier, 4096).unwrap() {
-                let end = bytes
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map_or(bytes.len(), |at| at + 1);
+                // The frame says where this record ends. The first newline does not: a
+                // length-framed payload carries 0x0A itself, so slicing there hands the
+                // decoder half a record.
+                let end = match crate::log_framing::next_frame(&bytes) {
+                    Ok(Some((consumed, _))) if consumed > 0 => consumed,
+                    _ => bytes.len(),
+                };
                 assert_eq!(
                     decode_wal_line(&bytes[..end]).unwrap().sequence,
                     *sequence,
