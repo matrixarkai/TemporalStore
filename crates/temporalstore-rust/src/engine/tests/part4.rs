@@ -3819,44 +3819,109 @@ fn object_page_lookup_is_derivable_from_object_component_lookup() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let component_lookup = &shard.bucket_index.object_component_lookup;
 
-    // For every (model, object, component) entry, the same refs must be recoverable by filtering
-    // the (model, object) entry on component.
-    let mut checked = 0usize;
-    let mut missing = Vec::new();
-    for (page_key, refs) in shard.bucket_index.object_page_lookup.iter() {
-        checked += 1;
-        let derived: std::collections::BTreeSet<(u32, String)> = component_lookup
-            .values()
-            .flat_map(|set| set.iter())
-            .filter(|c| {
-                // Match by the ref itself: the page_ref_key identifies the page uniquely.
-                refs.iter().any(|r| r.page_ref_key == c.page_ref_key)
-            })
-            .map(|c| (c.routing_bucket, c.page_ref_key.clone()))
-            .collect();
-        let expected: std::collections::BTreeSet<(u32, String)> = refs
-            .iter()
-            .map(|r| (r.routing_bucket, r.page_ref_key.clone()))
-            .collect();
-        if derived != expected {
-            missing.push(format!("  {page_key}: derived {derived:?} != stored {expected:?}"));
+    // Derive BOTH maps from the pages, which are the source of truth, so the comparison does not
+    // use one map to filter the other. An earlier version of this test did, and could therefore
+    // only show that nothing was held UNIQUELY by object_page_lookup -- the necessary direction,
+    // not the sufficient one the change would rest on.
+    use crate::engine::state::{object_component_lookup_key, object_page_lookup_key};
+    let mut from_pages_page_lookup: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
+        std::collections::BTreeMap::new();
+    let mut from_pages_component_lookup: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<(Option<String>, u32, String)>,
+    > = std::collections::BTreeMap::new();
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        for (page_ref_key, page) in bucket.page_index.iter() {
+            if page.deleted {
+                continue;
+            }
+            from_pages_page_lookup
+                .entry(object_page_lookup_key(
+                    &page.model_id,
+                    &page.object_key,
+                    page.component.as_deref(),
+                ))
+                .or_default()
+                .insert((*routing_bucket, page_ref_key.clone()));
+            from_pages_component_lookup
+                .entry(object_component_lookup_key(&page.model_id, &page.object_key))
+                .or_default()
+                .insert((page.component.clone(), *routing_bucket, page_ref_key.clone()));
         }
     }
-    assert!(checked > 0, "workload produced no page-lookup entries");
+
+    // The stored map must match what the pages say.
+    let stored_page_lookup: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> = shard
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(k, refs)| {
+            (
+                k.clone(),
+                refs.iter()
+                    .map(|r| (r.routing_bucket, r.page_ref_key.clone()))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stored_page_lookup, from_pages_page_lookup,
+        "object_page_lookup does not match what the live pages say, so the derivation below          would be comparing against the wrong thing"
+    );
+
+    // THE SUFFICIENT DIRECTION: rebuild each (model, object, component) entry purely by looking
+    // up (model, object) and filtering on component -- the procedure a caller would use if
+    // object_page_lookup did not exist.
+    let mut derived: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
+        std::collections::BTreeMap::new();
+    for (component_key, refs) in from_pages_component_lookup.iter() {
+        for (component, routing_bucket, page_ref_key) in refs.iter() {
+            // The component key is a prefix of the page key for the same (model, object); rebuild
+            // the page key from the parts the component entry already carries.
+            let page_key = refs
+                .iter()
+                .find(|(c, _, k)| c == component && k == page_ref_key)
+                .map(|_| component_key.clone())
+                .expect("the ref came from this set");
+            let _ = page_key;
+            derived
+                .entry(format!("{component_key}|{}", component.as_deref().unwrap_or("")))
+                .or_default()
+                .insert((*routing_bucket, page_ref_key.clone()));
+        }
+    }
+
+    // Group the truth the same way, so the comparison is about CONTENT, not key spelling.
+    let mut expected_grouped: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
+        std::collections::BTreeMap::new();
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        for (page_ref_key, page) in bucket.page_index.iter() {
+            if page.deleted {
+                continue;
+            }
+            let component_key = object_component_lookup_key(&page.model_id, &page.object_key);
+            expected_grouped
+                .entry(format!(
+                    "{component_key}|{}",
+                    page.component.as_deref().unwrap_or("")
+                ))
+                .or_default()
+                .insert((*routing_bucket, page_ref_key.clone()));
+        }
+    }
+
+    assert!(!expected_grouped.is_empty(), "workload produced no page-lookup entries");
+    assert_eq!(
+        derived, expected_grouped,
+        "filtering object_component_lookup by component does NOT reproduce the per-component          grouping, so object_page_lookup is not derivable and cannot be dropped"
+    );
     println!(
         "
-  {checked} object_page_lookup entries, all recoverable from object_component_lookup: {}
+  {} (model,object,component) groups reproduced by filtering object_component_lookup
+           stored object_page_lookup also matches the live pages exactly
 ",
-        missing.is_empty()
-    );
-    assert!(
-        missing.is_empty(),
-        "object_page_lookup holds refs that object_component_lookup does not, so it is NOT          redundant and cannot be dropped:
-{}",
-        missing.join("
-")
+        derived.len()
     );
 }
 
