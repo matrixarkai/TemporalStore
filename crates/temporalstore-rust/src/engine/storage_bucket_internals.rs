@@ -1425,14 +1425,38 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 }
 
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
-    let live_object_ids: BTreeSet<u64> = bucket
-        .page_index
-        .values()
-        .filter(|page| !page.deleted)
-        .map(|page| page.object_id)
-        .collect();
-    if !live_object_ids.is_empty() {
-        bucket.object_index = live_object_ids;
+    let mut scratch = Vec::new();
+    update_bucket_layout_with(bucket, &mut scratch);
+}
+
+/// Same as `update_bucket_layout`, but reusing a caller-owned buffer for the live object ids.
+///
+/// The sweep runs this over every bucket in the shard, so building the id set used to allocate a
+/// fresh tree per bucket and then free the previous one to replace it. Sorting and deduplicating
+/// a flat buffer yields exactly the elements the tree would have held, and the buffer is reused
+/// across buckets, so the common case allocates nothing at all.
+///
+/// The stored set is replaced only when it genuinely differs. A `BTreeSet` iterates in sorted
+/// order and the buffer is sorted, so equality is a linear element-wise comparison -- not a count
+/// check, which would wrongly accept a stored set holding a stale extra id alongside a duplicated
+/// live id.
+pub(super) fn update_bucket_layout_with(bucket: &mut BucketNode, live_ids: &mut Vec<u64>) {
+    live_ids.clear();
+    live_ids.extend(
+        bucket
+            .page_index
+            .values()
+            .filter(|page| !page.deleted)
+            .map(|page| page.object_id),
+    );
+    live_ids.sort_unstable();
+    live_ids.dedup();
+    if !live_ids.is_empty() {
+        if bucket.object_index.len() != live_ids.len()
+            || !bucket.object_index.iter().eq(live_ids.iter())
+        {
+            bucket.object_index = live_ids.iter().copied().collect();
+        }
     } else if !bucket.page_index.is_empty() {
         bucket.object_index.clear();
     }
@@ -1445,6 +1469,9 @@ pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     // than per page. When nothing in the shard has an expiry, every lookup below would miss and
     // the minimum over no values is `None` either way.
     let any_expiry = !shard.expires_at_ms.is_empty();
+    // Carried across buckets so the live-id buffer is allocated once per sweep, not once per
+    // bucket.
+    let mut live_ids: Vec<u64> = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         bucket.meta_loaded = true;
         bucket.loading = false;
@@ -1465,7 +1492,7 @@ pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
         } else {
             None
         };
-        update_bucket_layout(bucket);
+        update_bucket_layout_with(bucket, &mut live_ids);
     }
 }
 
