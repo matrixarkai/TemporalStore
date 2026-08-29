@@ -1630,9 +1630,14 @@ fn record_shard_key_parts(key: &str) -> Option<(&str, &str)> {
 }
 
 /// The record types stored in one shard-field payload, bundle-expanded.
-fn payload_record_types(value: &str) -> Vec<String> {
+/// Distinct `record_type`s across already-decoded records.
+///
+/// Split out of `payload_record_types` so a caller that has already decoded the payload -- the
+/// batch-append handler, which also needs the records for the scope index -- does not decode it
+/// a second time just to read one field.
+fn records_record_types(records: &[Value]) -> Vec<String> {
     let mut types: Vec<String> = Vec::new();
-    for record in decode_matrixark_payload(value) {
+    for record in records {
         if let Some(record_type) = record.get("record_type").and_then(Value::as_str) {
             if !record_type.is_empty() && !types.iter().any(|t| t == record_type) {
                 types.push(record_type.to_string());
@@ -1640,6 +1645,10 @@ fn payload_record_types(value: &str) -> Vec<String> {
         }
     }
     types
+}
+
+fn payload_record_types(value: &str) -> Vec<String> {
+    records_record_types(&decode_matrixark_payload(value))
 }
 
 /// Payload values for the requested types via the type index, in append order.
@@ -3042,14 +3051,19 @@ fn execute_record_log_request(
                         let Ok(value_text) = std::str::from_utf8(value) else {
                             continue;
                         };
-                        for record_type in payload_record_types(value_text) {
+                        // Both side indexes come from the same records, so decode once. This
+                        // used to call `payload_record_types` (itself a wrapper over
+                        // `decode_matrixark_payload`) and then decode the same string again,
+                        // deserializing every appended record into a Value tree twice.
+                        let decoded = decode_matrixark_payload(value_text);
+                        for record_type in records_record_types(&decoded) {
                             index_entries
                                 .entry(type_index_key(base, &record_type))
                                 .or_default()
                                 .push((format!("{shard6}:{field}"), b"1".to_vec()));
                         }
-                        for record in decode_matrixark_payload(value_text) {
-                            for bucket in record_scope_buckets(&record) {
+                        for record in &decoded {
+                            for bucket in record_scope_buckets(record) {
                                 index_entries
                                     .entry(scope_index_key(base, &bucket))
                                     .or_default()
