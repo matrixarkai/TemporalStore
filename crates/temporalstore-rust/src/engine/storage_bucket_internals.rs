@@ -1492,7 +1492,15 @@ pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
         } else {
             None
         };
-        update_bucket_layout_with(bucket, &mut live_ids);
+        // `object_index` and `layout` depend on the pages and nothing else, and nothing outside
+        // `update_bucket_layout` writes either of them -- so when the pages have not changed, the
+        // stored values are already what a recompute would produce. The version cannot be missed:
+        // the pages cannot be mutated except through `mutate()`, which bumps it.
+        let pages_version = bucket.page_index.version();
+        if bucket.layout_from_pages_version != Some(pages_version) {
+            update_bucket_layout_with(bucket, &mut live_ids);
+            bucket.layout_from_pages_version = Some(pages_version);
+        }
     }
 }
 
@@ -2306,6 +2314,53 @@ mod bucket_layout_tests {
         update_bucket_layout_with(&mut node, &mut scratch);
         assert_eq!(node.object_index, [1].into_iter().collect::<ObjectIndex>());
         assert_eq!(node.layout, classify_bucket_layout(1, 2));
+    }
+
+    #[test]
+    fn reading_the_pages_does_not_change_the_version_but_mutating_does() {
+        let mut node = bucket(&[(1, false)], &[1]);
+        let start = node.page_index.version();
+        // Reads, through Deref and by reference.
+        assert_eq!(node.page_index.len(), 1);
+        assert!(!node.page_index.is_empty());
+        let _ = node.page_index.values().count();
+        for (_key, _page) in &node.page_index {}
+        assert_eq!(
+            node.page_index.version(),
+            start,
+            "reading the pages must not look like a change"
+        );
+
+        node.page_index.mutate().insert("p9".to_string(), page(9, false));
+        assert_ne!(
+            node.page_index.version(),
+            start,
+            "changing the pages must change the version"
+        );
+    }
+
+    #[test]
+    fn a_changed_page_set_is_not_treated_as_up_to_date() {
+        // Stand in for what the sweep does: derive, record the version, then change the pages and
+        // confirm the recorded version no longer matches, so the next sweep recomputes.
+        let mut node = bucket(&[(1, false)], &[]);
+        let mut scratch = Vec::new();
+        update_bucket_layout_with(&mut node, &mut scratch);
+        node.layout_from_pages_version = Some(node.page_index.version());
+
+        // A page removed through `mutate()` -- the only way to remove one.
+        node.page_index.mutate().clear();
+        assert_ne!(
+            node.layout_from_pages_version,
+            Some(node.page_index.version()),
+            "a bucket whose pages changed must not look up to date"
+        );
+
+        // And recomputing from the emptied pages leaves the index alone, as a from-scratch
+        // rebuild would for a bucket with no pages at all.
+        let before = node.object_index.clone();
+        update_bucket_layout_with(&mut node, &mut scratch);
+        assert_eq!(node.object_index, before);
     }
 
     #[test]
