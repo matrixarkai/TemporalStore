@@ -2977,6 +2977,139 @@ fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogErr
     Ok((last_sequence, record_end))
 }
 
+
+/// Fixed-size blocks, so a footer can be found by ARITHMETIC instead of by searching.
+///
+/// This is the piece that pays for length framing. A delimited log finds its tail by scanning
+/// backward for the last delimiter; a length-framed one cannot, because a length prefix is only
+/// readable from in front of the record it describes, so the tail has to be walked to from the
+/// start. Walking is correct and costs the file.
+///
+/// Blocks fix that by making the answer writable in advance: every block ends with a footer
+/// naming the last record that started inside it, and because blocks are a fixed size, block N's
+/// footer is at a computed offset. Reopening reads the last footer present -- one seek, one small
+/// read -- and then walks only the final, still-open block. The walk stops being the file and
+/// becomes at most one block.
+const WAL_BLOCK_BYTES: u64 = 128 * 1024;
+
+/// Reserved at the end of every block for its footer. The encoded footer is far smaller; the
+/// slot is fixed so that the arithmetic above stays arithmetic.
+const WAL_BLOCK_FOOTER_BYTES: u64 = 128;
+
+/// Marks a footer slot that has actually been written, so a slot inside preallocated zeros is
+/// not mistaken for a footer describing block zero.
+const WAL_BLOCK_FOOTER_MAGIC: u64 = 0xB10C_F007_E12A_5EEDu64;
+
+/// TS_WAL_BLOCK_FOOTER (default OFF while it earns trust): reserve a footer at the end of every
+/// fixed-size block and use it to find the log's tail on reopen.
+fn wal_block_footer_enabled() -> bool {
+    matches!(
+        std::env::var("TS_WAL_BLOCK_FOOTER")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Where block `index` keeps its footer, relative to the start of the records.
+fn block_footer_at(index: u64) -> u64 {
+    index * WAL_BLOCK_BYTES + (WAL_BLOCK_BYTES - WAL_BLOCK_FOOTER_BYTES)
+}
+
+/// The last byte a record may occupy in block `index`, relative to the start of the records.
+fn block_data_end(index: u64) -> u64 {
+    block_footer_at(index)
+}
+
+fn block_of(relative_offset: u64) -> u64 {
+    relative_offset / WAL_BLOCK_BYTES
+}
+
+/// Encode a footer into its fixed-size slot, zero-padded.
+fn encode_block_footer(
+    index: u64,
+    block_end: u32,
+    last_record_offset: u64,
+    last_record_sequence: u64,
+    block_crc: u32,
+) -> Vec<u8> {
+    use prost::Message;
+    let footer = crate::storage_descriptor::BlockFooter {
+        magic: WAL_BLOCK_FOOTER_MAGIC,
+        version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+        timestamp_ms: current_time_ms(),
+        block_crc,
+        block_number: index,
+        block_end,
+        last_record_offset,
+        // Records never straddle a block here: one that does not fit starts the next block
+        // instead. That is what keeps this field zero and the reader free of the case.
+        last_record_left_size: 0,
+        last_record_sequence,
+        client_token: Vec::new(),
+        truncated_offset: 0,
+    };
+    let mut slot = footer.encode_to_vec();
+    assert!(
+        slot.len() as u64 <= WAL_BLOCK_FOOTER_BYTES,
+        "a block footer must fit its slot: {} > {}",
+        slot.len(),
+        WAL_BLOCK_FOOTER_BYTES
+    );
+    slot.resize(WAL_BLOCK_FOOTER_BYTES as usize, 0);
+    slot
+}
+
+/// Read a footer out of its slot. `None` for a slot that was never written -- which is what a
+/// preallocated block looks like, and what a crash before the footer leaves.
+fn decode_block_footer(slot: &[u8]) -> Option<crate::storage_descriptor::BlockFooter> {
+    use prost::Message;
+    if slot.iter().all(|byte| *byte == 0) {
+        return None;
+    }
+    let footer = crate::storage_descriptor::BlockFooter::decode(slot).ok()?;
+    if footer.magic != WAL_BLOCK_FOOTER_MAGIC {
+        return None;
+    }
+    Some(footer)
+}
+
+/// The last footer this file holds, if any: `(block index, footer)`.
+///
+/// Reads backwards through the footer SLOTS, which is not the same as scanning backwards through
+/// the file -- each slot is at a computed offset, so this is a handful of small reads whatever
+/// the log's size, and it stops at the first one that was written.
+fn last_written_footer(
+    file: &File,
+    header_len: u64,
+    file_len: u64,
+) -> Result<Option<(u64, crate::storage_descriptor::BlockFooter)>, WriteAheadLogError> {
+    if file_len <= header_len {
+        return Ok(None);
+    }
+    let data_len = file_len - header_len;
+    let mut index = block_of(data_len.saturating_sub(1));
+    loop {
+        let at = header_len + block_footer_at(index);
+        if at + WAL_BLOCK_FOOTER_BYTES <= file_len {
+            let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
+            let mut reader = BufReader::new(file.try_clone()?);
+            reader.seek(SeekFrom::Start(at))?;
+            if reader.read_exact(&mut slot).is_ok() {
+                if let Some(footer) = decode_block_footer(&slot) {
+                    return Ok(Some((index, footer)));
+                }
+            }
+        }
+        if index == 0 {
+            return Ok(None);
+        }
+        index -= 1;
+    }
+}
+
 fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
@@ -3221,6 +3354,69 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// What each frame costs in TIME, not just bytes. Ignored by default: it is a measurement,
+    /// and a timing assertion in the suite would be a flake generator.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_each_frame_costs_in_time -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn what_each_frame_costs_in_time() {
+        fn run(binary: bool, records: usize) -> (std::time::Duration, u64) {
+            let previous = std::env::var("TS_WAL_BINARY_FRAME").ok();
+            std::env::set_var("TS_WAL_BINARY_FRAME", if binary { "1" } else { "0" });
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            // A payload with the byte a delimited reader splits on, because escaping is what
+            // the length frame stops paying for and it is charged per occurrence.
+            let value: Vec<u8> = (0..512u32)
+                .map(|i| if i % 16 == 0 { b'\n' } else { b'v' })
+                .collect();
+            let started = std::time::Instant::now();
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("tenant/7/object/{index:06}"),
+                            value: value.clone(),
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let elapsed = started.elapsed();
+            let path = write_ahead_log_path(dir.path(), 1);
+            let (_, bytes) = last_wal_sequence_in(&path).unwrap();
+            match previous {
+                Some(value) => std::env::set_var("TS_WAL_BINARY_FRAME", value),
+                None => std::env::remove_var("TS_WAL_BINARY_FRAME"),
+            }
+            (elapsed, bytes)
+        }
+
+        let records = 4_000usize;
+        // Alternate the order so a cold page cache or a warming disk cannot be read as a win.
+        let (text_a, text_bytes) = run(false, records);
+        let (binary_a, binary_bytes) = run(true, records);
+        let (binary_b, _) = run(true, records);
+        let (text_b, _) = run(false, records);
+        let text = (text_a + text_b) / 2;
+        let binary = (binary_a + binary_b) / 2;
+
+        let text_us = text.as_secs_f64() * 1e6 / records as f64;
+        let binary_us = binary.as_secs_f64() * 1e6 / records as f64;
+        println!(
+            "  records {records}\n  \
+             delimited  {text_us:.2} us/append, {} B/record\n  \
+             length     {binary_us:.2} us/append, {} B/record\n  \
+             time  {:+.1}%   bytes {:+.1}%",
+            text_bytes / records as u64,
+            binary_bytes / records as u64,
+            100.0 * (binary_us - text_us) / text_us,
+            100.0 * (binary_bytes as f64 - text_bytes as f64) / text_bytes as f64,
+        );
+    }
     use super::*;
 
     /// What the two frames actually cost, measured on the file rather than argued from the
