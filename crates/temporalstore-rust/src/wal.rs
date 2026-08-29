@@ -96,6 +96,78 @@ pub fn encode_wal_line_for_test(
     Ok(crate::log_framing::encode_line(&encode_wal_payload(record)?))
 }
 
+
+/// Read one record's bytes AS FRAMED, or `None` at the end of the records.
+///
+/// The readers below all used `read_until(b'\n')`, which is only correct while every record is
+/// newline-terminated -- and that requirement is the reason binary payloads have to be
+/// byte-stuffed before they are written. This reads a binary frame by the length it declares
+/// and a text record up to its newline, so one loop walks a file holding both.
+///
+/// Returns the bytes exactly as they sit on disk, because callers hand them to
+/// `decode_wal_line`, and the byte count is what `scan` turns into a record's log id.
+fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+    let first = {
+        let buffered = reader.fill_buf()?;
+        buffered.first().copied()
+    };
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    // A zero where a record should start is preallocated room, never a record: reservations are
+    // written as zeros and always trail the records. No frame can begin with one -- the text
+    // frames begin with `#`, a legacy record with `{`, a binary frame with its marker.
+    if first == 0 {
+        return Ok(None);
+    }
+    if first != crate::log_framing::FRAME_MAGIC_V3 {
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok(None);
+        }
+        return Ok(Some(line));
+    }
+    // Binary: marker, varint length, four checksum bytes, then exactly that many payload bytes.
+    let mut raw = Vec::with_capacity(64);
+    let mut marker = [0u8; 1];
+    if reader.read_exact(&mut marker).is_err() {
+        return Ok(None);
+    }
+    raw.push(marker[0]);
+    let mut declared: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        let mut byte = [0u8; 1];
+        if reader.read_exact(&mut byte).is_err() {
+            return Ok(None); // torn mid-varint
+        }
+        raw.push(byte[0]);
+        declared |= u64::from(byte[0] & 0x7f) << shift;
+        if byte[0] & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift > 63 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "record length is not a varint",
+            ));
+        }
+    }
+    let mut digest = [0u8; 4];
+    if reader.read_exact(&mut digest).is_err() {
+        return Ok(None);
+    }
+    raw.extend_from_slice(&digest);
+    let mut payload = vec![0u8; declared as usize];
+    if reader.read_exact(&mut payload).is_err() {
+        return Ok(None); // fewer bytes than declared: a torn tail
+    }
+    raw.extend_from_slice(&payload);
+    Ok(Some(raw))
+}
+
 pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
     let payload = crate::log_framing::decode_line(line)?;
     // Which encoding a payload is in is a property of the payload, never of configuration: a log
@@ -1419,15 +1491,15 @@ impl LocalWriteAheadLogStore {
             let mut reader = BufReader::new(file);
             let mut log_id = base;
             loop {
-                let mut line = Vec::new();
-                let read = reader.read_until(b'\n', &mut line)?;
-                if read == 0 {
+                // Reads a record by the length it declares when it is framed that way, and to
+                // the newline when it is not, so one loop walks a log holding both. The
+                // preallocated zero run that trails the records ends the loop from inside the
+                // reader: no frame can start with a zero byte.
+                let Some(line) = read_raw_record(&mut reader)? else {
                     break;
-                }
-                // A trailing run of zeros with no newline is a preallocated reservation, not a
-                // record: records stop here. A torn NON-zero tail cannot reach this loop -- the
-                // repair scan above already truncated it.
-                if !line.ends_with(b"\n") && line.iter().all(|byte| *byte == 0) {
+                };
+                let read = line.len();
+                if read == 0 {
                     break;
                 }
                 let next_log_id = log_id.saturating_add(read as u64);
@@ -1728,10 +1800,11 @@ impl LocalWriteAheadLogStore {
         let mut records_after = 0usize;
         let mut split = None;
         let mut cursor = header_len;
-        let mut line = Vec::new();
         loop {
-            line.clear();
-            let read = reader.read_until(b'\n', &mut line)?;
+            let Some(line) = read_raw_record(&mut reader)? else {
+                break;
+            };
+            let read = line.len();
             if read == 0 {
                 break;
             }
@@ -1936,22 +2009,19 @@ impl LocalWriteAheadLogStore {
         // encodings, ever gets to look at it. Escaping the newline out of a binary payload keeps
         // records SPLITTABLE; it cannot make arbitrary bytes valid UTF-8, and nothing should
         // require them to be.
-        let mut line = Vec::new();
         loop {
-            line.clear();
-            if reader.read_until(b'\n', &mut line)? == 0 {
+            let Some(mut line) = read_raw_record(&mut reader)? else {
                 break;
-            }
-            while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
-                line.pop();
+            };
+            // Only a text record carries a trailing newline; a binary frame ends where its
+            // declared length ends, and trimming it would take a byte of the payload.
+            if line.first() != Some(&crate::log_framing::FRAME_MAGIC_V3) {
+                while line.last() == Some(&b'\n') || line.last() == Some(&b'\r') {
+                    line.pop();
+                }
             }
             if line.is_empty() {
                 continue;
-            }
-            // The records may end before the file does: a trailing zeros run is preallocated
-            // room, not a record, and it always comes last.
-            if line.iter().all(|byte| *byte == 0) {
-                break;
             }
             let record = decode_wal_line(&line)?;
             if start_sequence == 0 {
@@ -2637,7 +2707,7 @@ fn append_record_locked(
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
-    let bytes = crate::log_framing::encode_line(&encode_wal_payload(record)?);
+    let bytes = crate::log_framing::encode_record(&encode_wal_payload(record)?);
     let prealloc = wal_preallocate_enabled();
     let mut file = if prealloc {
         // Positioned write, not O_APPEND: with a reservation, the physical end of the file is
@@ -2841,9 +2911,55 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<(u64, u64), Wr
 /// `(last sequence, record end)` for one piece. The record end is the byte offset just past the
 /// last complete record -- the file's length, unless a torn tail was repaired or a preallocated
 /// zeros reservation follows the records (kept, not truncated: it is not damage, it is room).
+/// `(last sequence, record end)` found by walking the records FORWARD from the start.
+///
+/// The windowed scan below finds a log's last record by searching backward for the final
+/// newline. That is exact for records that end in one and wrong for records that do not: a
+/// length-framed payload carries 0x0A bytes of its own, so the search lands in the middle of a
+/// payload and reports a boundary that was never a boundary. There is no backward equivalent --
+/// a length prefix can only be read from in front of the record it describes -- so the frames
+/// have to be walked in order.
+///
+/// The cost is the file rather than its last window, which is why the binary frame is opt-in.
+fn last_wal_sequence_forward(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    let (_, header_len) = read_wal_base(path)?;
+    let file = File::open(path)?;
+    let len = file.metadata()?.len();
+    if len <= header_len {
+        return Ok((0, len.min(header_len)));
+    }
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(header_len))?;
+    let mut last_sequence = 0u64;
+    let mut record_end = header_len;
+    while let Some(raw) = read_raw_record(&mut reader)? {
+        if raw.is_empty() {
+            break;
+        }
+        // A blank line carries nothing and is skipped, exactly as the windowed scan skips it.
+        if raw.iter().all(|byte| byte.is_ascii_whitespace()) {
+            record_end = record_end.saturating_add(raw.len() as u64);
+            continue;
+        }
+        // A record that will not decode here is a torn tail: everything before it stands, and
+        // the end of the good prefix is where it starts.
+        match decode_wal_line(&raw) {
+            Ok(record) => {
+                last_sequence = last_sequence.max(record.sequence);
+                record_end = record_end.saturating_add(raw.len() as u64);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok((last_sequence, record_end))
+}
+
 fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
+    }
+    if crate::log_framing::binary_frame_enabled() {
+        return last_wal_sequence_forward(path);
     }
     let (_, header_len) = read_wal_base(path)?;
     let file = OpenOptions::new().read(true).write(true).open(path)?;

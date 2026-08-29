@@ -100,16 +100,26 @@ fn control_api_reads_and_scans_wal_stream() {
     assert!(stream.status.ok);
     // Decode the records rather than matching on how a field is spelled: the endpoint returns
     // the log's records, and that is what should be asserted.
-    let sequences: Vec<u64> = stream
-        .data
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            crate::wal::decode_wal_line(line)
-                .expect("the stream should carry decodable records")
-                .sequence
-        })
-        .collect();
+    // Walk the frames the stream carries rather than splitting it on newlines: a record ends
+    // where its frame says it does, and a length-framed payload contains 0x0A of its own.
+    let mut sequences: Vec<u64> = Vec::new();
+    let mut at = 0usize;
+    while at < stream.data.len() {
+        if stream.data[at] == 0 {
+            break;
+        }
+        match crate::log_framing::next_frame(&stream.data[at..]) {
+            Ok(Some((consumed, _))) if consumed > 0 => {
+                sequences.push(
+                    crate::wal::decode_wal_line(&stream.data[at..at + consumed])
+                        .expect("the stream should carry decodable records")
+                        .sequence,
+                );
+                at += consumed;
+            }
+            _ => break,
+        }
+    }
     assert_eq!(
         sequences,
         vec![1, 2],
