@@ -1186,6 +1186,12 @@ pub(super) fn upsert_bucket_index_page(
     );
     if let Some(page_refs) = direct_page_refs {
         for page_ref in page_refs {
+            // A ref in the bucket we are about to write needs no maintenance here: the end of
+            // this function rebuilds it, and that rebuild REPLACES object_index wholesale from
+            // page_index. Doing it per ref costs two walks of the bucket -- the `any` scan and
+            // the layout rebuild -- and both are thrown away. A ref in a DIFFERENT bucket is not
+            // covered by that rebuild, so it keeps the full treatment.
+            let superseded_in_target_bucket = page_ref.routing_bucket == routing_bucket;
             let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&page_ref.routing_bucket) else {
                 continue;
             };
@@ -1193,6 +1199,9 @@ pub(super) fn upsert_bucket_index_page(
                 .page_index
                 .remove(&page_ref.page_ref_key)
                 .map(|page| page.object_id);
+            if superseded_in_target_bucket {
+                continue;
+            }
             if let Some(removed_object_id) = removed_object_id {
                 if !bucket
                     .page_index
