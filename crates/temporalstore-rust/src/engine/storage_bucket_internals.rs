@@ -777,6 +777,38 @@ fn note_bucket_page_visits(count: usize) {
     BUCKET_PAGE_INDEX_VISITS.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Per-site attribution for [`BUCKET_PAGE_INDEX_VISITS`], so a scaling result names the walk that
+/// caused it rather than leaving it to be inferred from arithmetic.
+pub mod bucket_visit_sites {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static LAYOUT: AtomicU64 = AtomicU64::new(0);
+    pub(super) static CLEAR_DIRTY: AtomicU64 = AtomicU64::new(0);
+    pub(super) static REFRESH_FLAGS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static REMOVE_ALL_BUCKETS: AtomicU64 = AtomicU64::new(0);
+
+    /// `(layout, clear_dirty, refresh_flags, remove_all_buckets)` visits since the last reset.
+    pub fn snapshot() -> (u64, u64, u64, u64) {
+        (
+            LAYOUT.load(Ordering::Relaxed),
+            CLEAR_DIRTY.load(Ordering::Relaxed),
+            REFRESH_FLAGS.load(Ordering::Relaxed),
+            REMOVE_ALL_BUCKETS.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn reset() {
+        for counter in [&LAYOUT, &CLEAR_DIRTY, &REFRESH_FLAGS, &REMOVE_ALL_BUCKETS] {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+fn note_site(site: &std::sync::atomic::AtomicU64, count: usize) {
+    site.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    note_bucket_page_visits(count);
+}
+
 pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let entries = if !shard.bucket_index.bucket_map.is_empty() {
         collect_bucket_index_live_page_entries(shard)
@@ -1229,6 +1261,7 @@ pub(super) fn upsert_bucket_index_page(
         }
     } else if !lookup_enabled {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
+            note_site(&bucket_visit_sites::REMOVE_ALL_BUCKETS, bucket.page_index.len());
             bucket.page_index.retain(|_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
@@ -1431,7 +1464,7 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 }
 
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
-    note_bucket_page_visits(bucket.page_index.len());
+    note_site(&bucket_visit_sites::LAYOUT, bucket.page_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
         .page_index
         .values()
@@ -1449,6 +1482,7 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
 pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     let now = now_ms();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
+        note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.page_index.len());
         bucket.meta_loaded = true;
         bucket.loading = false;
         bucket.in_memory = !bucket.page_index.is_empty();
@@ -1491,7 +1525,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     }
     shard.dirty_objects.remove(object_key);
     for bucket in shard.bucket_index.bucket_map.values_mut() {
-        note_bucket_page_visits(bucket.page_index.len());
+        note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
         let mut touched = false;
         for page in bucket.page_index.values_mut() {
             if page.object_key == object_key {
@@ -1500,7 +1534,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             }
         }
         if touched {
-            note_bucket_page_visits(bucket.page_index.len());
+            note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
             bucket.dirty = bucket
                 .page_index
                 .values()

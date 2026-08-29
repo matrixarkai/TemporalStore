@@ -3510,7 +3510,7 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
 /// machine, and it reports per-write cost so growth is visible rather than implied.
 #[test]
 fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
-    fn visits_per_write(object_count: usize) -> (u64, f64) {
+    fn visits_per_write(object_count: usize) -> (u64, f64, (u64, u64, u64, u64)) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -3531,6 +3531,7 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
         }
         const MEASURED_WRITES: usize = 20;
         crate::engine::reset_bucket_page_index_visits();
+        crate::engine::bucket_visit_sites::reset();
         for index in 0..MEASURED_WRITES {
             engine.execute(ExecuteRequest {
                 shard_id: 1,
@@ -3541,19 +3542,31 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
             });
         }
         let visited = crate::engine::bucket_page_index_visits();
-        (visited, visited as f64 / MEASURED_WRITES as f64)
+        let sites = crate::engine::bucket_visit_sites::snapshot();
+        (visited, visited as f64 / MEASURED_WRITES as f64, sites)
     }
 
-    let (small_total, small_each) = visits_per_write(200);
-    let (large_total, large_each) = visits_per_write(800);
+    let (small_total, small_each, small_sites) = visits_per_write(200);
+    let (large_total, large_each, large_sites) = visits_per_write(800);
 
+    let per = |value: u64| value as f64 / 20.0;
     println!(
         "
-  200 objects -> {small_total:>9} page-index visits for 20 writes ({small_each:>9.1} per write)
-           800 objects -> {large_total:>9} page-index visits for 20 writes ({large_each:>9.1} per write)
+  200 objects -> {small_total:>9} visits for 20 writes ({small_each:>9.1} per write)
+           800 objects -> {large_total:>9} visits for 20 writes ({large_each:>9.1} per write)
            growth: {:.2}x cost for 4x the corpus
+
+           per-write attribution      200 objects    800 objects
+             update_bucket_layout     {:>9.1}      {:>9.1}
+             clear_dirty (all bkts)   {:>9.1}      {:>9.1}
+             refresh_runtime_flags    {:>9.1}      {:>9.1}
+             remove (all bkts)        {:>9.1}      {:>9.1}
 ",
-        if small_each > 0.0 { large_each / small_each } else { 0.0 }
+        if small_each > 0.0 { large_each / small_each } else { 0.0 },
+        per(small_sites.0), per(large_sites.0),
+        per(small_sites.1), per(large_sites.1),
+        per(small_sites.2), per(large_sites.2),
+        per(small_sites.3), per(large_sites.3),
     );
 
     // 4x the corpus must not cost materially more PER WRITE. Allowed a little slack for
