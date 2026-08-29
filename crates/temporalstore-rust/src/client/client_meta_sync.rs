@@ -186,7 +186,7 @@ impl TemporalStoreClient {
             .collect::<Vec<_>>();
         self.inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
             .insert(table_key.clone(), options.clone());
 
@@ -441,7 +441,7 @@ impl TemporalStoreClient {
         let mut tables = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .keys()
             .cloned()
@@ -540,7 +540,7 @@ impl TemporalStoreClient {
         let removed = self
             .inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
             .remove(&table_combine_name(table.namespace(), table.table_name()))
             .is_some();
@@ -579,7 +579,7 @@ impl TemporalStoreClient {
         let table_cache_size = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .len();
         let backend_failure_count = self
@@ -627,7 +627,7 @@ impl TemporalStoreClient {
         let tables = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .clone();
         let routes = self
