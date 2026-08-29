@@ -366,7 +366,7 @@ impl CoreIndex {
     pub(super) fn insert_object_page_lookup(
         &mut self,
         routing_bucket: u32,
-        page_ref_key: String,
+        page_ref_key: Arc<str>,
         page: &PageIndex,
     ) {
         if page.deleted {

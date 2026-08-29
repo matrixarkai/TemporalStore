@@ -843,14 +843,14 @@ pub(super) fn rebuild_bucket_page_ownership(
             });
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
-            format!(
+            Arc::<str>::from(format!(
                 "{}:{}:{}:{}:{}",
                 entry.kind,
                 entry.object_key,
                 entry.component.clone().unwrap_or_default(),
                 entry.address.page_slab_id,
                 entry.address.offset
-            ),
+            )),
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -1088,7 +1088,8 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
     entries
 }
 
-pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> String {
+/// The page-index key, as the shared allocation the object lookups also hold.
+pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> Arc<str> {
     format!(
         "{}:{}:{}:{}:{}:{}:{}:{}",
         entry.kind,
@@ -1100,6 +1101,7 @@ pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> String {
         entry.address.page_id.unwrap_or_default(),
         entry.address.generation.unwrap_or_default()
     )
+    .into()
 }
 
 pub(super) fn page_physical_identity_key(
@@ -1251,7 +1253,7 @@ pub(super) fn upsert_bucket_index_page(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         bucket.page_index
-            .insert(page_ref_key.clone(), page_index.clone());
+            .insert(Arc::clone(&page_ref_key), page_index.clone());
         update_bucket_layout(bucket);
     }
     shard

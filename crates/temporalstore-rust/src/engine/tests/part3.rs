@@ -2287,7 +2287,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             in_memory: true,
             object_index: [30].into_iter().collect(),
             page_index: [(
-                "string:k::1:0".to_string(),
+                "string:k::1:0".into(),
                 PageIndex {
                     object_key: "k".to_string(),
                     model_id: "string".to_string(),
@@ -2325,7 +2325,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             object_index: [40].into_iter().collect(),
             page_index: [
                 (
-                    "feature:k::2:0".to_string(),
+                    "feature:k::2:0".into(),
                     PageIndex {
                         object_key: "feature-key".to_string(),
                         model_id: "feature".to_string(),
@@ -2348,7 +2348,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     },
                 ),
                 (
-                    "feature:k::2:4".to_string(),
+                    "feature:k::2:4".into(),
                     PageIndex {
                         object_key: "feature-key".to_string(),
                         model_id: "feature".to_string(),
@@ -2386,7 +2386,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             object_index: [50, 51].into_iter().collect(),
             page_index: [
                 (
-                    "hash:k:a:3:0".to_string(),
+                    "hash:k:a:3:0".into(),
                     PageIndex {
                         object_key: "hash-key".to_string(),
                         model_id: "hash".to_string(),
@@ -2409,7 +2409,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     },
                 ),
                 (
-                    "hash:k:b:3:1".to_string(),
+                    "hash:k:b:3:1".into(),
                     PageIndex {
                         object_key: "hash-key".to_string(),
                         model_id: "hash".to_string(),
