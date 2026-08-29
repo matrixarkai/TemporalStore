@@ -563,7 +563,7 @@ fn direct_client_refreshes_cached_route_after_failure() {
     client
         .inner
         .routes
-        .lock()
+        .write()
         .unwrap()
         .insert(1, CachedRoute::for_shard(1, "127.0.0.1:1", "test_insert"));
     let table = client.open_table("ns", "tbl", TableOptions::default());
@@ -756,7 +756,7 @@ fn client_backend_pool_skips_cached_route_after_continuous_failure_threshold() {
         io_timeout_ms: 200,
         ..ClientOptions::default()
     });
-    client.inner.routes.lock().unwrap().insert(
+    client.inner.routes.write().unwrap().insert(
         1,
         CachedRoute::for_shard(1, bad_server.clone(), "test_insert"),
     );

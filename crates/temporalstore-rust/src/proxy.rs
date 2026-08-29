@@ -1980,6 +1980,64 @@ fn proxy_addr_port(addr: &str) -> u16 {
 mod tests {
     use super::*;
 
+    /// What resolving an already-cached route costs, per request, under contention.
+    ///
+    /// Every routed request asks the client for the shard's address. The cache is a mutex
+    /// over a map, and the lookup takes it EXCLUSIVELY -- not because the common path
+    /// writes anything, but because one policy (round-robin replica reads) advances a
+    /// cursor on the cached entry, so the whole lookup is behind `get_mut`. Under the
+    /// default pin-primary policy nothing is mutated at all and the lock is pure
+    /// serialization.
+    ///
+    /// Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_cached_route_lookup() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+        assert!(
+            proxy.client().route_cache_size() > 0,
+            "the route cache must be warm or this measures the miss path"
+        );
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = std::sync::Arc::clone(&proxy);
+            let gate = std::sync::Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                gate.wait();
+                for _ in 0..per_thread {
+                    let addr = proxy.client().shard_primary_addr(1, false);
+                    std::hint::black_box(&addr);
+                }
+            }));
+        }
+        gate.wait();
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread panicked");
+        }
+        let elapsed = start.elapsed();
+        let ops = (threads * per_thread) as u128;
+        println!(
+            "BENCH cached_route_lookup threads={threads} ops={ops} ns_per_op={} ops_per_sec={}",
+            elapsed.as_nanos() / ops,
+            ops * 1_000_000_000 / elapsed.as_nanos().max(1)
+        );
+    }
+
     /// What looking up an already-cached table costs, per request, under contention.
     ///
     /// The proxy resolves a table on every table-scoped request. On the cache-HIT path --
