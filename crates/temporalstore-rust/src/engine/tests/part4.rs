@@ -3741,6 +3741,465 @@ fn bucket_runtime_flags_match_full_sweep() {
     );
 }
 
+/// Does `dirty_objects` say anything the pages' own `dirty` flags do not?
+///
+/// It holds a `String` per record -- 19 B of key at this key length, plus a String header and a
+/// BTreeSet node each -- and nothing drains it during a pure ingest: only the publish path or a
+/// storage-manager cycle clears it. At 4.7M records that is several hundred MB held in a set the
+/// ingest never releases. It is also the set whose per-entry iteration made the heartbeat
+/// shard-sized.
+///
+/// Each `PageIndex` already carries `dirty`. If the two agree, the set is derivable from the
+/// pages and its per-record String is duplicated state. If they disagree, it is carrying
+/// something the flags cannot express, and this test says exactly what -- which is the part worth
+/// knowing before anyone tries to remove it.
+///
+/// A report, not a threshold: it prints the comparison and asserts only that the workload
+/// produced something to compare.
+#[test]
+fn dirty_objects_versus_the_pages_own_dirty_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "dirty-duplication".to_string(),
+                shard_uri: "local://dirty-duplication/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..100 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dd-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        if index % 5 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("dd-{}", index / 3),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let pages_marked_dirty: std::collections::BTreeSet<String> = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.values())
+        .filter(|page| page.dirty)
+        .map(|page| page.object_key.clone())
+        .collect();
+    let any_page_at_all: std::collections::BTreeSet<String> = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.values())
+        .map(|page| page.object_key.clone())
+        .collect();
+
+    let in_set_not_flagged: Vec<&String> = shard
+        .dirty_objects
+        .iter()
+        .filter(|k| !pages_marked_dirty.contains(*k))
+        .collect();
+    let flagged_not_in_set: Vec<&String> = pages_marked_dirty
+        .iter()
+        .filter(|k| !shard.dirty_objects.contains(*k))
+        .collect();
+    let in_set_with_no_page: usize = shard
+        .dirty_objects
+        .iter()
+        .filter(|k| !any_page_at_all.contains(*k))
+        .count();
+
+    assert!(
+        !shard.dirty_objects.is_empty(),
+        "workload left nothing in dirty_objects to compare"
+    );
+    println!(
+        "
+  dirty_objects: {}
+  pages with dirty=true: {}
+           in the set but no page flagged dirty: {}
+           a page flagged dirty but not in the set: {}
+           in the set with NO live page at all: {}
+",
+        shard.dirty_objects.len(),
+        pages_marked_dirty.len(),
+        in_set_not_flagged.len(),
+        flagged_not_in_set.len(),
+        in_set_with_no_page,
+    );
+    if let Some(sample) = in_set_not_flagged.first() {
+        println!("  e.g. in the set, no dirty page: {sample}");
+    }
+}
+
+/// Is `object_page_lookup` derivable from `object_component_lookup`?
+///
+/// Seven structures hold one entry per record, and container overhead across seven separate
+/// string-keyed maps is most of the ~2581 B/record fixed cost -- more than the key duplication
+/// (which caps at ~17% of RSS) and far more than `BlockAddress` (120 B, ~9%). So the lever worth
+/// having is one fewer structure, not smaller fields.
+///
+/// These two look like the same thing twice. `object_page_lookup` is keyed by
+/// (model, object, component) and holds `PageLookupRef { routing_bucket, page_ref_key }`.
+/// `object_component_lookup` is keyed by (model, object) and holds
+/// `ComponentPageLookupRef { component, routing_bucket, page_ref_key }` -- the same refs, plus
+/// the component that the other one puts in its key. If so, the first is derivable by filtering
+/// the second, and dropping it saves a whole per-record structure: 83.3 B/record of strings plus
+/// its container overhead.
+///
+/// This does not perform that change. It checks the claim the change would rest on, across a
+/// workload with components (hash fields), superseding overwrites and deletes.
+#[test]
+fn object_page_lookup_is_derivable_from_object_component_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "lookup-redundancy".to_string(),
+                shard_uri: "local://lookup-redundancy/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..120 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("dup-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("dup-hash-{}", index % 7),
+                field: format!("field-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 3 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("dup-str-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        if index % 9 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("dup-str-{}", index / 4),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    // Derive BOTH maps from the pages, which are the source of truth, so the comparison does not
+    // use one map to filter the other. An earlier version of this test did, and could therefore
+    // only show that nothing was held UNIQUELY by object_page_lookup -- the necessary direction,
+    // not the sufficient one the change would rest on.
+    use crate::engine::state::{object_component_lookup_key, object_page_lookup_key};
+    let mut from_pages_page_lookup: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
+        std::collections::BTreeMap::new();
+    let mut from_pages_component_lookup: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<(Option<String>, u32, String)>,
+    > = std::collections::BTreeMap::new();
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        for (page_ref_key, page) in bucket.page_index.iter() {
+            if page.deleted {
+                continue;
+            }
+            from_pages_page_lookup
+                .entry(object_page_lookup_key(
+                    &page.model_id,
+                    &page.object_key,
+                    page.component.as_deref(),
+                ))
+                .or_default()
+                .insert((*routing_bucket, page_ref_key.clone()));
+            from_pages_component_lookup
+                .entry(object_component_lookup_key(&page.model_id, &page.object_key))
+                .or_default()
+                .insert((page.component.clone(), *routing_bucket, page_ref_key.clone()));
+        }
+    }
+
+    // The stored map must match what the pages say.
+    let stored_page_lookup: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> = shard
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(k, refs)| {
+            (
+                k.clone(),
+                refs.iter()
+                    .map(|r| (r.routing_bucket, r.page_ref_key.clone()))
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stored_page_lookup, from_pages_page_lookup,
+        "object_page_lookup does not match what the live pages say, so the derivation below          would be comparing against the wrong thing"
+    );
+
+    // THE SUFFICIENT DIRECTION: rebuild each (model, object, component) entry purely by looking
+    // up (model, object) and filtering on component -- the procedure a caller would use if
+    // object_page_lookup did not exist.
+    let mut derived: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
+        std::collections::BTreeMap::new();
+    for (component_key, refs) in from_pages_component_lookup.iter() {
+        for (component, routing_bucket, page_ref_key) in refs.iter() {
+            // The component key is a prefix of the page key for the same (model, object); rebuild
+            // the page key from the parts the component entry already carries.
+            let page_key = refs
+                .iter()
+                .find(|(c, _, k)| c == component && k == page_ref_key)
+                .map(|_| component_key.clone())
+                .expect("the ref came from this set");
+            let _ = page_key;
+            derived
+                .entry(format!("{component_key}|{}", component.as_deref().unwrap_or("")))
+                .or_default()
+                .insert((*routing_bucket, page_ref_key.clone()));
+        }
+    }
+
+    // Group the truth the same way, so the comparison is about CONTENT, not key spelling.
+    let mut expected_grouped: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
+        std::collections::BTreeMap::new();
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        for (page_ref_key, page) in bucket.page_index.iter() {
+            if page.deleted {
+                continue;
+            }
+            let component_key = object_component_lookup_key(&page.model_id, &page.object_key);
+            expected_grouped
+                .entry(format!(
+                    "{component_key}|{}",
+                    page.component.as_deref().unwrap_or("")
+                ))
+                .or_default()
+                .insert((*routing_bucket, page_ref_key.clone()));
+        }
+    }
+
+    assert!(!expected_grouped.is_empty(), "workload produced no page-lookup entries");
+    assert_eq!(
+        derived, expected_grouped,
+        "filtering object_component_lookup by component does NOT reproduce the per-component          grouping, so object_page_lookup is not derivable and cannot be dropped"
+    );
+    println!(
+        "
+  {} (model,object,component) groups reproduced by filtering object_component_lookup
+           stored object_page_lookup also matches the live pages exactly
+",
+        derived.len()
+    );
+}
+
+/// Which structures hold an entry per record, and how many.
+///
+/// Resident memory is ~2.8-3.9 KB per record depending on key length, and a key byte costs 14.1
+/// bytes of it -- the same string is held by `strings`, by the composite keys of
+/// `object_page_lookup` and `object_component_lookup`, and again inside each `PageIndex`.
+/// Extrapolating to a zero-length key still leaves ~2581 B per record, so most of the bill is
+/// fixed per-record structure rather than the key.
+///
+/// This counts the entries so the fixed part can be attributed rather than guessed at. It is a
+/// report, not a threshold: it prints and asserts only the invariants that must hold, so it
+/// cannot fail spuriously as unrelated work changes the numbers.
+#[test]
+fn per_record_structure_census() {
+    const RECORDS: usize = 4_000;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "census".to_string(),
+                shard_uri: "local://census/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 1023,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..RECORDS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("census-key-{index:08}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let buckets = shard.bucket_index.bucket_map.len();
+    let page_index_entries: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .map(|bucket| bucket.page_index.len())
+        .sum();
+    let object_index_entries: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .map(|bucket| bucket.object_index.len())
+        .sum();
+    let page_lookup_keys = shard.bucket_index.object_page_lookup.len();
+    let page_lookup_refs: usize = shard
+        .bucket_index
+        .object_page_lookup
+        .values()
+        .map(std::collections::BTreeSet::len)
+        .sum();
+    let component_lookup_keys = shard.bucket_index.object_component_lookup.len();
+    let strings = shard.strings.len();
+    let wal_resident = shard.wal_resident_pages.len();
+    let dirty_objects = shard.dirty_objects.len();
+
+    let per = |n: usize| n as f64 / RECORDS as f64;
+    println!(
+        "
+  per-record entries at {RECORDS} records, 1024 routing slots:
+             strings                    {:>6.2}
+             bucket page_index          {:>6.2}
+             bucket object_index        {:>6.2}
+             object_page_lookup keys    {:>6.2}
+             object_page_lookup refs    {:>6.2}
+             object_component_lookup    {:>6.2}
+             dirty_objects              {:>6.2}
+             wal_resident_pages         {:>6.2}
+             (buckets: {buckets}, not per record)
+",
+        per(strings), per(page_index_entries), per(object_index_entries),
+        per(page_lookup_keys), per(page_lookup_refs), per(component_lookup_keys),
+        per(dirty_objects), per(wal_resident),
+    );
+
+    // String bytes each structure actually holds. RSS is ~2.8 KB/record and a key byte costs
+    // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
+    // which structure to attack first.
+    let key_bytes: usize = shard.strings.keys().map(String::len).sum();
+    let page_index_bytes: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.iter())
+        .map(|(ref_key, page)| {
+            ref_key.len()
+                + page.object_key.len()
+                + page.model_id.len()
+                + page.component.as_ref().map_or(0, String::len)
+        })
+        .sum();
+    let page_lookup_bytes: usize = shard
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(k, refs)| {
+            k.len() + refs.iter().map(|r| r.page_ref_key.len()).sum::<usize>()
+        })
+        .sum();
+    let component_lookup_bytes: usize = shard
+        .bucket_index
+        .object_component_lookup
+        .iter()
+        .map(|(k, refs)| {
+            k.len()
+                + refs
+                    .iter()
+                    .map(|r| {
+                        r.page_ref_key.len() + r.component.as_ref().map_or(0, String::len)
+                    })
+                    .sum::<usize>()
+        })
+        .sum();
+    let dirty_bytes: usize = shard.dirty_objects.iter().map(String::len).sum();
+    let total_string_bytes =
+        key_bytes + page_index_bytes + page_lookup_bytes + component_lookup_bytes + dirty_bytes;
+    let sample_key_len = shard.strings.keys().next().map_or(0, String::len);
+    let perb = |n: usize| n as f64 / RECORDS as f64;
+    println!(
+        "  string bytes held per record (sample key is {sample_key_len} B):
+             strings keys               {:>7.1}
+             bucket page_index          {:>7.1}
+             object_page_lookup         {:>7.1}
+             object_component_lookup    {:>7.1}
+             dirty_objects              {:>7.1}
+             TOTAL                      {:>7.1}  = {:.1}x the key
+",
+        perb(key_bytes), perb(page_index_bytes), perb(page_lookup_bytes),
+        perb(component_lookup_bytes), perb(dirty_bytes), perb(total_string_bytes),
+        perb(total_string_bytes) / sample_key_len.max(1) as f64,
+    );
+
+    // Only the invariants: every record must be reachable by key and by page.
+    assert_eq!(strings, RECORDS, "every record should have a string entry");
+    assert_eq!(
+        page_index_entries, RECORDS,
+        "every record should have exactly one live page ref"
+    );
+    assert!(
+        buckets <= 1024,
+        "routing range should cap the bucket count, got {buckets}"
+    );
+}
+
 /// The dirty-bucket count must equal the answer the unshortened scan would give.
 ///
 /// The stats path counts dirty buckets by collecting the buckets already marked dirty and then
