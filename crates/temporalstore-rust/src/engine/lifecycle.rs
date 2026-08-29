@@ -29,6 +29,10 @@ fn timestamped_series_mut<'a>(
     })
 }
 
+#[cfg(test)]
+pub(crate) static LAST_REPLAY_WATERMARK: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_block_store(cache, LocalBlockStore::default())
@@ -254,6 +258,12 @@ impl TemporalEngine {
             };
             (loaded, replay_watermark)
         };
+        // What this load decided to SKIP. A recovery that loses a write loses it by choosing a
+        // watermark, and that choice is invisible from outside: the shard loads clean, no error
+        // is returned, and the value is simply absent afterwards. Recorded so a failing test can
+        // say which watermark it was rather than leaving it to be guessed at.
+        #[cfg(test)]
+        LAST_REPLAY_WATERMARK.store(replay_watermark, std::sync::atomic::Ordering::SeqCst);
         // MANIFEST-CONFORMANCE FOLD recovery (gate on only): seed the band catalog from the folded
         // band-catalog anchor recovered from the index-log. This is applied AFTER the block
         // store already reconciled its catalog from the durable pages on open, so it only
@@ -1292,6 +1302,25 @@ impl TemporalEngine {
         shard_id: ShardId,
         watermark: u64,
     ) -> Result<(), Status> {
+        // Replay both re-executes commands and installs recorded outcomes, and BOTH stage
+        // outcome items -- while replay itself never appends, so nothing ever takes them.
+        // What it leaves behind is picked up by the next write on this thread and written
+        // into that write's record as changes it made itself; a later replay then installs
+        // them, and a single one that cannot be applied aborts the whole shard load, taking
+        // unrelated keys down with it. Threads are reused across requests in a server and
+        // across tests here, so "the next write" is routinely someone else entirely.
+        //
+        // A guard rather than a drain at the end: every early return below leaks otherwise,
+        // and the interesting exits -- an unreadable scan, a refused outcome -- are early
+        // returns by construction.
+        struct DrainStagedOnExit;
+        impl Drop for DrainStagedOnExit {
+            fn drop(&mut self) {
+                let _ = super::block_in_wal::take_outcomes();
+            }
+        }
+        let _drain_staged = DrainStagedOnExit;
+
         // A corrupt / unreadable WAL scan is DATA LOSS, not "nothing to replay": swallowing it
         // to Ok(()) would load the shard from the stale base index only, silently discarding
         // the committed WAL tail and defeating the caller's refuse-load-on-DataLoss guard. An
@@ -1321,7 +1350,11 @@ impl TemporalEngine {
         // failure (a value-preserving bit-flip surfaces as `Corruption`) instead of dropping
         // the record via `.ok()`, which would silently truncate the replayed tail.
         let mut pending: Vec<WriteAheadLogRecord> = Vec::new();
-        for (_, line) in records {
+        // Where each record physically lives. The scan hands this back and replay used to drop
+        // it (`for (_, line)`), which is why the registration below could not be done at all.
+        let mut log_id_by_sequence: std::collections::HashMap<u64, u64> =
+            std::collections::HashMap::new();
+        for (log_id, line) in records {
             let record = crate::wal::decode_wal_line(&line).map_err(|err| {
                 Status::error(
                     "wal_record_corruption",
@@ -1331,6 +1364,7 @@ impl TemporalEngine {
                 )
             })?;
             if record.sequence > watermark {
+                log_id_by_sequence.insert(record.sequence, log_id);
                 pending.push(record);
             }
         }
@@ -1364,6 +1398,8 @@ impl TemporalEngine {
         let _guard = WalReplayGuard::enter();
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
+        let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
+            Vec::new();
         for record in pending {
             // Strict sequence continuity, matching the WAL replay, which
             // returns DataLoss and aborts Load on a hole in the retained WAL. A gap means
@@ -1386,6 +1422,36 @@ impl TemporalEngine {
                     .expect("config lock poisoned")
                     .insert(shard_id, config_log[config_cursor].config.clone());
                 config_cursor += 1;
+            }
+            // A page whose only durable copy is INSIDE this record is addressable only if
+            // something says where it lives. The write path registered exactly that when it
+            // appended; replay registered nothing, so recovery installed outcomes naming pages
+            // the successor could not resolve -- and a read for one of them answered None. Not
+            // an error, not an empty shard: a durably acknowledged write reported as absent,
+            // which is the quietest way a store can lose data. Registering here, where the log
+            // id is still in hand, makes a replayed record as addressable as a written one.
+            if super::block_in_wal::enabled() && !record.staged_pages.is_empty() {
+                if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
+                    super::block_in_wal::register_record(
+                        &self.page_store,
+                        shard_id,
+                        &record.staged_pages,
+                        log_id,
+                        record.sequence,
+                        &self.wal_store,
+                    );
+                    // The same fact written where it survives this process, so a later reload
+                    // rehydrates it instead of rediscovering that it cannot.
+                    wal_resident_updates.extend(record.staged_pages.iter().map(|page| {
+                        (
+                            page.object_id,
+                            crate::engine::state::WalResidentPage {
+                                log_id,
+                                sequence: record.sequence,
+                            },
+                        )
+                    }));
+                }
             }
             // A record that says what its write DID is installed, not re-executed. Re-executing
             // reproduces state only if everything that influenced the original execution is
@@ -1440,6 +1506,14 @@ impl TemporalEngine {
             }
             replayed_through = record.sequence;
             expected = expected.saturating_add(1);
+        }
+        if !wal_resident_updates.is_empty() {
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                for (object_id, placement) in wal_resident_updates {
+                    shard.wal_resident_pages.insert(object_id, placement);
+                }
+            }
         }
         // Restore the latest config for post-recovery client writes: any config entries stamped
         // at/after the last replayed sequence (future-effective changes) were intentionally not

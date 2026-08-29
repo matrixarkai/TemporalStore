@@ -1588,6 +1588,42 @@ fn expiry_sweep_emits_wal_tombstone_like_native() {
     );
 }
 
+
+/// Pins the two clocks these recovery tests depend on: the timestamp stamped onto each WAL
+/// record (which replay reads back as the leader clock) and the clock the engine computes
+/// deadlines with. Both are restored on drop, including on panic, so a pinned clock can
+/// never leak into another test on this thread.
+static PINNED_LEADER_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct PinnedLeaderClock(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+impl PinnedLeaderClock {
+    fn at(leader_now_ms: u64) -> Self {
+        // The record clock is process-wide, so two tests pinning it at once would stamp each
+        // other's records. Held for the few writes that need it, released on drop.
+        let guard = PINNED_LEADER_CLOCK_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::wal::set_test_record_clock_ms(Some(leader_now_ms));
+        crate::engine::set_replay_clock_ms(Some(leader_now_ms));
+        PinnedLeaderClock(guard)
+    }
+
+    fn real_now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_millis() as u64
+    }
+}
+
+impl Drop for PinnedLeaderClock {
+    fn drop(&mut self) {
+        crate::wal::set_test_record_clock_ms(None);
+        crate::engine::set_replay_clock_ms(None);
+    }
+}
+
 #[test]
 fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     // resolves a TTL to an ABSOLUTE deadline on the leader before logging it
@@ -1652,14 +1688,6 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
 
 #[test]
 fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() {
-    // A logged conditional write (SET XX) that fired on the leader because the key was
-    // live must fire identically on replay. The implicit lazy-expiry gate
-    // (remove_if_expired) runs first inside the handler; if it consults the real restart
-    // clock instead of the per-record leader timestamp, a key that was live at leader time
-    // (but whose ORIGINAL deadline has since passed) is dropped during replay, the SET XX
-    // takes the "not exists" branch, and a durably-committed write is silently lost --
-    // diverging the recovered node from the leader. Regression for that hole: replay must
-    // reproduce the leader's branch.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -1683,45 +1711,91 @@ fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() 
             })
             .ok
     );
-    // Record 1: create k with a SHORT deadline (~120ms from now).
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSetEx {
-            key: "k".to_string(),
-            value: b"v1".to_vec(),
-            ttl_ms: 120,
-        },
-    });
-    // Record 2: immediately (k still live on the leader) a SET XX that refreshes k=v2 with
-    // a FAR-future deadline. On the leader this fires because k exists.
-    let cond = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSetConditional {
-            key: "k".to_string(),
-            value: b"v2".to_vec(),
-            ttl_ms: Some(10 * 60 * 1000),
-            condition: StringSetCondition::IfExists,
-            return_old: false,
-        },
-    });
-    assert_eq!(
-        cond.response,
-        CommandResponse::Integer { value: 1 },
-        "SET XX must fire on the leader while k is live"
-    );
 
-    // Downtime longer than record 1's original 120ms deadline (but far under the refreshed
-    // 10-minute deadline the SET XX installed).
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // An hour of downtime, STATED rather than slept for. Sleeping for it was the defect in
+    // this test: the two writes below have to land while k is still live, so a real deadline
+    // made that a race against whatever else the machine was doing, and any stall longer than
+    // the TTL failed the test on a property it is not about.
+    let leader_now_ms = PinnedLeaderClock::real_now_ms() - 60 * 60 * 1000;
+    {
+        let _clock = PinnedLeaderClock::at(leader_now_ms);
+        // Record 1: create k with a one-minute deadline, an hour before restart.
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: "k".to_string(),
+                value: b"v1".to_vec(),
+                ttl_ms: 60 * 1000,
+            },
+        });
+        // Record 2: a SET XX refreshing k=v2 with a deadline that OUTLASTS the downtime. On
+        // the leader this fires because k is live at leader time, and it now fires
+        // unconditionally, because the deadline and the check read the same pinned clock.
+        let cond = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetConditional {
+                key: "k".to_string(),
+                value: b"v2".to_vec(),
+                ttl_ms: Some(2 * 60 * 60 * 1000),
+                condition: StringSetCondition::IfExists,
+                return_old: false,
+            },
+        });
+        assert_eq!(
+            cond.response,
+            CommandResponse::Integer { value: 1 },
+            "SET XX must fire on the leader while k is live"
+        );
+    }
+    // These writes are asynchronous: the commit does not block, so a returned write does not
+    // mean the record has reached the file. The engine has no Drop that flushes, so dropping
+    // it is not a barrier either -- the successor below can open the log before the last
+    // record lands in it, and a replay test whose log is missing its last record fails
+    // looking exactly like a recovery defect. Flush, then check there is something to replay.
+    let flushed = engine
+        .write_ahead_log_store()
+        .flush(1)
+        .expect("flush the log before the engine goes away");
+    let _ = flushed;
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 2,
+        "premise: the log must hold the writes this test is about to replay, got {}",
+        engine.write_ahead_log_store().stats(1).writes
+    );
     drop(engine);
 
+    // Restart on the REAL clock. Record 1's deadline lapsed 59 minutes ago; the deadline the
+    // SET XX installed is still an hour out. Replay installs record 1's outcome (an absolute
+    // leader-time deadline) and re-executes record 2, whose lazy-expiry check picks the
+    // branch: against the leader clock k is live and the write survives; against the restart
+    // clock k reads expired and a durably-committed write is silently lost.
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
         &page_dir,
         &index_dir,
     );
-    restarted.load_shard(1);
+    // Assert the LOAD, not just what is readable after it. `load_shard` throws its response
+    // away, so a shard that refused to recover looks identical to one that recovered empty --
+    // every assertion below then reports a missing value and blames replay for dropping it,
+    // which is the wrong end of the failure and is exactly how this was read for several
+    // rounds.
+    let loaded = restarted.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        loaded.status.ok,
+        "the shard refused the load: {:?}",
+        loaded.status
+    );
+
     let get = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -1769,34 +1843,61 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
             })
             .ok
     );
-    // Durable canary that survives iff replay runs to completion (not aborted mid-way).
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSet {
-            key: "canary".to_string(),
-            value: b"present".to_vec(),
-        },
-    });
-    // Create k with a short deadline, then re-arm it via EXPIRE (also short). Both logged.
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSetEx {
-            key: "k".to_string(),
-            value: b"v".to_vec(),
-            ttl_ms: 100,
-        },
-    });
-    let rearmed = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::CommonExpire {
-            key: "k".to_string(),
-            ttl_ms: 100,
-        },
-    });
-    assert!(rearmed.status.ok, "EXPIRE on a live key should succeed on the leader");
 
-    // Downtime longer than k's deadline: at replay time k's original deadline has lapsed.
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    // An hour of downtime, stated rather than slept for, as in the sibling test. What this
+    // test needs is that k's deadline has LAPSED by restart -- a premise that now holds by
+    // construction. It previously held only if the sleep outlasted the TTL, and widening the
+    // TTL to steady the race quietly inverted it: 250ms of downtime against a 1500ms
+    // deadline left the key live at restart, so the test passed without ever building the
+    // situation it exists to check.
+    let leader_now_ms = PinnedLeaderClock::real_now_ms() - 60 * 60 * 1000;
+    {
+        let _clock = PinnedLeaderClock::at(leader_now_ms);
+        // Durable canary that survives iff replay runs to completion (not aborted mid-way).
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "canary".to_string(),
+                value: b"present".to_vec(),
+            },
+        });
+        // Create k with a one-minute deadline, then re-arm it via EXPIRE. Both logged, both
+        // an hour before restart, so both deadlines are in the past by the time replay runs.
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+                ttl_ms: 60 * 1000,
+            },
+        });
+        let rearmed = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: "k".to_string(),
+                ttl_ms: 60 * 1000,
+            },
+        });
+        assert!(
+            rearmed.status.ok,
+            "EXPIRE on a live key should succeed on the leader"
+        );
+    }
+    // These writes are asynchronous: the commit does not block, so a returned write does not
+    // mean the record has reached the file. The engine has no Drop that flushes, so dropping
+    // it is not a barrier either -- the successor below can open the log before the last
+    // record lands in it, and a replay test whose log is missing its last record fails
+    // looking exactly like a recovery defect. Flush, then check there is something to replay.
+    let flushed = engine
+        .write_ahead_log_store()
+        .flush(1)
+        .expect("flush the log before the engine goes away");
+    let _ = flushed;
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 3,
+        "premise: the log must hold the writes this test is about to replay, got {}",
+        engine.write_ahead_log_store().stats(1).writes
+    );
     drop(engine);
 
     let restarted = TemporalEngine::with_local_dirs(
@@ -1805,7 +1906,44 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
         &page_dir,
         &index_dir,
     );
-    restarted.load_shard(1);
+    // Assert the LOAD, not just what is readable after it. `load_shard` throws its response
+    // away, so a shard that refused to recover looks identical to one that recovered empty --
+    // every assertion below then reports a missing value and blames replay for dropping it,
+    // which is the wrong end of the failure and is exactly how this was read for several
+    // rounds.
+    let loaded = restarted.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        loaded.status.ok,
+        "the shard refused the load: {:?}",
+        loaded.status
+    );
+
+    // THE PREMISE, ASSERTED. This test is only meaningful if k's deadline actually lapsed
+    // while the engine was down; if it did not, the situation it exists to check was never
+    // built and the canary below passes for free. That is not hypothetical -- widening this
+    // test's TTL to steady a race once left 250ms of downtime against a 1500ms deadline, and
+    // it kept passing while checking nothing. So: k must be GONE at restart.
+    let lapsed = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert_eq!(
+        lapsed.response,
+        CommandResponse::Bytes { value: None },
+        "premise: k's re-armed deadline must have lapsed during the downtime, or this test \
+         is not exercising a replayed EXPIRE whose deadline is in the past"
+    );
     let canary = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
