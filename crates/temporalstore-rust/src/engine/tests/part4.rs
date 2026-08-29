@@ -3741,7 +3741,135 @@ fn bucket_runtime_flags_match_full_sweep() {
     );
 }
 
-/// The flat per-write cost holds only while a batch touches a SMALL SHARE of the buckets.
+/// Every bucket's `object_index` must already equal a from-scratch recompute.
+///
+/// `update_bucket_layout` rebuilds that set by scanning all of a bucket's pages, with no
+/// short-circuit -- it is the remaining guaranteed full pass in bucket maintenance, and the whole
+/// of what still scales with the corpus once the TTL pass is skipped.
+///
+/// The rebuild looks redundant: the mutation sites already maintain the set, inserting an
+/// object id when a page is added and removing it when the last live page for it goes. If that
+/// invariant genuinely holds, refreshing a bucket never needs the scan and can classify from the
+/// two lengths it already has.
+///
+/// This is the evidence for that "if". It runs a workload that exercises inserts, overwrites that
+/// supersede a page, hash fields, expiries and deletes, then recomputes the live-object set from
+/// each bucket's pages and requires it to match what is stored. A mutation site that fails to
+/// maintain the set shows up here as a named mismatch -- which is what makes dropping the scan
+/// safe rather than hopeful.
+#[test]
+fn bucket_object_index_already_matches_a_from_scratch_recompute() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "object-index-invariant".to_string(),
+                shard_uri: "local://object-index-invariant/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..150 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("inv-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("inv-hash-{}", index % 11),
+                field: format!("f-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 3 == 0 {
+            // Supersede an existing page: this is the path that removes page refs.
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("inv-str-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        if index % 7 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonExpire {
+                    key: format!("inv-str-{index}"),
+                    ttl_ms: 60_000,
+                },
+            });
+        }
+        if index % 9 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("inv-str-{}", index / 4),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut checked = 0usize;
+    let mut mismatches = Vec::new();
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        let recomputed: std::collections::BTreeSet<u64> = bucket
+            .page_index
+            .values()
+            .filter(|page| !page.deleted)
+            .map(|page| page.object_id)
+            .collect();
+        // Mirrors update_bucket_layout: an empty live set over an empty page index leaves the
+        // stored set untouched, so only compare where the rebuild would actually assign.
+        if recomputed.is_empty() && bucket.page_index.is_empty() {
+            continue;
+        }
+        checked += 1;
+        let expected = if recomputed.is_empty() {
+            std::collections::BTreeSet::new()
+        } else {
+            recomputed
+        };
+        if bucket.object_index != expected {
+            mismatches.push(format!(
+                "  bucket {routing_bucket}: stored {:?} != recomputed {:?}",
+                bucket.object_index, expected
+            ));
+        }
+    }
+    assert!(checked > 0, "workload produced no buckets to check");
+    assert!(
+        mismatches.is_empty(),
+        "object_index is NOT maintained incrementally by {} of {checked} bucket(s), so the          layout rebuild is load-bearing and cannot be dropped:
+{}",
+        mismatches.len(),
+        mismatches.join("
+")
+    );
+    println!("
+  {checked} buckets: stored object_index matches a from-scratch recompute
+");
+}
+
+/// Per-write cost must be flat at a NARROW routing range too, not only a wide one.
 ///
 /// This is the limitation the sibling tests cannot see, because they run at the default routing
 /// range where every key lands in its own bucket: a write touches one bucket of many, the
@@ -3759,10 +3887,14 @@ fn bucket_runtime_flags_match_full_sweep() {
 /// count, dirty-page count and minimum TTL incrementally, so refreshing a bucket is O(1) and the
 /// range stops mattering.
 ///
-/// This test PINS the current behaviour so the limitation is visible and a future fix has
-/// something to flip, rather than living only in a commit message.
+/// Counted at 64 slots as each pass came off: 12.6 -> 39.0 (3.10x), then 8.4 -> 26.0 after
+/// skipping the TTL pass when nothing expires, then 4.2 -> 13.0 once the refresh classifies
+/// instead of rescanning, then flat once the upsert does too. Only the last changed the SHAPE,
+/// because rebuilding the live-object set is the one pass with no short-circuit: `deleted`
+/// stops at the first live page and `dirty` at the first dirty one, but that rebuild reads
+/// every page every time.
 #[test]
-fn bucket_maintenance_is_still_linear_at_a_narrow_routing_range() {
+fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
     fn visits_per_write(object_count: usize) -> f64 {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -3821,17 +3953,19 @@ fn bucket_maintenance_is_still_linear_at_a_narrow_routing_range() {
         "
   64 routing slots:
     200 objects -> {small:>8.1} page-index visits per write
-             800 objects -> {large:>8.1} page-index visits per write
-             growth: {:.2}x for 4x the corpus (flat would be 1.00)
-",
-        if small > 0.0 { large / small } else { 0.0 }
+    800 objects -> {large:>8.1} page-index visits per write
+"
     );
 
-    // Documents the gap rather than asserting it away: at a narrow range the cost still tracks
-    // the corpus. When per-bucket aggregates land this fails, and that is the point.
+    // An absolute bound, not a ratio: the work is meant to be independent of the corpus, and a
+    // ratio is undefined once it reaches zero. 4x the objects must not buy more than a constant.
     assert!(
-        large > small * 2.0,
-        "expected per-write cost to still grow with the corpus at 64 routing slots          ({small:.1} -> {large:.1}); if this now holds flat, the aggregate work landed and this          test should become an equality check"
+        large <= 2.0,
+        "per-write bucket maintenance should not scan pages at a narrow routing range, got {large:.1} visits/write at 800 objects (200 objects: {small:.1})"
+    );
+    assert!(
+        large <= small + 2.0,
+        "per-write bucket maintenance grew with the corpus at 64 routing slots: {small:.1} -> {large:.1} visits/write for 200 -> 800 objects"
     );
 }
 
