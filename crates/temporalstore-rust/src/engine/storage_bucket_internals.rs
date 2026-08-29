@@ -1547,6 +1547,24 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     if shard.buckets_pending_flag_refresh.is_empty() {
         return;
     }
+    // Refreshing bucket-by-bucket costs a map lookup each, where the full sweep is one ordered
+    // pass. That only pays while the touched set is a small share of the shard's buckets.
+    //
+    // It is not always small. With a wide routing range every key lands in its own bucket, so a
+    // batch touches a few hundred of millions and the targeted path wins outright. With a narrow
+    // range -- `TS_SHARD_END_ROUTING_SLOT=1023`, the setting that cuts resident memory 45% and is
+    // the one to run in production -- there are only 1024 buckets and a 500-command batch hashes
+    // across essentially all of them. The targeted path then visits exactly the same pages as the
+    // sweep and adds a lookup per bucket on top: measured 1.6-2.2x SLOWER over 200k and 400k
+    // records, in four runs out of four.
+    //
+    // So choose. Measured at default slots the targeted path is 1.3-2.7x faster; at 1023 slots
+    // this guard hands the work back to the sweep, which is where it belongs.
+    let bucket_count = shard.bucket_index.bucket_map.len();
+    if shard.buckets_pending_flag_refresh.len().saturating_mul(2) >= bucket_count {
+        refresh_bucket_runtime_flags(shard);
+        return;
+    }
     let now = now_ms();
     let pending = std::mem::take(&mut shard.buckets_pending_flag_refresh);
     for routing_bucket in pending {
