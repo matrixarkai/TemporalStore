@@ -1258,10 +1258,18 @@ pub(super) fn upsert_bucket_index_page(
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
         bucket.in_memory = true;
-        bucket.object_index.insert(object_id);
+        if !page_index.deleted {
+            bucket.object_index.insert(object_id);
+        }
         bucket.page_index
             .insert(page_ref_key.clone(), page_index.clone());
-        update_bucket_layout(bucket);
+        // Not a full `update_bucket_layout` here on purpose. That walks every page in the bucket
+        // and allocates a fresh BTreeSet of live object ids, and on this path the set is already
+        // right: a superseded ref belongs to the SAME object as the page being written (the
+        // lookup that produced it is keyed by the same identity), and the id being written was
+        // just inserted. Only the two counts change, and those are all the classifier takes.
+        bucket.layout =
+            classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
     }
     shard
         .bucket_index
