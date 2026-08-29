@@ -334,10 +334,14 @@ pub(super) enum BucketLayoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PageIndex {
-    pub(super) object_key: String,
-    pub(super) model_id: String,
+    /// Interned: one allocation per distinct value, not one per page. All three of these are
+    /// also encoded in the map key this entry is filed under, and they repeat heavily -- 10
+    /// distinct `model_id` and 556 distinct `object_key` across 28,093 entries on a
+    /// 500-memory store.
+    pub(super) object_key: Arc<str>,
+    pub(super) model_id: Arc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<String>,
+    pub(super) component: Option<Arc<str>>,
     pub(super) object_id: u64,
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
@@ -458,6 +462,29 @@ pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> S
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
     key
+}
+
+/// One allocation per distinct identity string, shared by every page entry that uses it.
+///
+/// `PageIndex` used to own a `String` per field per page. The values repeat heavily -- the model
+/// id is one of about ten literals, and an object key is shared by every page of that object --
+/// so the table stays small while the number of pages does not.
+pub(super) fn intern_identity(value: &str) -> Arc<str> {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static TABLE: OnceLock<Mutex<HashSet<Arc<str>>>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut table) = table.lock() else {
+        // A poisoned table is not a reason to fail a write; fall back to a private allocation,
+        // which is exactly the old behaviour.
+        return Arc::from(value);
+    };
+    if let Some(existing) = table.get(value) {
+        return Arc::clone(existing);
+    }
+    let interned: Arc<str> = Arc::from(value);
+    table.insert(Arc::clone(&interned));
+    interned
 }
 
 pub(super) fn object_page_lookup_key(
