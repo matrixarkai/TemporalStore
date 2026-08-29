@@ -469,7 +469,24 @@ impl CoreIndex {
             .remove(&object_page_lookup_key(model_id, object_key, component));
         let component_lookup_key = object_component_lookup_key(model_id, object_key);
         if let Some(component_refs) = self.object_component_lookup.get_mut(&component_lookup_key) {
-            component_refs.retain(|page_ref| page_ref.component.as_deref() != component);
+            // `ComponentPageLookupRef` orders on `component` first, so every ref for one component
+            // is a contiguous range and can be found by seeking to it. Walking the whole set
+            // instead cost time proportional to how many components the object has -- and for a
+            // shard hash the components ARE its fields, so writing one field walked every field
+            // already in that hash.
+            let first = ComponentPageLookupRef {
+                component: component.map(str::to_string),
+                routing_bucket: 0,
+                page_ref_key: String::new(),
+            };
+            let doomed: Vec<ComponentPageLookupRef> = component_refs
+                .range(first..)
+                .take_while(|page_ref| page_ref.component.as_deref() == component)
+                .cloned()
+                .collect();
+            for page_ref in doomed {
+                component_refs.remove(&page_ref);
+            }
             if component_refs.is_empty() {
                 self.object_component_lookup.remove(&component_lookup_key);
             }
@@ -609,4 +626,113 @@ pub(super) enum PackedFeaturePageDecode {
 pub(super) struct SeenSet {
     pub(super) by_member: BTreeMap<Vec<u8>, u64>,
     pub(super) by_time: BTreeMap<(u64, Vec<u8>), ()>,
+}
+
+
+#[cfg(test)]
+mod component_lookup_tests {
+    use super::*;
+
+    fn core_with(object: &str, components: &[Option<&str>]) -> CoreIndex {
+        let mut index = CoreIndex::default();
+        let set = index
+            .object_component_lookup
+            .entry(object_component_lookup_key("hash", object))
+            .or_default();
+        for (i, component) in components.iter().enumerate() {
+            set.insert(ComponentPageLookupRef {
+                component: component.map(str::to_string),
+                routing_bucket: i as u32,
+                page_ref_key: format!("p{i}"),
+            });
+        }
+        index
+    }
+
+    fn components_left(index: &CoreIndex, object: &str) -> Vec<Option<String>> {
+        index
+            .object_component_lookup
+            .get(&object_component_lookup_key("hash", object))
+            .map(|refs| refs.iter().map(|r| r.component.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn removing_one_component_leaves_the_others() {
+        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("b"));
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("a".to_string()), Some("c".to_string())]
+        );
+    }
+
+    #[test]
+    fn removing_the_first_and_last_components_works() {
+        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("a"));
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("b".to_string()), Some("c".to_string())]
+        );
+        index.remove_object_page_lookup_entry("hash", "k", Some("c"));
+        assert_eq!(components_left(&index, "k"), vec![Some("b".to_string())]);
+    }
+
+    #[test]
+    fn a_none_component_is_removable_and_does_not_take_the_others() {
+        // `None` sorts before every `Some`, so it is the range's first element -- the case most
+        // likely to run off the front of the set.
+        let mut index = core_with("k", &[None, Some("a"), Some("b")]);
+        index.remove_object_page_lookup_entry("hash", "k", None);
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+    }
+
+    #[test]
+    fn every_ref_sharing_a_component_goes() {
+        // One component can hold several refs (different buckets/pages); all of them must go, the
+        // way the walk that this replaces would have dropped them.
+        let mut index = CoreIndex::default();
+        let set = index
+            .object_component_lookup
+            .entry(object_component_lookup_key("hash", "k"))
+            .or_default();
+        for i in 0..3u32 {
+            set.insert(ComponentPageLookupRef {
+                component: Some("dup".to_string()),
+                routing_bucket: i,
+                page_ref_key: format!("p{i}"),
+            });
+        }
+        set.insert(ComponentPageLookupRef {
+            component: Some("keep".to_string()),
+            routing_bucket: 9,
+            page_ref_key: "p9".to_string(),
+        });
+        index.remove_object_page_lookup_entry("hash", "k", Some("dup"));
+        assert_eq!(components_left(&index, "k"), vec![Some("keep".to_string())]);
+    }
+
+    #[test]
+    fn removing_an_absent_component_changes_nothing() {
+        let mut index = core_with("k", &[Some("a"), Some("b")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("zzz"));
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+    }
+
+    #[test]
+    fn emptying_the_set_drops_the_key_entirely() {
+        let mut index = core_with("k", &[Some("only")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("only"));
+        assert!(index
+            .object_component_lookup
+            .get(&object_component_lookup_key("hash", "k"))
+            .is_none());
+    }
 }
