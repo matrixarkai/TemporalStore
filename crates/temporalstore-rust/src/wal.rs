@@ -3379,18 +3379,34 @@ mod tests {
         // 3 & 4 intact after it. A newline-terminated line that fails to parse is committed
         // corruption, not a torn tail.
         let path = write_ahead_log_path(dir.path(), 1);
-        let contents = std::fs::read_to_string(&path).unwrap();
-        // Preallocated room trails the records; the record lines are the non-zero ones.
-        let lines: Vec<&str> = contents
-            .lines()
-            .filter(|line| !line.bytes().all(|byte| byte == 0))
-            .collect();
-        assert_eq!(lines.len(), 4);
-        let corrupted = format!(
-            "{}\ncorrupt-not-json\n{}\n{}\n",
-            lines[0], lines[2], lines[3]
-        );
-        std::fs::write(&path, corrupted).unwrap();
+        // Read bytes and walk frames: a record is not a line once the frame declares its own
+        // length, and `read_to_string` fails outright on a payload that is not valid UTF-8.
+        let contents = std::fs::read(&path).unwrap();
+        let mut spans: Vec<(usize, usize)> = Vec::new();
+        let mut at = data_start(&contents);
+        while at < contents.len() {
+            // Preallocated room trails the records and is not one of them.
+            if contents[at] == 0 {
+                break;
+            }
+            match crate::log_framing::next_frame(&contents[at..]) {
+                Ok(Some((consumed, _))) if consumed > 0 => {
+                    spans.push((at, at + consumed));
+                    at += consumed;
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(spans.len(), 4);
+        // The damage this injects is a COMPLETE record that will not parse -- framed correctly,
+        // checksum intact, contents not a record. That is committed corruption, distinct from a
+        // torn tail, and the whole point of the test is that the two are handled differently.
+        let mut corrupted = Vec::new();
+        corrupted.extend_from_slice(&contents[..spans[0].1]);
+        corrupted.extend_from_slice(&crate::log_framing::encode_record(b"corrupt-not-json"));
+        corrupted.extend_from_slice(&contents[spans[2].0..spans[2].1]);
+        corrupted.extend_from_slice(&contents[spans[3].0..spans[3].1]);
+        std::fs::write(&path, &corrupted).unwrap();
         // scan drives last_wal_sequence_at, which must surface the interior corruption as an
         // error rather than silently truncating away records 3 & 4 (which would defeat the
         // strict replay-continuity DataLoss guard).
@@ -3733,16 +3749,32 @@ mod tests {
         bytes
     }
 
-    /// Decode the shard's WAL the way GC does, so a test can assert on what survived.
+    /// Decode the shard's WAL the way GC does, by frames, so a test can assert on what
+    /// survived. Splitting on newlines answers correctly only while every record ends with one:
+    /// a record that declares its own length carries 0x0A inside its payload, and the split
+    /// then reports fragments that were never records. Asking each frame how far it runs works
+    /// for a file holding either kind, which is what an upgrade or a reclaim rewrite leaves.
     fn sequences_on_disk(root: &std::path::Path, shard: ShardId) -> Vec<u64> {
         let bytes = std::fs::read(write_ahead_log_path(root, shard)).unwrap();
-        bytes[data_start(&bytes)..]
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            // A trailing zeros run is preallocated room, not a record.
-            .filter(|line| !line.iter().all(|byte| *byte == 0))
-            .map(|line| decode_wal_line(line).unwrap().sequence)
-            .collect()
+        let mut sequences = Vec::new();
+        let mut at = data_start(&bytes);
+        while at < bytes.len() {
+            // A zero where a record should start is preallocated room, not a record.
+            if bytes[at] == 0 {
+                break;
+            }
+            match crate::log_framing::next_frame(&bytes[at..]) {
+                Ok(Some((consumed, _))) if consumed > 0 => {
+                    let raw = &bytes[at..at + consumed];
+                    if !raw.iter().all(|byte| byte.is_ascii_whitespace()) {
+                        sequences.push(decode_wal_line(raw).unwrap().sequence);
+                    }
+                    at += consumed;
+                }
+                _ => break,
+            }
+        }
+        sequences
     }
 
     /// Byte offset at which each record starts, in order, past any base header.
