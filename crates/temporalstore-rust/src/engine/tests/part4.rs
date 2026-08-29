@@ -3499,6 +3499,106 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     }
 }
 
+/// The same, for the batch path -- which is the one bulk ingest actually runs.
+///
+/// `batch_execute` swept every bucket once per batch rather than once per write. That is a much
+/// smaller constant than the per-write sweep, but the same `O(total pages)` shape, so a bulk
+/// import still paid for the whole corpus on every batch. Measured per BATCH, and the flags are
+/// compared against a full sweep for the same reason as the single-write case: a bucket left
+/// stale-false in `dirty` never gets flushed.
+#[test]
+fn batch_bucket_maintenance_does_not_grow_with_the_store() {
+    const BATCH: usize = 32;
+    const MEASURED_BATCHES: usize = 5;
+
+    fn visits_per_batch(object_count: usize) -> (f64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..object_count {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("batch-fill-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        crate::engine::reset_bucket_page_index_visits();
+        for batch in 0..MEASURED_BATCHES {
+            let commands = (0..BATCH)
+                .map(|item| Command::StringSet {
+                    key: format!("batch-measured-{batch}-{item}"),
+                    value: vec![b'v'; 64],
+                })
+                .collect();
+            engine.batch_execute(BatchExecuteRequest {
+                shard_id: 1,
+                commands,
+            });
+        }
+        let visited = crate::engine::bucket_page_index_visits();
+
+        // Same equivalence requirement as the single-write path: sweeping afterwards must not
+        // move anything the targeted refresh already settled.
+        let snapshot = |engine: &TemporalEngine| {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(id, bucket)| {
+                    (
+                        *id,
+                        (
+                            bucket.in_memory,
+                            bucket.deleted,
+                            bucket.dirty,
+                            format!("{:?}", bucket.layout),
+                            bucket.object_index.iter().copied().collect::<Vec<_>>(),
+                        ),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let before_sweep = snapshot(&engine);
+        {
+            let mut shards = engine.shards.write().expect("shards lock poisoned");
+            let shard = shards.get_mut(&1).expect("shard 1 loaded");
+            crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+        }
+        let after_sweep = snapshot(&engine);
+        assert_eq!(
+            before_sweep, after_sweep,
+            "batch targeted refresh disagreed with a full sweep at {object_count} objects"
+        );
+
+        (visited as f64 / MEASURED_BATCHES as f64, before_sweep.len())
+    }
+
+    let (small, small_buckets) = visits_per_batch(200);
+    let (large, large_buckets) = visits_per_batch(800);
+    println!(
+        "
+  200 objects -> {small:>9.1} page-index visits per {BATCH}-command batch ({small_buckets} buckets)
+           800 objects -> {large:>9.1} page-index visits per {BATCH}-command batch ({large_buckets} buckets)
+           growth: {:.2}x cost for 4x the corpus
+",
+        if small > 0.0 { large / small } else { 0.0 }
+    );
+
+    assert!(
+        large <= small * 1.5 + 1.0,
+        "per-batch bucket maintenance grew with the store: {small:.1} -> {large:.1}          visits/batch for 200 -> 800 objects"
+    );
+}
+
 /// The per-write targeted refresh must leave the same flags as sweeping the whole shard.
 ///
 /// The write path refreshes only the buckets it recorded as touched. That is only correct if a
