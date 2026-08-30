@@ -926,6 +926,16 @@ struct ProxyInner {
     /// so cloning it per request meant six allocations to look at a handful of scalars.
     /// Writers swap in a whole new `Arc`, so a reader never observes a half-updated config.
     options: RwLock<Arc<ProxyOptions>>,
+    /// Bumped whenever `options` is replaced, so the request path can tell whether the
+    /// snapshot it already holds is current with a LOAD instead of a lock. A line nobody
+    /// writes stays shared in every core's cache; the read-modify-writes a lock and a
+    /// refcount perform each take it exclusive.
+    options_version: std::sync::atomic::AtomicU64,
+    /// Distinguishes this proxy from any other in the process. The snapshot cache is
+    /// thread-local and therefore shared by every proxy a thread touches, and without this
+    /// two proxies that happen to be on the same version would read each other's config.
+    /// Tests build many proxies on one thread.
+    instance_id: u64,
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
     stats: RwLock<ProxyStats>,
@@ -985,6 +995,13 @@ struct ProxyInner {
     cluster_shards_contiguous: std::sync::atomic::AtomicBool,
 }
 
+/// A process-unique number for each proxy, so a thread-local options snapshot can tell whose
+/// config it is holding.
+fn next_proxy_instance_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl ProxyService {
     pub fn new(options: ProxyOptions) -> Self {
         // Read before the options move into the Arc below.
@@ -993,6 +1010,8 @@ impl ProxyService {
             inner: Arc::new(ProxyInner {
                 client: RwLock::new(proxy_client_from_options(&options)),
                 options: RwLock::new(Arc::new(options)),
+                options_version: std::sync::atomic::AtomicU64::new(1),
+                instance_id: next_proxy_instance_id(),
                 last_client_stats: RwLock::default(),
                 stats: RwLock::default(),
                 service_discovery: RwLock::default(),
@@ -1274,6 +1293,12 @@ impl ProxyService {
             .options
             .write()
             .expect("proxy options lock poisoned") = Arc::new(options);
+        // After the new document is installed, so a reader that sees this version is
+        // guaranteed to see the options it names. Release pairs with the Acquire load in
+        // `with_options`.
+        self.inner
+            .options_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         report.applied = true;
         report.reason = "config_changed".to_string();
         report
@@ -1380,6 +1405,55 @@ impl ProxyService {
 
     /// The live options. Cheap: clones an `Arc`, not the six strings inside it. Callers that
     /// need to MUTATE take an owned copy explicitly via `options_owned`.
+    /// Run `f` against the live options without taking a lock or touching a refcount.
+    ///
+    /// `options()` costs an `RwLock` read AND an `Arc` clone, and both are atomic
+    /// read-modify-writes on cache lines every thread shares. Measured on eight threads:
+    /// 83 ns for that pair, against 15 ns for the whole of admission on ONE thread -- which
+    /// is why two threads admitted less in total than one did.
+    ///
+    /// The asymmetry this exploits: the config document changes when an operator pushes one
+    /// and is read on every single request. So the read side is version-gated. A relaxed
+    /// load (0.6 ns, because a line nobody writes stays shared in every cache) says whether
+    /// the snapshot this thread already holds is current, and only a version change pays for
+    /// the lock and the clone.
+    fn with_options<R>(&self, f: impl FnOnce(&ProxyOptions) -> R) -> R {
+        use std::sync::atomic::Ordering;
+        thread_local! {
+            static SNAPSHOT: std::cell::RefCell<Option<(u64, u64, Arc<ProxyOptions>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let instance = self.inner.instance_id;
+        let version = self.inner.options_version.load(Ordering::Acquire);
+        SNAPSHOT.with(|cell| {
+            // A nested call cannot refresh the slot it is already borrowing. That does not
+            // happen today, and if it ever does this is simply the old path rather than a
+            // panic. `f` is consumed once on whichever branch runs.
+            let Ok(mut slot) = cell.try_borrow_mut() else {
+                let options = Arc::clone(
+                    &self
+                        .inner
+                        .options
+                        .read()
+                        .expect("proxy options lock poisoned"),
+                );
+                return f(&options);
+            };
+            if !matches!(&*slot, Some((id, seen, _)) if *id == instance && *seen == version) {
+                let fresh = Arc::clone(
+                    &self
+                        .inner
+                        .options
+                        .read()
+                        .expect("proxy options lock poisoned"),
+                );
+                *slot = Some((instance, version, fresh));
+            }
+            let (_, _, options) = slot.as_ref().expect("just filled");
+            f(options)
+        })
+    }
+
     fn options(&self) -> Arc<ProxyOptions> {
         Arc::clone(
             &self
@@ -1423,14 +1497,27 @@ impl ProxyService {
         namespace: Option<&str>,
         commands: &[Command],
     ) -> Result<ProxyInflightGuard<'_>, Status> {
-        let options = self.options();
-        if let Some(namespace) = namespace {
-            if let Some(status) = proxy_account_rejection(&options, namespace) {
-                return Err(self.reject(status, ProxyRejectionKind::Account));
-            }
-        }
-        if let Some(status) = proxy_policy_rejection(&options, commands) {
-            return Err(self.reject(status, ProxyRejectionKind::Policy));
+        // One snapshot read, and only the two decisions that need the whole document happen
+        // inside it. Running the REST of admission inside the closure as well measured
+        // slower on a single thread -- the borrow spans the in-flight acquire and the guard
+        // it returns, which is more than the read needs to cover.
+        let (rejection, max_inflight_requests, max_inflight_write_requests) =
+            self.with_options(|options| {
+                let rejection = namespace
+                    .and_then(|namespace| proxy_account_rejection(options, namespace))
+                    .map(|status| (status, ProxyRejectionKind::Account))
+                    .or_else(|| {
+                        proxy_policy_rejection(options, commands)
+                            .map(|status| (status, ProxyRejectionKind::Policy))
+                    });
+                (
+                    rejection,
+                    options.max_inflight_requests,
+                    options.max_inflight_write_requests,
+                )
+            });
+        if let Some((status, kind)) = rejection {
+            return Err(self.reject(status, kind));
         }
         // Yes, this walks the batch a second time -- `proxy_policy_rejection` above asks the
         // same question for the write-disable decision. Computing it once here and passing it
@@ -1446,8 +1533,8 @@ impl ProxyService {
             .inflight
             .try_acquire(
                 is_write,
-                options.max_inflight_requests,
-                options.max_inflight_write_requests,
+                max_inflight_requests,
+                max_inflight_write_requests,
             )
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
@@ -2021,6 +2108,223 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_push_reaches_a_thread_that_already_cached_the_options() {
+        // The request path reads the options from a thread-local snapshot and only refreshes
+        // it when a version counter moves. If the counter is not bumped wherever the running
+        // options are replaced, a thread that has already served one request keeps its old
+        // copy for the life of the process: an operator would drain the proxy, watch the
+        // config report agree, and see traffic keep flowing on that thread.
+        let proxy = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            ..ProxyOptions::default()
+        });
+
+        // Populate this thread's snapshot.
+        let before = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_ne!(
+            before.status.code, "proxy_not_serving",
+            "premise: this proxy serves before the push"
+        );
+
+        let mut drained = ProxyOptions::default();
+        drained.serving_mode = ProxyServingMode::NotServing;
+        proxy.update_options(drained);
+
+        // Same thread, so it still holds the snapshot taken above.
+        let after = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_eq!(
+            after.status.code, "proxy_not_serving",
+            "the push must reach a thread that had already cached the options"
+        );
+
+        // And back again, so the gate is not a one-way latch.
+        let mut serving = ProxyOptions::default();
+        serving.serving_mode = ProxyServingMode::Serving;
+        proxy.update_options(serving);
+        let restored = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_ne!(
+            restored.status.code, "proxy_not_serving",
+            "lifting the drain must reach that thread too"
+        );
+    }
+
+    #[test]
+    fn one_proxy_snapshot_is_never_served_to_another() {
+        // The snapshot cache is thread-local, so every proxy this thread touches shares it.
+        // Keyed only by version, two proxies on the same version -- which is every pair of
+        // freshly built ones -- would read each other's configuration.
+        let serving = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            ..ProxyOptions::default()
+        });
+        let stopped = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+
+        for _ in 0..3 {
+            assert_ne!(
+                serving
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: read_command(),
+                    })
+                    .status
+                    .code,
+                "proxy_not_serving",
+                "the serving proxy must not pick up the stopped one's config"
+            );
+            assert_eq!(
+                stopped
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: read_command(),
+                    })
+                    .status
+                    .code,
+                "proxy_not_serving",
+                "the stopped proxy must not pick up the serving one's config"
+            );
+        }
+    }
+
+    /// What admission actually spends under contention, primitive by primitive.
+    ///
+    /// Admission costs ~15 ns on one thread and ~100 ns on several, so most of it is the cost
+    /// of sharing rather than the cost of working. This attributes that to the primitives the
+    /// path uses, measured the same way, so a fix aims at the one that dominates instead of
+    /// the one that looks expensive.
+    #[test]
+    #[ignore]
+    fn bench_proxy_admission_primitives() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Barrier, RwLock};
+
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let iters: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200_000);
+
+        fn run<F>(label: &str, threads: usize, iters: usize, body: F)
+        where
+            F: Fn() + Send + Sync + 'static,
+        {
+            let body = Arc::new(body);
+            let gate = Arc::new(Barrier::new(threads + 1));
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let body = body.clone();
+                let gate = gate.clone();
+                handles.push(std::thread::spawn(move || {
+                    gate.wait();
+                    for _ in 0..iters {
+                        body();
+                    }
+                }));
+            }
+            gate.wait();
+            let started = std::time::Instant::now();
+            for handle in handles {
+                handle.join().expect("bench thread");
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "  {label:<44} {:>7.1} ns/op",
+                elapsed.as_nanos() as f64 / (threads * iters) as f64
+            );
+        }
+
+        println!("primitives at {threads} threads:");
+
+        let lock: Arc<RwLock<Arc<ProxyOptions>>> =
+            Arc::new(RwLock::new(Arc::new(ProxyOptions::default())));
+        let l = lock.clone();
+        run("RwLock read + Arc::clone + drop", threads, iters, move || {
+            let snapshot = Arc::clone(&l.read().expect("lock"));
+            std::hint::black_box(&snapshot);
+        });
+
+        let l = lock.clone();
+        run("RwLock read only (no Arc clone)", threads, iters, move || {
+            let guard = l.read().expect("lock");
+            std::hint::black_box(&*guard);
+        });
+
+        let shared: Arc<ProxyOptions> = Arc::new(ProxyOptions::default());
+        let a = shared.clone();
+        run("Arc::clone + drop only", threads, iters, move || {
+            let cloned = Arc::clone(&a);
+            std::hint::black_box(&cloned);
+        });
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = counter.clone();
+        run("AtomicU64 fetch_add + fetch_sub", threads, iters, move || {
+            c.fetch_add(1, Ordering::Acquire);
+            c.fetch_sub(1, Ordering::Release);
+        });
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = counter.clone();
+        run("AtomicU64 compare_exchange loop", threads, iters, move || {
+            let mut cur = c.load(Ordering::Relaxed);
+            loop {
+                match c.compare_exchange_weak(cur, cur + 1, Ordering::Acquire, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(seen) => cur = seen,
+                }
+            }
+            c.fetch_sub(1, Ordering::Release);
+        });
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = counter.clone();
+        run("AtomicU64 relaxed fetch_add (no release)", threads, iters, move || {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+
+        // What a version-gated snapshot would cost instead. A line nobody WRITES stays shared
+        // in every core's cache, so a relaxed load is not a coherence event at all -- unlike
+        // the read-modify-writes above, every one of which takes the line exclusive.
+        let version = Arc::new(AtomicU64::new(7));
+        let v = version.clone();
+        run("AtomicU64 relaxed LOAD only (version check)", threads, iters, move || {
+            std::hint::black_box(v.load(Ordering::Relaxed));
+        });
+
+        thread_local! {
+            static CACHED: std::cell::RefCell<Option<(u64, Arc<ProxyOptions>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let v = version.clone();
+        run("version load + thread-local hit (no clone)", threads, iters, move || {
+            let current = v.load(Ordering::Relaxed);
+            CACHED.with(|cell| {
+                let mut cell = cell.borrow_mut();
+                let fresh = matches!(&*cell, Some((seen, _)) if *seen == current);
+                if !fresh {
+                    *cell = Some((current, Arc::new(ProxyOptions::default())));
+                }
+                let (_, options) = cell.as_ref().expect("just filled");
+                std::hint::black_box(options.drop_percent);
+            });
+        });
+    }
 
     /// Admission cost for a batch, under contention. `cargo test --lib bench_proxy_admission
     /// -- --ignored --nocapture`
