@@ -2150,7 +2150,7 @@ fn collect_command_index_items(
             items.push(crate::index_log::IndexItem {
                 kind: crate::index_log::IndexItemKind::Page,
                 routing_bucket,
-                page_ref_key: page_ref_key.clone(),
+                page_ref_key: page_ref_key.to_string(),
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone(),
                 component: page.component.clone(),
@@ -2340,7 +2340,9 @@ fn fold_delta_page_items(
             });
         bucket.object_index.insert(item.object_id);
         bucket.page_index.insert(
-            item.page_ref_key.clone(),
+            // The record carries an owned String; the in-memory structures share one allocation,
+            // so it is converted once here as the page is installed.
+            std::sync::Arc::from(item.page_ref_key.as_str()),
             PageIndex {
                 object_key: item.object_key.clone(),
                 model_id: item.model_id.clone(),

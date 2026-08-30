@@ -3,6 +3,7 @@
 
 //! Storage snapshot/sample reporting + bucket-index maintenance internals, split from engine.rs.
 use super::*;
+use std::sync::Arc;
 
 pub(super) fn storage_slab_integrity_report(
     shard_id: ShardId,
@@ -899,14 +900,14 @@ pub(super) fn rebuild_bucket_page_ownership(
             });
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
-            format!(
+            Arc::from(format!(
                 "{}:{}:{}:{}:{}",
                 entry.kind,
                 entry.object_key,
                 entry.component.clone().unwrap_or_default(),
                 entry.address.page_slab_id,
                 entry.address.offset
-            ),
+            )),
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -1144,8 +1145,10 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
     entries
 }
 
-pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> String {
-    format!(
+/// The key a page is filed under, as ONE allocation shared by every structure that points at the
+/// page: the bucket's `page_index`, and the two object lookups.
+pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> Arc<str> {
+    Arc::from(format!(
         "{}:{}:{}:{}:{}:{}:{}:{}",
         entry.kind,
         entry.object_key,
@@ -1155,7 +1158,7 @@ pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> String {
         entry.address.length,
         entry.address.page_id.unwrap_or_default(),
         entry.address.generation.unwrap_or_default()
-    )
+    ))
 }
 
 pub(super) fn page_physical_identity_key(

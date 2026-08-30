@@ -3957,11 +3957,11 @@ fn object_page_lookup_is_derivable_from_object_component_lookup() {
                     page.component.as_deref(),
                 ))
                 .or_default()
-                .insert((*routing_bucket, page_ref_key.clone()));
+                .insert((*routing_bucket, page_ref_key.to_string()));
             from_pages_component_lookup
                 .entry(object_component_lookup_key(&page.model_id, &page.object_key))
                 .or_default()
-                .insert((page.component.clone(), *routing_bucket, page_ref_key.clone()));
+                .insert((page.component.clone(), *routing_bucket, page_ref_key.to_string()));
         }
     }
 
@@ -3974,7 +3974,7 @@ fn object_page_lookup_is_derivable_from_object_component_lookup() {
             (
                 k.clone(),
                 refs.iter()
-                    .map(|r| (r.routing_bucket, r.page_ref_key.clone()))
+                    .map(|r| (r.routing_bucket, r.page_ref_key.to_string()))
                     .collect(),
             )
         })
@@ -4002,7 +4002,7 @@ fn object_page_lookup_is_derivable_from_object_component_lookup() {
             derived
                 .entry(format!("{component_key}|{}", component.as_deref().unwrap_or("")))
                 .or_default()
-                .insert((*routing_bucket, page_ref_key.clone()));
+                .insert((*routing_bucket, page_ref_key.to_string()));
         }
     }
 
@@ -4021,7 +4021,7 @@ fn object_page_lookup_is_derivable_from_object_component_lookup() {
                     page.component.as_deref().unwrap_or("")
                 ))
                 .or_default()
-                .insert((*routing_bucket, page_ref_key.clone()));
+                .insert((*routing_bucket, page_ref_key.to_string()));
         }
     }
 
