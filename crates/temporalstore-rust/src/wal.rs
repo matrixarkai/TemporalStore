@@ -3453,6 +3453,11 @@ fn last_wal_sequence_forward_from(
     Ok((last_sequence, record_end))
 }
 
+/// Where the records of one log end, for measurements that need bytes rather than counts.
+pub fn last_wal_sequence_in_for_test(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
+    last_wal_sequence_in(path)
+}
+
 fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     if !path.exists() {
         return Ok((0, 0));
@@ -3703,6 +3708,253 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    /// eight records against one record holding eight items, on identical outcomes.
+    ///
+    /// An ingest writes eight things. Today that is eight records, each paying a frame, a shard
+    /// id, a sequence, a timestamp and — in a batch — three more fields of batch bookkeeping so
+    /// the group can be recovered as a unit. The record format already carries `repeated items`,
+    /// so the same eight outcomes fit in one record that is atomic by construction and needs no
+    /// commit marker at all.
+    ///
+    /// This encodes both shapes from the same items and compares them, which says what the change
+    /// is worth before anything is rebuilt to get it.
+    #[test]
+    fn eight_records_against_one_record_holding_eight() {
+        fn item(index: usize) -> WalOutcomeItem {
+            WalOutcomeItem {
+                kind: "string".to_string(),
+                object_key: format!("ingest-00042/{index}"),
+                component: None,
+                object_id: 1000 + index as u64,
+                routing_bucket: 7,
+                address: None,
+                value: Some(vec![b'v'; 96]),
+                ttl: None,
+                deleted: false,
+                meta: false,
+            }
+        }
+
+        // Shape one: eight records, one item each, as a batch (so batch metadata is counted).
+        let mut separate = 0usize;
+        for index in 0..8 {
+            let record = WriteAheadLogRecord {
+                shard_id: 1,
+                sequence: 100 + index as u64,
+                command: None,
+                metadata: Some(WriteAheadLogRecordMetadata {
+                    version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                    timestamp_ms: 1_787_270_070_192,
+                    items: Vec::new(),
+                    batch_id: Some(9),
+                    batch_size: Some(8),
+                    batch_index: Some(index as u32 + 1),
+                }),
+                staged_pages: Vec::new(),
+                outcomes: vec![item(index)],
+            };
+            separate += crate::log_framing::encode_record(&encode_wal_payload(&record).unwrap()).len();
+        }
+
+        // Shape two: one record carrying all eight. Atomic because it is one record.
+        let record = WriteAheadLogRecord {
+            shard_id: 1,
+            sequence: 100,
+            command: None,
+            metadata: Some(WriteAheadLogRecordMetadata {
+                version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                timestamp_ms: 1_787_270_070_192,
+                items: Vec::new(),
+                batch_id: None,
+                batch_size: None,
+                batch_index: None,
+            }),
+            staged_pages: Vec::new(),
+            outcomes: (0..8).map(item).collect(),
+        };
+        let together = crate::log_framing::encode_record(&encode_wal_payload(&record).unwrap()).len();
+
+        println!(
+            "  eight records   {separate:>6} B\n  \
+             one record      {together:>6} B\n  \
+             saving          {:>6} B   {:.1}%",
+            separate.saturating_sub(together),
+            100.0 * (separate as f64 - together as f64) / separate as f64,
+        );
+        // And it must still decode to the same eight outcomes.
+        let framed = crate::log_framing::encode_record(&encode_wal_payload(&record).unwrap());
+        let back = decode_wal_line(&framed).unwrap();
+        assert_eq!(back.outcomes.len(), 8, "one record must carry all eight");
+        assert!(
+            together < separate,
+            "one record should not cost more than eight: {together} against {separate}"
+        );
+    }
+
+    /// Resident bytes this process holds, from the kernel rather than from a guess.
+    fn resident_bytes() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        for line in status.lines() {
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                let kb: u64 = rest
+                    .trim()
+                    .trim_end_matches(" kB")
+                    .trim()
+                    .parse()
+                    .unwrap_or(0);
+                return kb * 1024;
+            }
+        }
+        0
+    }
+
+    /// what the log holds in memory, and whether it grows with the LOG or with the SHARDS.
+    ///
+    /// The claim this exists to check is one I had been repeating from reading the struct: every
+    /// map the log retains is keyed by shard, so memory is bounded by shard count and not by how
+    /// much has been written. That is an argument. This is the measurement.
+    ///
+    /// Ignored: it allocates thousands of shards and reads RSS, which is a process-wide number
+    /// and useless beside other tests.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_the_log_holds_in_memory -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn what_the_log_holds_in_memory() {
+        set_wal_segment_bytes_for_test(None);
+        const SHARDS: u64 = 1_000;
+
+        // A: one record per shard. Whatever the log keeps per shard is now resident.
+        let dir_a = tempfile::tempdir().unwrap();
+        let before_a = resident_bytes();
+        let store_a = LocalWriteAheadLogStore::new(dir_a.path());
+        for shard in 1..=SHARDS {
+            store_a
+                .append_with_sync(
+                    shard,
+                    Command::StringSet {
+                        key: format!("k{shard}"),
+                        value: vec![b'v'; 128],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let after_a = resident_bytes();
+        let per_shard = (after_a.saturating_sub(before_a)) as f64 / SHARDS as f64;
+
+        // B: the same shards, a hundred times the records. If memory tracks the LOG this grows a
+        // hundredfold; if it tracks the SHARDS it does not move.
+        let dir_b = tempfile::tempdir().unwrap();
+        let before_b = resident_bytes();
+        let store_b = LocalWriteAheadLogStore::new(dir_b.path());
+        for shard in 1..=SHARDS {
+            for index in 0..100 {
+                store_b
+                    .append_with_sync(
+                        shard,
+                        Command::StringSet {
+                            key: format!("k{shard}-{index}"),
+                            value: vec![b'v'; 128],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+        }
+        let after_b = resident_bytes();
+        let per_shard_deep = (after_b.saturating_sub(before_b)) as f64 / SHARDS as f64;
+
+        println!(
+            "  {SHARDS} shards, 1 record each     resident +{:>9} B   {:>8.0} B/shard\n  \
+             {SHARDS} shards, 100 records each   resident +{:>9} B   {:>8.0} B/shard\n  \
+             records written: {} against {}   ratio of per-shard cost: {:.2}x",
+            after_a.saturating_sub(before_a),
+            per_shard,
+            after_b.saturating_sub(before_b),
+            per_shard_deep,
+            SHARDS,
+            SHARDS * 100,
+            per_shard_deep / per_shard.max(1.0),
+        );
+        // A hundredfold more log for the same shards must not cost a hundredfold more memory.
+        // Ten is a wide bar on purpose: RSS is a high-water mark and the allocator keeps what it
+        // has taken, so a strict bound would be measuring malloc rather than the log.
+        assert!(
+            per_shard_deep < per_shard * 10.0 + 4096.0,
+            "memory looks like it tracks the log rather than the shards: {per_shard:.0} B/shard \
+             at one record, {per_shard_deep:.0} B/shard at a hundred"
+        );
+        drop(store_a);
+        drop(store_b);
+    }
+
+    /// what a byte of value costs in the log, across payload sizes.
+    ///
+    /// Ignored: a measurement. The ratio is meaningless without its payload size -- the frame is
+    /// fixed and the key is per record, so both dilute as the value grows. Quoting one number
+    /// for "amplification" is quoting a coincidence, which is why this prints a table.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_a_byte_of_value_costs -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn what_a_byte_of_value_costs() {
+        set_wal_segment_bytes_for_test(None);
+        println!("  value     records      payload        wal bytes    per record   ratio");
+        for value_bytes in [64usize, 256, 1024, 4096, 16384] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 400usize;
+            for index in 0..records {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("tenant/7/object/{index:06}"),
+                            value: vec![b'v'; value_bytes],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            let path = write_ahead_log_path(dir.path(), 1);
+            let (_, record_end) = last_wal_sequence_in(&path).unwrap();
+            let (_, header_len) = read_wal_base(&path).unwrap();
+            let wal_bytes = record_end.saturating_sub(header_len);
+            let payload = (records * value_bytes) as u64;
+            println!(
+                "  {value_bytes:>5}   {records:>7}   {payload:>10}   {wal_bytes:>12}   \
+                 {:>10.1}   {:>5.2}x",
+                wal_bytes as f64 / records as f64,
+                wal_bytes as f64 / payload as f64,
+            );
+        }
+        // And what the file COSTS, which is not the same as what the records occupy:
+        // preallocation reserves ahead, and that reservation is real disk.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 0..400 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let path = write_ahead_log_path(dir.path(), 1);
+        let (_, record_end) = last_wal_sequence_in(&path).unwrap();
+        let file_len = std::fs::metadata(&path).unwrap().len();
+        println!(
+            "\n  records occupy {record_end} bytes; the file is {file_len} bytes ({:.2}x), the \
+             difference being the reservation",
+            file_len as f64 / record_end.max(1) as f64
+        );
+    }
 
     /// The narrow case: a log written WITHOUT blocks whose records end INSIDE where a footer
     /// slot would go. About 128 bytes in 131072 of log lengths land here.

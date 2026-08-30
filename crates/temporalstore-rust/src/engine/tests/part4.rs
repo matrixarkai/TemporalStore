@@ -8642,3 +8642,255 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
         );
     }
 }
+
+/// what the log-resident registry does under sustained writes.
+///
+/// Every asynchronous write whose page has nowhere durable to go yet leaves a registration: one
+/// entry naming the record that holds the only copy. Two things ride on that entry. It costs
+/// memory, which is the smaller half. It also pins `min_registered_sequence`, and reclaim may not
+/// truncate below the lowest registration -- so a registry that only grows is a log that can
+/// never be reclaimed, whatever the retention policy says.
+///
+/// Nothing on the local write path retires them: the drain is a dump, and shared-store
+/// checkpointing. This measures what happens in between.
+#[test]
+fn what_the_log_resident_registry_does_under_sustained_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+
+    let mut seen = Vec::new();
+    for batch in 1..=6 {
+        for index in 0..200 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    // Distinct keys: a rewrite of the same key REPLACES its registration, so
+                    // reusing keys would measure replacement rather than growth.
+                    key: format!("object-{:06}", batch * 1000 + index),
+                    value: vec![b'v'; 256],
+                },
+            });
+        }
+        seen.push((batch * 200, engine.registration_count_for_test(1)));
+    }
+
+    let floor_pinned = seen.last().map(|(_, count)| *count).unwrap_or(0);
+    println!("  writes -> registrations held");
+    for (writes, held) in &seen {
+        println!("  {writes:>6} -> {held:>6}");
+    }
+    println!(
+        "  a dump moves them out; between dumps the floor is pinned by {floor_pinned} entries"
+    );
+
+    // The shape is the finding: if this tracks writes one-for-one it is unbounded between dumps.
+    let (first_writes, first_held) = seen[0];
+    let (last_writes, last_held) = *seen.last().unwrap();
+    let grew = last_held as f64 / (first_held.max(1)) as f64;
+    let wrote = last_writes as f64 / first_writes as f64;
+    println!("  writes x{wrote:.1}, registrations x{grew:.1}");
+}
+
+/// what eight records per ingest cost, and what a batch already saves.
+///
+/// An ingest here is not one write. Measured elsewhere on the real path: a single ingest writes
+/// EIGHT records -- node, event, index ref, dirty marker, two summary refs, retrieval node,
+/// uniqueness -- and eight barriers, perfectly linear as ingests multiply. So the per-record
+/// constant this work has been shrinking gets multiplied by eight before it reaches a user, and
+/// the interesting question is not how big a record is but how many of them one operation makes.
+///
+/// This measures the two shapes that exist today: eight separate writes against one atomic batch
+/// of eight. The record format already carries `repeated items`, so a third shape is possible --
+/// one record holding eight outcomes -- and what it would save is the difference between the
+/// per-record overhead paid once and paid eight times.
+#[test]
+fn what_eight_records_per_ingest_cost() {
+    fn write_and_measure(batched: bool, ingests: usize) -> (u64, u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            &page_dir,
+            &index_dir,
+        );
+        engine.load_shard(1);
+        let before = engine.write_ahead_log_store().stats(1);
+        for ingest in 0..ingests {
+            // The eight writes one ingest makes, as distinct keys.
+            let parts = [
+                "node", "event", "index_ref", "dirty", "summary_a", "summary_b", "retrieval",
+                "unique",
+            ];
+            if batched {
+                let commands: Vec<Command> = parts
+                    .iter()
+                    .map(|part| Command::StringSet {
+                        key: format!("ingest-{ingest:05}/{part}"),
+                        value: vec![b'v'; 96],
+                    })
+                    .collect();
+                assert!(
+                    engine
+                        .batch_execute(BatchExecuteRequest {
+                            shard_id: 1,
+                            commands,
+                        })
+                        .status
+                        .ok
+                );
+            } else {
+                for part in parts {
+                    engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("ingest-{ingest:05}/{part}"),
+                            value: vec![b'v'; 96],
+                        },
+                    });
+                }
+            }
+        }
+        engine.write_ahead_log_store().flush(1).ok();
+        let after = engine.write_ahead_log_store().stats(1);
+        let path = index_dir.join("wals").join("shard-1.wal.jsonl");
+        let (_, record_end) = crate::wal::last_wal_sequence_in_for_test(&path).unwrap_or((0, 0));
+        (
+            record_end,
+            after.writes.saturating_sub(before.writes),
+            after.syncs.saturating_sub(before.syncs),
+        )
+    }
+
+    let ingests = 200usize;
+    let (loose_bytes, loose_writes, loose_syncs) = write_and_measure(false, ingests);
+    let (batch_bytes, batch_writes, batch_syncs) = write_and_measure(true, ingests);
+    let payload = (ingests * 8 * 96) as u64;
+
+    println!(
+        "  {ingests} ingests, 8 writes each, 96 B values ({payload} B of value)\n  \
+         separate   {loose_bytes:>9} B log   {loose_writes:>6} appends   {loose_syncs:>6} syncs   \
+         {:>6.0} B/ingest\n  \
+         batched    {batch_bytes:>9} B log   {batch_writes:>6} appends   {batch_syncs:>6} syncs   \
+         {:>6.0} B/ingest\n  \
+         batching saves {:.1}% of the log and {:.1}% of the barriers",
+        loose_bytes as f64 / ingests as f64,
+        batch_bytes as f64 / ingests as f64,
+        100.0 * (loose_bytes as f64 - batch_bytes as f64) / loose_bytes.max(1) as f64,
+        100.0 * (loose_syncs as f64 - batch_syncs as f64) / loose_syncs.max(1) as f64,
+    );
+}
+
+/// registrations plateau instead of tracking writes, and every value still reads.
+///
+/// Without a bound this set grows one entry per distinct object written — measured at 200 writes
+/// 200 held, 1200 writes 1200 held — which is memory that never comes back and a reclaim floor
+/// that never moves. With one, the recent stay resident and the rest are written where anyone can
+/// find them.
+///
+/// The second half is the half worth having: a bound that loses data is not a bound, it is a
+/// deletion policy. Every value written is read back after the sweeps have run.
+#[test]
+fn registrations_plateau_instead_of_tracking_writes() {
+    let previous = std::env::var("TS_WAL_RESIDENT_PAGES").ok();
+    std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
+    let before_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
+
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+
+    let total = 600usize;
+    let mut held = Vec::new();
+    for index in 0..total {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("object-{index:05}"),
+                value: vec![b'v'; 128],
+            },
+        });
+        if index % 100 == 99 {
+            held.push((index + 1, engine.registration_count_for_test(1)));
+        }
+    }
+    let after_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
+    match previous {
+        Some(value) => std::env::set_var("TS_WAL_RESIDENT_PAGES", value),
+        None => std::env::remove_var("TS_WAL_RESIDENT_PAGES"),
+    }
+
+    println!("  writes -> registrations held (limit 64)");
+    for (writes, count) in &held {
+        println!("  {writes:>6} -> {count:>6}");
+    }
+    println!("  sweeps: {}", after_sweeps - before_sweeps);
+
+    assert!(
+        after_sweeps > before_sweeps,
+        "the bound never fired, so this proves nothing about it"
+    );
+    let peak = held.iter().map(|(_, count)| *count).max().unwrap_or(0);
+    assert!(
+        peak <= 128,
+        "registrations should stay near the limit, peaked at {peak} over {total} writes"
+    );
+
+    // A bound that loses data is a deletion policy. Everything written must still read.
+    for index in 0..total {
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("object-{index:05}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![b'v'; 128])
+            },
+            "object-{index:05} was lost when its page was moved out"
+        );
+    }
+}

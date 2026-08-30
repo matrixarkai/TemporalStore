@@ -217,6 +217,29 @@ pub(super) fn min_registered_sequence(
 /// The registry resolves a synthetic address to the record carrying its bytes, and it is process
 /// static: one entry per distinct object, held until the shard unloads. A test needs to see the
 /// count to say anything about whether it grows with the log.
+/// The objects this shard has registered, oldest WAL sequence first.
+///
+/// Oldest first because that is the order in which they stop being worth holding: the lowest
+/// registered sequence is the one pinning the log's retention floor, so retiring it is what lets
+/// reclaim move at all. Newest are kept because a page written a moment ago is the one a read is
+/// most likely to want, and it is already in the record the writer just wrote.
+pub(super) fn oldest_registered_objects(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+) -> Vec<(u64, u64)> {
+    let Ok(map) = registry().lock() else {
+        return Vec::new();
+    };
+    let owner = block_store.store_id();
+    let mut entries: Vec<(u64, u64)> = map
+        .iter()
+        .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
+        .map(|((_, _, object_id), (_, _, sequence))| (*sequence, *object_id))
+        .collect();
+    entries.sort_unstable();
+    entries
+}
+
 pub(super) fn registration_count(
     block_store: &crate::block_store::LocalBlockStore,
     shard_id: ShardId,
