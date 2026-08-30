@@ -658,6 +658,21 @@ _EMBEDDING_META_SKIP = (
     "vector",
     "storage_route",
     "storage_options",
+    # The placement/storage half of the same routing blob, inherited the same way and read by
+    # nobody. Measured over 400 memories: placement_key 182.9 KB, scope_key 125.1 KB,
+    # storage_record_kind 64.5 KB, placement_hash 56.3 KB, storage_part 50.8 KB -- 479.6 KB of
+    # embedding_meta's 1,703.4 KB (28.2%), every one of them a single distinct value across the
+    # whole store. Checked for readers rather than assumed: no read of any of them across 101
+    # `embedding_meta` sites, and the native layer never reads `embedding_meta` at all.
+    #
+    # `model` / `model_ref` are deliberately NOT here despite also scanning clean: a mis-set model
+    # path falls back to a different vector dimension, and the model identity on an embedding is
+    # what makes that detectable.
+    "placement_key",
+    "placement_hash",
+    "scope_key",
+    "storage_record_kind",
+    "storage_part",
 )
 
 def fold_embedding_records(
