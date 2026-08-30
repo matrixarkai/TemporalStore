@@ -978,6 +978,20 @@ async def _json(send: Callable, status: int, payload: Json,
     await send({"type": "http.response.body", "body": data})
 
 
+async def _text(send: Callable, status: int, body: str,
+                content_type: str = "text/plain; charset=utf-8",
+                extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
+    """A plain-text response. Used for the Prometheus exposition format, which needs its own
+    content type rather than JSON or HTML."""
+    data = body.encode("utf-8")
+    headers = [(b"content-type", content_type.encode()),
+               (b"content-length", str(len(data)).encode())]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": data})
+
+
 async def _html(send: Callable, status: int, body: bytes,
                 extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
     headers = [(b"content-type", b"text/html; charset=utf-8"),
@@ -1004,6 +1018,30 @@ _PORTAL_FALLBACK_HTML = (
     "<code>GET /v1/admin/api_key_usage</code> — each with an admin-scoped "
     "<code>Authorization: Bearer &lt;key&gt;</code>.</p>"
 )
+
+
+_INGESTION_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+
+
+def _ingestion_portal_html_bytes() -> bytes:
+    """The ingestion portal page (cached), read from the committed file next to this module."""
+    cached = _INGESTION_PORTAL_CACHE.get("bytes")
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", "ingestion_portal.html")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception:  # pragma: no cover - deployments without the file bundled
+        data = (
+            "<!doctype html><meta charset='utf-8'><title>MatrixArk Ingestion</title>"
+            "<h1>MatrixArk Ingestion</h1><p>The bundled page "
+            "(<code>tools/portal/ingestion_portal.html</code>) was not found. The JSON endpoints "
+            "still work: <code>POST /v1/admin/ingestion/jobs</code>, "
+            "<code>GET /v1/admin/ingestion/jobs</code>, and <code>GET /v1/metrics</code>.</p>"
+        ).encode("utf-8")
+    _INGESTION_PORTAL_CACHE["bytes"] = data
+    return data
 
 
 def _portal_html_bytes() -> bytes:
@@ -1868,6 +1906,83 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             if denied is not None:
                 return await _json(send, 403, denied)
             return await _json(send, 200, _model_config_snapshot())
+
+        # ---- Prometheus scrape (no auth: counters only, no tenant data) ----------------------
+        # The gateway had no /metrics, so the customer-facing API surface was invisible to the
+        # dashboards while the engine below it was fully instrumented. These are aggregate
+        # ingestion counters -- no keys, no tenant identifiers, nothing per-user -- so the endpoint
+        # is safe to scrape without credentials, the way an exporter normally is.
+        if method == "GET" and path == "/v1/metrics":
+            try:
+                import matrixark_ingestion_jobs as _jobs
+                body = _jobs.prometheus_text()
+            except Exception:
+                body = "# ingestion job registry unavailable" + chr(10)
+            return await _text(send, 200, body, content_type="text/plain; version=0.0.4")
+
+        # ---- ingestion portal page (static HTML, no auth to FETCH) ---------------------------
+        # Same posture as the key portal: fetching the page needs nothing, every action on it calls
+        # an admin-gated endpoint, so the page is inert without a valid admin key.
+        if method == "GET" and path == "/v1/admin/ingestion":
+            return await _html(send, 200, _ingestion_portal_html_bytes())
+
+        # ---- ingestion jobs: list (auth + admin scope) ---------------------------------------
+        if method == "GET" and path == "/v1/admin/ingestion/jobs":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            import matrixark_ingestion_jobs as _jobs
+            return await _json(send, 200, {
+                "status": "ok",
+                "jobs": _jobs.REGISTRY.list(),
+                "ingestion_root": _jobs.ingestion_root(),
+            })
+
+        # ---- ingestion jobs: submit (auth + admin scope) -------------------------------------
+        # Starts a background import over documents the caller names. Every path is resolved inside
+        # MATRIXARK_INGESTION_ROOT (see matrixark_ingestion_jobs) so this cannot be turned into a
+        # file-disclosure endpoint; with no root configured, submission is refused rather than
+        # defaulting to the whole filesystem.
+        if method == "POST" and path == "/v1/admin/ingestion/jobs":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 20)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            import matrixark_ingestion_jobs as _jobs
+            try:
+                documents = _jobs.resolve_request_paths(
+                    paths=payload.get("paths"),
+                    directory=payload.get("directory"),
+                    globs=payload.get("globs"),
+                )
+            except _jobs.IngestionRootNotConfigured as exc:
+                return await _json(send, 400, {"error": "ingestion_root_not_configured",
+                                               "detail": str(exc)})
+            except _jobs.PathOutsideRoot as exc:
+                return await _json(send, 403, {"error": "path_outside_ingestion_root",
+                                               "detail": str(exc)})
+            if not documents:
+                return await _json(send, 400, {"error": "no_documents_matched"})
+            job = _jobs.REGISTRY.submit(documents, {
+                "base_url": payload.get("base_url") or ("http://127.0.0.1:%d" % cfg.port
+                                                        if getattr(cfg, "port", None) else None),
+                "user_id": payload.get("user_id") or "default",
+                "api_key_env": payload.get("api_key_env") or "MATRIXARK_API_KEY",
+                "timeout_s": payload.get("timeout_s") or 1800.0,
+            })
+            return await _json(send, 202, job.snapshot())
 
         # ---- get_all via GET /v1/memories (auth + context:retrieve) -------------------------
         # Convenience read: list a scope's active memories. Scope identity comes from the query

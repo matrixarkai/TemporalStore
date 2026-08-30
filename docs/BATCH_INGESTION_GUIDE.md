@@ -115,6 +115,59 @@ want under a scheduler or in a log-sensitive environment.
 
 ---
 
+## 4a. The ingestion portal (no terminal required)
+
+For customers who would rather not run a CLI, the gateway serves a page at
+**`/v1/admin/ingestion`**. Point a browser at it, paste an admin key, name a directory or a list of
+paths, and start the import; the page shows each job's progress, rate and ETA, and lists failures as
+they happen. It also renders the deployment's model configuration and any warnings, so a
+misconfigured encoder is visible before a large import rather than after.
+
+Fetching the page needs no credentials; every action on it calls an admin-gated endpoint, so the page
+is inert without a key.
+
+**Configure the boundary first.** Jobs may only read documents beneath a configured root:
+
+```bash
+export MATRIXARK_INGESTION_ROOT=/srv/playbooks
+```
+
+Anything resolving outside it — an absolute path elsewhere, a `..` traversal, or a symlink pointing
+out — is refused. With the variable unset, submitting paths is refused outright rather than
+defaulting to the filesystem root.
+
+The same operations are available as JSON if you would rather script them:
+
+```bash
+curl -X POST http://your-host:8080/v1/admin/ingestion/jobs      -H "Authorization: Bearer $MATRIXARK_API_KEY"      -H 'Content-Type: application/json'      -d '{"directory":"/srv/playbooks","user_id":"acme_team"}'
+
+curl http://your-host:8080/v1/admin/ingestion/jobs -H "Authorization: Bearer $MATRIXARK_API_KEY"
+```
+
+## 4b. Metrics and Grafana
+
+The gateway exposes Prometheus counters at **`/v1/metrics`** — aggregate only, with no keys and no
+tenant identifiers, so it is safe to scrape without credentials the way an exporter normally is:
+
+```
+matrixark_ingestion_jobs_total        matrixark_ingestion_documents_done
+matrixark_ingestion_jobs_running      matrixark_ingestion_documents_failed
+matrixark_ingestion_documents_total   matrixark_ingestion_bytes_total
+```
+
+Add a scrape job and import `docs/ops/matrixark-ingestion-dashboard.json` into Grafana for the
+matching panels: imports running, documents ingested, failures, ingest rate, source throughput and
+import backlog. The backlog panel is the one to watch on a long import — a backlog that stops falling
+while no job is running means the import died partway.
+
+```yaml
+scrape_configs:
+  - job_name: matrixark_gateway
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ["your-host:8080"]
+```
+
 ## 5. Interrupting and resuming
 
 Ingest is a **keyed upsert**: each document carries a stable `identity_key` derived from its path, so

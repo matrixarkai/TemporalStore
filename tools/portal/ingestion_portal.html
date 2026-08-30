@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MatrixArk Ingestion</title>
+<style>
+  :root{
+    --bg:#f4f6f8; --panel:#fff; --ink:#151a20; --muted:#5b6672; --line:#dde3ea;
+    --accent:#0e6e6b; --ok:#1e7a5a; --warn:#9a6510; --crit:#a8443a;
+    --ok-bg:#dceee6; --warn-bg:#f7ead3; --crit-bg:#f7e0dd;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0e1216; --panel:#161c22; --ink:#e3e9ef; --muted:#8d99a7; --line:#28313b;
+      --accent:#3fb3a8; --ok:#4cb68b; --warn:#d9a441; --crit:#d7756a;
+      --ok-bg:#123227; --warn-bg:#33280f; --crit-bg:#351e1b;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  .wrap{max-width:940px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--muted);margin:0 0 24px}
+  h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+     margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin-bottom:18px}
+  label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+  input,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;
+               background:var(--bg);color:var(--ink);font:inherit;font-size:14px}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:9px 16px;
+         font:inherit;font-weight:600;cursor:pointer;margin-top:14px}
+  button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  td.num{text-align:right;font-family:"IBM Plex Mono",ui-monospace,monospace;
+         font-variant-numeric:tabular-nums}
+  .pill{display:inline-block;font-size:11px;font-weight:600;text-transform:uppercase;
+        letter-spacing:.05em;padding:2px 8px;border-radius:20px}
+  .pill.running{background:var(--warn-bg);color:var(--warn)}
+  .pill.completed{background:var(--ok-bg);color:var(--ok)}
+  .pill.failed,.pill.cancelled{background:var(--crit-bg);color:var(--crit)}
+  .pill.queued{background:var(--line);color:var(--muted)}
+  .bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}
+  .bar>i{display:block;height:100%;background:var(--accent);transition:width .4s}
+  .msg{padding:10px 12px;border-radius:6px;font-size:14px;margin-top:12px}
+  .msg.err{background:var(--crit-bg);color:var(--crit)}
+  .msg.ok{background:var(--ok-bg);color:var(--ok)}
+  .warn-item{background:var(--warn-bg);color:var(--warn);padding:9px 12px;border-radius:6px;
+             font-size:13.5px;margin-bottom:8px}
+  .hint{font-size:13px;color:var(--muted);margin-top:8px}
+  code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Ingestion</h1>
+  <p class="sub">Hand over a list of skill documents, start the import, and watch it run.</p>
+
+  <div class="card">
+    <h2>Access</h2>
+    <label for="key">Admin API key — held in this page only, never stored</label>
+    <input id="key" type="password" placeholder="Bearer key with admin scope" autocomplete="off">
+    <div class="hint">Every action below calls an admin-gated endpoint. The page is inert without a key.</div>
+  </div>
+
+  <div class="card">
+    <h2>Deployment</h2>
+    <div id="config">Loading configuration…</div>
+  </div>
+
+  <div class="card">
+    <h2>Start an import</h2>
+    <label for="dir">Directory — every matching document beneath it</label>
+    <input id="dir" placeholder="/srv/playbooks">
+    <label for="paths">Or an explicit list, one path per line</label>
+    <input id="paths" placeholder="/srv/playbooks/acme/checkout.md">
+    <div class="row">
+      <div>
+        <label for="globs">File patterns</label>
+        <input id="globs" value="*.md, *.markdown, *.json">
+      </div>
+      <div>
+        <label for="user">Ingest as user</label>
+        <input id="user" value="default">
+      </div>
+    </div>
+    <button id="start">Start import</button>
+    <button id="refresh" class="secondary">Refresh</button>
+    <div id="startMsg"></div>
+    <div class="hint">Paths must sit inside the deployment's configured ingestion root. Re-importing a
+      document replaces it rather than duplicating it, so restarting an interrupted import is safe.</div>
+  </div>
+
+  <div class="card">
+    <h2>Jobs</h2>
+    <div id="jobs">No jobs yet.</div>
+  </div>
+
+  <div class="card">
+    <h2>Metrics</h2>
+    <p class="hint" style="margin-top:0">Ingestion counters are exported for Prometheus at
+      <code>/v1/metrics</code> — no credentials, no tenant data. Point a scrape job at it and import
+      <code>docs/ops/matrixark-ingestion-dashboard.json</code> into Grafana for the matching panels.</p>
+    <pre id="metrics" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;
+      padding:12px;overflow-x:auto;font-size:12.5px;margin:0">Loading…</pre>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var timer = null;
+
+  function auth() {
+    var k = $("key").value.trim();
+    return k ? { "Authorization": "Bearer " + k } : {};
+  }
+
+  function say(el, text, cls) {
+    el.innerHTML = "";
+    if (!text) { return; }
+    var d = document.createElement("div");
+    d.className = "msg " + (cls || "");
+    d.textContent = text;
+    el.appendChild(d);
+  }
+
+  function loadConfig() {
+    fetch("/v1/admin/config", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        var host = $("config");
+        host.innerHTML = "";
+        var t = document.createElement("table");
+        var rows = [
+          ["Embedding", d.embedding.provider + (d.embedding.model ? " — " + d.embedding.model : "")],
+          ["Encoder endpoint", d.embedding.api_base || "(not set)"],
+          ["Extraction", d.extraction.provider + (d.extraction.model ? " — " + d.extraction.model : "")],
+          ["Skill budget", d.skills.shared_skill_budget_ratio + " of " +
+                           d.skills.max_budget_tokens + " tokens"]
+        ];
+        rows.forEach(function (r) {
+          var tr = document.createElement("tr");
+          var th = document.createElement("th"); th.textContent = r[0];
+          var td = document.createElement("td"); td.textContent = r[1];
+          tr.appendChild(th); tr.appendChild(td); t.appendChild(tr);
+        });
+        host.appendChild(t);
+        (d.warnings || []).forEach(function (w) {
+          var el = document.createElement("div");
+          el.className = "warn-item";
+          el.textContent = w;
+          host.appendChild(el);
+        });
+      })
+      .catch(function (e) {
+        $("config").textContent = e === 401
+          ? "Enter an admin key to read the deployment configuration."
+          : "Could not read configuration (" + e + ").";
+      });
+  }
+
+  function renderJobs(jobs) {
+    var host = $("jobs");
+    host.innerHTML = "";
+    if (!jobs.length) { host.textContent = "No jobs yet."; return; }
+    var t = document.createElement("table");
+    t.innerHTML = "<tr><th>Job</th><th>State</th><th>Progress</th>" +
+                  "<th>Done</th><th>Failed</th><th>Rate</th><th>ETA</th></tr>";
+    jobs.forEach(function (j) {
+      var pct = j.total ? Math.round(((j.done + j.failed) / j.total) * 100) : 0;
+      var tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td><code>" + j.job_id + "</code></td>" +
+        "<td><span class='pill " + j.state + "'>" + j.state + "</span></td>" +
+        "<td>" + pct + "% of " + j.total +
+          "<div class='bar'><i style='width:" + pct + "%'></i></div></td>" +
+        "<td class='num'>" + j.done + "</td>" +
+        "<td class='num'>" + j.failed + "</td>" +
+        "<td class='num'>" + j.docs_per_s + "/s</td>" +
+        "<td class='num'>" + (j.eta_s ? j.eta_s + "s" : "—") + "</td>";
+      t.appendChild(tr);
+    });
+    host.appendChild(t);
+    var failing = jobs.filter(function (j) { return j.failures && j.failures.length; });
+    failing.forEach(function (j) {
+      var d = document.createElement("div");
+      d.className = "warn-item";
+      d.textContent = j.job_id + ": " + j.failures.length + " failure(s), first — " +
+                      j.failures[0].detail + " (" + j.failures[0].path + ")";
+      host.appendChild(d);
+    });
+  }
+
+  function loadJobs() {
+    fetch("/v1/admin/ingestion/jobs", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { renderJobs(d.jobs || []); })
+      .catch(function (e) {
+        $("jobs").textContent = e === 401 ? "Enter an admin key to list jobs." : "Could not list jobs.";
+      });
+  }
+
+  function loadMetrics() {
+    fetch("/v1/metrics")
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        $("metrics").textContent = t.split("\n").filter(function (l) {
+          return l && l.charAt(0) !== "#";
+        }).join("\n") || "(no samples yet)";
+      })
+      .catch(function () { $("metrics").textContent = "Metrics endpoint unavailable."; });
+  }
+
+  $("start").addEventListener("click", function () {
+    var body = { user_id: $("user").value.trim() || "default" };
+    var dir = $("dir").value.trim();
+    var paths = $("paths").value.trim();
+    if (dir) { body.directory = dir; }
+    if (paths) { body.paths = paths.split(/[\n,]/).map(function (s) { return s.trim(); })
+                                   .filter(Boolean); }
+    var globs = $("globs").value.trim();
+    if (globs) { body.globs = globs.split(",").map(function (s) { return s.trim(); }).filter(Boolean); }
+    if (!body.directory && !body.paths) {
+      say($("startMsg"), "Give a directory or at least one path.", "err");
+      return;
+    }
+    $("start").disabled = true;
+    fetch("/v1/admin/ingestion/jobs", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify(body)
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (res.ok) {
+          say($("startMsg"), "Started " + res.d.job_id + " over " + res.d.total + " document(s).", "ok");
+          loadJobs();
+        } else {
+          say($("startMsg"), res.d.detail || res.d.error || "Could not start the import.", "err");
+        }
+      })
+      .catch(function () { say($("startMsg"), "Could not reach the gateway.", "err"); })
+      .then(function () { $("start").disabled = false; });
+  });
+
+  $("refresh").addEventListener("click", function () { loadConfig(); loadJobs(); loadMetrics(); });
+  $("key").addEventListener("change", function () { loadConfig(); loadJobs(); });
+
+  loadConfig(); loadJobs(); loadMetrics();
+  timer = setInterval(function () { loadJobs(); loadMetrics(); }, 4000);
+})();
+</script>
+</body>
+</html>
