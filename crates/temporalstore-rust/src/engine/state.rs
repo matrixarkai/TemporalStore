@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
@@ -305,7 +306,9 @@ pub(super) struct CoreIndex {
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
-pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
+/// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
+/// page, instead of each of the three keeping its own copy of the same ~117-byte string.
+pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
 pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
 pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
 
@@ -313,7 +316,7 @@ pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageL
 pub(super) struct PageLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: String,
+    pub(super) page_ref_key: Arc<str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -322,7 +325,7 @@ pub(super) struct ComponentPageLookupRef {
     pub(super) component: Option<String>,
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: String,
+    pub(super) page_ref_key: Arc<str>,
 }
 
 /// Rust-native core index mirroring the shape:
@@ -394,10 +397,12 @@ impl CoreIndex {
         }
     }
 
+    /// Takes the key by shared pointer: both lookups clone the `Arc`, not the string, so the
+    /// three structures that point at a page hold one allocation between them.
     pub(super) fn insert_object_page_lookup(
         &mut self,
         routing_bucket: u32,
-        page_ref_key: String,
+        page_ref_key: Arc<str>,
         page: &PageIndex,
     ) {
         if page.deleted {
@@ -412,7 +417,7 @@ impl CoreIndex {
             .or_default()
             .insert(PageLookupRef {
                 routing_bucket,
-                page_ref_key: page_ref_key.clone(),
+                page_ref_key: Arc::clone(&page_ref_key),
             });
         let added = self
             .object_component_lookup
