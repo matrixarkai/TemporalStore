@@ -2125,9 +2125,31 @@ def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -
     return access
 
 
+# Characters an index term may keep beyond ASCII: CJK ideographs, kana and hangul.
+#
+# Without them `[^a-z0-9_.:/-]` turned every CJK character into "_", so a pure-Chinese value
+# normalized to "" and `context_index_name` returned "" -- no term at all. The resource parser
+# indexes Chinese as overlapping character bigrams precisely because Chinese has no spaces to
+# split on, and every one of those bigrams was being discarded here.
+#
+# It cost twice over. The Chinese half of a CN/EN corpus had NO keyword index, and because
+# `keywords_for_text` interleaves bigrams with Latin runs so English filler cannot exhaust the
+# quota, the discarded bigrams still consumed their slots: measured on a CN/EN corpus, only
+# 42.9-51.1% of emitted keywords survived to become terms, so a cap of 12 bought 6 usable terms
+# and a cap of 200 bought 86.
+_INDEX_VALUE_CJK = (
+    "㐀-䶿"  # CJK extension A
+    "一-鿿"  # CJK unified ideographs
+    "豈-﫿"  # compatibility ideographs
+    "぀-ヿ"  # hiragana + katakana
+    "가-힯"  # hangul syllables
+)
+_INDEX_VALUE_STRIP_RE = re.compile(r"[^a-z0-9_.:/-" + _INDEX_VALUE_CJK + r"]+")
+
+
 def normalized_index_value(value: Any) -> str:
     text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9_.:/-]+", "_", text)
+    text = _INDEX_VALUE_STRIP_RE.sub("_", text)
     return text.strip("_")
 
 
