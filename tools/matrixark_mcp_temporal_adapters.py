@@ -2240,6 +2240,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
             "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
             "ids_requested": purged.get("matrixark_delete_ids_requested"),
+            # How much the purge actually READ, not just what it removed. Without this the
+            # caller cannot tell a cheap purge from an expensive one: measured on one subject
+            # with 600 memories, a single update decodes ~11,400 records to remove five.
+            "records_scanned": purged.get("matrixark_delete_records_scanned"),
         }
 
     def update_memory(self, args: Json, hook: Json | None = None) -> Json:
