@@ -3239,6 +3239,21 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "hgetall" | "scan_hash" => hash_entries_output(&engine, request.key, root)?,
+        // Read the durability barrier counters. They are collected by every site that takes a
+        // barrier and were, until now, unreachable from outside the process -- so the one number
+        // that says how much of a write is barrier-bound could not be measured, only argued.
+        // `field == "reset"` clears them first, so a harness can bracket a span.
+        "durability_barriers" => {
+            if request.field == "reset" {
+                temporalstore_rust::durability_metrics::reset();
+            }
+            let counts = temporalstore_rust::durability_metrics::snapshot();
+            let mut map = serde_json::Map::new();
+            for (site, count) in counts {
+                map.insert(site.to_string(), serde_json::json!(count));
+            }
+            json_output(serde_json::Value::Object(map), root)?
+        }
         "matrixark_scan_candidates" => {
             json_output(scan_matrixark_candidates(&engine, &request)?, root)?
         }
@@ -3380,6 +3395,8 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
                 Err("forget requires a scope object".to_string())
             }
         }
+        // Read-only counter dump: no key, no field, nothing to validate.
+        "durability_barriers" => Ok(()),
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;
             require_non_empty("field", &request.field)
@@ -4857,6 +4874,66 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The barrier counters are only useful if something outside the process can read them.
+    ///
+    /// They are recorded at every barrier site and were exposed nowhere, so the one number that
+    /// says how much of a write is barrier-bound could not be measured, only argued. This asserts
+    /// both halves a harness needs: a durable write moves the counters, and `reset` clears them
+    /// so a span can be bracketed instead of diffing lifetime totals by hand.
+    #[test]
+    fn durability_barriers_op_reports_and_resets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            root.join("bar-cache"),
+            root.join("bar-pages"),
+            root.join("bar-index"),
+        );
+        engine.load_shard(DEFAULT_SHARD_ID);
+
+        let mut clear = request("durability_barriers");
+        clear.field = "reset".to_string();
+        execute_record_log_request(&engine, clear, root.clone()).expect("reset");
+
+        let prefix = "matrixark:barriertest";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{prefix}:records:000000"),
+            format!("{:020}", 0),
+            "{\"record_type\":\"context_event\"}".to_string(),
+        )];
+        execute_record_log_request(&engine, append, root.clone()).expect("append");
+
+        let output = execute_record_log_request(
+            &engine,
+            request("durability_barriers"),
+            root.clone(),
+        )
+        .expect("read");
+        let after_write: u64 = output.extra.values().filter_map(Value::as_u64).sum();
+        assert!(
+            after_write > 0,
+            "a durable write recorded no barriers: {:?}",
+            output.extra
+        );
+
+        let mut clear = request("durability_barriers");
+        clear.field = "reset".to_string();
+        execute_record_log_request(&engine, clear, root.clone()).expect("reset again");
+
+        let output =
+            execute_record_log_request(&engine, request("durability_barriers"), root)
+                .expect("read back");
+        let after_reset: u64 = output.extra.values().filter_map(Value::as_u64).sum();
+        assert!(
+            after_reset < after_write,
+            "reset did not clear the counters: {after_write} then {after_reset}"
+        );
     }
 
     fn request(op: &str) -> RecordLogRequest {
