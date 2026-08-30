@@ -70,6 +70,20 @@ DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
     "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING", "1"
 ) not in {"0", "false", "False", ""}
 
+# A skill chunk's text is written TWICE: once as `resource_chunk` and once as `skill_section`,
+# byte for byte. Measured on a 1.41 MB markdown skill: 411 chunks and 411 sections, and all 411
+# section texts identical to a chunk's -- `resource_chunk` is 42.1% of the bytes a skill ingest
+# writes, for a copy.
+#
+# Retrieval never reads it: the resource/skill scan skips `resource_chunk` outright when
+# `resource_type == "skill"` and serves the section instead. The dashboard's chunk view was the
+# only other reader, and it now accepts `skill_section` too.
+#
+# Off restores the second copy.
+DEDUPE_SKILL_CHUNK_TEXT = os.environ.get(
+    "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT", "1"
+) not in {"0", "false", "False", ""}
+
 RESOURCE_APPEND_BATCH_RECORDS = int(
     os.environ.get("MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS", "512")
 )
@@ -142,25 +156,30 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
-        pending_records.append(
-            resource_record_builders.resource_chunk_record(
-                import_task_hash=resource_import_task_hash,
-                chunk_hash=chunk.chunk_hash,
-                node_hash=node_hash,
-                node_path=node_path,
-                resource_hash=chunk_resource_hash,
-                raw_uri_hash=raw_uri_hash,
-                resource_type=str(chunk_metadata.get("resource_type") or resource_type),
-                source_locator=source_locator,
-                text=chunk.text,
-                token_estimate=chunk.token_estimate,
-                metadata=chunk_metadata,
-                access_scope=access_scope,
-                deployment_scope=deployment_scope,
-                scope=resource_record_scope,
-                updated_at_ms=envelope["ingestion_time_ms"],
+        # For a skill this record is a byte-identical second copy of the section written just
+        # above. Retrieval skips it (`resource_chunk` + `resource_type == "skill"` is filtered out
+        # of the resource/skill scan) and the dashboard now reads the section, so writing it costs
+        # 42.1% of a skill ingest's bytes for a duplicate nobody reads.
+        if skill_hash is None or not DEDUPE_SKILL_CHUNK_TEXT:
+            pending_records.append(
+                resource_record_builders.resource_chunk_record(
+                    import_task_hash=resource_import_task_hash,
+                    chunk_hash=chunk.chunk_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    resource_hash=chunk_resource_hash,
+                    raw_uri_hash=raw_uri_hash,
+                    resource_type=str(chunk_metadata.get("resource_type") or resource_type),
+                    source_locator=source_locator,
+                    text=chunk.text,
+                    token_estimate=chunk.token_estimate,
+                    metadata=chunk_metadata,
+                    access_scope=access_scope,
+                    deployment_scope=deployment_scope,
+                    scope=resource_record_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
-        )
         if chunk_debug_metadata:
             pending_records.append(
                 resource_record_builders.resource_chunk_debug_record(
