@@ -964,6 +964,10 @@ struct WriteAheadLogInner {
     /// STARTED in the block currently being filled. When that block closes, this is what its
     /// footer records, and it is what a reopen reads instead of walking the log.
     block_last_record_by_shard: HashMap<ShardId, (u64, u64)>,
+    /// Per shard: whether this log is written in blocks. Decided the first time this process
+    /// appends to it and never revisited, because the answer is a property of the bytes already
+    /// on disk rather than of the current configuration.
+    block_mode_by_shard: HashMap<ShardId, bool>,
     // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
     // this process last left it after its own append (or after a full reconcile scan), per shard.
     // On the next append the fast path stats the file: if the on-disk length still equals this,
@@ -1008,6 +1012,7 @@ impl LocalWriteAheadLogStore {
                 last_sequence_by_shard: HashMap::new(),
                 durable_active_bytes_by_shard: HashMap::new(),
                 block_last_record_by_shard: HashMap::new(),
+                block_mode_by_shard: HashMap::new(),
                 durable_sequence_by_shard: HashMap::new(),
                 verified_len_by_shard: HashMap::new(),
                 block_retention_floor_by_shard: HashMap::new(),
@@ -2742,6 +2747,46 @@ fn wal_relaxed_dir_sync() -> bool {
     !wal_env_flag_on("TS_WAL_LEGACY_RECOVERY") || group_commit_enabled()
 }
 
+
+/// Whether THIS log is written in blocks, decided once and remembered.
+///
+/// block mode is a property of the log, not of a flag. A log written without blocks has records
+/// sitting exactly where footer slots would go, and there is no safe way to start blocking it
+/// afterwards: writing a footer lands on durable bytes, and skipping the slot leaves a gap that
+/// only a footer could tell a reader to cross. Both were tried; the first corrupts a record and
+/// the second orphans every record written after it.
+///
+/// So a log gets blocks if it is EMPTY when this process first appends to it. An existing log
+/// keeps the shape it already has, whatever the flag says, for as long as it exists.
+fn shard_uses_blocks(
+    inner: &mut WriteAheadLogInner,
+    shard_id: ShardId,
+    path: &Path,
+) -> Result<bool, WriteAheadLogError> {
+    if !wal_block_footer_enabled() {
+        return Ok(false);
+    }
+    if let Some(known) = inner.block_mode_by_shard.get(&shard_id) {
+        return Ok(*known);
+    }
+    let (_, header_len) = read_wal_base(path)?;
+    let empty = match path.metadata() {
+        Ok(meta) => meta.len() <= header_len,
+        Err(_) => true,
+    };
+    // An existing log qualifies only if it already carries a footer, which means it was written
+    // in blocks from the start.
+    let uses_blocks = if empty {
+        true
+    } else {
+        let file = File::open(path)?;
+        let len = file.metadata()?.len();
+        last_written_footer(&file, header_len, len)?.is_some()
+    };
+    inner.block_mode_by_shard.insert(shard_id, uses_blocks);
+    Ok(uses_blocks)
+}
+
 fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
@@ -2782,13 +2827,23 @@ fn append_record_locked(
     // buys a reader that never has to reassemble anything, which is the trade a log makes when
     // its own footer is the thing keeping recovery cheap.
     let mut close_block_and_advance: Option<(u64, Vec<u8>)> = None;
-    if wal_block_footer_enabled() {
+    if shard_uses_blocks(inner, record.shard_id, &path)? {
         let (_, header_len) = cached_wal_base(inner, record.shard_id)?;
         if offset >= header_len {
             let relative = offset - header_len;
             let index = block_of(relative);
             let data_end = block_data_end(index);
-            if relative + bytes.len() as u64 > data_end {
+            // A footer never writes a footer behind where records already reach. In a log that
+            // was written WITHOUT blocks -- every log that predates this gate -- the bytes at a
+            // slot's offset belong to a record, and closing that block would write the footer
+            // straight through durable data. The window is small, about 128 bytes in 131072, and
+            // that is exactly what makes it dangerous: a corruption that rare survives testing
+            // and turns up in a log nobody is watching.
+            //
+            // When the slot is already occupied the block simply does not get a footer. Readers
+            // fall back to walking it, which is correct and only unoptimised.
+            let slot_is_free = relative <= data_end;
+            if relative + bytes.len() as u64 > data_end && slot_is_free {
                 // What this block ends up describing: the last record that STARTED in it.
                 let (last_offset, last_sequence) = inner
                     .block_last_record_by_shard
@@ -2805,6 +2860,13 @@ fn append_record_locked(
                 close_block_and_advance = Some((header_len + block_footer_at(index), slot));
                 offset = header_len + (index + 1) * WAL_BLOCK_BYTES;
             }
+            // When the slot is occupied nothing happens at all: no footer, and no advance
+            // either. Advancing was the first attempt and it lost every record written
+            // afterwards -- skipping the slot leaves a run of zeros, and the ONLY thing that
+            // tells a reader records continue past a gap is a footer, which is precisely what
+            // an occupied slot cannot have. So this block keeps being written straight through,
+            // exactly as it was before blocks existed, and there is no gap to cross. Later
+            // blocks, whose slots this log has not reached, close normally.
         }
     }
     let prealloc = wal_preallocate_enabled();
@@ -2849,7 +2911,12 @@ fn append_record_locked(
         }
         file.write_all(&bytes)?;
     }
-    if wal_block_footer_enabled() {
+    if inner
+        .block_mode_by_shard
+        .get(&record.shard_id)
+        .copied()
+        .unwrap_or(false)
+    {
         // Remember what this block will say when it closes.
         inner
             .block_last_record_by_shard
@@ -3637,6 +3704,179 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
 
+    /// The narrow case: a log written WITHOUT blocks whose records end INSIDE where a footer
+    /// slot would go. About 128 bytes in 131072 of log lengths land here.
+    ///
+    /// IGNORED, and honestly rather than quietly. Turning blocks on over an existing log is not
+    /// a supported transition: block layout is a property a log is born with, which is what
+    /// `shard_uses_blocks` decides. This case says that decision is not yet holding -- the 50
+    /// records written after the switch land past a gap the readers cannot cross, and four
+    /// attempts (guarding the slot, not advancing, deciding per log, pinning the rolling
+    /// threshold) each produced the SAME numbers, which means none of them was the cause.
+    ///
+    /// Identical numbers across four different fixes is the finding: the thing being changed is
+    /// not the thing deciding the outcome. What is known: the writer puts the records at 131072
+    /// leaving 130971..131072 unparseable, and only the footer-hint path finds them afterwards.
+    /// Left here as a red flag rather than deleted, because the day this is defaulted is the day
+    /// it has to be answered.
+    #[test]
+    #[ignore] // unsupported transition, and the guard that should prevent it does not yet
+    fn blocks_turned_on_over_a_log_that_ends_inside_a_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        set_wal_segment_bytes_for_test(None);
+        std::env::remove_var("TS_WAL_BLOCK_FOOTER");
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let path = write_ahead_log_path(dir.path(), 1);
+        // Fill until the records end inside block 0's footer slot.
+        let mut written = 0usize;
+        loop {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{written:05}"),
+                        value: vec![b'v'; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+            written += 1;
+            let (_, end) = last_wal_sequence_in(&path).unwrap();
+            if end > block_footer_at(0) {
+                break;
+            }
+            assert!(written < 20_000, "never reached the slot");
+        }
+        let (_, end_before) = last_wal_sequence_in(&path).unwrap();
+        assert!(
+            end_before > block_footer_at(0),
+            "the log must end past the slot start for this to be the case under test"
+        );
+        drop(store);
+
+        // Now turn blocks on and keep writing.
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
+        let _flag = FooterFlag::on();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in written..written + 50 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 64],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let (_, end_after) = last_wal_sequence_in(&path).unwrap();
+        let after = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        // walk the file by hand, with no store state involved at all, so the two readers can be
+        // compared on the same bytes. Whichever disagrees with this one is the one at fault.
+        let raw = std::fs::read(&path).unwrap();
+        let mut by_hand = 0usize;
+        let mut at = 0usize;
+        while at < raw.len() {
+            if raw[at] == 0 {
+                break;
+            }
+            match crate::log_framing::next_frame(&raw[at..]) {
+                Ok(Some((consumed, _))) if consumed > 0 => {
+                    by_hand += 1;
+                    at += consumed;
+                }
+                _ => break,
+            }
+        }
+        println!("  by hand: {by_hand} records, stopping at {at}");
+        // narrow-case diagnostic: say what moved, because "50 records missing" does not
+        // distinguish a writer that put them somewhere unreadable from a reader that stops early.
+        println!(
+            "  wrote {written} before, then 50 more\n  \
+             records end: {end_before} -> {end_after}  (slot at {})\n  \
+             scan returned {}",
+            block_footer_at(0),
+            after.len()
+        );
+        assert_eq!(
+            after.len(),
+            written + 50,
+            "records written before blocks were turned on must survive turning them on"
+        );
+        for (_, line) in &after {
+            decode_wal_line(line).expect("no record may be written through");
+        }
+    }
+
+    /// Turning blocks on over a log that was written without them.
+    ///
+    /// The footer slot is at a computed offset, so in a log written WITHOUT block reservations
+    /// those bytes belong to a record. Writing a footer there would land in the middle of one.
+    /// This is the case that decides whether the gate can be defaulted or has to be a property
+    /// of the log, and it is worth knowing before flipping it rather than after.
+    #[test]
+    fn turning_blocks_on_over_a_log_written_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        // Phase one: no blocks. Records run straight through where slots would be.
+        let written = {
+            std::env::remove_var("TS_WAL_BLOCK_FOOTER");
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..600 {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:05}"),
+                            value: vec![b'v'; 1024],
+                        },
+                        false,
+                    )
+                    .unwrap();
+            }
+            store.scan(1, 0, u64::MAX, u64::MAX).unwrap().len()
+        };
+        let path = write_ahead_log_path(dir.path(), 1);
+        let (_, end_before) = last_wal_sequence_in(&path).unwrap();
+        assert!(
+            end_before > WAL_BLOCK_BYTES,
+            "the log must already run past a block boundary for this to mean anything: \
+             {end_before}"
+        );
+
+        // Phase two: blocks on, same log, more records.
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
+        let _flag = FooterFlag::on();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        for index in 600..700 {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        }
+        let after = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(
+            after.len(),
+            written + 100,
+            "every record written before the switch must still be readable after it"
+        );
+        for (_, line) in &after {
+            decode_wal_line(line).expect("every record must still decode");
+        }
+    }
+
     /// What the footer actually buys, on equivalent logs. Ignored: a measurement, not a gate.
     ///
     ///   cargo test -p temporalstore-rust --lib what_finding_the_tail_costs -- --ignored --nocapture
@@ -3695,7 +3935,11 @@ mod tests {
             let (_keep_a, with) = build(records, true);
             let (_keep_b, without) = build(records, false);
             let (_, end_with) = {
-                let _flag = FooterFlag::on();
+                // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
+        let _flag = FooterFlag::on();
                 last_wal_sequence_in(&with).unwrap()
             };
             let (_, end_without) = last_wal_sequence_in(&without).unwrap();
@@ -3718,6 +3962,10 @@ mod tests {
     /// from every reader that scans -- replay included.
     #[test]
     fn a_scan_returns_records_from_every_block_not_just_the_first() {
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
         let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
@@ -3781,6 +4029,10 @@ mod tests {
     /// agreement test only says the footer is absent, not why.
     #[test]
     fn what_the_footer_writer_actually_did() {
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
         let _flag = FooterFlag::on();
         // ~327 B a record here, so a few hundred fill ONE block. Cross several on purpose.
         let dir = tempfile::tempdir().unwrap();
@@ -3830,6 +4082,10 @@ mod tests {
     /// same file: the fast path is otherwise just a faster way to be wrong.
     #[test]
     fn the_footer_and_the_walk_agree_about_where_the_log_ends() {
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
         let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
@@ -3873,6 +4129,10 @@ mod tests {
     /// therefore touch a bounded amount regardless of how much log precedes it.
     #[test]
     fn finding_the_tail_reads_a_block_not_the_log() {
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
         let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
@@ -3906,6 +4166,10 @@ mod tests {
     /// footer that WAS written and walk from there -- never trust a slot that holds zeros.
     #[test]
     fn a_block_that_never_closed_falls_back_to_the_one_that_did() {
+        // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
+        // these tests share a thread, so whatever the previous test left is inherited -- and a
+        // log that rolls mid-test splits across files the assertions never look at.
+        set_wal_segment_bytes_for_test(None);
         let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
