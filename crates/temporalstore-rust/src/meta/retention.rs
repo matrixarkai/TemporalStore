@@ -274,20 +274,34 @@ impl SingleNodeMeta {
                 dropped_since_ms: at,
             })
             .collect::<Vec<_>>();
-        let shard_owners = state
-            .shards
-            .values()
-            .map(|location| (location.shard_id, location.server_addr.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let shard_tables = shard_owning_tables(&state)
-            .into_iter()
-            .map(|(shard_id, table)| {
-                (
-                    shard_id,
-                    table_key(&table.info.namespace, &table.info.table_name),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
+        // Only a dropped server can be held back by still owning shards, and
+        // the owner map is read nowhere else -- so with nothing dropped there is
+        // nothing for it to say.
+        let shard_owners = if servers.is_empty() {
+            BTreeMap::new()
+        } else {
+            state
+                .shards
+                .values()
+                .map(|location| (location.shard_id, location.server_addr.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        // A shard is only collected because the table that owns it is being
+        // collected, so with no dropped tables this map cannot contribute a
+        // single shard -- and deriving it walks every registered shard.
+        let shard_tables = if tables.is_empty() {
+            BTreeMap::new()
+        } else {
+            shard_owning_tables(&state)
+                .into_iter()
+                .map(|(shard_id, table)| {
+                    (
+                        shard_id,
+                        table_key(&table.info.namespace, &table.info.table_name),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
         plan_meta_retention(
             &servers,
             &proxies,

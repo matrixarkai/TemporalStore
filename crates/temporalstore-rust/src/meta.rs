@@ -6261,6 +6261,96 @@ mod tests {
     }
 
     #[test]
+    fn a_purged_table_still_takes_its_shard_routes_with_it() {
+        // A round with nothing to collect no longer derives who owns each shard
+        // or which table owns each shard -- neither can change what an empty
+        // round returns, and deriving them walked every registered shard. The
+        // risk in that is a round which does have something to collect quietly
+        // losing the shard routes, and the planner's own test supplies those
+        // maps ready-made, so it would not notice.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+                first_shard_id: 400,
+                shard_count: 3,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        for shard_id in [400u64, 401, 402] {
+            assert!(meta
+                .register(RegisterShardRequest {
+                    shard_id,
+                    server_addr: "node-a".to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Nothing is dropped yet, so the round has nothing to say about shards.
+        let quiet = meta.plan_meta_retention_now(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(quiet.is_empty(), "{quiet:?}");
+
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+            })
+            .status
+            .ok);
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.plan.tables, vec![table_key("ns", "gone")]);
+        assert_eq!(
+            report.plan.shards,
+            vec![400, 401, 402],
+            "the purged table's shard routes were left behind"
+        );
+        assert!(
+            meta.list_shards(ListShardsRequest {
+                server_addr: String::new(),
+                after_shard_id: 0,
+                limit: 0,
+            })
+            .shards
+            .is_empty(),
+            "the routes are still in the state"
+        );
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
