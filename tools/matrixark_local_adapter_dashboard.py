@@ -734,7 +734,11 @@ class _LocalAdapterDashboardMixin:
                 if rid == resource_hash and scope_matches(candidate_access_scope(record), scope):
                     manifest = record
                 continue
-            if record_type != "resource_chunk":
+            # A skill's chunk text lives on its skill_section. Retrieval already skips
+            # `resource_chunk` for skills (see the resource/skill scan in
+            # matrixark_local_adapter_retrieve), so for a skill this view is the only reader the
+            # duplicate chunk ever had -- reading the section instead lets ingest stop writing it.
+            if record_type not in {"resource_chunk", "skill_section"}:
                 continue
             try:
                 if int(record.get("resource_hash") or 0) != resource_hash:
@@ -747,7 +751,9 @@ class _LocalAdapterDashboardMixin:
             found.append({
                 "order": (int(index) if isinstance(index, int) else position),
                 "chunk_index": int(index) if isinstance(index, int) else None,
-                "chunk_hash": record.get("chunk_hash"),
+                # section_hash identifies a section the way chunk_hash identifies a chunk; the
+                # dedupe below keys on whichever is present.
+                "chunk_hash": record.get("chunk_hash", record.get("section_hash")),
                 "source_ref": record.get("source_ref", record.get("source_locator", "")),
                 "token_estimate": record.get("token_estimate", 0),
                 "text": str(record.get("text") or ""),
