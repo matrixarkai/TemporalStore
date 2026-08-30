@@ -120,6 +120,23 @@ impl TemporalEngine {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
+        // and the records this path appends are built from the commands -- so nothing ever took
+        // what was staged. Those items stayed in the thread's buffer, and the next write on that
+        // thread appended them as its own doing. Threads are reused across requests, so "the next
+        // write" is routinely a different request entirely.
+        //
+        // A guard rather than a drain at the end, because this function returns early on a
+        // missing shard and on a failed durable commit, and those exits leaked too. Discarding is
+        // correct while batch records carry their commands: replay re-executes them, so the items
+        // describe work that is already accounted for.
+        struct DrainStagedOnExit;
+        impl Drop for DrainStagedOnExit {
+            fn drop(&mut self) {
+                let _ = super::block_in_wal::take_outcomes();
+            }
+        }
+        let _drain_staged = DrainStagedOnExit;
         let command_count = request.commands.len();
         let mut responses = Vec::with_capacity(command_count);
         if command_count == 0 {
