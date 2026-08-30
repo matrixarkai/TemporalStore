@@ -385,11 +385,35 @@ of each other — any of them looked like a correct answer.
 
 If you raise the chunk size, **verify retrieval on your own documents and your own queries first.**
 
-**Vector encoding — a disk win, not a memory one.** `MATRIXARK_EMBEDDING_VECTOR_SCALE=100000` stores
-vectors as integers for about a third less disk with ranking unchanged. Resident memory barely moves,
-because it is dominated by per-record bookkeeping rather than payload: to reduce memory, reduce the
-number of records. Avoid `MATRIXARK_EMBEDDING_VECTOR_INT8`; it is smaller still but measurably
-reorders near-neighbours.
+**Vector encoding — 25% of everything written, and ranking-safe.** Vectors are the bulk of an ingest.
+Census of one 1 MB markdown skill (2,510 chunks, 7,574 records):
+
+```
+context_embedding   2,510 records   10,432 KB   67.9%   <- vectors dominate
+skill_section       2,510 records    3,521 KB   22.9%
+context_index       2,554 records    1,419 KB    9.2%
+                                    ---------
+                                    15,371 KB = 14.6x the source document
+```
+
+Re-running that census under each encoding:
+
+```
+vector encoding        total written   amplification   vs default
+decimals=6 (default)       15,371 KB       14.6x           100%
+decimals=4                 13,491 KB       12.9x            88%
+scale=100000               11,598 KB       11.1x            75%   <- recommended
+int8                        9,667 KB        9.2x            63%   <- reorders, avoid
+```
+
+`MATRIXARK_EMBEDDING_VECTOR_SCALE=100000` cuts **a quarter off everything an ingest writes** with
+ranking unchanged — 15.0 GB down to 11.3 GB across a thousand documents. `INT8` is smaller again but
+measurably reorders near-neighbours, so it trades retrieval quality for disk.
+
+Note what this is and is not. It reduces **bytes written and stored**. Resident memory is dominated
+by per-record bookkeeping rather than payload, so it barely moves: to reduce resident memory you must
+reduce the number of *records*, which means fewer chunks — and that carries the retrieval cost
+described above.
 
 ### The two lossless levers together
 
