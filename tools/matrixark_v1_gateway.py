@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -1021,6 +1022,164 @@ def _portal_html_bytes() -> bytes:
     return data
 
 
+_STORE_SENTINELS = {"", "local", "none", "standalone", "off"}
+
+
+def _model_config_snapshot() -> Json:
+    """The effective extraction/embedding/skill-budget configuration, redacted for display.
+
+    Operators need to see which model endpoints a deployment is actually talking to without shell
+    access to the process environment. API keys are NEVER included: a key is configured by naming
+    the environment variable that holds it (`MATRIXARK_EXTRACTION_API_KEY_ENV`), so this reports the
+    variable's NAME and whether it currently resolves to a non-empty value -- never the value.
+
+    `warnings` calls out the silent-degradation cases. Both extraction and embedding fall back to a
+    deterministic local path when no provider is configured; that path answers 200 with hash vectors
+    and rule-extracted memories, which is indistinguishable from a healthy system at the API
+    surface. Surfacing it is the difference between a misconfigured deployment that looks fine and
+    one an operator can see is misconfigured.
+    """
+
+    def _env(name: str, default: str = "") -> str:
+        return os.environ.get(name, default).strip()
+
+    def _key_state(env_name: str) -> Json:
+        return {
+            "api_key_env": env_name,
+            "api_key_configured": bool(os.environ.get(env_name, "").strip()),
+        }
+
+    extraction_provider = _env(
+        "MATRIXARK_UNDERSTANDING_PROVIDER", _env("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")
+    )
+    extraction_key_env = _env("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
+    embedding_provider = _env("MATRIXARK_EMBEDDING_PROVIDER", "deterministic")
+    embedding_key_env = _env("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
+    require_model_embeddings = _env("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS") in {"1", "true", "yes", "on"}
+
+    extraction: Json = {
+        "provider": extraction_provider,
+        "base_url": _env("MATRIXARK_EXTRACTION_BASE_URL"),
+        "model": _env("MATRIXARK_EXTRACTION_MODEL"),
+        "timeout_sec": _env("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"),
+        "max_tokens": _env("MATRIXARK_EXTRACTION_MAX_TOKENS"),
+        **_key_state(extraction_key_env),
+    }
+    embedding: Json = {
+        "provider": embedding_provider,
+        "api_base": _env("MATRIXARK_EMBEDDING_API_BASE") or _env("MATRIXARK_EMBED_BASE_URL"),
+        "model": _env("MATRIXARK_EMBEDDING_MODEL"),
+        "model_path": _env("MATRIXARK_EMBEDDING_MODEL_PATH"),
+        "text_max_tokens": _env("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"),
+        "require_model_embeddings": require_model_embeddings,
+        **_key_state(embedding_key_env),
+    }
+    skills: Json = {
+        "shared_skill_budget_ratio": _env("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"),
+        "max_budget_tokens": _env("MATRIXARK_MAX_BUDGET_TOKENS", "8192"),
+        "skill_chunks_per_skill": _env("MATRIXARK_SKILL_CHUNKS_PER_SKILL", "3"),
+        "skill_reserved_refs": _env("MATRIXARK_SKILL_RESERVED_REFS", "3"),
+    }
+
+    warnings: List[str] = []
+    deterministic = {"", "deterministic", "rules", "local"}
+    if extraction_provider in deterministic:
+        warnings.append(
+            "extraction_provider is deterministic: no LLM is called, so ingest stores only what the "
+            "local rules extract. Set MATRIXARK_EXTRACTION_PROVIDER=openai_compatible with "
+            "MATRIXARK_EXTRACTION_BASE_URL/_MODEL/_API_KEY_ENV to enable model extraction."
+        )
+    elif not extraction["api_key_configured"]:
+        warnings.append(
+            "extraction_provider is " + repr(extraction_provider) + " but " + extraction_key_env
+            + " is empty: extraction calls will fail and fall back to the deterministic path."
+        )
+    if embedding_provider in deterministic:
+        warnings.append(
+            "embedding_provider is deterministic: retrieval uses hash vectors, not semantic "
+            "embeddings. Set MATRIXARK_EMBEDDING_PROVIDER and MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1."
+        )
+    elif not require_model_embeddings:
+        warnings.append(
+            "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is not set: if the encoder becomes unreachable the "
+            "gateway silently falls back to hash vectors instead of failing the request."
+        )
+
+    return {
+        "status": "ok",
+        "extraction": extraction,
+        "embedding": embedding,
+        "skills": skills,
+        "warnings": warnings,
+    }
+
+
+def _single_writer_warning(
+    argv: Optional[list] = None, env: Optional[dict] = None
+) -> Optional[str]:
+    """Warn when the worker count would silently split a tenant's memory across separate stores.
+
+    With the spawning MCP backend each uvicorn worker starts its OWN `--serve` proxy child over a
+    pipe (see matrixark_mcp_rust_proxy_process.ensure_lane_process -- there is no code path that
+    dials an existing proxy), and that child owns an embedded store. So `--workers 4` is four
+    independent stores: a memory written through one worker is invisible to the other three, with no
+    error at any layer.
+
+    A worker count above one is only safe when the workers share a store: a real TS_META_ADDR
+    (distributed routing) or an explicit TS_STORAGE_BACKEND. Returns the warning text, or None when
+    the configuration is safe -- returning it rather than printing keeps this unit-testable.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    env = dict(os.environ if env is None else env)
+
+    workers = 0
+    for index, token in enumerate(argv):
+        if token == "--workers" and index + 1 < len(argv):
+            try:
+                workers = int(argv[index + 1])
+            except ValueError:
+                workers = 0
+        elif token.startswith("--workers="):
+            try:
+                workers = int(token.split("=", 1)[1])
+            except ValueError:
+                workers = 0
+    if workers <= 0:
+        try:
+            workers = int(str(env.get("WEB_CONCURRENCY", "")).strip() or "0")
+        except ValueError:
+            workers = 0
+    if workers <= 1:
+        return None
+
+    # A shared store makes multiple workers safe.
+    if str(env.get("TS_META_ADDR", "")).strip().lower() not in _STORE_SENTINELS:
+        return None
+    if str(env.get("TS_STORAGE_BACKEND", "")).strip():
+        return None
+    if str(env.get("TS_SHARED_STORE_DIR", "")).strip():
+        return None
+
+    return (
+        "MATRIXARK GATEWAY: --workers " + str(workers) + " with the spawning backend gives each "
+        "worker its own embedded store, so memories written through one worker are INVISIBLE to the "
+        "others. Run --workers 1, or point the workers at one shared store (TS_META_ADDR, or "
+        "TS_STORAGE_BACKEND with TS_SHARED_STORE_DIR). Set MATRIXARK_STRICT_SINGLE_WRITER=1 to make "
+        "this fatal."
+    )
+
+
+def _enforce_single_writer(argv: Optional[list] = None, env: Optional[dict] = None) -> None:
+    """Emit the split-store warning; raise instead when MATRIXARK_STRICT_SINGLE_WRITER is set."""
+    warning = _single_writer_warning(argv, env)
+    if warning is None:
+        return
+    env = dict(os.environ if env is None else env)
+    if str(env.get("MATRIXARK_STRICT_SINGLE_WRITER", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(warning)
+    print(warning, file=sys.stderr, flush=True)
+
+
 async def _read_body_capped(receive: Callable, cap: int) -> Tuple[Optional[bytes], bool]:
     """Read the full request body but bail (None, True) as soon as it exceeds `cap` bytes."""
     chunks: list[bytes] = []
@@ -1604,6 +1763,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     executor_lock = threading.Lock()
     # Direct network path (B): one shared pooled client per worker when enabled.
     direct_client = _build_direct_client(cfg) if cfg.direct_backend else None
+    # A multi-worker deployment on the spawning backend silently splits the store; say so
+    # loudly here rather than letting writes scatter across per-worker embedded stores.
+    _enforce_single_writer()
 
     async def app(scope: Json, receive: Callable, send: Callable) -> None:
         # ASGI lifespan: start the background stream-materializer on startup (so a non-finalized
@@ -1674,6 +1836,21 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 403, denied)
             usage = meter.snapshot()
             return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+
+        # ---- effective model configuration (auth + admin scope) ------------------------------
+        # Which extraction/embedding endpoints this deployment actually talks to, plus the skill
+        # budget knobs, so an operator can confirm a deployment from the portal instead of needing
+        # shell access. Redacted: reports the NAME of the env var holding each key and whether it
+        # resolves, never the key. `warnings` names the silent-fallback cases (see
+        # _model_config_snapshot) that otherwise look healthy at the API surface.
+        if method == "GET" and path == "/v1/admin/config":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            return await _json(send, 200, _model_config_snapshot())
 
         # ---- get_all via GET /v1/memories (auth + context:retrieve) -------------------------
         # Convenience read: list a scope's active memories. Scope identity comes from the query
