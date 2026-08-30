@@ -1226,6 +1226,64 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
 }
 
 #[test]
+fn text_with_nothing_to_redact_still_went_through_the_filter() {
+    // pii_filtering_applied answered "did redaction change the text", not "did this text go
+    // through the filter". With filtering on, most text has no personal data in it, so the flag
+    // read false in the ordinary healthy case: anyone auditing whether filtering ran got "no"
+    // for every clean record, which is the majority of them.
+    let policy = ContextWorkflowPolicy {
+        allowed_provider_kinds: vec![ContextProviderKind::OpenAiCompatible],
+        allowed_models: vec!["context-prod".to_string()],
+        max_extract_body_bytes: 256,
+        max_prompt_tokens: 64,
+        pii_filtering_enabled: true,
+        tenant_isolation_required: true,
+        rate_limit_per_minute: 100,
+        provider_failure_budget: 3,
+    };
+    let request = ContextExtractRequest {
+        shard_id: 1,
+        tenant_hash: 9,
+        source_kind: ContextSourceKind::Ticket,
+        source_id: "T-2".to_string(),
+        title: "Billing".to_string(),
+        body: "Customer asked when the next invoice run happens".to_string(),
+        timestamp_ms: 1,
+        provider: ContextModelProviderConfig {
+            provider_name: "openai-compatible".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            model: "context-prod".to_string(),
+            mock_mode: false,
+            ..ContextModelProviderConfig::default()
+        },
+    };
+
+    let report = validate_context_extract_policy(&policy, &request);
+    assert!(report.status.ok);
+    assert_eq!(
+        report.sanitized_text, request.body,
+        "premise: this text has nothing in it to redact"
+    );
+    assert!(
+        report.pii_filtering_applied,
+        "the text went through the filter -- it simply had nothing to remove, which is not          the same as the filter not running"
+    );
+
+    // And the other direction, so "applied" cannot quietly come to mean something else: with
+    // filtering switched off, nothing went through the filter and the report has to say so.
+    let unfiltered = ContextWorkflowPolicy {
+        pii_filtering_enabled: false,
+        ..policy
+    };
+    let report = validate_context_extract_policy(&unfiltered, &request);
+    assert!(report.status.ok);
+    assert!(
+        !report.pii_filtering_applied,
+        "filtering is switched off, so it was not applied to this text"
+    );
+}
+
+#[test]
 fn context_workflow_policy_controls_provider_model_and_pii() {
     let policy = ContextWorkflowPolicy {
         allowed_provider_kinds: vec![ContextProviderKind::OpenAiCompatible],
