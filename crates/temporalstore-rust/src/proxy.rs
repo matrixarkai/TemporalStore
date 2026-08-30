@@ -2014,6 +2014,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_route_the_surface_report_advertises_answers() {
+        // The report lists the routes this proxy serves and marks each one covered. That flag
+        // is set where the entry is built, so it reads covered whether or not the route is
+        // still there: rename or drop one and the report goes on advertising it to whoever is
+        // wiring up against it.
+        //
+        // The dispatcher is a match on (method, path), so the served set cannot be read out at
+        // runtime. Asking it is the next best thing, and it is the question a reader of this
+        // report actually has.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let report = proxy.operational_surface_report();
+        assert!(
+            !report.entries.is_empty(),
+            "premise: the report advertises some routes"
+        );
+
+        let answers = |path: &str| {
+            ["GET", "POST"].iter().any(|method| {
+                let (code, _) = proxy.handle(HttpRequest {
+                    method: (*method).to_string(),
+                    path: path.to_string(),
+                    body: b"{}".to_vec(),
+                });
+                code != 404
+            })
+        };
+
+        // The unknown-route answer is what this test reads as "not served", so pin it.
+        assert!(
+            !answers("/proxy/a-route-that-does-not-exist"),
+            "premise: an unserved route is refused, or this test cannot tell the difference"
+        );
+
+        for entry in &report.entries {
+            assert!(
+                answers(&entry.rust_native_route),
+                "the report advertises {} and marks it covered, but the proxy does not serve it",
+                entry.rust_native_route
+            );
+            assert!(
+                answers(&entry.rust_alias),
+                "the report advertises alias {} and marks it covered, but the proxy does not                  serve it",
+                entry.rust_alias
+            );
+        }
+    }
+
+    #[test]
     fn a_mapping_claims_coverage_only_while_the_family_is_published() {
         // `covered` is set where each mapping is built, and it was built as true, so the
         // JSON report and the metric_family_parity gauge said "covered" whether or not the
