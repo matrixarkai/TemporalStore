@@ -9037,3 +9037,310 @@ fn which_records_still_carry_an_operation() {
     // that rebuilds it. That one is a durability distinction, not an unconverted path.
     println!("  async separate carries {async_cmds} operations, async batched {async_batch_cmds}");
 }
+
+/// Is `object_component_lookup` derivable from `object_page_lookup`? — the other direction.
+///
+/// The existing probe asked whether the per-component map could be rebuilt from the per-object
+/// one and found it could not: filtering by component does not reproduce the grouping. That
+/// settles the direction that would have removed `object_page_lookup`, and says nothing about the
+/// direction that would remove the other one.
+///
+/// This asks the reverse, and the encoding says it should hold. Both keys are built from
+/// length-prefixed parts (`len:value|`), and the component key is literally the first two parts of
+/// the page key, so `object_component_lookup_key(m, o)` is a prefix of
+/// `object_page_lookup_key(m, o, _)` and — because the lengths disambiguate — of no other pair's.
+/// A range scan therefore recovers exactly one object's entries, and the component itself is
+/// recoverable from the rest of the key. `ComponentPageLookupRef` is `PageLookupRef` plus that
+/// component, so every field of the derived value has a source.
+///
+/// If this holds, one of seven per-record structures can be a range scan instead of a map that
+/// has to be kept in agreement with its neighbour.
+#[test]
+fn object_component_lookup_is_derivable_from_object_page_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "reverse-derive".to_string(),
+                shard_uri: "local://reverse-derive/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 63,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+
+    // The same mixed workload the forward probe uses: plain values, hash fields that carry a
+    // component, superseding overwrites that retire page refs, and deletes. A derivation that
+    // only holds for inserts would not be worth acting on.
+    for index in 0..120 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("rev-str-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("rev-hash-{}", index % 7),
+                field: format!("field-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+        if index % 3 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("rev-str-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        if index % 9 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("rev-str-{}", index / 4),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    // Recover the component a page-lookup key was built with. `0|` is the no-component case;
+    // `1|` is followed by one length-prefixed part. Anything else means the encoding moved and
+    // the derivation below would be reading tea leaves, so it is an error rather than a None.
+    fn component_of(suffix: &str) -> Option<String> {
+        if let Some(rest) = suffix.strip_prefix("1|") {
+            let (len, tail) = rest.split_once(':').expect("length-prefixed part");
+            let len: usize = len.parse().expect("part length parses");
+            assert!(tail.len() >= len, "part shorter than its declared length");
+            Some(tail[..len].to_string())
+        } else {
+            assert_eq!(suffix, "0|", "unrecognised component encoding: {suffix:?}");
+            None
+        }
+    }
+
+    // Derive the per-object map by range-scanning the per-component one, which is the operation
+    // that would replace it if this holds.
+    let mut derived: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeSet<crate::engine::state::ComponentPageLookupRef>,
+    > = std::collections::BTreeMap::new();
+    for (object_key, refs) in shard.bucket_index.object_component_lookup.iter() {
+        let entry = derived.entry(object_key.clone()).or_default();
+        for (page_key, page_refs) in shard.bucket_index.object_page_lookup.range(object_key.clone()..)
+        {
+            let Some(suffix) = page_key.strip_prefix(object_key.as_str()) else {
+                break; // past this object: the range is contiguous, so the first miss ends it
+            };
+            let component = component_of(suffix);
+            for page_ref in page_refs {
+                entry.insert(crate::engine::state::ComponentPageLookupRef {
+                    component: component.clone(),
+                    routing_bucket: page_ref.routing_bucket,
+                    page_ref_key: page_ref.page_ref_key.clone(),
+                });
+            }
+        }
+        let _ = refs;
+    }
+
+    let live = &shard.bucket_index.object_component_lookup;
+    let live_refs: usize = live.values().map(std::collections::BTreeSet::len).sum();
+    let derived_refs: usize = derived.values().map(std::collections::BTreeSet::len).sum();
+    let mismatched: Vec<&String> = live
+        .iter()
+        .filter(|(key, refs)| derived.get(*key) != Some(*refs))
+        .map(|(key, _)| key)
+        .collect();
+
+    println!(
+        "
+  object_component_lookup vs a range scan of object_page_lookup:
+             objects, live                {:>6}
+             objects, derived             {:>6}
+             page refs, live              {:>6}
+             page refs, derived           {:>6}
+             objects that disagree        {:>6}
+",
+        live.len(),
+        derived.len(),
+        live_refs,
+        derived_refs,
+        mismatched.len(),
+    );
+
+    assert!(
+        live.len() > 0 && live_refs > 0,
+        "the workload must populate the map, or this proves nothing"
+    );
+    assert!(
+        mismatched.is_empty(),
+        "object_component_lookup is NOT reproducible by a prefix range scan of \
+         object_page_lookup -- {} of {} objects disagree, first: {:?}",
+        mismatched.len(),
+        live.len(),
+        mismatched.first()
+    );
+    assert_eq!(
+        derived.len(),
+        live.len(),
+        "the derivation must produce the same objects, not a subset"
+    );
+}
+
+/// What would nesting the two page-lookup maps into one actually save?
+///
+/// The two maps are keyed by overlapping composites: `object_page_lookup` by (model, object,
+/// component) and `object_component_lookup` by (model, object). The second key is a byte-for-byte
+/// prefix of the first, so every record pays for the (model, object) part TWICE -- once as a whole
+/// key, once as the head of a longer one.
+///
+/// Nesting removes that repetition: one map keyed by (model, object), whose value holds the
+/// per-component lists under a short inner key. This measures the difference on a live shard
+/// rather than deriving it from the type definitions, because the question is what the bytes are,
+/// not what the shape suggests they should be.
+///
+/// It is a report, not a threshold. It prints and asserts only the relationships that must hold
+/// for the restructure to be sound at all, so it cannot fail spuriously as the workload changes.
+#[test]
+fn what_nesting_the_two_page_lookups_would_save() {
+    const RECORDS: usize = 4_000;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    assert!(
+        engine
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "nested-layout".to_string(),
+                shard_uri: "local://nested-layout/1".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 1023,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    // A mix, because the saving depends on whether an object carries a component: a plain value
+    // has none, a hash field has one, and a measurement over only one kind would generalise from
+    // the easy case.
+    for index in 0..RECORDS {
+        if index % 4 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("nest-hash-{}", index / 4),
+                    field: format!("field-{index}"),
+                    value: vec![b'h'; 64],
+                },
+            });
+        } else {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("nest-str-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let index = &shard.bucket_index;
+
+    // What is held today: both key sets in full.
+    let page_key_bytes: usize = index.object_page_lookup.keys().map(String::len).sum();
+    let component_key_bytes: usize = index.object_component_lookup.keys().map(String::len).sum();
+    let page_entries = index.object_page_lookup.len();
+    let component_entries = index.object_component_lookup.len();
+
+    // What a nested map would hold: the (model, object) key once as the outer key, and the
+    // component alone as the inner key. The component is the tail of the page key after the
+    // object prefix, which is what the outer key already is.
+    let mut outer_key_bytes = 0usize;
+    let mut inner_key_bytes = 0usize;
+    let mut inner_entries = 0usize;
+    for object_key in index.object_component_lookup.keys() {
+        outer_key_bytes += object_key.len();
+        for page_key in index.object_page_lookup.range(object_key.clone()..) {
+            let Some(suffix) = page_key.0.strip_prefix(object_key.as_str()) else {
+                break;
+            };
+            // `0|` is no component and needs no inner key at all; `1|len:value|` keeps only the
+            // value. Either way the (model, object) head is not stored again.
+            inner_key_bytes += suffix.strip_prefix("1|").map_or(0, |rest| {
+                rest.split_once(':').map_or(0, |(_, tail)| tail.len().saturating_sub(1))
+            });
+            inner_entries += 1;
+        }
+    }
+
+    let now = page_key_bytes + component_key_bytes;
+    let nested = outer_key_bytes + inner_key_bytes;
+    let per = |n: usize| n as f64 / RECORDS as f64;
+    println!(
+        "
+  page-lookup key bytes at {RECORDS} records:
+             object_page_lookup keys      {:>8}  ({:>6.1} B/record, {page_entries} entries)
+             object_component_lookup keys {:>8}  ({:>6.1} B/record, {component_entries} entries)
+             held today                   {:>8}  ({:>6.1} B/record)
+
+             nested outer keys            {:>8}  ({:>6.1} B/record)
+             nested inner keys            {:>8}  ({:>6.1} B/record, {inner_entries} entries)
+             held nested                  {:>8}  ({:>6.1} B/record)
+
+             saved                        {:>8}  ({:>6.1} B/record, {:>5.1}% of these keys)
+             map entries, today           {:>8}
+             map entries, nested          {:>8}
+",
+        page_key_bytes, per(page_key_bytes),
+        component_key_bytes, per(component_key_bytes),
+        now, per(now),
+        outer_key_bytes, per(outer_key_bytes),
+        inner_key_bytes, per(inner_key_bytes),
+        nested, per(nested),
+        now - nested, per(now - nested),
+        100.0 * (now - nested) as f64 / now as f64,
+        page_entries + component_entries,
+        component_entries + inner_entries,
+    );
+
+    assert!(now > 0 && component_entries > 0, "the workload must populate both maps");
+    // The whole premise: the second key is a prefix of the first, so nesting cannot cost more.
+    assert!(
+        nested < now,
+        "nesting held {nested} B against {now} B today -- the restructure has no byte case"
+    );
+    // Every page-lookup entry must be reachable from some object, or the derivation that makes
+    // the outer key sufficient is wrong and the saving is being counted against entries that
+    // would still need their own key.
+    assert_eq!(
+        inner_entries, page_entries,
+        "the range scan reached {inner_entries} of {page_entries} page-lookup entries; entries no \
+         object prefix reaches would still need a key of their own"
+    );
+}

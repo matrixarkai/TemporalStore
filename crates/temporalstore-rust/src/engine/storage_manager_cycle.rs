@@ -1094,8 +1094,16 @@ impl TemporalEngine {
             None
         };
         let manifest_chain_valid = boundary.manifest_chain_issues.is_empty();
-        let follower_retention_safe = manifest_prune_plan.follower_blocks.is_empty()
-            && manifest_prune_plan.raft_snapshot_blocks.is_empty();
+        // Safe means nothing is left unservable, NOT that no cursor exists. A cursor anchored on
+        // a manifest the plan retains is served by that manifest. Only one that precedes every
+        // manifest has nothing to replay from. Emptiness stopped being the right test the moment
+        // every cursor is recorded rather than only those that kept an extra manifest -- read as
+        // emptiness, index GC would be blocked by the mere existence of a healthy follower.
+        let follower_retention_safe = !manifest_prune_plan.follower_blocks.iter().any(|block| {
+            block.reason == crate::engine::bucket_dump_io::FOLLOWER_PRECEDES_EVERY_MANIFEST
+        }) && !manifest_prune_plan.raft_snapshot_blocks.iter().any(|block| {
+            block.reason == crate::engine::bucket_dump_io::RAFT_SNAPSHOT_PRECEDES_EVERY_MANIFEST
+        });
         let load_preflight_safe = load_preflight
             .as_ref()
             .map(|preflight| preflight.install_safe)
