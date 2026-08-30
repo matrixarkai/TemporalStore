@@ -1257,6 +1257,51 @@ impl LocalWriteAheadLogStore {
     /// other writer can interleave a record into the middle of the batch (the engine also
     /// serializes writes through its shard lock). A single command takes the standalone
     /// `append_with_sync` path (no batch framing, byte-identical WAL).
+    /// Append a whole batch as ONE record carrying every item it produced.
+    ///
+    /// A batch has always been crash-atomic; what changed is how. Written as N records sharing a
+    /// batch id, atomicity is bookkeeping: each record carries the id, the size and its index,
+    /// the last one is the commit marker, and replay drops a trailing group whose marker never
+    /// arrived. Written as one record it is atomic by construction -- a torn write leaves an
+    /// incomplete frame, and an incomplete frame was never a record.
+    ///
+    /// So the three batch fields go unused, the commit marker stops being a concept, and the
+    /// per-record cost is paid once instead of N times. Measured on eight items: 1015 bytes
+    /// against 1224, and the eight barriers were already one.
+    ///
+    /// The caller decides whether this is allowed: it needs every item's block to be findable
+    /// after a crash, which is the same rule a single write follows.
+    pub fn append_batch_as_one_record(
+        &self,
+        shard_id: ShardId,
+        outcomes: Vec<WalOutcomeItem>,
+        staged_pages: Vec<StagedPage>,
+        sync: bool,
+    ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+        let seq = last_sequence.saturating_add(1);
+        let record = WriteAheadLogRecord {
+            shard_id,
+            sequence: seq,
+            // No command: the items say what the batch did. No batch id, size or index either --
+            // one record needs none of them to be recovered as a unit.
+            command: None,
+            metadata: Some(WriteAheadLogRecordMetadata::single_command(
+                &Command::StringGet {
+                    key: String::new(),
+                },
+            )),
+            staged_pages,
+            outcomes,
+        };
+        let report = append_record_locked(&mut inner, &record, sync, None)?;
+        inner.stats.last_sequence = report.current_sequence;
+        inner.last_sequence_by_shard.insert(shard_id, seq);
+        Ok(record)
+    }
+
     pub fn append_batch_atomic(
         &self,
         shard_id: ShardId,

@@ -399,10 +399,34 @@ impl TemporalEngine {
             // which for a non-idempotent / time-unspecified command (FeatureAppend occur_time=0 ->
             // a fresh now on each apply) would otherwise duplicate points.
             let sync = !config.async_storage && !bulk_ingest_mode();
-            if let Err(err) =
+            // Use what the batch staged rather than discarding it. Every command here recorded
+            // what it DID; writing the commands instead left those items in the thread's buffer
+            // and put this whole path outside data-only, which is why a batch measured larger
+            // than the same writes made separately.
+            //
+            // one record carrying every item, when the items can be found again after a crash --
+            // the same rule a single write follows. Otherwise the commands go, as before.
+            let staged_outcomes = super::block_in_wal::take_outcomes();
+            let staged_blocks = super::block_in_wal::take_staged();
+            let recoverable = sync || !staged_blocks.is_empty();
+            let batch_result = if crate::wal::wal_data_only_enabled()
+                && !staged_outcomes.is_empty()
+                && recoverable
+            {
+                self.wal_store
+                    .append_batch_as_one_record(
+                        request.shard_id,
+                        staged_outcomes,
+                        staged_blocks,
+                        sync,
+                    )
+                    .map(|_| ())
+            } else {
                 self.wal_store
                     .append_batch_atomic(request.shard_id, wal_commands, sync)
-            {
+                    .map(|_| ())
+            };
+            if let Err(err) = batch_result {
                 if sync {
                     // A durable batch commit that failed is not durable; surface it rather than
                     // acking undurable writes (mirrors the single-command execute path).
