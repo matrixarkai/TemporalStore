@@ -247,6 +247,29 @@ errors and timeouts are retried three times with backoff before being reported; 
 retried, because it will not improve. Fix the cause and re-run with `--resume` to retry only what
 failed.
 
+**`http 500` with `resource produced more than max_total_chunks`** — a large document produced more
+chunks than the cap allows. The parser defaults to ~240-token chunks, so a 1 MB document makes
+roughly 2,500 chunks against a default cap of 2,048 and every such document fails. Raise the cap, or
+use larger chunks (which also cuts memory substantially):
+
+```bash
+export MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS=20000     # headroom for ~1 MB documents
+export MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS=240       # chunk size; larger = fewer chunks
+```
+
+Chunk size is a real trade-off, not just a limit. Larger chunks mean far fewer records and much less
+memory, but the encoder only embeds the first `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS` tokens of each
+chunk (128 by default, 256 for the MiniLM models). A chunk much longer than that window has its tail
+left out of the semantic index. Keeping the chunk size at or below the embedding window is the
+configuration that indexes everything you store.
+
+**`http 500` with `wal_commit_failed: json error: expected value at line 1 column 1`** — a durable
+commit hit WAL frames it could not parse, which happens when binary framing is enabled without its
+block-footer prerequisite. Set `TS_WAL_BLOCK_FOOTER=1`. If a store has already been written in the
+mixed state, recovery will refuse to load it (`wal_scan_failed: ... refusing load rather than serving
+a truncated prefix`) — that refusal is correct, and the store needs to be recreated rather than
+forced open.
+
 **`http 401`** — the key variable is unset or empty. Confirm with `echo ${MATRIXARK_API_KEY:+set}`.
 
 **Ingest is much slower than expected** — check `/v1/admin/config` for warnings, confirm the server

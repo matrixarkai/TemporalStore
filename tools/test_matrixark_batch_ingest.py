@@ -105,6 +105,77 @@ class ResourceTypeTest(unittest.TestCase):
         self.assertEqual(batch.resource_type_for("a/notes.markdown"), "markdown")
 
 
+class EnvelopeShapeTest(unittest.TestCase):
+    """The wire shape a document is sent in.
+
+    Two mistakes here are silent rather than loud, which is why they are pinned: the ingest envelope
+    reads resource content from ``text``/``resource_text`` and IGNORES an unknown ``content`` field,
+    and an ingest that is neither finalized nor waited on is accepted as a deferred event and is not
+    retrievable when the call returns. Either one makes a batch import report success while storing
+    nothing useful.
+    """
+
+    def setUp(self) -> None:
+        self.captured = {}
+        self.doc = os.path.join(tempfile.mkdtemp(), "playbook.md")
+        with open(self.doc, "w", encoding="utf-8") as handle:
+            handle.write("# Playbook" + chr(10) + chr(10) +
+                         "## Step 1" + chr(10) + "Apply the coupon." + chr(10))
+
+        class FakeResponse:
+            status = 202
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            self.captured["url"] = request.full_url
+            self.captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        self._real = batch.urllib.request.urlopen
+        batch.urllib.request.urlopen = fake_urlopen
+
+    def tearDown(self) -> None:
+        batch.urllib.request.urlopen = self._real
+
+    def test_resource_content_is_sent_as_text_not_content(self) -> None:
+        ok, _ = batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5
+        )
+        self.assertTrue(ok)
+        body = self.captured["body"]
+        self.assertIn("text", body)
+        self.assertIn("Apply the coupon", body["text"])
+        # `content` is not part of the envelope; sending it would be silently dropped.
+        self.assertNotIn("content", body)
+
+    def test_documents_are_finalized_and_waited_on_by_default(self) -> None:
+        batch.post_document("http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        body = self.captured["body"]
+        self.assertTrue(body["finalize"])
+        self.assertTrue(body["wait"])
+
+    def test_finalize_can_be_turned_off_for_streaming_callers(self) -> None:
+        batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5, finalize=False
+        )
+        self.assertFalse(self.captured["body"]["finalize"])
+
+    def test_identity_and_scope_travel_with_the_document(self) -> None:
+        batch.post_document("http://h:8080", self.doc, user_id="acme", api_key="", timeout_s=5)
+        body = self.captured["body"]
+        self.assertEqual(body["identity_key"], batch.identity_key_for(self.doc))
+        self.assertEqual(body["scope"], {"user_id": "acme"})
+        self.assertTrue(self.captured["url"].endswith("/v1/ingest"))
+
+
 class ArgumentTest(unittest.TestCase):
     def test_resume_without_a_state_file_is_rejected(self) -> None:
         self.assertEqual(batch.main(["--dir", ".", "--resume"]), 2)
