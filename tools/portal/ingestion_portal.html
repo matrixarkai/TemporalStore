@@ -6,112 +6,195 @@
 <title>MatrixArk Ingestion</title>
 <style>
   :root{
-    --bg:#f4f6f8; --panel:#fff; --ink:#151a20; --muted:#5b6672; --line:#dde3ea;
-    --accent:#0e6e6b; --ok:#1e7a5a; --warn:#9a6510; --crit:#a8443a;
-    --ok-bg:#dceee6; --warn-bg:#f7ead3; --crit-bg:#f7e0dd;
+    --bg:#f2f5f7; --panel:#fff; --panel-2:#f7f9fb;
+    --ink:#141a20; --muted:#5c6773; --faint:#8b95a1; --line:#dce3ea;
+    --accent:#0d6b68; --accent-ink:#fff; --accent-soft:#d9ecea;
+    --ok:#1c7a58; --ok-soft:#dbeee5;
+    --warn:#93610f; --warn-soft:#f7ead2;
+    --crit:#a6423a; --crit-soft:#f7dfdc;
+    --shadow:0 1px 2px rgba(20,26,32,.05), 0 4px 14px rgba(20,26,32,.05);
+    --radius:10px;
   }
   @media (prefers-color-scheme:dark){
     :root{
-      --bg:#0e1216; --panel:#161c22; --ink:#e3e9ef; --muted:#8d99a7; --line:#28313b;
-      --accent:#3fb3a8; --ok:#4cb68b; --warn:#d9a441; --crit:#d7756a;
-      --ok-bg:#123227; --warn-bg:#33280f; --crit-bg:#351e1b;
+      --bg:#0d1115; --panel:#151b21; --panel-2:#1a212a;
+      --ink:#e4e9ef; --muted:#8d99a7; --faint:#6c7885; --line:#27303a;
+      --accent:#3fb3a8; --accent-ink:#06231f; --accent-soft:#11302e;
+      --ok:#4cb68b; --ok-soft:#113126;
+      --warn:#d9a441; --warn-soft:#31270f;
+      --crit:#d7756a; --crit-soft:#341e1b;
+      --shadow:0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.28);
     }
   }
   *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
   body{margin:0;background:var(--bg);color:var(--ink);
-       font:15px/1.55 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-  .wrap{max-width:940px;margin:0 auto;padding:32px 20px 64px}
-  h1{font-size:26px;margin:0 0 4px;letter-spacing:-.01em}
-  .sub{color:var(--muted);margin:0 0 24px}
-  h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
-     margin:0 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-        padding:18px 20px;margin-bottom:18px}
-  label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
-  input,select{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:6px;
-               background:var(--bg);color:var(--ink);font:inherit;font-size:14px}
-  .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:9px 16px;
-         font:inherit;font-weight:600;cursor:pointer;margin-top:14px}
-  button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent)}
-  button:disabled{opacity:.5;cursor:not-allowed}
+       font:15px/1.55 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 72px}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  /* header */
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:24px;margin:0;letter-spacing:-.015em;font-weight:650}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block;
+       margin-right:6px;vertical-align:middle}
+  .dot.live{background:var(--ok)} .dot.down{background:var(--crit)}
+  .conn{font-size:13px;color:var(--muted)}
+  .lede{color:var(--muted);margin:2px 0 22px;max-width:64ch}
+
+  /* summary */
+  .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:14px 16px;box-shadow:var(--shadow)}
+  .stat b{display:block;font-size:26px;line-height:1.1;font-weight:650;
+          font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace}
+  .stat span{display:block;font-size:12.5px;color:var(--muted);margin-top:5px}
+  .stat.ok b{color:var(--ok)} .stat.warn b{color:var(--warn)} .stat.crit b{color:var(--crit)}
+
+  section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+          padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  h2{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+     margin:0 0 14px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .aux{margin-left:auto;text-transform:none;letter-spacing:0;font-size:12px;font-weight:400}
+
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px;font-weight:500}
+  input[type=text],input[type=password],textarea{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+    background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  textarea{min-height:74px;resize:vertical;font-family:"IBM Plex Mono",monospace;font-size:13px}
+  input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:620px){.grid2{grid-template-columns:1fr}}
+
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;align-items:center}
+  button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:7px;
+         padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.link{background:none;border:0;color:var(--accent);padding:4px 2px;font-weight:500;
+              text-decoration:underline;text-underline-offset:2px}
+  button.danger{background:transparent;color:var(--crit);border:1px solid var(--crit);
+                padding:5px 11px;font-size:13px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .check{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
+
+  .msg{padding:10px 13px;border-radius:7px;font-size:14px;margin-top:14px;line-height:1.5}
+  .msg.err{background:var(--crit-soft);color:var(--crit)}
+  .msg.ok{background:var(--ok-soft);color:var(--ok)}
+  .msg.info{background:var(--accent-soft);color:var(--accent)}
+  .note{background:var(--warn-soft);color:var(--warn);padding:10px 13px;border-radius:7px;
+        font-size:13.5px;margin-bottom:9px;line-height:1.5}
+  /* Config warnings and errors quote long unbreakable tokens (env var names, endpoints, paths).
+     Without this they force the whole page to scroll sideways on a narrow viewport. */
+  .note,.msg,.hint,td,.job-stats,.lede{overflow-wrap:anywhere}
+  .hint{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5}
+
   table{width:100%;border-collapse:collapse;font-size:14px}
-  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
-  th{font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
-  td.num{text-align:right;font-family:"IBM Plex Mono",ui-monospace,monospace;
-         font-variant-numeric:tabular-nums}
-  .pill{display:inline-block;font-size:11px;font-weight:600;text-transform:uppercase;
-        letter-spacing:.05em;padding:2px 8px;border-radius:20px}
-  .pill.running{background:var(--warn-bg);color:var(--warn)}
-  .pill.completed{background:var(--ok-bg);color:var(--ok)}
-  .pill.failed,.pill.cancelled{background:var(--crit-bg);color:var(--crit)}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+     font-weight:600;white-space:nowrap}
+  td.num{text-align:right;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+
+  .job{border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-bottom:10px;
+       background:var(--panel-2)}
+  .job-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .job-id{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--muted)}
+  .pill{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+        padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .pill.running{background:var(--accent-soft);color:var(--accent)}
+  .pill.completed{background:var(--ok-soft);color:var(--ok)}
   .pill.queued{background:var(--line);color:var(--muted)}
-  .bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}
-  .bar>i{display:block;height:100%;background:var(--accent);transition:width .4s}
-  .msg{padding:10px 12px;border-radius:6px;font-size:14px;margin-top:12px}
-  .msg.err{background:var(--crit-bg);color:var(--crit)}
-  .msg.ok{background:var(--ok-bg);color:var(--ok)}
-  .warn-item{background:var(--warn-bg);color:var(--warn);padding:9px 12px;border-radius:6px;
-             font-size:13.5px;margin-bottom:8px}
-  .hint{font-size:13px;color:var(--muted);margin-top:8px}
-  code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:13px}
+  .pill.failed,.pill.cancelled{background:var(--crit-soft);color:var(--crit)}
+  .job-meta{margin-left:auto;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .bar{height:7px;background:var(--line);border-radius:5px;overflow:hidden;margin:11px 0 8px}
+  .bar>i{display:block;height:100%;background:var(--accent);transition:width .45s ease}
+  .bar>i.done{background:var(--ok)} .bar>i.bad{background:var(--crit)}
+  .job-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+             font-variant-numeric:tabular-nums}
+  .job-stats b{color:var(--ink);font-weight:600}
+  .current{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);
+           margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  details{margin-top:9px}
+  summary{cursor:pointer;font-size:13px;color:var(--crit)}
+  details ul{margin:7px 0 0;padding-left:18px;font-size:12.5px;color:var(--muted)}
+  details li{margin-bottom:3px;font-family:"IBM Plex Mono",monospace;word-break:break-all}
+
+  pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
+  .empty{color:var(--faint);font-size:14px;padding:6px 0}
   a{color:var(--accent)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
 <body>
 <div class="wrap">
 
-  <h1>Ingestion</h1>
-  <p class="sub">Hand over a list of skill documents, start the import, and watch it run.</p>
+  <header>
+    <h1>Ingestion</h1>
+    <span class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+  <p class="lede">Point MatrixArk at a set of skill documents, watch the import run, and confirm the
+    deployment is configured the way you expect before you commit to a long one.</p>
 
-  <div class="card">
-    <h2>Access</h2>
-    <label for="key">Admin API key — held in this page only, never stored</label>
-    <input id="key" type="password" placeholder="Bearer key with admin scope" autocomplete="off">
-    <div class="hint">Every action below calls an admin-gated endpoint. The page is inert without a key.</div>
-  </div>
+  <div class="summary" id="summary"></div>
 
-  <div class="card">
-    <h2>Deployment</h2>
-    <div id="config">Loading configuration…</div>
-  </div>
+  <section>
+    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <label for="key">Admin API key</label>
+    <input id="key" type="password" placeholder="Key carrying an admin scope" autocomplete="off" spellcheck="false">
+    <div class="hint">Reading this page needs nothing; every action calls an admin-gated endpoint, so the
+      page is inert without a key. “Remember” keeps it in this tab only and forgets it when the tab
+      closes — it is never written to disk or sent anywhere but this gateway.</div>
+  </section>
 
-  <div class="card">
-    <h2>Start an import</h2>
-    <label for="dir">Directory — every matching document beneath it</label>
-    <input id="dir" placeholder="/srv/playbooks">
-    <label for="paths">Or an explicit list, one path per line</label>
-    <input id="paths" placeholder="/srv/playbooks/acme/checkout.md">
-    <div class="row">
+  <section>
+    <h2>Deployment <span class="aux" id="cfgTime"></span></h2>
+    <div id="config"><div class="empty">Loading configuration…</div></div>
+  </section>
+
+  <section>
+    <h2>Import documents</h2>
+    <div class="grid2">
+      <div>
+        <label for="dir">Directory</label>
+        <input id="dir" type="text" placeholder="/srv/playbooks" spellcheck="false">
+        <div class="hint">Searched recursively. Must sit inside the deployment’s ingestion root.</div>
+      </div>
       <div>
         <label for="globs">File patterns</label>
-        <input id="globs" value="*.md, *.markdown, *.json">
-      </div>
-      <div>
+        <input id="globs" type="text" value="*.md, *.markdown, *.json" spellcheck="false">
         <label for="user">Ingest as user</label>
-        <input id="user" value="default">
+        <input id="user" type="text" value="default" spellcheck="false">
       </div>
     </div>
-    <button id="start">Start import</button>
-    <button id="refresh" class="secondary">Refresh</button>
+    <label for="paths">Or list documents explicitly — one path per line</label>
+    <textarea id="paths" placeholder="/srv/playbooks/acme/checkout.md&#10;/srv/playbooks/globex/pricing.json" spellcheck="false"></textarea>
+
+    <div class="actions">
+      <button id="preview" class="ghost">Preview selection</button>
+      <button id="start" disabled>Start import</button>
+      <span class="hint" style="margin:0">Preview first — it shows exactly what would be sent.</span>
+    </div>
     <div id="startMsg"></div>
-    <div class="hint">Paths must sit inside the deployment's configured ingestion root. Re-importing a
-      document replaces it rather than duplicating it, so restarting an interrupted import is safe.</div>
-  </div>
+    <div class="hint">Re-importing a document replaces it rather than duplicating it, so a stopped
+      import can simply be run again.</div>
+  </section>
 
-  <div class="card">
-    <h2>Jobs</h2>
-    <div id="jobs">No jobs yet.</div>
-  </div>
+  <section>
+    <h2>Jobs <span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></h2>
+    <div id="jobs"><div class="empty">Loading…</div></div>
+  </section>
 
-  <div class="card">
-    <h2>Metrics</h2>
-    <p class="hint" style="margin-top:0">Ingestion counters are exported for Prometheus at
-      <code>/v1/metrics</code> — no credentials, no tenant data. Point a scrape job at it and import
-      <code>docs/ops/matrixark-ingestion-dashboard.json</code> into Grafana for the matching panels.</p>
-    <pre id="metrics" style="background:var(--bg);border:1px solid var(--line);border-radius:6px;
-      padding:12px;overflow-x:auto;font-size:12.5px;margin:0">Loading…</pre>
-  </div>
+  <section>
+    <h2>Metrics <span class="aux"><button class="link" id="copyScrape">copy Prometheus scrape config</button></span></h2>
+    <p class="hint" style="margin-top:0">Aggregate counters are exported at <span class="mono">/v1/metrics</span>
+      — no keys, no tenant identifiers — so it is safe to scrape without credentials. Import
+      <span class="mono">docs/ops/matrixark-ingestion-dashboard.json</span> into Grafana for the
+      matching panels; the <em>import backlog</em> panel is the one to watch on a long run.</p>
+    <pre id="metrics">Loading…</pre>
+  </section>
 
 </div>
 
@@ -119,146 +202,291 @@
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
-  var timer = null;
+  var lastPreview = null, timer = null;
 
+  /* ---------- helpers ---------- */
   function auth() {
     var k = $("key").value.trim();
-    return k ? { "Authorization": "Bearer " + k } : {};
+    return k ? { Authorization: "Bearer " + k } : {};
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function say(el, text, cls) {
+    el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
+  }
+  function bytes(n) {
+    if (!n) { return "0 B"; }
+    var u = ["B", "KB", "MB", "GB", "TB"], i = Math.floor(Math.log(n) / Math.log(1024));
+    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + u[i];
+  }
+  function secs(s) {
+    if (!s) { return "—"; }
+    if (s < 60) { return Math.round(s) + "s"; }
+    if (s < 3600) { return Math.floor(s / 60) + "m " + Math.round(s % 60) + "s"; }
+    return Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m";
+  }
+  function conn(state, text) {
+    $("dot").className = "dot " + state;
+    $("conn").textContent = text;
   }
 
-  function say(el, text, cls) {
-    el.innerHTML = "";
-    if (!text) { return; }
-    var d = document.createElement("div");
-    d.className = "msg " + (cls || "");
-    d.textContent = text;
-    el.appendChild(d);
+  /* ---------- summary ---------- */
+  function renderSummary(jobs) {
+    var running = 0, done = 0, failed = 0, remaining = 0, rate = 0, b = 0;
+    jobs.forEach(function (j) {
+      if (j.state === "running") { running++; rate += j.docs_per_s || 0; }
+      done += j.done; failed += j.failed; remaining += j.remaining; b += j.bytes || 0;
+    });
+    var cards = [
+      { n: running, l: running === 1 ? "import running" : "imports running", c: running ? "ok" : "" },
+      { n: done, l: "documents ingested", c: "" },
+      { n: failed, l: failed === 1 ? "failure" : "failures", c: failed ? "crit" : "" },
+      { n: remaining ? remaining : bytes(b), l: remaining ? "remaining" : "source ingested", c: remaining ? "warn" : "" }
+    ];
+    $("summary").innerHTML = cards.map(function (c) {
+      return '<div class="stat ' + c.c + '"><b>' + esc(c.n) + "</b><span>" + esc(c.l) + "</span></div>";
+    }).join("");
+  }
+
+  /* ---------- deployment config ---------- */
+  function renderConfig(d) {
+    var rows = [
+      ["Embedding", d.embedding.provider + (d.embedding.model ? " · " + d.embedding.model : "")],
+      ["Encoder endpoint", d.embedding.api_base || "not set"],
+      ["Fail closed", d.embedding.require_model_embeddings ? "yes — a failed encoder call errors"
+                                                           : "no — falls back to hash vectors"],
+      ["Extraction", d.extraction.provider + (d.extraction.model ? " · " + d.extraction.model : "")],
+      ["Extraction key", d.extraction.api_key_configured
+        ? d.extraction.api_key_env + " is set" : d.extraction.api_key_env + " is empty"],
+      ["Skill budget", d.skills.shared_skill_budget_ratio + " of " + d.skills.max_budget_tokens +
+                       " tokens · " + d.skills.skill_chunks_per_skill + " sections per skill"]
+    ];
+    var html = (d.warnings || []).map(function (w) {
+      return '<div class="note">' + esc(w) + "</div>";
+    }).join("");
+    html += "<table>" + rows.map(function (r) {
+      return "<tr><th>" + esc(r[0]) + "</th><td>" + esc(r[1]) + "</td></tr>";
+    }).join("") + "</table>";
+    $("config").innerHTML = html;
+    $("cfgTime").textContent = "checked " + new Date().toLocaleTimeString();
   }
 
   function loadConfig() {
     fetch("/v1/admin/config", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        var host = $("config");
-        host.innerHTML = "";
-        var t = document.createElement("table");
-        var rows = [
-          ["Embedding", d.embedding.provider + (d.embedding.model ? " — " + d.embedding.model : "")],
-          ["Encoder endpoint", d.embedding.api_base || "(not set)"],
-          ["Extraction", d.extraction.provider + (d.extraction.model ? " — " + d.extraction.model : "")],
-          ["Skill budget", d.skills.shared_skill_budget_ratio + " of " +
-                           d.skills.max_budget_tokens + " tokens"]
-        ];
-        rows.forEach(function (r) {
-          var tr = document.createElement("tr");
-          var th = document.createElement("th"); th.textContent = r[0];
-          var td = document.createElement("td"); td.textContent = r[1];
-          tr.appendChild(th); tr.appendChild(td); t.appendChild(tr);
-        });
-        host.appendChild(t);
-        (d.warnings || []).forEach(function (w) {
-          var el = document.createElement("div");
-          el.className = "warn-item";
-          el.textContent = w;
-          host.appendChild(el);
-        });
-      })
+      .then(function (d) { conn("live", "connected"); renderConfig(d); })
       .catch(function (e) {
-        $("config").textContent = e === 401
-          ? "Enter an admin key to read the deployment configuration."
-          : "Could not read configuration (" + e + ").";
+        if (e === 401 || e === 403) {
+          conn("live", "connected");
+          $("config").innerHTML = '<div class="empty">Enter an admin key above to see how this ' +
+            "deployment is configured.</div>";
+        } else {
+          conn("down", "gateway unreachable");
+          $("config").innerHTML = '<div class="msg err">Could not reach the gateway.</div>';
+        }
       });
   }
 
+  /* ---------- jobs ---------- */
+  function jobHtml(j) {
+    var processed = j.done + j.failed;
+    var pct = j.total ? Math.round((processed / j.total) * 100) : 0;
+    var barCls = j.failed && !j.done ? "bad" : (j.state === "completed" ? "done" : "");
+    var h = '<div class="job"><div class="job-head">' +
+      '<span class="pill ' + esc(j.state) + '">' + esc(j.state) + "</span>" +
+      '<span class="job-id">' + esc(j.job_id) + "</span>" +
+      (j.user_id ? '<span class="job-id">· ' + esc(j.user_id) + "</span>" : "") +
+      '<span class="job-meta">' + pct + "% of " + j.total + "</span>";
+    if (j.state === "running" || j.state === "queued") {
+      h += '<button class="danger" data-cancel="' + esc(j.job_id) + '">Stop</button>';
+    }
+    h += '</div><div class="bar"><i class="' + barCls + '" style="width:' + pct + '%"></i></div>' +
+      '<div class="job-stats">' +
+      "<span><b>" + j.done + "</b> ingested</span>" +
+      "<span><b>" + j.failed + "</b> failed</span>" +
+      "<span><b>" + bytes(j.bytes) + "</b> source</span>" +
+      "<span><b>" + (j.docs_per_s || 0) + "</b> docs/s</span>" +
+      "<span>elapsed <b>" + secs(j.elapsed_s) + "</b></span>" +
+      (j.remaining ? "<span>eta <b>" + secs(j.eta_s) + "</b></span>" : "") +
+      "</div>";
+    if (j.current) { h += '<div class="current">' + esc(j.current) + "</div>"; }
+    if (j.failures && j.failures.length) {
+      h += "<details><summary>" + j.failures.length + " failure" +
+        (j.failures.length === 1 ? "" : "s") + "</summary><ul>" +
+        j.failures.map(function (f) {
+          return "<li>" + esc(f.detail) + " — " + esc(f.path) + "</li>";
+        }).join("") + "</ul></details>";
+    }
+    return h + "</div>";
+  }
+
   function renderJobs(jobs) {
-    var host = $("jobs");
-    host.innerHTML = "";
-    if (!jobs.length) { host.textContent = "No jobs yet."; return; }
-    var t = document.createElement("table");
-    t.innerHTML = "<tr><th>Job</th><th>State</th><th>Progress</th>" +
-                  "<th>Done</th><th>Failed</th><th>Rate</th><th>ETA</th></tr>";
-    jobs.forEach(function (j) {
-      var pct = j.total ? Math.round(((j.done + j.failed) / j.total) * 100) : 0;
-      var tr = document.createElement("tr");
-      tr.innerHTML =
-        "<td><code>" + j.job_id + "</code></td>" +
-        "<td><span class='pill " + j.state + "'>" + j.state + "</span></td>" +
-        "<td>" + pct + "% of " + j.total +
-          "<div class='bar'><i style='width:" + pct + "%'></i></div></td>" +
-        "<td class='num'>" + j.done + "</td>" +
-        "<td class='num'>" + j.failed + "</td>" +
-        "<td class='num'>" + j.docs_per_s + "/s</td>" +
-        "<td class='num'>" + (j.eta_s ? j.eta_s + "s" : "—") + "</td>";
-      t.appendChild(tr);
-    });
-    host.appendChild(t);
-    var failing = jobs.filter(function (j) { return j.failures && j.failures.length; });
-    failing.forEach(function (j) {
-      var d = document.createElement("div");
-      d.className = "warn-item";
-      d.textContent = j.job_id + ": " + j.failures.length + " failure(s), first — " +
-                      j.failures[0].detail + " (" + j.failures[0].path + ")";
-      host.appendChild(d);
+    renderSummary(jobs);
+    if (!jobs.length) {
+      $("jobs").innerHTML = '<div class="empty">No imports yet. Preview a selection above, then ' +
+        "start one — progress appears here.</div>";
+      return;
+    }
+    $("jobs").innerHTML = jobs.map(jobHtml).join("");
+    Array.prototype.forEach.call($("jobs").querySelectorAll("[data-cancel]"), function (b) {
+      b.addEventListener("click", function () { cancelJob(b.getAttribute("data-cancel")); });
     });
   }
 
   function loadJobs() {
     fetch("/v1/admin/ingestion/jobs", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) { renderJobs(d.jobs || []); })
+      .then(function (d) { conn("live", "connected"); renderJobs(d.jobs || []); })
       .catch(function (e) {
-        $("jobs").textContent = e === 401 ? "Enter an admin key to list jobs." : "Could not list jobs.";
+        if (e === 401 || e === 403) {
+          $("jobs").innerHTML = '<div class="empty">Enter an admin key to list imports.</div>';
+          renderSummary([]);
+        } else { conn("down", "gateway unreachable"); }
       });
   }
 
+  function cancelJob(id) {
+    fetch("/v1/admin/ingestion/jobs/" + encodeURIComponent(id) + "/cancel",
+          { method: "POST", headers: auth() })
+      .then(loadJobs)
+      .catch(function () { say($("startMsg"), "Could not stop " + id + ".", "err"); });
+  }
+
+  /* ---------- metrics ---------- */
   function loadMetrics() {
     fetch("/v1/metrics")
       .then(function (r) { return r.text(); })
       .then(function (t) {
-        $("metrics").textContent = t.split("\n").filter(function (l) {
-          return l && l.charAt(0) !== "#";
-        }).join("\n") || "(no samples yet)";
+        var lines = t.split("\n").filter(function (l) { return l && l.charAt(0) !== "#"; });
+        $("metrics").textContent = lines.length ? lines.join("\n") : "(no samples yet)";
       })
       .catch(function () { $("metrics").textContent = "Metrics endpoint unavailable."; });
   }
 
-  $("start").addEventListener("click", function () {
+  /* ---------- request body ---------- */
+  function requestBody() {
     var body = { user_id: $("user").value.trim() || "default" };
     var dir = $("dir").value.trim();
     var paths = $("paths").value.trim();
     if (dir) { body.directory = dir; }
-    if (paths) { body.paths = paths.split(/[\n,]/).map(function (s) { return s.trim(); })
-                                   .filter(Boolean); }
-    var globs = $("globs").value.trim();
-    if (globs) { body.globs = globs.split(",").map(function (s) { return s.trim(); }).filter(Boolean); }
-    if (!body.directory && !body.paths) {
-      say($("startMsg"), "Give a directory or at least one path.", "err");
-      return;
+    if (paths) {
+      body.paths = paths.split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
     }
-    $("start").disabled = true;
-    fetch("/v1/admin/ingestion/jobs", {
+    var globs = $("globs").value.trim();
+    if (globs) {
+      body.globs = globs.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    }
+    return (body.directory || body.paths) ? body : null;
+  }
+
+  function post(body) {
+    return fetch("/v1/admin/ingestion/jobs", {
       method: "POST",
       headers: Object.assign({ "Content-Type": "application/json" }, auth()),
       body: JSON.stringify(body)
-    })
-      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
-      .then(function (res) {
-        if (res.ok) {
-          say($("startMsg"), "Started " + res.d.job_id + " over " + res.d.total + " document(s).", "ok");
-          loadJobs();
-        } else {
-          say($("startMsg"), res.d.detail || res.d.error || "Could not start the import.", "err");
-        }
-      })
-      .catch(function () { say($("startMsg"), "Could not reach the gateway.", "err"); })
-      .then(function () { $("start").disabled = false; });
+    }).then(function (r) {
+      return r.json().then(function (d) { return { ok: r.ok, status: r.status, d: d }; });
+    });
+  }
+
+  function explain(res) {
+    var d = res.d || {};
+    if (res.status === 401) { return "That key was not accepted. Check it carries an admin scope."; }
+    if (d.error === "ingestion_root_not_configured") {
+      return "This deployment has no ingestion root, so server-side paths are refused. Set " +
+             "MATRIXARK_INGESTION_ROOT to the directory holding your documents and restart.";
+    }
+    if (d.error === "path_outside_ingestion_root") {
+      return "That path sits outside the deployment's ingestion root: " + (d.detail || "");
+    }
+    if (d.error === "no_documents_matched") {
+      return "Nothing matched. Check the directory, and that your patterns cover the file types.";
+    }
+    return d.detail || d.error || "The gateway rejected the request.";
+  }
+
+  /* ---------- actions ---------- */
+  $("preview").addEventListener("click", function () {
+    var body = requestBody();
+    if (!body) { say($("startMsg"), "Give a directory or at least one path.", "err"); return; }
+    body.preview = true;
+    $("preview").disabled = true;
+    post(body).then(function (res) {
+      if (!res.ok) { lastPreview = null; $("start").disabled = true; say($("startMsg"), explain(res), "err"); return; }
+      lastPreview = res.d;
+      $("start").disabled = false;
+      var sample = res.d.sample.slice(0, 6).join("\n");
+      $("startMsg").innerHTML =
+        '<div class="msg ok">' + res.d.total + " document" + (res.d.total === 1 ? "" : "s") +
+        " match, " + bytes(res.d.bytes) + " of source. Ready to import.</div>" +
+        "<pre style='margin-top:10px'>" + esc(sample) +
+        (res.d.truncated ? "\n… and " + (res.d.total - res.d.sample.length) + " more" : "") + "</pre>";
+    }).catch(function () {
+      say($("startMsg"), "Could not reach the gateway.", "err");
+    }).then(function () { $("preview").disabled = false; });
   });
 
-  $("refresh").addEventListener("click", function () { loadConfig(); loadJobs(); loadMetrics(); });
-  $("key").addEventListener("change", function () { loadConfig(); loadJobs(); });
+  $("start").addEventListener("click", function () {
+    var body = requestBody();
+    if (!body) { return; }
+    $("start").disabled = true;
+    post(body).then(function (res) {
+      if (res.ok) {
+        say($("startMsg"), "Started " + res.d.job_id + " over " + res.d.total +
+            " document" + (res.d.total === 1 ? "" : "s") + ".", "ok");
+        lastPreview = null;
+        loadJobs();
+      } else {
+        say($("startMsg"), explain(res), "err");
+        $("start").disabled = false;
+      }
+    }).catch(function () {
+      say($("startMsg"), "Could not reach the gateway.", "err");
+      $("start").disabled = false;
+    });
+  });
 
-  loadConfig(); loadJobs(); loadMetrics();
-  timer = setInterval(function () { loadJobs(); loadMetrics(); }, 4000);
+  $("copyScrape").addEventListener("click", function () {
+    var cfg = "scrape_configs:\n  - job_name: matrixark_gateway\n    metrics_path: /v1/metrics\n" +
+              "    static_configs:\n      - targets: [\"" + location.host + "\"]\n";
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(cfg).then(function () {
+        $("copyScrape").textContent = "copied";
+        setTimeout(function () { $("copyScrape").textContent = "copy Prometheus scrape config"; }, 1800);
+      });
+    }
+  });
+
+  /* invalidate a stale preview when the selection changes */
+  ["dir", "paths", "globs", "user"].forEach(function (id) {
+    $(id).addEventListener("input", function () { lastPreview = null; $("start").disabled = true; });
+  });
+
+  /* key handling */
+  try {
+    var saved = sessionStorage.getItem("matrixark_admin_key");
+    if (saved) { $("key").value = saved; $("remember").checked = true; }
+  } catch (e) { /* storage unavailable */ }
+  function persistKey() {
+    try {
+      if ($("remember").checked) { sessionStorage.setItem("matrixark_admin_key", $("key").value); }
+      else { sessionStorage.removeItem("matrixark_admin_key"); }
+    } catch (e) { /* storage unavailable */ }
+  }
+  $("key").addEventListener("change", function () { persistKey(); loadConfig(); loadJobs(); });
+  $("remember").addEventListener("change", persistKey);
+
+  function tick() { loadJobs(); loadMetrics(); }
+  function schedule() {
+    if (timer) { clearInterval(timer); timer = null; }
+    if ($("auto").checked) { timer = setInterval(tick, 4000); }
+  }
+  $("auto").addEventListener("change", schedule);
+
+  loadConfig(); tick(); schedule();
 })();
 </script>
 </body>

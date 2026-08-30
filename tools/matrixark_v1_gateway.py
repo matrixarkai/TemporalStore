@@ -1975,6 +1975,17 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                                "detail": str(exc)})
             if not documents:
                 return await _json(send, 400, {"error": "no_documents_matched"})
+            # A preview resolves and counts the documents without importing them, so a customer can
+            # confirm the selection is what they meant before committing to a long run.
+            if payload.get("preview"):
+                return await _json(send, 200, {
+                    "status": "preview",
+                    "total": len(documents),
+                    "bytes": sum((os.path.getsize(p) if os.path.exists(p) else 0)
+                                 for p in documents[:5000]),
+                    "sample": documents[:25],
+                    "truncated": len(documents) > 25,
+                })
             job = _jobs.REGISTRY.submit(documents, {
                 "base_url": payload.get("base_url") or ("http://127.0.0.1:%d" % cfg.port
                                                         if getattr(cfg, "port", None) else None),
@@ -1982,6 +1993,24 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "api_key_env": payload.get("api_key_env") or "MATRIXARK_API_KEY",
                 "timeout_s": payload.get("timeout_s") or 1800.0,
             })
+            return await _json(send, 202, job.snapshot())
+
+        # ---- cancel a running ingestion job (auth + admin scope) -----------------------------
+        # Stops the job before its next document; documents already imported stay imported, which
+        # is safe because ingest is a keyed upsert and a later re-run replaces rather than duplicates.
+        if method == "POST" and path.startswith("/v1/admin/ingestion/jobs/") and path.endswith("/cancel"):
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            import matrixark_ingestion_jobs as _jobs
+            job_id = path[len("/v1/admin/ingestion/jobs/"):-len("/cancel")]
+            job = _jobs.REGISTRY.get(job_id)
+            if job is None:
+                return await _json(send, 404, {"error": "unknown_job", "job_id": job_id})
+            job.cancel()
             return await _json(send, 202, job.snapshot())
 
         # ---- get_all via GET /v1/memories (auth + context:retrieve) -------------------------
