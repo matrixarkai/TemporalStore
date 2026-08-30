@@ -158,9 +158,18 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
             Command::ContextUpsertNode { tenant_hash, node } => {
                 Some(format!("ctx:node:{tenant_hash}:{}", node.node_hash))
             }
+            // ContextSetNodeEmbedding names a node exactly like the two above and the
+            // client keys it that way, but this copy of the logic did not key it at all --
+            // so a shed node was refused when read and accepted when its embedding was
+            // written. Same record, same drain, two answers.
             Command::ContextGetNode {
                 tenant_hash,
                 node_hash,
+            }
+            | Command::ContextSetNodeEmbedding {
+                tenant_hash,
+                node_hash,
+                ..
             } => Some(format!("ctx:node:{tenant_hash}:{node_hash}")),
             Command::ContextGetNodes {
                 tenant_hash,

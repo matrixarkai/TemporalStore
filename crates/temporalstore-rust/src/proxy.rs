@@ -1992,6 +1992,100 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_full_drain_refuses_commands_that_carry_no_routing_key() {
+        // The drop decision hashes a routing key, and the `filter_map` that collects those
+        // keys silently discarded every command that has none -- the whole resource-blob
+        // upload path, sequence batch queries, node-embedding reads. A proxy an operator had
+        // drained to zero went on serving them in full, while the readiness probe reported it
+        // as rejecting everything.
+        //
+        // Only a FULL drain closes this. Partial shedding is per key by construction, so a
+        // command with nothing to hash stays served below 100 -- the same boundary the
+        // readiness probe draws.
+        let drained = scoped_proxy(ProxyOptions {
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        let keyless = [
+            Command::ContextResourceBlobPut {
+                tenant_hash: 7,
+                payload_base64: String::new(),
+            },
+            Command::ContextResourceBlobBegin { tenant_hash: 7 },
+            Command::SequenceBatchQuery {
+                queries: Vec::new(),
+            },
+        ];
+        for command in keyless {
+            let response = drained.execute(ExecuteRequest {
+                shard_id: 1,
+                command: command.clone(),
+            });
+            assert_eq!(
+                response.status.code, "proxy_traffic_dropped",
+                "a fully drained proxy must refuse this, not serve it because the command                  carries no key to hash: {command:?}"
+            );
+        }
+
+        // The boundary stays where the readiness probe puts it: 99 is load management.
+        let shedding = scoped_proxy(ProxyOptions {
+            drop_percent: 99,
+            ..ProxyOptions::default()
+        });
+        let response = shedding.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextResourceBlobBegin { tenant_hash: 7 },
+        });
+        assert_ne!(
+            response.status.code, "proxy_traffic_dropped",
+            "below a full drain there is no key to shed on, so it is still served"
+        );
+    }
+
+    #[test]
+    fn the_same_context_node_is_shed_whatever_command_names_it() {
+        // The proxy keeps its own copy of the routing-key logic and the copies had drifted:
+        // the client keys ContextSetNodeEmbedding by (tenant, node) like every other command
+        // naming a node, the proxy keyed it not at all. A shed tenant's node was therefore
+        // refused when read and accepted when its embedding was written -- one record, two
+        // answers, from a drain that is supposed to be per key.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 50,
+            ..ProxyOptions::default()
+        });
+        let refused_node = (0..200u64)
+            .find(|node_hash| {
+                proxy
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::ContextGetNode {
+                            tenant_hash: 7,
+                            node_hash: *node_hash,
+                        },
+                    })
+                    .status
+                    .code
+                    == "proxy_traffic_dropped"
+            })
+            .expect("at 50 percent some node is refused");
+
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: 7,
+                node_hash: refused_node,
+                model_hash: 1,
+                vector: vec![0.0],
+                updated_at_ms: 1,
+            },
+        });
+        assert_eq!(
+            response.status.code, "proxy_traffic_dropped",
+            "node {refused_node} is refused when read; writing its embedding names the same              node and has to be refused too"
+        );
+    }
+
+    #[test]
     fn a_proxy_shedding_everything_fails_its_readiness_probe() {
         // Draining has two knobs. `serving_mode: NotServing` is the obvious one and the
         // probe already answered for it. `drop_percent: 100` is the other: every request

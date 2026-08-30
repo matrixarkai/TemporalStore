@@ -18,6 +18,18 @@ pub(super) fn proxy_policy_rejection(
         return Some(status);
     }
     let drop_percent = options.drop_percent.min(100);
+    // A full drain has to mean every request. The check below can only judge commands that
+    // HAVE a routing key and `filter_map` silently discards the ones that do not -- the
+    // resource-blob upload path, sequence batch queries, node-embedding reads. A proxy an
+    // operator had drained to zero served those in full while its readiness probe reported
+    // it as rejecting everything.
+    //
+    // Below 100 the leak stands on purpose: shedding is per key by construction, and a
+    // command with nothing to hash has no share to shed. That is the same boundary the
+    // readiness probe draws between a drain and load management.
+    if drop_percent >= 100 {
+        return Some(proxy_dropped_status());
+    }
     if drop_percent > 0
         && commands
             .iter()

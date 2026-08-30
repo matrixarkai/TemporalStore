@@ -1511,6 +1511,11 @@ impl TemporalStoreTable {
         command_routing_key(command)
             .as_deref()
             .map(|key| self.shard_id_for_key(key))
+            // A command with no routing key pins to the handle's shard, and that is load
+            // bearing rather than a lazy default: a multi-part blob upload is Begin, then
+            // Appends, then Commit, and the staged parts live on the node that served the
+            // Begin. Hashing something per command would scatter the parts of one upload
+            // across shards and none of them would commit.
             .unwrap_or(self.shard_id)
     }
 
