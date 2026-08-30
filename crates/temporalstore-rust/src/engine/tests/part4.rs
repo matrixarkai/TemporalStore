@@ -8894,3 +8894,45 @@ fn registrations_plateau_instead_of_tracking_writes() {
         );
     }
 }
+
+/// a batch leaves nothing staged for the next write to adopt.
+///
+/// Outcomes are staged during execution and taken at the append. The batch path executes every
+/// command in the batch — staging an item for each — and then appends records built from the
+/// COMMANDS, never touching what was staged. So the items sit in the thread's buffer, and the
+/// next write on that thread appends them as its own doing.
+///
+/// This is the same defect already fixed for replay and for the single-write path, in the one
+/// place left. Threads are reused across requests in a server and across tests here, so "the next
+/// write" is routinely someone else entirely.
+#[test]
+fn a_batch_leaves_nothing_staged_for_the_next_write_to_adopt() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+
+    let batch = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: (0..6)
+            .map(|index| Command::StringSet {
+                key: format!("batched-{index}"),
+                value: b"v".to_vec(),
+            })
+            .collect(),
+    });
+    assert!(batch.status.ok, "the batch itself must succeed");
+
+    assert_eq!(
+        crate::engine::block_in_wal::staged_outcome_count(),
+        0,
+        "a batch must leave nothing staged: whatever it leaves is picked up by the next write on \
+         this thread and written into that write's record as changes it made itself"
+    );
+}
