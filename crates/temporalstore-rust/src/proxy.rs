@@ -1992,6 +1992,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_write_disabled_proxy_refuses_everything_the_engine_calls_a_write() {
+        // The proxy kept its own hand-maintained list of what counts as a write and it had
+        // fallen fourteen commands behind the engine's -- every list and sorted-set mutation
+        // among them. So a proxy an operator had put in WriteDisabled took a ZSetAdd and a
+        // ListPush and forwarded them, and the write inflight quota never counted them either.
+        //
+        // The client and the data node both delegate to the engine's classifier, each after
+        // this same drift did damage. This was the third copy.
+        let proxy = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::WriteDisabled,
+            ..ProxyOptions::default()
+        });
+        let writes = [
+            Command::ZSetAdd {
+                key: "k".to_string(),
+                member: b"m".to_vec(),
+                score: 1.0,
+            },
+            Command::ListPush {
+                key: "k".to_string(),
+                member: b"m".to_vec(),
+                left: true,
+            },
+            Command::CommonPersist {
+                key: "k".to_string(),
+            },
+        ];
+        for command in writes {
+            assert!(
+                crate::engine::is_write_command(&command),
+                "premise: the engine calls this a write: {command:?}"
+            );
+            let response = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: command.clone(),
+            });
+            assert_eq!(
+                response.status.code, "proxy_write_disabled",
+                "a write-disabled proxy must refuse what the engine calls a write, not                  forward it because its own list is short: {command:?}"
+            );
+        }
+
+        // A read is still served -- the fix must not turn the whole proxy off.
+        let read = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_ne!(
+            read.status.code, "proxy_write_disabled",
+            "reads are still served while writes are disabled"
+        );
+    }
+
+    #[test]
     fn a_full_drain_refuses_commands_that_carry_no_routing_key() {
         // The drop decision hashes a routing key, and the `filter_map` that collects those
         // keys silently discarded every command that has none -- the whole resource-blob
