@@ -1099,11 +1099,28 @@ def _model_config_snapshot() -> Json:
             "embedding_provider is deterministic: retrieval uses hash vectors, not semantic "
             "embeddings. Set MATRIXARK_EMBEDDING_PROVIDER and MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1."
         )
-    elif not require_model_embeddings:
-        warnings.append(
-            "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is not set: if the encoder becomes unreachable the "
-            "gateway silently falls back to hash vectors instead of failing the request."
-        )
+    else:
+        if not require_model_embeddings:
+            warnings.append(
+                "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is not set: if the encoder becomes unreachable "
+                "the gateway falls back to hash vectors instead of failing the request."
+            )
+        # Two configuration mistakes silently degrade an OpenAI-compatible encoder to hash vectors,
+        # and neither is visible from the outside: the request 200s and retrieval still returns
+        # plausible results. Both are cheap to check here.
+        api_base = embedding["api_base"]
+        if api_base and not api_base.rstrip("/").endswith("/v1"):
+            warnings.append(
+                "MATRIXARK_EMBEDDING_API_BASE (" + api_base + ") does not end in /v1: the endpoint "
+                "is built as <base>/embeddings, so an OpenAI-compatible encoder serving "
+                "/v1/embeddings is never reached and every vector is a hash fallback."
+            )
+        if not embedding["api_key_configured"]:
+            warnings.append(
+                "embedding key env " + embedding_key_env + " is empty: the embedding call is skipped "
+                "before it is attempted, even for a local encoder that needs no auth. Set it to any "
+                "non-empty placeholder for a local endpoint."
+            )
 
     return {
         "status": "ok",

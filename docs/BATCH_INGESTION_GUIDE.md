@@ -213,6 +213,34 @@ holding each key and whether it currently resolves.
 
 ---
 
+## 9a. Wiring a co-resident encoder (read this before a large import)
+
+Three settings must all be right, and getting any of them wrong degrades retrieval **silently** —
+the requests still return `200` and results still look plausible, because the system falls back to
+hash vectors.
+
+```bash
+export MATRIXARK_EMBEDDING_PROVIDER=openai_compatible
+export MATRIXARK_EMBEDDING_API_BASE=http://127.0.0.1:8400/v1   # MUST end in /v1
+export MATRIXARK_EMBEDDING_API_KEY_ENV=LOCAL_ENCODER_KEY
+export LOCAL_ENCODER_KEY=any-non-empty-placeholder             # MUST be non-empty
+export MATRIXARK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+export MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1                    # fail loudly instead
+```
+
+- **`/v1` is required.** The endpoint is built as `<api_base>/embeddings`, so a base of
+  `http://host:8400` produces `http://host:8400/embeddings` and never reaches an OpenAI-compatible
+  encoder serving `/v1/embeddings`.
+- **The key variable must be non-empty even for a local encoder that needs no auth.** An empty value
+  makes the call be skipped before it is attempted. Any placeholder works.
+- **`MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1` turns both of the above into loud failures** instead of a
+  silent downgrade to hash vectors.
+
+Confirm it with `/v1/admin/config` — the `warnings` list names each of these mistakes explicitly — and
+verify the vectors are real by checking that the encoder receives traffic during an ingest. A correctly
+wired deployment reports `embedding.provider` as your endpoint with no embedding warnings; the vectors
+are 384-dimensional for either MiniLM model, versus 32 for the hash fallback.
+
 ## 10. What to expect
 
 Measured on 1,000 markdown/JSON documents averaging 1.3 MB, on the storage path:

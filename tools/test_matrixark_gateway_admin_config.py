@@ -60,10 +60,40 @@ class ModelConfigSnapshotTest(unittest.TestCase):
                 "MATRIXARK_EXTRACTION_API_KEY_ENV": "DEEPSEEK_API_KEY",
                 "DEEPSEEK_API_KEY": "present",
                 "MATRIXARK_EMBEDDING_PROVIDER": "openai_compatible",
+                "MATRIXARK_EMBEDDING_API_BASE": "http://127.0.0.1:8400/v1",
+                "MATRIXARK_EMBEDDING_API_KEY_ENV": "LOCAL_ENCODER_KEY",
+                "LOCAL_ENCODER_KEY": "placeholder",
                 "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS": "1",
             }
         )
         self.assertEqual(gateway._model_config_snapshot()["warnings"], [])
+
+    def test_an_embedding_base_url_without_v1_is_called_out(self) -> None:
+        # <base>/embeddings never reaches an encoder serving /v1/embeddings, and the request still
+        # succeeds with hash vectors -- invisible without this warning.
+        os.environ.update(
+            {
+                "MATRIXARK_EMBEDDING_PROVIDER": "openai_compatible",
+                "MATRIXARK_EMBEDDING_API_BASE": "http://127.0.0.1:8400",
+                "MATRIXARK_EMBEDDING_API_KEY_ENV": "LOCAL_ENCODER_KEY",
+                "LOCAL_ENCODER_KEY": "placeholder",
+                "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS": "1",
+            }
+        )
+        joined = " ".join(gateway._model_config_snapshot()["warnings"])
+        self.assertIn("does not end in /v1", joined)
+
+    def test_an_empty_embedding_key_is_called_out_even_for_a_local_encoder(self) -> None:
+        os.environ.update(
+            {
+                "MATRIXARK_EMBEDDING_PROVIDER": "openai_compatible",
+                "MATRIXARK_EMBEDDING_API_BASE": "http://127.0.0.1:8400/v1",
+                "MATRIXARK_EMBEDDING_API_KEY_ENV": "LOCAL_ENCODER_KEY",
+                "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS": "1",
+            }
+        )
+        joined = " ".join(gateway._model_config_snapshot()["warnings"])
+        self.assertIn("is empty", joined)
 
     def test_a_named_provider_with_an_empty_key_is_called_out(self) -> None:
         os.environ["MATRIXARK_EXTRACTION_PROVIDER"] = "openai_compatible"
