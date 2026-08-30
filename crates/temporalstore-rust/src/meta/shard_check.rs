@@ -165,6 +165,45 @@ pub fn serving_shards(server: &ServerMetaInfo) -> BTreeSet<ShardId> {
         .collect()
 }
 
+/// What one server looks like to the divergence check.
+///
+/// Taken while the metadata lock is held, so the check itself runs without it.
+/// Copying the whole `ServerMetaInfo` to do that copied its shard-load list and
+/// its shard-state list -- three strings for every shard a datanode holds --
+/// for a check that reads neither. Every state is reduced to a [`ShardHealth`],
+/// which is `Copy`, and that is what the check compares.
+#[derive(Debug, Clone)]
+pub struct ObservedServer {
+    server_addr: String,
+    state: MetaEntityState,
+    reports_shard_states: bool,
+    boot_time_ms: u64,
+    /// The healthiest verdict per shard: two workers mid-handoff report the
+    /// same shard, and one of them still serving it is enough.
+    shard_health: BTreeMap<ShardId, ShardHealth>,
+}
+
+impl ObservedServer {
+    pub fn observe(server: &ServerMetaInfo) -> Self {
+        let mut shard_health: BTreeMap<ShardId, ShardHealth> = BTreeMap::new();
+        for state in &server.shard_states {
+            let health = ShardHealth::classify(state);
+            let health = match shard_health.get(&state.shard_id) {
+                Some(existing) => (*existing).max(health),
+                None => health,
+            };
+            shard_health.insert(state.shard_id, health);
+        }
+        Self {
+            server_addr: server.server_addr.clone(),
+            state: server.state,
+            reports_shard_states: server.reports_shard_states,
+            boot_time_ms: server.boot_time_ms,
+            shard_health,
+        }
+    }
+}
+
 /// Stateful reconciler: pure comparison plus a rate-limit window.
 #[derive(Debug, Clone)]
 pub struct ShardChecker {
@@ -209,14 +248,14 @@ impl ShardChecker {
     pub fn check(
         &mut self,
         shard_owners: &BTreeMap<ShardId, String>,
-        servers: &[ServerMetaInfo],
+        servers: &[ObservedServer],
         now_ms: u64,
     ) -> ShardCheckReport {
         self.roll_window(now_ms);
 
         let mut report = ShardCheckReport::default();
         // Which servers may be judged this round, and what each one serves.
-        let mut served: BTreeMap<&str, BTreeMap<ShardId, ShardHealth>> = BTreeMap::new();
+        let mut served: BTreeMap<&str, &BTreeMap<ShardId, ShardHealth>> = BTreeMap::new();
         let mut judgeable: BTreeSet<&str> = BTreeSet::new();
         for server in servers {
             if server.state != MetaEntityState::Normal {
@@ -235,17 +274,8 @@ impl ShardChecker {
                 continue;
             }
             judgeable.insert(server.server_addr.as_str());
-            let entry = served.entry(server.server_addr.as_str()).or_default();
-            for state in &server.shard_states {
-                let health = ShardHealth::classify(state);
-                // A shard reported twice (two workers mid-handoff) keeps the
-                // healthiest verdict: one worker still serving it is enough.
-                let health = match entry.get(&state.shard_id) {
-                    Some(existing) => (*existing).max(health),
-                    None => health,
-                };
-                entry.insert(state.shard_id, health);
-            }
+            // Reduced when the server was observed, under the lock.
+            served.insert(server.server_addr.as_str(), &server.shard_health);
         }
         report.skipped_in_reboot_grace.sort();
         report.skipped_without_shard_reports.sort();
@@ -370,7 +400,7 @@ impl ShardChecker {
     /// True while the server is still inside its post-boot reload window. A zero
     /// or future-dated boot time yields false: an unknown boot time must not
     /// grant an unbounded grace.
-    fn in_reboot_grace(&self, server: &ServerMetaInfo, now_ms: u64) -> bool {
+    fn in_reboot_grace(&self, server: &ObservedServer, now_ms: u64) -> bool {
         if self.options.reboot_grace_ms == 0 || server.boot_time_ms == 0 {
             return false;
         }
@@ -393,7 +423,11 @@ impl SingleNodeMeta {
             // A frozen shard is out of service on purpose, so its owner not
             // serving it is expected rather than divergence.
             let shard_owners = serving_shard_owners(&state);
-            let servers = state.servers.values().cloned().collect::<Vec<_>>();
+            let servers = state
+                .servers
+                .values()
+                .map(ObservedServer::observe)
+                .collect::<Vec<_>>();
             let live_servers = state
                 .servers
                 .values()
@@ -502,7 +536,13 @@ mod tests {
     }
 
     /// A healthy, reporting server that boots long before any test clock.
-    fn server(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
+    /// A server as the check sees it, built from a full record so the tests
+    /// still exercise the reduction that the round performs under the lock.
+    fn server(addr: &str, serving: &[(ShardId, &str)]) -> ObservedServer {
+        ObservedServer::observe(&server_record(addr, serving))
+    }
+
+    fn server_record(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
             reported_record_count: 0,
             reported_storage_bytes: 0,
@@ -648,9 +688,15 @@ mod tests {
         // Mid-handoff one worker can report `loading` while another serves it.
         // One worker serving is enough.
         let mut checker = ShardChecker::default();
-        let mut handoff = server("s1", &[(1, "loading")]);
+        let mut handoff = server_record("s1", &[(1, "loading")]);
         handoff.shard_states.push(serving_state(1, "serving"));
-        let report = checker.check(&owners(&[(1, "s1")]), &[handoff], NOW);
+        // The healthiest verdict is picked while the server is observed, which
+        // is where the two reports are still both visible.
+        let report = checker.check(
+            &owners(&[(1, "s1")]),
+            &[ObservedServer::observe(&handoff)],
+            NOW,
+        );
         assert!(report.diverged.is_empty());
         assert!(report.settling.is_empty());
     }
