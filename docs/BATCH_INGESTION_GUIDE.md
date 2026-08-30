@@ -318,6 +318,90 @@ Two caveats worth planning around:
 
 ---
 
+## 10a. Where the time goes, and what actually moves it
+
+Ingesting markdown at scale is **encoder-bound**, not storage-bound. Measured on this hardware with
+`paraphrase-multilingual-MiniLM-L12-v2`:
+
+| | |
+|---|---|
+| Encoder throughput, realistic chunks | **~24-30 texts/s** on 8 cores |
+| A 1 MB markdown document | ~2,500 chunks at the 240-token default |
+| Encoding that one document | **~92 s** |
+| Storage path for the same document | ~1.4 s |
+
+The storage engine is not the constraint — embedding is, by roughly two orders of magnitude. Plan
+capacity from encoder throughput, and be aware that adding cores helps sub-linearly: eight cores buy
+about 4.5x the throughput of one.
+
+**A caution on benchmarking.** Measuring the encoder with short strings is badly misleading — a
+handful of words runs near 200 texts/s while real 240-token chunks run near 24 texts/s, an eightfold
+difference. Always benchmark with chunks from your own corpus.
+
+### The levers, measured
+
+**Worker layout — free, ~19%.** Several small encoder processes beat one large one, because thread
+scaling inside a process is sublinear. On an eight-core budget:
+
+```
+1 process  x 8 threads    29.8 texts/s
+2 processes x 4 threads    30.7 texts/s
+4 processes x 2 threads    35.4 texts/s   <- best
+8 processes x 1 thread     32.9 texts/s
+```
+
+**Embedding text length — ~28%, no measured quality cost.** `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS`
+caps how much of each chunk is embedded (default 128; the model's own window is also 128, so nothing
+above that is ever read). Measured on real documentation, retrieving with English and Chinese
+queries:
+
+```
+tokens   texts/s   mean top score   leading answer unchanged
+128         29.8        0.529            (baseline)
+ 96         30.3        0.541               7 of 8
+ 64         38.1        0.532               6 of 8
+ 32         72.0        0.510               4 of 8
+```
+
+Sixty-four is the sweet spot: **+28% throughput at a marginally better mean score**. Thirty-two is
+more than twice as fast but changes half the answers — too lossy for retrieval you depend on.
+
+**Chunk size — large, but it costs retrieval. Measure before adopting.** Chunk size sets the number
+of vectors, so it moves ingest time and vector storage proportionally:
+
+```
+chunk tokens   chunks/MB doc   encode/doc   vectors/doc
+240 (default)       2,664          92 s        8.6 MB
+500                   830          28 s        2.7 MB
+1000                  414          12 s        1.3 MB
+```
+
+That looks like a 7.7x win, and on synthetic repetitive content it measures as nearly free. **On real
+prose it is not.** Repeating the test against genuine documentation, moving from 240 to 1000 tokens
+dropped the mean top score 15% and changed the leading answer for four of six queries, one of them to
+a plainly wrong section. The synthetic corpus hid the loss because its passages were near-duplicates
+of each other — any of them looked like a correct answer.
+
+If you raise the chunk size, **verify retrieval on your own documents and your own queries first.**
+
+**Vector encoding — a disk win, not a memory one.** `MATRIXARK_EMBEDDING_VECTOR_SCALE=100000` stores
+vectors as integers for about a third less disk with ranking unchanged. Resident memory barely moves,
+because it is dominated by per-record bookkeeping rather than payload: to reduce memory, reduce the
+number of records. Avoid `MATRIXARK_EMBEDDING_VECTOR_INT8`; it is smaller still but measurably
+reorders near-neighbours.
+
+### A production profile
+
+```bash
+export MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS=64      # +28% throughput, no measured quality cost
+export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # ~33% less disk, ranking unchanged
+export MATRIXARK_EMBEDDING_CACHE_ENTRIES=32768     # ~100 MB, worth it on repetitive corpora
+export MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS=20000   # 1 MB documents exceed the 2048 default
+# run the encoder as several small processes rather than one large one
+```
+
+Leave chunk size at its default unless you have measured the effect on your own corpus.
+
 ## 11. Troubleshooting
 
 **`no input documents found`** — `--dir` matched nothing. Check the path, and remember the default
@@ -340,7 +424,7 @@ export MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS=240       # chunk size; larger = fewe
 
 Chunk size is a real trade-off, not just a limit. Larger chunks mean far fewer records and much less
 memory, but the encoder only embeds the first `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS` tokens of each
-chunk (128 by default, 256 for the MiniLM models). A chunk much longer than that window has its tail
+chunk (128 by default, which is also the MiniLM models' own maximum sequence length). A chunk much longer than that window has its tail
 left out of the semantic index. Keeping the chunk size at or below the embedding window is the
 configuration that indexes everything you store.
 
