@@ -4,46 +4,16 @@
 use crate::types::Command;
 
 pub(super) fn proxy_command_is_write(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::CommonDelete { .. }
-            | Command::CommonExpire { .. }
-            | Command::StringSet { .. }
-            | Command::StringSetEx { .. }
-            | Command::StringSetConditional { .. }
-            | Command::StringDelete { .. }
-            | Command::HashSet { .. }
-            | Command::HashMultiSet { .. }
-            | Command::HashIncrBy { .. }
-            | Command::HashDelete { .. }
-            | Command::SetAdd { .. }
-            | Command::SetRemove { .. }
-            | Command::FeatureAppend { .. }
-            | Command::FeatureAppendWithPolicy { .. }
-            | Command::FeatureReplace { .. }
-            | Command::FeatureDelete { .. }
-            | Command::SequenceAdd { .. }
-            | Command::ControlStateIncrement { .. }
-            | Command::ControlStateIncrementWithOptions { .. }
-            | Command::ControlStateChangeAdd { .. }
-            | Command::ControlStateSet { .. }
-            | Command::ControlStateSetAndGet { .. }
-            | Command::ControlStateSetAndGetWithOptions { .. }
-            | Command::ControlStateSelectionSet { .. }
-            | Command::ContextUpsertNode { .. }
-            | Command::ContextWriteEvent { .. }
-            | Command::ContextWriteExtractedEvent { .. }
-            | Command::ContextWriteIndexRef { .. }
-            | Command::ContextWritePackAudit { .. }
-            | Command::ContextMarkSummaryDirty { .. }
-            | Command::ContextMarkEmbeddingDirty { .. }
-            | Command::ContextUpsertEntity { .. }
-            | Command::ContextUpsertChildRef { .. }
-            | Command::ContextSetNodeEmbedding { .. }
-            | Command::ContextUpsertSummary { .. }
-            | Command::ContextWriteCompressionEvent { .. }
-            | Command::ContextCompressEvents { .. }
-    )
+    // Delegate to the engine's write-command classifier -- the same one that gates WAL
+    // persistence, and the one the client and the data node already delegate to after a
+    // hand-maintained subset drifted in each of them.
+    //
+    // This copy had drifted too, by fourteen commands: every list and sorted-set mutation
+    // (ListPush/ListPop, ZSetAdd/ZSetRemove/ZSetIncrBy/ZSetPop), BucketTake, SeenCheck,
+    // CommonPersist and the whole resource-blob upload path. Both things this answers for
+    // were wrong as a result -- a proxy in Readonly or WriteDisabled forwarded those writes
+    // instead of refusing them, and the write inflight quota never counted them.
+    crate::engine::is_write_command(command)
 }
 
 fn proxy_command_key(command: &Command) -> Option<&str> {
