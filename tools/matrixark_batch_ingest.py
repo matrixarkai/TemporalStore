@@ -142,7 +142,13 @@ def resource_type_for(path: str) -> str:
 # ingest
 # ---------------------------------------------------------------------------------------------
 def post_document(
-    base_url: str, path: str, *, user_id: str, api_key: str, timeout_s: float
+    base_url: str,
+    path: str,
+    *,
+    user_id: str,
+    api_key: str,
+    timeout_s: float,
+    finalize: bool = True,
 ) -> Tuple[bool, str]:
     """Ingest one document. Returns (ok, detail). Retries transient failures with backoff."""
     try:
@@ -156,10 +162,19 @@ def post_document(
         "resource_type": resource_type_for(path),
         "raw_uri": os.path.abspath(path),
         "identity_key": identity_key_for(path),
-        "content": content,
-        "messages": [{"role": "user", "content": content}],
+        # The ingest envelope takes resource content as `text`/`resource_text` -- NOT `content`,
+        # which is silently ignored. See docs/INGEST_SCHEMA.md ("Content requirement by kind").
+        "text": content,
         "user_id": user_id,
         "scope": {"user_id": user_id},
+        # Block until the document is durable rather than accepting it as a deferred event, so a
+        # reported success means the document is actually retrievable.
+        "wait": True,
+        # A document is a COMPLETE unit, unlike a streaming chat message. Without this the gateway
+        # accepts the ingest as a lightweight event and defers materialisation to a background
+        # drain, so the document is not retrievable when the call returns -- a batch import would
+        # report 1000 successes and read back nothing.
+        "finalize": finalize,
     }
     payload = json.dumps(body).encode("utf-8")
     url = base_url.rstrip("/") + "/v1/ingest"
@@ -314,7 +329,12 @@ def run(args: argparse.Namespace) -> int:
             except OSError:
                 size = 0
             ok, detail = post_document(
-                args.base_url, path, user_id=args.user_id, api_key=api_key, timeout_s=args.timeout
+                args.base_url,
+                path,
+                user_id=args.user_id,
+                api_key=api_key,
+                timeout_s=args.timeout,
+                finalize=not args.no_finalize,
             )
             if ok:
                 with state_lock:
@@ -374,6 +394,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true", help="skip documents recorded in --state")
     parser.add_argument("--status-file", help="write JSON progress here on every update")
     parser.add_argument("--dry-run", action="store_true", help="list what would be sent, send nothing")
+    parser.add_argument(
+        "--no-finalize",
+        action="store_true",
+        help="accept documents without materialising them now (they stay unretrievable "
+             "until a background drain runs); only for streaming callers",
+    )
     parser.add_argument("--quiet", action="store_true", help="suppress the per-document progress line")
     return parser
 

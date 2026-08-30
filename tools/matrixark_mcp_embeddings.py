@@ -188,13 +188,35 @@ def _api_embedding_config(provider: str) -> tuple[str, str, str, str]:
     return endpoint, os.environ.get(key_env, "").strip(), model, key_env
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def require_model_embeddings(path: str) -> bool:
+    """True when a failed real-encoder call must raise instead of falling back to hash vectors.
+
+    Three knobs name this idea and they are easy to confuse:
+    ``MATRIXARK_REQUIRE_API_EMBEDDINGS`` (hosted/OpenAI-compatible endpoints) and
+    ``MATRIXARK_REQUIRE_OSS_EMBEDDINGS`` (a locally loaded sentence-transformers model) each guard one
+    path, while ``MATRIXARK_REQUIRE_MODEL_EMBEDDINGS`` reads like the provider-agnostic form of both --
+    it is what an operator naturally reaches for, and it appears in the deployment config map. It
+    previously enforced NOTHING, so a deployment that set it still degraded silently to 32-dimension
+    hash vectors while reporting success. It is now honoured on both paths.
+
+    Silent degradation is the failure worth preventing here: hash vectors answer 200, retrieve
+    plausibly, and poison the store with mismatched-dimension data that only shows up as bad recall
+    much later.
+    """
+    return _truthy_env("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS") or _truthy_env(path)
+
+
 def api_embedding_for_texts(texts: list[str], provider: str) -> list[list[float]]:
     """Embed via an OpenAI-compatible or Voyage embeddings API. Falls back to the deterministic
     encoder on missing key / network error unless MATRIXARK_REQUIRE_API_EMBEDDINGS is set (then it
     raises, so production fails fast instead of silently poisoning the store with mismatched-dim vectors)."""
     global _EMBEDDING_FALLBACK_USED
     endpoint, api_key, model, key_env = _api_embedding_config(provider)
-    require = os.environ.get("MATRIXARK_REQUIRE_API_EMBEDDINGS", "").strip().lower() in {"1", "true", "yes"}
+    require = require_model_embeddings("MATRIXARK_REQUIRE_API_EMBEDDINGS")
     if not api_key:
         if require:
             raise MatrixArkError(f"API embeddings require {key_env} for provider '{provider}'")
@@ -247,7 +269,7 @@ def oss_embedding_for_text(text: str) -> list[float]:
         vector = encoder.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
         return [round(float(value), 6) for value in vector]
     except Exception as exc:  # pragma: no cover - depends on optional local model packages.
-        if os.environ.get("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", "").strip().lower() in {"1", "true", "yes"}:
+        if require_model_embeddings("MATRIXARK_REQUIRE_OSS_EMBEDDINGS"):
             raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
         _EMBEDDING_FALLBACK_USED = True
         previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")

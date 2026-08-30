@@ -10,13 +10,22 @@ POST /v1/embeddings  {"model": "...", "input": "text" | ["t1","t2",...]}
 Run detached; prints the bound port to stdout as: LISTENING <port>
 """
 import json
+import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sentence_transformers import SentenceTransformer
 
-MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+# The model is configurable so a deployment can run the encoder its retrieval was tuned for --
+# e.g. a multilingual model for mixed CN/EN corpora. MATRIXARK_EMBEDDING_MODEL_PATH takes a
+# local directory; MATRIXARK_EMBEDDING_MODEL takes a hub id. Both MiniLM variants emit 384
+# dimensions, so switching between them does not change the stored vector width.
+MODEL_NAME = (
+    os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH", "").strip()
+    or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
+    or "sentence-transformers/all-MiniLM-L6-v2"
+)
 print("loading model...", file=sys.stderr, flush=True)
 _MODEL = SentenceTransformer(MODEL_NAME)
 _LOCK = threading.Lock()

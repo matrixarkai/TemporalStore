@@ -115,6 +115,59 @@ want under a scheduler or in a log-sensitive environment.
 
 ---
 
+## 4a. The ingestion portal (no terminal required)
+
+For customers who would rather not run a CLI, the gateway serves a page at
+**`/v1/admin/ingestion`**. Point a browser at it, paste an admin key, name a directory or a list of
+paths, and start the import; the page shows each job's progress, rate and ETA, and lists failures as
+they happen. It also renders the deployment's model configuration and any warnings, so a
+misconfigured encoder is visible before a large import rather than after.
+
+Fetching the page needs no credentials; every action on it calls an admin-gated endpoint, so the page
+is inert without a key.
+
+**Configure the boundary first.** Jobs may only read documents beneath a configured root:
+
+```bash
+export MATRIXARK_INGESTION_ROOT=/srv/playbooks
+```
+
+Anything resolving outside it — an absolute path elsewhere, a `..` traversal, or a symlink pointing
+out — is refused. With the variable unset, submitting paths is refused outright rather than
+defaulting to the filesystem root.
+
+The same operations are available as JSON if you would rather script them:
+
+```bash
+curl -X POST http://your-host:8080/v1/admin/ingestion/jobs      -H "Authorization: Bearer $MATRIXARK_API_KEY"      -H 'Content-Type: application/json'      -d '{"directory":"/srv/playbooks","user_id":"acme_team"}'
+
+curl http://your-host:8080/v1/admin/ingestion/jobs -H "Authorization: Bearer $MATRIXARK_API_KEY"
+```
+
+## 4b. Metrics and Grafana
+
+The gateway exposes Prometheus counters at **`/v1/metrics`** — aggregate only, with no keys and no
+tenant identifiers, so it is safe to scrape without credentials the way an exporter normally is:
+
+```
+matrixark_ingestion_jobs_total        matrixark_ingestion_documents_done
+matrixark_ingestion_jobs_running      matrixark_ingestion_documents_failed
+matrixark_ingestion_documents_total   matrixark_ingestion_bytes_total
+```
+
+Add a scrape job and import `docs/ops/matrixark-ingestion-dashboard.json` into Grafana for the
+matching panels: imports running, documents ingested, failures, ingest rate, source throughput and
+import backlog. The backlog panel is the one to watch on a long import — a backlog that stops falling
+while no job is running means the import died partway.
+
+```yaml
+scrape_configs:
+  - job_name: matrixark_gateway
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ["your-host:8080"]
+```
+
 ## 5. Interrupting and resuming
 
 Ingest is a **keyed upsert**: each document carries a stable `identity_key` derived from its path, so
@@ -213,6 +266,34 @@ holding each key and whether it currently resolves.
 
 ---
 
+## 9a. Wiring a co-resident encoder (read this before a large import)
+
+Three settings must all be right, and getting any of them wrong degrades retrieval **silently** —
+the requests still return `200` and results still look plausible, because the system falls back to
+hash vectors.
+
+```bash
+export MATRIXARK_EMBEDDING_PROVIDER=openai_compatible
+export MATRIXARK_EMBEDDING_API_BASE=http://127.0.0.1:8400/v1   # MUST end in /v1
+export MATRIXARK_EMBEDDING_API_KEY_ENV=LOCAL_ENCODER_KEY
+export LOCAL_ENCODER_KEY=any-non-empty-placeholder             # MUST be non-empty
+export MATRIXARK_EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+export MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1                    # fail loudly instead
+```
+
+- **`/v1` is required.** The endpoint is built as `<api_base>/embeddings`, so a base of
+  `http://host:8400` produces `http://host:8400/embeddings` and never reaches an OpenAI-compatible
+  encoder serving `/v1/embeddings`.
+- **The key variable must be non-empty even for a local encoder that needs no auth.** An empty value
+  makes the call be skipped before it is attempted. Any placeholder works.
+- **`MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1` turns both of the above into loud failures** instead of a
+  silent downgrade to hash vectors.
+
+Confirm it with `/v1/admin/config` — the `warnings` list names each of these mistakes explicitly — and
+verify the vectors are real by checking that the encoder receives traffic during an ingest. A correctly
+wired deployment reports `embedding.provider` as your endpoint with no embedding warnings; the vectors
+are 384-dimensional for either MiniLM model, versus 32 for the hash fallback.
+
 ## 10. What to expect
 
 Measured on 1,000 markdown/JSON documents averaging 1.3 MB, on the storage path:
@@ -246,6 +327,29 @@ globs are `*.md`, `*.markdown`, `*.json`; anything else needs an explicit `--glo
 errors and timeouts are retried three times with backoff before being reported; a `4xx` is not
 retried, because it will not improve. Fix the cause and re-run with `--resume` to retry only what
 failed.
+
+**`http 500` with `resource produced more than max_total_chunks`** — a large document produced more
+chunks than the cap allows. The parser defaults to ~240-token chunks, so a 1 MB document makes
+roughly 2,500 chunks against a default cap of 2,048 and every such document fails. Raise the cap, or
+use larger chunks (which also cuts memory substantially):
+
+```bash
+export MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS=20000     # headroom for ~1 MB documents
+export MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS=240       # chunk size; larger = fewer chunks
+```
+
+Chunk size is a real trade-off, not just a limit. Larger chunks mean far fewer records and much less
+memory, but the encoder only embeds the first `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS` tokens of each
+chunk (128 by default, 256 for the MiniLM models). A chunk much longer than that window has its tail
+left out of the semantic index. Keeping the chunk size at or below the embedding window is the
+configuration that indexes everything you store.
+
+**`http 500` with `wal_commit_failed: json error: expected value at line 1 column 1`** — a durable
+commit hit WAL frames it could not parse, which happens when binary framing is enabled without its
+block-footer prerequisite. Set `TS_WAL_BLOCK_FOOTER=1`. If a store has already been written in the
+mixed state, recovery will refuse to load it (`wal_scan_failed: ... refusing load rather than serving
+a truncated prefix`) — that refusal is correct, and the store needs to be recreated rather than
+forced open.
 
 **`http 401`** — the key variable is unset or empty. Confirm with `echo ${MATRIXARK_API_KEY:+set}`.
 
