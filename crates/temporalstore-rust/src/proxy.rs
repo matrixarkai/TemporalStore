@@ -1908,6 +1908,26 @@ pub(super) fn proxy_metric_families_from(rendered: &str) -> Vec<String> {
     families
 }
 
+/// The mapping table, answered against the metrics a render actually produced.
+///
+/// `covered` is set where each mapping is built, and it was set to `true` there, so it said
+/// the same thing whether or not the proxy still published the family the mapping names. Both
+/// things that read it -- the JSON report and the `metric_family_parity` gauge -- therefore
+/// could not fall to 0 whatever happened to the metrics they claim to track. The sibling list
+/// on this report was already fixed the same way, for the same reason.
+pub(super) fn proxy_metric_mappings_against(rendered: &str) -> Vec<ProxyMetricFamilyMapping> {
+    let families = proxy_metric_families_from(rendered);
+    proxy_metrics_parity_mappings()
+        .into_iter()
+        .map(|mut mapping| {
+            mapping.covered = families
+                .iter()
+                .any(|family| *family == mapping.rust_prometheus_family);
+            mapping
+        })
+        .collect()
+}
+
 fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
     vec![
         proxy_metric_mapping(
@@ -1972,7 +1992,9 @@ fn proxy_metric_mapping(
         rust_prometheus_family: rust_prometheus_family.to_string(),
         rust_labels: rust_labels.into_iter().map(str::to_string).collect(),
         grafana_panel: grafana_panel.to_string(),
-        covered: true,
+        // Unproven here on purpose; `proxy_metric_mappings_against` answers it from the
+        // metrics that were actually rendered.
+        covered: false,
     }
 }
 
@@ -1990,6 +2012,50 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mapping_claims_coverage_only_while_the_family_is_published() {
+        // `covered` is set where each mapping is built, and it was built as true, so the
+        // JSON report and the metric_family_parity gauge said "covered" whether or not the
+        // proxy still published the family named. A check that cannot fail is not a check:
+        // if a family were renamed or dropped, the gauge would have gone on reading 1 and
+        // the dashboard built on it would have gone quiet with nothing to say so.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let rendered = proxy.prometheus_metrics();
+
+        let live = proxy_metric_mappings_against(&rendered);
+        assert!(!live.is_empty(), "premise: there are mappings to check");
+        assert!(
+            live.iter().all(|mapping| mapping.covered),
+            "every mapped family is published today, so all of them must read covered"
+        );
+
+        // Take one family out of the rendered metrics. The mapping that names it has to stop
+        // claiming coverage, and no other mapping may be disturbed.
+        let dropped = live[0].rust_prometheus_family.clone();
+        let without = rendered.replace(
+            &format!("# TYPE {dropped} "),
+            "# TYPE temporalstore_proxy_family_that_is_not_published ",
+        );
+        assert_ne!(without, rendered, "premise: the family was in the render");
+
+        let checked = proxy_metric_mappings_against(&without);
+        let entry = checked
+            .iter()
+            .find(|mapping| mapping.rust_prometheus_family == dropped)
+            .expect("the mapping still exists, it just is not covered");
+        assert!(
+            !entry.covered,
+            "{dropped} is no longer published, so its mapping must not claim coverage"
+        );
+        assert!(
+            checked
+                .iter()
+                .filter(|mapping| mapping.rust_prometheus_family != dropped)
+                .all(|mapping| mapping.covered),
+            "removing one family must not unsettle the others"
+        );
+    }
 
     #[test]
     fn a_heartbeat_that_says_nothing_about_shedding_does_not_lift_a_drain() {

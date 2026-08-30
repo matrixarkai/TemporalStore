@@ -169,6 +169,7 @@ impl ProxyService {
     }
 
     pub fn metrics_parity_report(&self) -> ProxyMetricsParityReport {
+        let rendered = self.prometheus_metrics();
         ProxyMetricsParityReport {
             status: Status::ok(),
             compared_files: vec![
@@ -178,8 +179,8 @@ impl ProxyService {
                 "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
             ],
-            rust_prometheus_families: proxy_metric_families_from(&self.prometheus_metrics()),
-            mappings: proxy_metrics_parity_mappings(),
+            rust_prometheus_families: proxy_metric_families_from(&rendered),
+            mappings: proxy_metric_mappings_against(&rendered),
             grafana_panels_ready: true,
             alerts_ready: true,
         }

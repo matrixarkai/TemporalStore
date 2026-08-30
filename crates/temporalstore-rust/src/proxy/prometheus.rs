@@ -164,21 +164,6 @@ impl ProxyService {
             u64::from(options.pin_primary_reads),
         );
 
-        out.push_str("# HELP temporalstore_proxy_metric_family_parity proxy operational metric surface mapped to Rust Prometheus families.\n");
-        out.push_str("# TYPE temporalstore_proxy_metric_family_parity gauge\n");
-        for mapping in proxy_metrics_parity_mappings() {
-            push_proxy_metric(
-                &mut out,
-                "temporalstore_proxy_metric_family_parity",
-                &[
-                    ("native_surface", mapping.native_surface.as_str()),
-                    ("rust_family", mapping.rust_prometheus_family.as_str()),
-                    ("grafana_panel", mapping.grafana_panel.as_str()),
-                ],
-                u64::from(mapping.covered),
-            );
-        }
-
         let service_discovery = self.service_discovery_report_with_options(&options);
         out.push_str("# HELP temporalstore_proxy_service_registry_state Proxy service-discovery registration state.\n");
         out.push_str("# TYPE temporalstore_proxy_service_registry_state gauge\n");
@@ -273,6 +258,25 @@ impl ProxyService {
                 "temporalstore_production_readiness_service_blockers",
                 &[("service", service.service.as_str())],
                 service.blocker_count as u64,
+            );
+        }
+
+        // Last, so every family above has been rendered and this can be answered from them
+        // rather than asserted. A mapping naming a family the proxy no longer publishes
+        // reports 0 here now; it used to report 1 regardless.
+        let mappings = proxy_metric_mappings_against(&out);
+        out.push_str("# HELP temporalstore_proxy_metric_family_parity proxy operational metric surface mapped to Rust Prometheus families.\n");
+        out.push_str("# TYPE temporalstore_proxy_metric_family_parity gauge\n");
+        for mapping in mappings {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_metric_family_parity",
+                &[
+                    ("native_surface", mapping.native_surface.as_str()),
+                    ("rust_family", mapping.rust_prometheus_family.as_str()),
+                    ("grafana_panel", mapping.grafana_panel.as_str()),
+                ],
+                u64::from(mapping.covered),
             );
         }
         out
