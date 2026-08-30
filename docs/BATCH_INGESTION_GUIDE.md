@@ -318,6 +318,159 @@ Two caveats worth planning around:
 
 ---
 
+## 10a. The tuned profile, measured end to end
+
+Four real 1 MB skill documents, real encoder, default settings against the tuned profile below.
+Both arms produce identical retrieval behaviour on the queries tested; nothing here trades quality.
+
+```
+profile                     parse   embed   build    wall    written   amplification
+default                      2.9s   307.4s   3.7s   314.0s   55.7 MB       12.8x
+tuned                        2.7s   153.6s   2.4s   158.7s   44.0 MB       10.1x
+                                                    -------  -------
+                                                    1.98x     79%
+```
+
+Extrapolated to a thousand-document import: **21.8 hours down to 11.0 hours, and 14.6 GB down to
+11.5 GB.**
+
+Note where the time sits: **embedding is 98% of it.** Parsing and record building together are under
+2%. Any optimisation that is not about the encoder is rounding error on this workload.
+
+```bash
+export MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS=64      # half the embedded text, same retrieval
+export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # integer vectors, ranking unchanged
+# and run the encoder as four small processes rather than one large one
+```
+
+## 10a. Where the time goes, and what actually moves it
+
+Ingesting markdown at scale is **encoder-bound**, not storage-bound. Measured on this hardware with
+`paraphrase-multilingual-MiniLM-L12-v2`:
+
+| | |
+|---|---|
+| Encoder throughput, realistic chunks | **~24-30 texts/s** on 8 cores |
+| A 1 MB markdown document | ~2,500 chunks at the 240-token default |
+| Encoding that one document | **~92 s** |
+| Storage path for the same document | ~1.4 s |
+
+The storage engine is not the constraint — embedding is, by roughly two orders of magnitude. Plan
+capacity from encoder throughput, and be aware that adding cores helps sub-linearly: eight cores buy
+about 4.5x the throughput of one.
+
+**A caution on benchmarking.** Measuring the encoder with short strings is badly misleading — a
+handful of words runs near 200 texts/s while real 240-token chunks run near 24 texts/s, an eightfold
+difference. Always benchmark with chunks from your own corpus.
+
+### The levers, measured
+
+**Worker layout — free, ~19%.** Several small encoder processes beat one large one, because thread
+scaling inside a process is sublinear. On an eight-core budget:
+
+```
+1 process  x 8 threads    29.8 texts/s
+2 processes x 4 threads    30.7 texts/s
+4 processes x 2 threads    35.4 texts/s   <- best
+8 processes x 1 thread     32.9 texts/s
+```
+
+**Embedding text length — ~28%, no measured quality cost.** `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS`
+caps how much of each chunk is embedded (default 128; the model's own window is also 128, so nothing
+above that is ever read). Measured on real documentation, retrieving with English and Chinese
+queries:
+
+```
+tokens   texts/s   mean top score   leading answer unchanged
+128         29.8        0.529            (baseline)
+ 96         30.3        0.541               7 of 8
+ 64         38.1        0.532               6 of 8
+ 32         72.0        0.510               4 of 8
+```
+
+Sixty-four is the sweet spot: faster at a marginally better mean score (+28% measured in
+isolation here; see the combined figure below, which is the one to plan with). Thirty-two is
+more than twice as fast but changes half the answers — too lossy for retrieval you depend on.
+
+**Chunk size — large, but it costs retrieval. Measure before adopting.** Chunk size sets the number
+of vectors, so it moves ingest time and vector storage proportionally:
+
+```
+chunk tokens   chunks/MB doc   encode/doc   vectors/doc
+240 (default)       2,664          92 s        8.6 MB
+500                   830          28 s        2.7 MB
+1000                  414          12 s        1.3 MB
+```
+
+That looks like a 7.7x win, and on synthetic repetitive content it measures as nearly free. **On real
+prose it is not.** Repeating the test against genuine documentation, moving from 240 to 1000 tokens
+dropped the mean top score 15% and changed the leading answer for four of six queries, one of them to
+a plainly wrong section. The synthetic corpus hid the loss because its passages were near-duplicates
+of each other — any of them looked like a correct answer.
+
+If you raise the chunk size, **verify retrieval on your own documents and your own queries first.**
+
+**Vector encoding — 25% of everything written, and ranking-safe.** Vectors are the bulk of an ingest.
+Census of one 1 MB markdown skill (2,510 chunks, 7,574 records):
+
+```
+context_embedding   2,510 records   10,432 KB   67.9%   <- vectors dominate
+skill_section       2,510 records    3,521 KB   22.9%
+context_index       2,554 records    1,419 KB    9.2%
+                                    ---------
+                                    15,371 KB = 14.6x the source document
+```
+
+Re-running that census under each encoding:
+
+```
+vector encoding        total written   amplification   vs default
+decimals=6 (default)       15,371 KB       14.6x           100%
+decimals=4                 13,491 KB       12.9x            88%
+scale=100000               11,598 KB       11.1x            75%   <- recommended
+int8                        9,667 KB        9.2x            63%   <- reorders, avoid
+```
+
+`MATRIXARK_EMBEDDING_VECTOR_SCALE=100000` cuts **a quarter off everything an ingest writes** with
+ranking unchanged — 15.0 GB down to 11.3 GB across a thousand documents. `INT8` is smaller again but
+measurably reorders near-neighbours, so it trades retrieval quality for disk.
+
+Note what this is and is not. It reduces **bytes written and stored**. Resident memory is dominated
+by per-record bookkeeping rather than payload, so it barely moves: to reduce resident memory you must
+reduce the number of *records*, which means fewer chunks — and that carries the retrieval cost
+described above.
+
+### The two lossless levers together
+
+Measured directly rather than multiplied, on the same real-documentation corpus, because gains
+measured separately on different corpora do not simply compose:
+
+```
+128 tokens, 1 process x 8 threads     32.7 texts/s   1.00x   (defaults)
+ 64 tokens, 1 process x 8 threads     35.1 texts/s   1.07x
+128 tokens, 4 processes x 2 threads   36.0 texts/s   1.10x
+ 64 tokens, 4 processes x 2 threads   44.6 texts/s   1.37x   <- tuned
+```
+
+The two together are worth **1.37x**, more than the 1.18x their separate gains predict — shorter
+texts cut per-process memory pressure, which helps once several encoders share a machine. Neither
+lever changed the leading retrieval result on this corpus.
+
+Treat 1.37x as the honest figure for a lossless retune. It is worth having, and it is not the order
+of magnitude that a 1,000-document import needs; for that, the constraint is encoder hardware.
+
+### A production profile
+
+```bash
+export MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS=64      # +28% throughput, no measured quality cost
+export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # ~33% less disk, ranking unchanged
+export MATRIXARK_EMBEDDING_CACHE_ENTRIES=32768     # ~100 MB, worth it on repetitive corpora
+export MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS=20000   # 1 MB documents exceed the 2048 default
+# run the encoder as several small processes rather than one large one
+```
+
+Leave chunk size at its default unless you have measured the effect on your own corpus.
+
 ## 11. Troubleshooting
 
 **`no input documents found`** — `--dir` matched nothing. Check the path, and remember the default
@@ -340,7 +493,7 @@ export MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS=240       # chunk size; larger = fewe
 
 Chunk size is a real trade-off, not just a limit. Larger chunks mean far fewer records and much less
 memory, but the encoder only embeds the first `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS` tokens of each
-chunk (128 by default, 256 for the MiniLM models). A chunk much longer than that window has its tail
+chunk (128 by default, which is also the MiniLM models' own maximum sequence length). A chunk much longer than that window has its tail
 left out of the semantic index. Keeping the chunk size at or below the embedding window is the
 configuration that indexes everything you store.
 

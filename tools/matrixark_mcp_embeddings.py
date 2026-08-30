@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import math
 import os
@@ -21,8 +22,55 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 EMBEDDING_DIM = 32
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
-_EMBEDDING_VECTOR_CACHE: dict[tuple[str, str], list[float]] = {}
+# Bounded LRU rather than a plain dict. The previous policy CLEARED the whole cache on overflow,
+# which throws away every warm entry at the exact moment the cache starts paying off -- on a corpus
+# with any repeated text that turns a steady hit rate into a sawtooth. Eviction is now
+# least-recently-used, and the bound is configurable because the cache is real memory: an entry is a
+# 384-float vector, so the 8192 default is roughly 25 MB per worker.
+_EMBEDDING_VECTOR_CACHE: "collections.OrderedDict[tuple[str, str], list[float]]" = collections.OrderedDict()
 _EMBEDDING_VECTOR_CACHE_LOCK = threading.RLock()
+_EMBEDDING_CACHE_STATS = {"hits": 0, "misses": 0, "evictions": 0}
+
+
+def embedding_cache_capacity() -> int:
+    try:
+        return max(0, int(os.environ.get("MATRIXARK_EMBEDDING_CACHE_ENTRIES", "8192")))
+    except ValueError:
+        return 8192
+
+
+def _cache_get(key: "tuple[str, str]") -> "list[float] | None":
+    """Read through the LRU, refreshing recency. Caller must hold the lock."""
+    vector = _EMBEDDING_VECTOR_CACHE.get(key)
+    if vector is None:
+        _EMBEDDING_CACHE_STATS["misses"] += 1
+        return None
+    _EMBEDDING_VECTOR_CACHE.move_to_end(key)
+    _EMBEDDING_CACHE_STATS["hits"] += 1
+    return vector
+
+
+def _cache_put(key: "tuple[str, str]", vector: "list[float]") -> None:
+    """Insert and evict the least recently used entries. Caller must hold the lock."""
+    capacity = embedding_cache_capacity()
+    if capacity <= 0:
+        return
+    _EMBEDDING_VECTOR_CACHE[key] = list(vector)
+    _EMBEDDING_VECTOR_CACHE.move_to_end(key)
+    while len(_EMBEDDING_VECTOR_CACHE) > capacity:
+        _EMBEDDING_VECTOR_CACHE.popitem(last=False)
+        _EMBEDDING_CACHE_STATS["evictions"] += 1
+
+
+def embedding_cache_stats() -> dict:
+    """Hits, misses, evictions and current size -- so cache behaviour is observable."""
+    with _EMBEDDING_VECTOR_CACHE_LOCK:
+        stats = dict(_EMBEDDING_CACHE_STATS)
+        stats["entries"] = len(_EMBEDDING_VECTOR_CACHE)
+        stats["capacity"] = embedding_cache_capacity()
+        looked_up = stats["hits"] + stats["misses"]
+        stats["hit_rate"] = round(stats["hits"] / looked_up, 4) if looked_up else 0.0
+        return stats
 _EMBEDDING_FALLBACK_USED = False
 
 
@@ -30,23 +78,19 @@ def embedding_for_text(text: str) -> list[float]:
     model = embedding_model_name()
     cache_key = (model, text)
     with _EMBEDDING_VECTOR_CACHE_LOCK:
-        cached = _EMBEDDING_VECTOR_CACHE.get(cache_key)
+        cached = _cache_get(cache_key)
         if cached is not None:
             return list(cached)
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         vector = oss_embedding_for_text(text)
         with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
-            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
+            _cache_put(cache_key, vector)
         return vector
     if provider in _API_EMBEDDING_PROVIDERS:
         vector = api_embedding_for_text(text, provider)
         with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
-            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
+            _cache_put(cache_key, vector)
         return vector
     vector = [0.0] * EMBEDDING_DIM
     for token in tokens(text):
@@ -60,9 +104,7 @@ def embedding_for_text(text: str) -> list[float]:
     else:
         result = [round(value / norm, 6) for value in vector]
     with _EMBEDDING_VECTOR_CACHE_LOCK:
-        if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
-            _EMBEDDING_VECTOR_CACHE.clear()
-        _EMBEDDING_VECTOR_CACHE[cache_key] = list(result)
+        _cache_put(cache_key, result)
     return result
 
 
@@ -75,7 +117,7 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
     missing: list[tuple[int, str]] = []
     with _EMBEDDING_VECTOR_CACHE_LOCK:
         for index, text in enumerate(texts):
-            cached = _EMBEDDING_VECTOR_CACHE.get((model, text))
+            cached = _cache_get((model, text))
             if cached is None:
                 results.append(None)
                 missing.append((index, text))
@@ -85,11 +127,9 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
     if missing and provider in _API_EMBEDDING_PROVIDERS:
         vectors = api_embedding_for_texts([text for _index, text in missing], provider)
         with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
             for (index, text), vector in zip(missing, vectors):
                 materialized = [round(float(value), 6) for value in vector]
-                _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
+                _cache_put((model, text), materialized)
                 results[index] = materialized
     elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
@@ -105,11 +145,9 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
                 _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
             vectors = encoder.encode([text for _index, text in missing], normalize_embeddings=True, show_progress_bar=False)
             with _EMBEDDING_VECTOR_CACHE_LOCK:
-                if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
-                    _EMBEDDING_VECTOR_CACHE.clear()
                 for (index, text), vector in zip(missing, vectors):
                     materialized = [round(float(value), 6) for value in vector]
-                    _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
+                    _cache_put((model, text), materialized)
                     results[index] = materialized
         except Exception:
             for index, text in missing:
