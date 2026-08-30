@@ -3188,16 +3188,27 @@ const WAL_BLOCK_FOOTER_BYTES: u64 = 128;
 /// not mistaken for a footer describing block zero.
 const WAL_BLOCK_FOOTER_MAGIC: u64 = 0xB10C_F007_E12A_5EEDu64;
 
-/// TS_WAL_BLOCK_FOOTER (default OFF while it earns trust): reserve a footer at the end of every
-/// fixed-size block and use it to find the log's tail on reopen.
+/// TS_WAL_BLOCK_FOOTER (DEFAULT ON): reserve a footer at the end of every fixed-size block and use
+/// it to find the log's tail on reopen.
+///
+/// On by default because it is the prerequisite for the frame it exists to serve. A length-framed
+/// record cannot be located by scanning backward, so finding the tail without a footer means
+/// reading forward, and that cost grows with the log. With binary framing already the default,
+/// leaving this off made the shipped configuration the only one with neither fast path: measured
+/// on 150 adds of 4KB, 643 ms p50 and degrading 3.8x over the run, against 110 ms and flat with
+/// the footer on. At 530 memories the same configuration reached seconds per add.
+///
+/// `TS_WAL_BLOCK_FOOTER=0` reserves no footer and finds the tail by reading forward, which is what
+/// a log written before this existed needs -- reading never depends on the flag, since a footer is
+/// self-describing and its absence is simply the older layout.
 fn wal_block_footer_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("TS_WAL_BLOCK_FOOTER")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -3648,7 +3659,9 @@ mod tests {
             if footers {
                 std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
             } else {
-                std::env::remove_var("TS_WAL_BLOCK_FOOTER");
+                // Explicitly off: the default is ON now, so removing the variable would leave
+                // footers enabled and this arm would compare the footer path against itself.
+                std::env::set_var("TS_WAL_BLOCK_FOOTER", "0");
             }
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
@@ -3677,7 +3690,9 @@ mod tests {
             if footers {
                 std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
             } else {
-                std::env::remove_var("TS_WAL_BLOCK_FOOTER");
+                // Explicitly off: the default is ON now, so removing the variable would leave
+                // footers enabled and this arm would compare the footer path against itself.
+                std::env::set_var("TS_WAL_BLOCK_FOOTER", "0");
             }
             let started = std::time::Instant::now();
             for _ in 0..rounds {
