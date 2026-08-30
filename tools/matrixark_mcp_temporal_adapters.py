@@ -1201,6 +1201,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # a FAILED scan means the engine could not answer and the only safe report is True.
         if not callable(getattr(self._client, "matrixark_scan_candidates", None)):
             return super().memory_tombstones_may_exist()
+        # One tombstone is enough to answer yes, and this runs on every add.
+        if self._memory_tombstone_probe():
+            return True
+        # An empty capped answer is NOT conclusive: a location the index still lists but that no
+        # longer resolves is skipped by the fetch, so a store with tombstones could probe empty.
+        # A false negative here skips tombstone filtering and lets deleted memories come back, so
+        # confirm with the full read -- which is cheap exactly when it runs, because a store with
+        # no tombstones has nothing to read.
         records = self._memory_tombstone_records()
         if records is None:
             return True
@@ -1281,6 +1289,23 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         return self._scan_records_of_types([MEMORY_TOMBSTONE_RECORD_TYPE])
+
+    def _memory_tombstone_probe(self) -> list[Json] | None:
+        """At most one memory tombstone, to answer whether any exist.
+
+        Separate from `_memory_tombstone_records` on purpose: the consumer that tests each pending
+        event against the tombstones genuinely needs all of them, while the guard only needs to
+        know whether the set is non-empty. Reading the whole set to answer that made a per-add
+        guard cost grow with every delete the store had ever seen.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        return self._scan_records_of_types(
+            [MEMORY_TOMBSTONE_RECORD_TYPE],
+            newest_by_type={MEMORY_TOMBSTONE_RECORD_TYPE: 1},
+        )
 
     # Every record type the refresh pass's consumers filter on, enumerated from the consumers
     # themselves. Deliberately absent: context_index -- the store's largest class, whose only
