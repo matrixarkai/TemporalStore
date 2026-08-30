@@ -23,13 +23,16 @@ use crate::meta::{
 mod client_routing;
 mod client_meta_sync;
 mod commands;
+// The proxy's drop decision hashes the same routing key this builds; it is re-exported
+// rather than copied because the copy that used to live there had drifted.
+pub(crate) use commands::command_routing_key;
 mod table_feature;
 mod table_context;
 mod table_control_state;
 mod retry;
 mod routing;
 
-use commands::{command_is_dropped, command_key, command_routing_key, is_write};
+use commands::{command_is_dropped, command_key, is_write};
 use retry::{
     classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
     sleep_before_retry,

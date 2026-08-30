@@ -1992,6 +1992,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_proxy_sheds_exactly_the_keys_the_client_would() {
+        // The proxy used to keep its own routing-key extractor, so the two layers of one drain
+        // hashed different strings and shed two unrelated subsets of the same traffic -- and
+        // the copy had already fallen a command behind, which is how a shed node came to be
+        // refused when read and accepted when its embedding was written. One extractor now
+        // answers for both, so this pins them together rather than trusting them to agree.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 50,
+            ..ProxyOptions::default()
+        });
+        let mut shed = 0;
+        for node_hash in 0..60u64 {
+            let command = Command::ContextGetNode {
+                tenant_hash: 7,
+                node_hash,
+            };
+            let key = crate::client::command_routing_key(&command)
+                .expect("a command naming a context node has a routing key");
+            let expected = crate::client::key_is_dropped_by_percent(&key, 50);
+            let refused = proxy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                })
+                .status
+                .code
+                == "proxy_traffic_dropped";
+            assert_eq!(
+                refused, expected,
+                "node {node_hash}: the proxy and the client must make the same call on the                  same key"
+            );
+            if expected {
+                shed += 1;
+            }
+        }
+        // Both branches have to have been exercised, or agreement proves nothing.
+        assert!(
+            shed > 0 && shed < 60,
+            "at 50 percent the sample must be split, got {shed}/60"
+        );
+    }
+
+    #[test]
     fn a_write_disabled_proxy_refuses_everything_the_engine_calls_a_write() {
         // The proxy kept its own hand-maintained list of what counts as a write and it had
         // fallen fourteen commands behind the engine's -- every list and sorted-set mutation

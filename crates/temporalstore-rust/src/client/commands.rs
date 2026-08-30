@@ -139,7 +139,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
     }
 }
 
-pub(super) fn command_routing_key(command: &Command) -> Option<String> {
+pub(crate) fn command_routing_key(command: &Command) -> Option<String> {
     command_key(command)
         .map(str::to_string)
         .or_else(|| context_command_key(command))
