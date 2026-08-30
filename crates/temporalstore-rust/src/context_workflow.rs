@@ -2913,7 +2913,11 @@ fn context_policy_report_for_text(
     } else {
         text.to_string()
     };
-    let pii_filtering_applied = !policy.pii_filtering_enabled || sanitized_text != text;
+    // "Applied" is about whether this text went through the filter, not about whether the
+    // filter found anything. Answering `sanitized_text != text` meant a record with no personal
+    // data in it -- the ordinary case, and the great majority of them -- reported that filtering
+    // had not been applied, so anyone auditing whether it runs read "no" nearly every time.
+    let pii_filtering_applied = policy.pii_filtering_enabled;
     let accepted = provider_allowed
         && model_allowed
         && body_size_allowed
