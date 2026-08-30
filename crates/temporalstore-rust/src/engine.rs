@@ -146,6 +146,37 @@ pub struct TemporalEngine {
     maintenance_mirror: Arc<RwLock<Option<Arc<dyn crate::data_node::SharedWalSink>>>>,
 }
 
+
+/// TS_WAL_RESIDENT_PAGES: how many log-resident pages one shard may hold before the oldest are
+/// written out to the block store. Zero disables the bound entirely.
+///
+/// resident pages are bounded because an unbounded set costs twice. Each one is a registration,
+/// which is memory; each one also pins `min_registered_sequence`, and reclaim may not truncate
+/// below the lowest registration — so a set that only grows is a log that can never be reclaimed
+/// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
+/// tracked writes ONE FOR ONE: 200 writes 200 held, 1200 writes 1200 held.
+///
+/// The default is deliberately generous. The recent ones are worth keeping where they are: a page
+/// written moments ago is the one a read is most likely to want, and its bytes are already in the
+/// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
+/// How many times a sweep has moved pages out, for tests that need to know the bound fired
+/// rather than that the count merely happened to stay low.
+pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn wal_resident_page_limit() -> usize {
+    std::env::var("TS_WAL_RESIDENT_PAGES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(4096)
+}
+
+/// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
+/// materialise on every single append.
+fn wal_resident_page_floor(limit: usize) -> usize {
+    limit.saturating_sub(limit / 4).max(1)
+}
+
 impl TemporalEngine {
     /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
     /// to the same place request-path writes go.
@@ -968,6 +999,23 @@ impl TemporalEngine {
                     ),
                     response: CommandResponse::Empty,
                 };
+            }
+        }
+        // Locks are released and the barrier is done: a safe point to bound the resident set.
+        // Not inside the write lock -- moving a page takes the same lock -- and not before the
+        // barrier, because the write this call is acking must reach disk first.
+        if write_command && !replaying_wal() {
+            let limit = wal_resident_page_limit();
+            if limit > 0
+                && block_in_wal::registration_count(&self.page_store, request.shard_id) > limit
+            {
+                let moved = self.materialize_oldest_resident_pages(
+                    request.shard_id,
+                    wal_resident_page_floor(limit),
+                );
+                if moved > 0 {
+                    RESIDENT_SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         ExecuteResponse {

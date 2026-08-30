@@ -1156,7 +1156,40 @@ impl TemporalEngine {
     ///
     /// Called before a checkpoint exports the index. Returns how many were materialised, so a
     /// caller can tell the difference between "none needed it" and "it did not run".
+    /// Move the OLDEST log-resident pages into the block store, keeping the most recent
+    /// `keep` where they are. Returns how many moved.
+    ///
+    /// A page whose only durable copy is inside a WAL record costs twice. It holds a registration,
+    /// which is memory, and that registration pins `min_registered_sequence` -- reclaim may not
+    /// truncate below the lowest one, so a registry that only grows is a log that can never be
+    /// reclaimed no matter what the retention policy says. Measured on an ingest of distinct keys,
+    /// registrations track writes ONE FOR ONE: 200 writes, 200 held; 1200 writes, 1200 held.
+    ///
+    /// So the recent stay resident -- they are the ones a read is most likely to want, and their
+    /// bytes are in the record just written -- and everything older is written where anyone can
+    /// find it. Oldest first, because the oldest is the one holding the floor down.
+    pub fn materialize_oldest_resident_pages(&self, shard_id: ShardId, keep: usize) -> usize {
+        let ordered = super::block_in_wal::oldest_registered_objects(&self.page_store, shard_id);
+        if ordered.len() <= keep {
+            return 0;
+        }
+        let retiring: std::collections::HashSet<u64> = ordered[..ordered.len() - keep]
+            .iter()
+            .map(|(_, object_id)| *object_id)
+            .collect();
+        self.materialize_resident_pages_where(shard_id, |object_id| retiring.contains(&object_id))
+    }
+
     pub fn materialize_synthetic_pages(&self, shard_id: ShardId) -> usize {
+        self.materialize_resident_pages_where(shard_id, |_| true)
+    }
+
+    /// The one implementation both callers use: everything, or only what `wanted` selects.
+    fn materialize_resident_pages_where(
+        &self,
+        shard_id: ShardId,
+        wanted: impl Fn(u64) -> bool,
+    ) -> usize {
         let addresses: Vec<(String, crate::block_store::BlockAddress)> = {
             let shards = self.shards.read().expect("engine lock poisoned");
             let Some(shard) = shards.get(&shard_id) else {
@@ -1173,13 +1206,16 @@ impl TemporalEngine {
         };
         let mut moved = 0usize;
         for (key, address) in addresses {
+            let object_id = super::stable_page_object_id(shard_id, "string", &key, None);
+            if !wanted(object_id) {
+                continue;
+            }
             // Read it the way a reader here would -- through the registry that still works in
             // this process -- and write it where anyone can find it.
             let Some(bytes) = super::read_page_bytes(&self.cache, &self.page_store, shard_id, &address)
             else {
                 continue;
             };
-            let object_id = super::stable_page_object_id(shard_id, "string", &key, None);
             let Ok(durable) = super::append_value(
                 &self.cache,
                 &self.page_store,
