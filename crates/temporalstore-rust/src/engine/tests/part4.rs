@@ -8936,3 +8936,104 @@ fn a_batch_leaves_nothing_staged_for_the_next_write_to_adopt() {
          this thread and written into that write's record as changes it made itself"
     );
 }
+
+/// which records still carry an operation, across every shape a write can take.
+///
+/// "Results, not operations" is only true of the paths that were changed. This walks the log a
+/// mixed workload leaves and counts, per shape, how many records carry an operation and how many
+/// state what they did — which is the difference between believing the claim and checking it.
+#[test]
+fn which_records_still_carry_an_operation() {
+    fn audit(label: &str, async_storage: bool, batched: bool) -> (usize, usize, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(
+            2 * 1024 * 1024,
+            dir.path().join("cache"),
+            &page_dir,
+            &index_dir,
+        );
+        engine.load_shard(1);
+        if async_storage {
+            assert!(
+                engine
+                    .set_config(SetConfigRequest {
+                        shard_id: 1,
+                        config: Config {
+                            version: 2,
+                            async_storage: true,
+                            ..Config::default()
+                        },
+                    })
+                    .ok
+            );
+        }
+        if batched {
+            engine.batch_execute(BatchExecuteRequest {
+                shard_id: 1,
+                commands: (0..8)
+                    .map(|index| Command::StringSet {
+                        key: format!("{label}-{index}"),
+                        value: vec![b'v'; 64],
+                    })
+                    .collect(),
+            });
+        } else {
+            for index in 0..8 {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("{label}-{index}"),
+                        value: vec![b'v'; 64],
+                    },
+                });
+            }
+        }
+        engine.write_ahead_log_store().flush(1).ok();
+        let records = engine
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .expect("the log should read back");
+        let mut with_command = 0usize;
+        let mut with_items = 0usize;
+        let total = records.len();
+        for (_, line) in &records {
+            let record = crate::wal::decode_wal_line(line).expect("a record should decode");
+            if record.command.is_some() {
+                with_command += 1;
+            }
+            if !record.outcomes.is_empty() {
+                with_items += 1;
+            }
+        }
+        println!(
+            "  {label:<22} {total:>3} records   {with_command:>3} carry an operation   \
+             {with_items:>3} state results"
+        );
+        (total, with_command, with_items)
+    }
+
+    println!("  shape                  records   operations   results");
+    let (_, sync_cmds, sync_items) = audit("sync, separate", false, false);
+    let (_, sync_batch_cmds, sync_batch_items) = audit("sync, batched", false, true);
+    let (_, async_cmds, _) = audit("async, separate", true, false);
+    let (_, async_batch_cmds, _) = audit("async, batched", true, true);
+
+    // The synchronous shapes have no excuse: their blocks are in the block store before the
+    // record is acked, so a result names something a reader can find.
+    assert_eq!(
+        sync_cmds, 0,
+        "a synchronous write should state results, not the operation"
+    );
+    assert!(sync_items > 0, "and it should state some");
+    assert_eq!(
+        sync_batch_cmds, 0,
+        "a synchronous batch should state results, not the operation"
+    );
+    assert!(sync_batch_items > 0, "and it should state some");
+    // The asynchronous shapes are reported rather than asserted: an async write carrying nothing
+    // names a block-store address a crash may leave unwritten, and re-running is the only thing
+    // that rebuilds it. That one is a durability distinction, not an unconverted path.
+    println!("  async separate carries {async_cmds} operations, async batched {async_batch_cmds}");
+}
