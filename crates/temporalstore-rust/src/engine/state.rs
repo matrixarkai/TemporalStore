@@ -309,7 +309,21 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 /// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
 /// page, instead of each of the three keeping its own copy of the same ~117-byte string.
 pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
-pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
+/// A sorted, deduplicated vector rather than a set: measured, 100% of these entries hold exactly
+/// one ref, and a B-tree node costs its full size whether it holds one element or eleven.
+/// Insertion goes through `insert_page_lookup_ref`, which keeps both invariants.
+///
+/// Serializes identically -- both a `Vec` and a `BTreeSet` encode as a sequence -- which matters
+/// because this map is part of the serialized index.
+pub(super) type ObjectPageLookup = BTreeMap<String, Vec<PageLookupRef>>;
+
+/// Insert keeping the vector sorted and free of duplicates, which is what the set it replaced did.
+pub(super) fn insert_page_lookup_ref(refs: &mut Vec<PageLookupRef>, value: PageLookupRef) {
+    match refs.binary_search(&value) {
+        Ok(_) => {}
+        Err(at) => refs.insert(at, value),
+    }
+}
 pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -408,17 +422,21 @@ impl CoreIndex {
         if page.deleted {
             return;
         }
-        self.object_page_lookup
+        let page_refs = self
+            .object_page_lookup
             .entry(object_page_lookup_key(
                 &page.model_id,
                 &page.object_key,
                 page.component.as_deref(),
             ))
-            .or_default()
-            .insert(PageLookupRef {
+            .or_default();
+        insert_page_lookup_ref(
+            page_refs,
+            PageLookupRef {
                 routing_bucket,
                 page_ref_key: Arc::clone(&page_ref_key),
-            });
+            },
+        );
         let added = self
             .object_component_lookup
             .entry(object_component_lookup_key(
