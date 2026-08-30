@@ -137,12 +137,18 @@ impl ProxyService {
         ProxyPolicyReport {
             serving_mode: options.serving_mode,
             drop_percent: options.drop_percent.min(100),
-            serving_reads: !matches!(options.serving_mode, ProxyServingMode::NotServing),
+            // `drop_percent` at 100 refuses every request, so a report that reads only
+            // `serving_mode` says a proxy is serving while nothing gets through. The
+            // percentage is in this report either way, but these three are the fields an
+            // operator reads to answer "is this proxy taking traffic".
+            serving_reads: !matches!(options.serving_mode, ProxyServingMode::NotServing)
+                && options.drop_percent < 100,
             serving_writes: matches!(
                 options.serving_mode,
                 ProxyServingMode::Serving | ProxyServingMode::Degraded
-            ),
-            rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing),
+            ) && options.drop_percent < 100,
+            rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing)
+                || options.drop_percent >= 100,
             admission_rejections: stats.admission_rejections,
             account_rejections: stats.account_rejections,
             inflight_rejections: stats.inflight_rejections,

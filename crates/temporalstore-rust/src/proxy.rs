@@ -1717,11 +1717,22 @@ impl ProxyService {
     /// flags say which is which for anyone who needs the distinction.
     pub fn readiness_response(&self) -> (u16, ProxyReadinessResponse) {
         let options = self.options();
-        let serving_reads = !matches!(options.serving_mode, ProxyServingMode::NotServing);
+        // Draining has TWO knobs and the probe has to answer for both. `serving_mode` is
+        // the obvious one; `drop_percent` at 100 is the other, and it refuses every
+        // request with `traffic_dropped` while the mode still reads as Serving. A probe
+        // that answers 200 in that state puts a proxy back in rotation that will shed
+        // everything sent to it -- the same failure this probe was changed to stop, just
+        // reached through the other control.
+        //
+        // Only 100 counts. Shedding a fraction is deliberate load management and the proxy
+        // is still serving the rest, so it stays ready.
+        let sheds_everything = options.drop_percent >= 100;
+        let serving_reads =
+            !matches!(options.serving_mode, ProxyServingMode::NotServing) && !sheds_everything;
         let serving_writes = matches!(
             options.serving_mode,
             ProxyServingMode::Serving | ProxyServingMode::Degraded
-        );
+        ) && !sheds_everything;
         let response = ProxyReadinessResponse {
             serving: serving_reads,
             serving_mode: options.serving_mode,
@@ -1979,6 +1990,69 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_proxy_shedding_everything_fails_its_readiness_probe() {
+        // Draining has two knobs. `serving_mode: NotServing` is the obvious one and the
+        // probe already answered for it. `drop_percent: 100` is the other: every request
+        // is refused with `traffic_dropped` while the mode still reads Serving, so the
+        // probe answered 200 and the proxy went back into rotation to shed everything sent
+        // to it -- the same failure the probe was changed to stop, reached the other way.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+
+        // It really does refuse everything -- this is the behaviour the probe has to match.
+        let refused = drained.table_execute(ProxyTableExecuteRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_eq!(
+            refused.status.code, "proxy_traffic_dropped",
+            "drop_percent 100 must refuse every request: {:?}",
+            refused.status
+        );
+
+        let (code, response) = drained.readiness_response();
+        assert_eq!(
+            code, 503,
+            "a proxy refusing every request must fail its probe, not report ready"
+        );
+        assert!(!response.serving);
+        assert!(!response.serving_reads);
+        assert!(!response.serving_writes);
+        assert!(
+            drained.policy_report().rejecting_all,
+            "the field that means 'this proxy rejects everything' has to say so"
+        );
+
+        // The boundary, so this cannot quietly become "any shedding means unready".
+        // Shedding a fraction is deliberate load management and the rest is still served.
+        let shedding = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            drop_percent: 99,
+            ..ProxyOptions::default()
+        });
+        let (code, response) = shedding.readiness_response();
+        assert_eq!(
+            code, 200,
+            "99% shedding still serves the remainder, so the proxy stays ready"
+        );
+        assert!(response.serving_reads);
+        assert!(!shedding.policy_report().rejecting_all);
+
+        // And the mode knob still works on its own, with nothing dropped.
+        let stopped = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            drop_percent: 0,
+            ..ProxyOptions::default()
+        });
+        assert_eq!(stopped.readiness_response().0, 503);
+        assert!(stopped.policy_report().rejecting_all);
+    }
 
     /// What resolving an already-cached route costs, per request, under contention.
     ///
