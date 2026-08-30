@@ -320,28 +320,64 @@ Two caveats worth planning around:
 
 ## 10a. The tuned profile, measured end to end
 
-Four real 1 MB skill documents, real encoder, default settings against the tuned profile below.
-Both arms produce identical retrieval behaviour on the queries tested; nothing here trades quality.
+Four real 1 MB skill documents, real encoder. **Retrieval quality was measured for each lever, not
+assumed** — an earlier version of this section reported a larger speedup because it checked mean
+similarity rather than whether the answer was still retrieved.
 
 ```
-profile                     parse   embed   build    wall    written   amplification
-default                      2.9s   307.4s   3.7s   314.0s   55.7 MB       12.8x
-tuned                        2.7s   153.6s   2.4s   158.7s   44.0 MB       10.1x
-                                                    -------  -------
-                                                    1.98x     79%
+configuration                              wall     written   retrieval
+default                                   436.9s    58.4 MB     4/8 hit@5
+lossless: integer vectors + 4x2 workers   300.4s    46.1 MB     4/8 hit@5   1.45x
+  plus a 64-token text cap                201.8s    46.2 MB     3/8 hit@5   2.16x
 ```
 
-Extrapolated to a thousand-document import: **21.8 hours down to 11.0 hours, and 14.6 GB down to
-11.5 GB.**
+**The lossless retune is 1.45x for 79% of the bytes**, with retrieval unchanged. Neither integer
+vector encoding nor the worker layout can alter what the encoder sees, which is why they are safe.
+
+The 64-token cap buys another 1.49x and **costs an answer in eight**. It is a legitimate trade for a
+bulk backfill you will re-index later; it is not a default.
+
+Extrapolated to a thousand documents: **30.3 hours down to 20.9 hours, and 14.6 GB down to 11.5 GB**
+on the lossless profile.
 
 Note where the time sits: **embedding is 98% of it.** Parsing and record building together are under
 2%. Any optimisation that is not about the encoder is rounding error on this workload.
 
 ```bash
-export MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS=64      # half the embedded text, same retrieval
 export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # integer vectors, ranking unchanged
 # and run the encoder as four small processes rather than one large one
 ```
+
+## 10b. Window, text cap and chunk size are one decision
+
+These three must agree, and the measured answer is not the intuitive one. A cap below the window
+asks the model for a short sequence it could have filled; a chunk larger than the window is embedded
+only in part. Measured with cap, window and chunk all equal, against hit@5 on real documentation:
+
+```
+cap = window = chunk    tokens/s   chunks/doc   vectors/doc   hit@5   CN hit@5
+128 (model default)       3020        3302        8.02 MB      5/8      1/2
+256                       3558        1519        3.69 MB      4/8      0/2
+512 (model maximum)       3222         744        1.81 MB      2/8      0/2
+```
+
+**Wider is worse for retrieval.** A 512-token vector averages so much text that a specific answer
+stops surviving it, and Chinese queries fail entirely. The window buys memory and a little
+throughput at a steep quality price, so `MATRIXARK_EMBEDDING_MAX_SEQ_LENGTH` exists but should be
+left alone unless you have measured your own corpus.
+
+Holding the window at 128, chunk size is the remaining choice:
+
+```
+cap    chunk    s/doc    vectors/doc   hit@5
+ 64      240     48.0      6.10 MB      3/8    fastest, loses an answer
+128      240     83.8      6.10 MB      4/8    today's default
+128      128    117.9      8.02 MB      5/8    matched: best retrieval
+```
+
+Matching the chunk to the window is **the best-quality configuration** — every token is embedded
+rather than the back half of each chunk being discarded — at 1.4x the time and 31% more vectors.
+That is the setting to choose when retrieval quality matters more than import duration.
 
 ## 10a. Where the time goes, and what actually moves it
 
@@ -375,22 +411,14 @@ scaling inside a process is sublinear. On an eight-core budget:
 8 processes x 1 thread     32.9 texts/s
 ```
 
-**Embedding text length — ~28%, no measured quality cost.** `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS`
-caps how much of each chunk is embedded (default 128; the model's own window is also 128, so nothing
-above that is ever read). Measured on real documentation, retrieving with English and Chinese
-queries:
+**Embedding text length — faster, but it costs retrieval.** `MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS`
+caps how much of each chunk is embedded (default 128, which is also the model's own window). Lowering
+it to 64 is roughly 1.5x faster and **drops hit@5 from 4/8 to 3/8** on real documentation.
 
-```
-tokens   texts/s   mean top score   leading answer unchanged
-128         29.8        0.529            (baseline)
- 96         30.3        0.541               7 of 8
- 64         38.1        0.532               6 of 8
- 32         72.0        0.510               4 of 8
-```
-
-Sixty-four is the sweet spot: faster at a marginally better mean score (+28% measured in
-isolation here; see the combined figure below, which is the one to plan with). Thirty-two is
-more than twice as fast but changes half the answers — too lossy for retrieval you depend on.
+An earlier version of this guide called that change free. It was measured on mean similarity score
+and on whether the leading result changed — neither of which notices an answer falling out of the
+top five. Measured against hit@5 it is a real regression. Treat the cap as a speed/quality dial for
+bulk backfills, not as a default.
 
 **Chunk size — large, but it costs retrieval. Measure before adopting.** Chunk size sets the number
 of vectors, so it moves ingest time and vector storage proportionally:
@@ -440,29 +468,20 @@ by per-record bookkeeping rather than payload, so it barely moves: to reduce res
 reduce the number of *records*, which means fewer chunks — and that carries the retrieval cost
 described above.
 
-### The two lossless levers together
+### What is actually lossless
 
-Measured directly rather than multiplied, on the same real-documentation corpus, because gains
-measured separately on different corpora do not simply compose:
+Only two changes cannot affect what the encoder sees, and therefore cannot affect retrieval:
+**integer vector encoding** and **encoder worker layout**. Together they are worth **1.45x on wall
+clock and 79% of the bytes**, measured end to end on real 1 MB documents with retrieval verified
+unchanged at 4/8 hit@5.
 
-```
-128 tokens, 1 process x 8 threads     32.7 texts/s   1.00x   (defaults)
- 64 tokens, 1 process x 8 threads     35.1 texts/s   1.07x
-128 tokens, 4 processes x 2 threads   36.0 texts/s   1.10x
- 64 tokens, 4 processes x 2 threads   44.6 texts/s   1.37x   <- tuned
-```
-
-The two together are worth **1.37x**, more than the 1.18x their separate gains predict — shorter
-texts cut per-process memory pressure, which helps once several encoders share a machine. Neither
-lever changed the leading retrieval result on this corpus.
-
-Treat 1.37x as the honest figure for a lossless retune. It is worth having, and it is not the order
-of magnitude that a 1,000-document import needs; for that, the constraint is encoder hardware.
+Everything else on this page — text cap, window, chunk size — trades retrieval for speed or memory
+in one direction or the other. There is no third free lever; the remaining constraint is encoder
+hardware.
 
 ### A production profile
 
 ```bash
-export MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS=64      # +28% throughput, no measured quality cost
 export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # ~33% less disk, ranking unchanged
 export MATRIXARK_EMBEDDING_CACHE_ENTRIES=32768     # ~100 MB, worth it on repetitive corpora
 export MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS=20000   # 1 MB documents exceed the 2048 default
