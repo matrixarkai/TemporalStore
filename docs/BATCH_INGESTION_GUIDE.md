@@ -318,6 +318,31 @@ Two caveats worth planning around:
 
 ---
 
+## 10a. The tuned profile, measured end to end
+
+Four real 1 MB skill documents, real encoder, default settings against the tuned profile below.
+Both arms produce identical retrieval behaviour on the queries tested; nothing here trades quality.
+
+```
+profile                     parse   embed   build    wall    written   amplification
+default                      2.9s   307.4s   3.7s   314.0s   55.7 MB       12.8x
+tuned                        2.7s   153.6s   2.4s   158.7s   44.0 MB       10.1x
+                                                    -------  -------
+                                                    1.98x     79%
+```
+
+Extrapolated to a thousand-document import: **21.8 hours down to 11.0 hours, and 14.6 GB down to
+11.5 GB.**
+
+Note where the time sits: **embedding is 98% of it.** Parsing and record building together are under
+2%. Any optimisation that is not about the encoder is rounding error on this workload.
+
+```bash
+export MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS=64      # half the embedded text, same retrieval
+export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # integer vectors, ranking unchanged
+# and run the encoder as four small processes rather than one large one
+```
+
 ## 10a. Where the time goes, and what actually moves it
 
 Ingesting markdown at scale is **encoder-bound**, not storage-bound. Measured on this hardware with
