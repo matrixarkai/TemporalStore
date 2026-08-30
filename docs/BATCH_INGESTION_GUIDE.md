@@ -363,7 +363,8 @@ tokens   texts/s   mean top score   leading answer unchanged
  32         72.0        0.510               4 of 8
 ```
 
-Sixty-four is the sweet spot: **+28% throughput at a marginally better mean score**. Thirty-two is
+Sixty-four is the sweet spot: faster at a marginally better mean score (+28% measured in
+isolation here; see the combined figure below, which is the one to plan with). Thirty-two is
 more than twice as fast but changes half the answers — too lossy for retrieval you depend on.
 
 **Chunk size — large, but it costs retrieval. Measure before adopting.** Chunk size sets the number
@@ -389,6 +390,25 @@ vectors as integers for about a third less disk with ranking unchanged. Resident
 because it is dominated by per-record bookkeeping rather than payload: to reduce memory, reduce the
 number of records. Avoid `MATRIXARK_EMBEDDING_VECTOR_INT8`; it is smaller still but measurably
 reorders near-neighbours.
+
+### The two lossless levers together
+
+Measured directly rather than multiplied, on the same real-documentation corpus, because gains
+measured separately on different corpora do not simply compose:
+
+```
+128 tokens, 1 process x 8 threads     32.7 texts/s   1.00x   (defaults)
+ 64 tokens, 1 process x 8 threads     35.1 texts/s   1.07x
+128 tokens, 4 processes x 2 threads   36.0 texts/s   1.10x
+ 64 tokens, 4 processes x 2 threads   44.6 texts/s   1.37x   <- tuned
+```
+
+The two together are worth **1.37x**, more than the 1.18x their separate gains predict — shorter
+texts cut per-process memory pressure, which helps once several encoders share a machine. Neither
+lever changed the leading retrieval result on this corpus.
+
+Treat 1.37x as the honest figure for a lossless retune. It is worth having, and it is not the order
+of magnitude that a 1,000-document import needs; for that, the constraint is encoder hardware.
 
 ### A production profile
 
