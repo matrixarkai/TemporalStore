@@ -1432,6 +1432,15 @@ impl ProxyService {
         if let Some(status) = proxy_policy_rejection(&options, commands) {
             return Err(self.reject(status, ProxyRejectionKind::Policy));
         }
+        // Yes, this walks the batch a second time -- `proxy_policy_rejection` above asks the
+        // same question for the write-disable decision. Computing it once here and passing it
+        // in is the obvious tidy-up and it was measured, interleaved, on two separately built
+        // binaries: FASTER for large batches (about 5% at 16 commands, 10% at 128) and SLOWER
+        // for a single command, which is the shape of nearly every request -- 9 of 10 pairs,
+        // about 6%. Classification is roughly a quarter of a nanosecond per command, so the
+        // second walk is not what this path spends its time on; moving the work earlier just
+        // costs more than it saves where it matters. Left as it is on purpose.
+        // See `bench_proxy_admission_path`.
         let is_write = commands.iter().any(proxy_command_is_write);
         self.inner
             .inflight
@@ -2012,6 +2021,64 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Admission cost for a batch, under contention. `cargo test --lib bench_proxy_admission
+    /// -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_proxy_admission_path() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20_000);
+        let batch: usize = std::env::var("BENCH_BATCH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions {
+            namespace: "bench".to_string(),
+            ..ProxyOptions::default()
+        }));
+        let commands: std::sync::Arc<Vec<Command>> = std::sync::Arc::new(
+            (0..batch)
+                .map(|i| Command::StringGet {
+                    key: format!("key-{i}"),
+                })
+                .collect(),
+        );
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = proxy.clone();
+            let commands = commands.clone();
+            let gate = gate.clone();
+            handles.push(std::thread::spawn(move || {
+                gate.wait();
+                for _ in 0..per_thread {
+                    let admitted = proxy.admit(None, &commands);
+                    std::hint::black_box(&admitted);
+                }
+            }));
+        }
+        gate.wait();
+        let started = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread");
+        }
+        let elapsed = started.elapsed();
+        let total = threads * per_thread;
+        println!(
+            "admission: {threads} threads x {per_thread} x batch {batch} = {total} admits in              {elapsed:?} -> {:.1} ns/admit ({:.1} ns per command)",
+            elapsed.as_nanos() as f64 / total as f64,
+            elapsed.as_nanos() as f64 / (total * batch) as f64
+        );
+    }
 
     #[test]
     fn every_route_the_surface_report_advertises_answers() {
