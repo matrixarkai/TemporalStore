@@ -1523,6 +1523,8 @@ impl LocalWriteAheadLogStore {
         Ok(bytes)
     }
 
+    /// The records in the window. Says nothing about whether the window was exhausted, which
+    /// is why anything reporting completeness to a caller wants `scan_bounded` instead.
     pub fn scan(
         &self,
         shard_id: ShardId,
@@ -1530,6 +1532,22 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, WriteAheadLogError> {
+        self.scan_bounded(shard_id, start_offset, end_offset, max_bytes)
+            .map(|(records, _)| records)
+    }
+
+    /// The records in the window, and whether `max_bytes` cut the scan short.
+    ///
+    /// The walk below stops for two unrelated reasons: the window ended, or the byte budget ran
+    /// out. Returning only the records conflates them, and a caller that cannot tell them apart
+    /// reports a truncated read as a complete one.
+    pub fn scan_bounded(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        end_offset: u64,
+        max_bytes: u64,
+    ) -> Result<(Vec<(u64, Vec<u8>)>, bool), WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let segments = wal_segment_paths(&inner.root, shard_id)
             .into_iter()
@@ -1540,10 +1558,11 @@ impl LocalWriteAheadLogStore {
         // (corruption) as data loss (see engine::lifecycle replay).
         if segments.is_empty() {
             inner.stats.scans += 1;
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let _ = last_wal_sequence_at(&inner.root, shard_id)?;
         let mut total = 0;
+        let mut truncated = false;
         let mut records = Vec::new();
         'segments: for path in segments {
             // Each piece says where in the log's history its contents begin, so a record's position
@@ -1600,7 +1619,12 @@ impl LocalWriteAheadLogStore {
                     log_id = next_log_id;
                     continue;
                 }
-                if next_log_id > end_offset || total + read as u64 > max_bytes {
+                if next_log_id > end_offset {
+                    break 'segments;
+                }
+                if total + read as u64 > max_bytes {
+                    // Out of budget with the window not yet walked: there is more to read.
+                    truncated = true;
                     break 'segments;
                 }
                 // Refuse a corrupt record here, where it is being read. This used to happen only as
@@ -1617,7 +1641,7 @@ impl LocalWriteAheadLogStore {
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
-        Ok(records)
+        Ok((records, truncated))
     }
 
     /// Where reading can start, to see every record after `sequence` and no whole piece before it.

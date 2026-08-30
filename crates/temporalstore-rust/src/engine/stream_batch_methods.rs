@@ -64,7 +64,7 @@ impl TemporalEngine {
             let records = match request.stream_kind {
                 StreamKind::Wal => self
                     .wal_store
-                    .scan(
+                    .scan_bounded(
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
@@ -73,7 +73,7 @@ impl TemporalEngine {
                     .map_err(|err| err.to_string()),
                 StreamKind::IndexLog => self
                     .index_log_store
-                    .scan(
+                    .scan_bounded(
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
@@ -83,13 +83,17 @@ impl TemporalEngine {
                 StreamKind::Index | StreamKind::Block | StreamKind::Page => unreachable!(),
             };
             return match records {
-                Ok(records) => ScanStreamResponse {
+                // `truncated` is the whole point of asking: the walk stops both when the window
+                // ends and when max_bytes runs out, and this used to answer "end of stream" for
+                // either. A caller reading a range larger than its budget was handed a prefix
+                // and told it had the lot.
+                Ok((records, truncated)) => ScanStreamResponse {
                     status: Status::ok(),
                     records: records
                         .into_iter()
                         .map(|(offset, data)| StreamRecord { offset, data })
                         .collect(),
-                    end_of_stream: true,
+                    end_of_stream: !truncated,
                 },
                 Err(err) => ScanStreamResponse {
                     status: Status::error("stream_scan_failed", err.to_string()),
@@ -105,6 +109,13 @@ impl TemporalEngine {
             offset: request.start_offset,
             size,
         });
+        // A byte-addressed read is capped the same way -- `size` above is the window clamped to
+        // max_bytes -- so it ends the stream only when it reached the offset that was asked for.
+        let end_of_stream = !read.status.ok
+            || request
+                .start_offset
+                .saturating_add(read.data.len() as u64)
+                >= request.end_offset;
         ScanStreamResponse {
             status: read.status.clone(),
             records: if read.status.ok && !read.data.is_empty() {
@@ -115,7 +126,7 @@ impl TemporalEngine {
             } else {
                 Vec::new()
             },
-            end_of_stream: true,
+            end_of_stream,
         }
     }
 

@@ -66,6 +66,72 @@ fn control_api_reads_page_and_index_streams() {
 }
 
 #[test]
+fn a_scan_cut_short_by_its_budget_does_not_claim_the_stream_ended() {
+    // scan_stream stops walking for two unrelated reasons -- the window ended, or max_bytes ran
+    // out -- and it answered end_of_stream: true for both. So a caller reading a range larger
+    // than its budget was handed a prefix and told it had the whole thing, with nothing in the
+    // response to suggest otherwise.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..8 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let all = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_slab_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: u64::MAX,
+    });
+    assert!(all.status.ok);
+    assert!(
+        all.records.len() >= 4,
+        "premise: there are several records to walk, got {}",
+        all.records.len()
+    );
+    assert!(
+        all.end_of_stream,
+        "a scan with no budget to run out of did reach the end of the window"
+    );
+
+    // A budget that fits the first record and not the second.
+    let budget = all.records[0].data.len() as u64 + 1;
+    let cut = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_slab_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: budget,
+    });
+    assert!(cut.status.ok);
+    assert!(
+        cut.records.len() < all.records.len(),
+        "premise: the budget cut this scan short, got {} of {}",
+        cut.records.len(),
+        all.records.len()
+    );
+    assert!(
+        !cut.end_of_stream,
+        "the budget stopped this scan with records still in the window, so it must not report          the stream as ended"
+    );
+}
+
+#[test]
 fn control_api_reads_and_scans_wal_stream() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
