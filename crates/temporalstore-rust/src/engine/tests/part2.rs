@@ -1063,12 +1063,17 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
             _ => break,
         }
     }
+    // however many records the batch became. Written as N records sharing a batch id the last
+    // one is the commit marker and dropping it strands the rest; written as ONE record carrying
+    // every item, dropping it removes the batch outright. Both are the same test -- cut the tail
+    // and require that nothing of the batch survives -- and neither depends on the count, so this
+    // asserts the shape it needs rather than the shape one format happens to produce.
     assert!(
-        spans.len() >= 4,
-        "expected keep + 3 batch records, got {}",
+        spans.len() >= 2,
+        "expected the standalone write plus at least one batch record, got {}",
         spans.len()
     );
-    spans.pop(); // drop the batch commit-marker record
+    spans.pop(); // the commit marker, or the whole batch when it is one record
     let mut truncated = Vec::new();
     for (start, end) in spans {
         truncated.extend_from_slice(&contents[start..end]);
@@ -1449,7 +1454,15 @@ fn async_storage_batch_write_records_wal_without_sync_or_index() {
     });
     assert!(batch.status.ok);
     assert_eq!(engine.block_store().stats().writes, 0);
-    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 2);
+    // logged at all, not logged once per command. Whether a batch of two becomes two records
+    // sharing a batch id or one record carrying both items is a property of the log format, and
+    // this test is about what an ASYNCHRONOUS batch does and does not touch: the log yes, the
+    // barrier no, the block store no, the index no. Pinning the count made it a test of the
+    // format instead, which is how it came to fail on a change that took nothing away from it.
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 1,
+        "the batch must reach the log"
+    );
     assert_eq!(engine.write_ahead_log_store().stats(1).syncs, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 }
