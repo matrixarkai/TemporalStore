@@ -3361,6 +3361,21 @@ def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
     A tombstone-free log short-circuits ``apply_memory_tombstones`` unchanged, so the middle step is a
     no-op for the overwhelmingly common no-tombstone case (and ``compact_latest_value`` then
     ``compact_latest_context_state`` is exactly the historical composition)."""
+    # Audit/pipeline-task footprint bounding runs FIRST. It was written as this pipeline's entry
+    # (`bound_pipeline_task_footprint`, "Lever A, lever B, audit-payload retention, then value
+    # sharing") and was reachable from nowhere -- while a comment in matrixark_mcp_summary_runtime
+    # states serving already applies it. Its knob is defaulted, not off: audit payloads are retained
+    # for the newest 20 rows per scope and aged out beyond that.
+    #
+    # Safe at this position: it touches only pipeline-task and audit rows, never context_index
+    # postings and never memory records, so neither load-bearing boundary above is disturbed. The
+    # audit ROW always survives (retrieval and session-commit look it up by record_type + scope);
+    # only the diagnostic payload ages out.
+    try:
+        from tools.matrixark_pipeline_task_slim import bound_pipeline_task_footprint
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_pipeline_task_slim import bound_pipeline_task_footprint
+    records = bound_pipeline_task_footprint(records)
     return compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
 
 
