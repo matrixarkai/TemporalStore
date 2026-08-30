@@ -456,7 +456,10 @@ impl CoreIndex {
             let first = ComponentPageLookupRef {
                 component: component.map(str::to_string),
                 routing_bucket: 0,
-                page_ref_key: String::new(),
+                // Only a range START: the empty key sorts below every real page-ref key, so the
+                // seek lands on this component's first ref. It became an `Arc<str>` when the key
+                // was made shared, and the sentinel has to follow the field.
+                page_ref_key: Arc::from(""),
             };
             let doomed: Vec<ComponentPageLookupRef> = component_refs
                 .range(first..)
@@ -628,7 +631,7 @@ mod component_lookup_tests {
             set.insert(ComponentPageLookupRef {
                 component: component.map(str::to_string),
                 routing_bucket: i as u32,
-                page_ref_key: format!("p{i}"),
+                page_ref_key: Arc::from(format!("p{i}").as_str()),
             });
         }
         index
@@ -687,13 +690,13 @@ mod component_lookup_tests {
             set.insert(ComponentPageLookupRef {
                 component: Some("dup".to_string()),
                 routing_bucket: i,
-                page_ref_key: format!("p{i}"),
+                page_ref_key: Arc::from(format!("p{i}").as_str()),
             });
         }
         set.insert(ComponentPageLookupRef {
             component: Some("keep".to_string()),
             routing_bucket: 9,
-            page_ref_key: "p9".to_string(),
+            page_ref_key: Arc::from("p9"),
         });
         index.remove_object_page_lookup_entry("hash", "k", Some("dup"));
         assert_eq!(components_left(&index, "k"), vec![Some("keep".to_string())]);
