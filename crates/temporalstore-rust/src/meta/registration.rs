@@ -354,7 +354,7 @@ impl SingleNodeMeta {
                 namespace: String::new(),
                 config_version: 0,
                 serving_mode: String::new(),
-                drop_percent: 0,
+                drop_percent: None,
             };
         };
         if proxy.state == MetaEntityState::Frozen {
@@ -364,7 +364,7 @@ impl SingleNodeMeta {
                 namespace: proxy.namespace.clone(),
                 config_version: proxy.config_version,
                 serving_mode: proxy_serving_mode_for_state(proxy.state).to_string(),
-                drop_percent: 0,
+                drop_percent: None,
             };
         }
         proxy.last_heartbeat_ms = now_ms();
@@ -421,9 +421,20 @@ impl SingleNodeMeta {
             namespace,
             config_version,
             serving_mode,
-            // What the group asks its proxies to shed. Zero unless an operator
-            // has said otherwise, which is what every group means by default.
-            drop_percent: if attached { served.drop_percent } else { 0 },
+            // What the group asks its proxies to shed, and nothing at all when this proxy
+            // belongs to no group.
+            //
+            // The unattached branch used to send 0, which is not the same statement: the
+            // proxy applied it, so a proxy configured to shed through its own /config had
+            // that wiped by every heartbeat. A deployment that uses no groups is entirely
+            // unattached proxies, and namespace and config_version two branches above
+            // already fall back to local configuration for exactly that case -- this now
+            // says the same thing the same way.
+            drop_percent: if attached {
+                Some(served.drop_percent)
+            } else {
+                None
+            },
         }
     }
 

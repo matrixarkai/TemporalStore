@@ -123,7 +123,7 @@ impl MetaRaftCluster {
                 namespace: String::new(),
                 config_version: 0,
                 serving_mode: "not_serving".to_string(),
-                drop_percent: 0,
+                drop_percent: None,
             },
             |meta| meta.proxy_heartbeat(request),
         )

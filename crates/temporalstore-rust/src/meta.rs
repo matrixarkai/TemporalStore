@@ -531,8 +531,12 @@ pub struct ProxyHeartbeatResponse {
     pub config_version: u64,
     #[serde(default)]
     pub serving_mode: String,
+    /// None means the metaserver has no opinion, which today is always: there is no
+    /// per-proxy drop_percent in the meta model at all -- the one that exists is a TABLE
+    /// serving option. As a bare `u8` this field could not say that, so it said 0, and the
+    /// proxy applied it and lifted whatever drain an operator had put in force.
     #[serde(default)]
-    pub drop_percent: u8,
+    pub drop_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5922,13 +5926,17 @@ mod tests {
         // response carried a hard-coded zero, so the only way to pull the lever
         // was to restart each proxy with different configuration.
         let meta = shedding_meta(25);
-        assert_eq!(beat_proxy(&meta, 0).drop_percent, 25);
+        assert_eq!(beat_proxy(&meta, 0).drop_percent, Some(25));
     }
 
     #[test]
     fn a_group_that_asks_for_nothing_sheds_nothing() {
         let meta = shedding_meta(0);
-        assert_eq!(beat_proxy(&meta, 0).drop_percent, 0);
+        assert_eq!(
+            beat_proxy(&meta, 0).drop_percent,
+            Some(0),
+            "a group that asks for zero has still spoken, which is not the same as silence"
+        );
     }
 
     #[test]
@@ -5955,7 +5963,7 @@ mod tests {
             "the version did not move, so an attached proxy would never re-read"
         );
         assert!(after.config_changed);
-        assert_eq!(after.drop_percent, 40);
+        assert_eq!(after.drop_percent, Some(40));
     }
 
     #[test]
@@ -5971,7 +5979,11 @@ mod tests {
             .status
             .ok
         );
-        assert_eq!(beat_proxy(&meta, 0).drop_percent, 0);
+        assert_eq!(
+            beat_proxy(&meta, 0).drop_percent,
+            None,
+            "no group is holding an opinion about this proxy, so the heartbeat must not \n             carry one -- it used to carry 0, which erased whatever the proxy was \n             configured with"
+        );
     }
 
     #[test]
@@ -7073,7 +7085,10 @@ mod tests {
         assert!(response.config_changed);
         assert_eq!(response.config_version, 3);
         assert_eq!(response.serving_mode, "serving");
-        assert_eq!(response.drop_percent, 0);
+        assert_eq!(
+            response.drop_percent, None,
+            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear              to set one -- it used to answer 0, which the proxy applied over an operator's drain"
+        );
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
 
         let frozen = meta.freeze_proxy(StateChangeRequest {

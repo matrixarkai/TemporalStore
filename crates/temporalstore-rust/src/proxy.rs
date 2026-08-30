@@ -1992,6 +1992,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_heartbeat_that_says_nothing_about_shedding_does_not_lift_a_drain() {
+        // An operator drains a proxy through its own config endpoint, which is the only way
+        // drop_percent is ever set: the metaserver has no proxy-level drop_percent to hold an
+        // opinion about -- the one in the meta model is a TABLE serving option. So every
+        // heartbeat response carries a hardcoded 0, and the proxy applied it. The drain lasted
+        // until the next heartbeat, which is seconds.
+        //
+        // The three neighbouring fields are all guarded against "the metaserver did not say":
+        // namespace only applies when non-empty, config_version when non-zero, serving_mode
+        // when it parses. This one had a guard too -- `<= 100` -- which reads as though a
+        // value above 100 meant "unspecified", except nothing ever sends one and an absent
+        // field deserializes to 0.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        assert_eq!(
+            proxy.readiness_response().0,
+            503,
+            "premise: this proxy is drained and out of rotation"
+        );
+
+        proxy.apply_heartbeat_config(&ProxyHeartbeatResponse {
+            status: Status::ok(),
+            config_changed: false,
+            namespace: String::new(),
+            config_version: 0,
+            serving_mode: String::new(),
+            drop_percent: None,
+        });
+
+        assert_eq!(
+            proxy.options().drop_percent,
+            100,
+            "the metaserver never spoke for drop_percent, so a heartbeat must not reset it"
+        );
+        assert_eq!(
+            proxy.readiness_response().0,
+            503,
+            "a drain has to survive the heartbeat loop, or draining a proxy does nothing"
+        );
+    }
+
+    #[test]
     fn the_proxy_sheds_exactly_the_keys_the_client_would() {
         // The proxy used to keep its own routing-key extractor, so the two layers of one drain
         // hashed different strings and shed two unrelated subsets of the same traffic -- and
@@ -3532,7 +3576,7 @@ mod tests {
                                 namespace: String::new(),
                                 config_version: 0,
                                 serving_mode: "serving".to_string(),
-                                drop_percent: 0,
+                                drop_percent: None,
                             },
                         )
                     }
@@ -4287,7 +4331,7 @@ mod tests {
                         namespace: String::new(),
                         config_version: 0,
                         serving_mode: "serving".to_string(),
-                        drop_percent: 0,
+                        drop_percent: None,
                     },
                 ),
                 _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
@@ -4371,7 +4415,7 @@ mod tests {
                         namespace: String::new(),
                         config_version: 0,
                         serving_mode: "serving".to_string(),
-                        drop_percent: 0,
+                        drop_percent: None,
                     },
                 ),
                 _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
