@@ -4105,7 +4105,7 @@ fn per_record_structure_census() {
         .bucket_index
         .object_page_lookup
         .values()
-        .map(std::collections::BTreeSet::len)
+        .map(Vec::len)
         .sum();
     let component_lookup_keys = shard.bucket_index.object_component_lookup.len();
     let strings = shard.strings.len();
@@ -4380,7 +4380,7 @@ fn maintained_component_page_ref_total_matches_the_walk() {
         .bucket_index
         .object_component_lookup
         .values()
-        .map(std::collections::BTreeSet::len)
+        .map(BTreeSet::len)
         .sum();
     let maintained = shard
         .bucket_index
