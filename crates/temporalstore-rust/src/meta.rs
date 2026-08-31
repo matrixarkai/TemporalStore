@@ -815,13 +815,43 @@ impl StateTally {
     }
 }
 
-/// The counts a scrape needs, taken in one pass under the read lock.
+/// One server, reduced to what a scrape reports about it.
+///
+/// A server record carries its shard loads, its stat loads and its shard
+/// serving states -- one entry per shard it holds, and the serving states carry
+/// strings. A scrape reads none of them, so none of them are here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerScrapeRow {
+    pub server_addr: String,
+    pub state: MetaEntityState,
+    pub reported_record_count: u64,
+    pub reported_storage_bytes: u64,
+    pub last_meta_topology_version: u64,
+    pub rejected_total: u64,
+    pub timed_out_total: u64,
+    pub canceled_total: u64,
+}
+
+/// One proxy, reduced the same way.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyScrapeRow {
+    pub proxy_addr: String,
+    pub state: MetaEntityState,
+    pub restart_count: u64,
+}
+
+/// Everything a scrape needs, taken in one pass under one read lock.
+///
+/// The scrape used to make five separate listing calls, each taking the lock
+/// again, so its numbers described five consecutive moments rather than one.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResourceTalliesResponse {
+pub struct MetaMetricsReport {
     pub status: Status,
     pub tables: StateTally,
     pub namespaces: StateTally,
     pub proxy_groups: StateTally,
+    pub servers: Vec<ServerScrapeRow>,
+    pub proxies: Vec<ProxyScrapeRow>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5227,6 +5257,55 @@ mod tests {
 fn counting_resources_agrees_with_listing_them_and_counting_those() {
         let meta = SingleNodeMeta::default();
 
+        // A server that has heartbeated, so its row has something in it, and a
+        // frozen one so the states are spread.
+        for node in 0..2u64 {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: format!("node-{node}"),
+                    node_id: node + 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: format!("node-{node}"),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: node + 1,
+                    key_count: 7 + node,
+                    memory_bytes: 4096,
+                }],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad {
+                    rejected_total: 3 + node,
+                    timed_out_total: 1,
+                    canceled_total: 2,
+                    last_meta_topology_version: 9,
+                    ..Default::default()
+                },
+                // The record and storage counters a scrape reports are summed
+                // from these, not from the loads above.
+                shard_states: vec![ServerShardServingState {
+                    shard_id: node + 1,
+                    total_records: 11 + node as usize,
+                    storage_bytes: 2048,
+                    ..Default::default()
+                }],
+            });
+        }
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-1".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unresponsive,
+            })
+            .status
+            .ok);
+
         // Tables in all three states.
         for table_name in ["kept", "frozen", "dropped"] {
             assert!(meta
@@ -5299,7 +5378,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             .status
             .ok);
 
-        let tallies = meta.resource_tallies();
+        let tallies = meta.metrics_report();
         assert!(tallies.status.ok);
 
         // Counted against listing them and counting those, which is what the
@@ -5356,6 +5435,73 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         // A name nothing uses counts as nothing, rather than falling into one
         // of the three.
         assert_eq!(tallies.tables.in_state("loading"), 0);
+
+        // The server and proxy rows carry what the scrape reports, for every
+        // server and proxy there is, and they agree with the full records.
+        let full_servers = meta.list_servers().servers;
+        let full_proxies = meta.list_proxies().proxies;
+        assert_eq!(tallies.servers.len(), full_servers.len(), "a server is missing");
+        assert_eq!(tallies.proxies.len(), full_proxies.len(), "a proxy is missing");
+        for full in &full_servers {
+            let row = tallies
+                .servers
+                .iter()
+                .find(|row| row.server_addr == full.server_addr)
+                .unwrap_or_else(|| panic!("{} has no row", full.server_addr));
+            assert_eq!(row.state, full.state, "{} state", full.server_addr);
+            assert_eq!(
+                row.reported_record_count, full.reported_record_count,
+                "{} record count",
+                full.server_addr
+            );
+            assert_eq!(
+                row.reported_storage_bytes, full.reported_storage_bytes,
+                "{} storage bytes",
+                full.server_addr
+            );
+            assert_eq!(
+                row.last_meta_topology_version, full.runtime_load.last_meta_topology_version,
+                "{} topology version",
+                full.server_addr
+            );
+            assert_eq!(
+                row.rejected_total, full.runtime_load.rejected_total,
+                "{} rejected",
+                full.server_addr
+            );
+            assert_eq!(
+                row.timed_out_total, full.runtime_load.timed_out_total,
+                "{} timed out",
+                full.server_addr
+            );
+            assert_eq!(
+                row.canceled_total, full.runtime_load.canceled_total,
+                "{} canceled",
+                full.server_addr
+            );
+        }
+        for full in &full_proxies {
+            let row = tallies
+                .proxies
+                .iter()
+                .find(|row| row.proxy_addr == full.proxy_addr)
+                .unwrap_or_else(|| panic!("{} has no row", full.proxy_addr));
+            assert_eq!(row.state, full.state, "{} state", full.proxy_addr);
+            assert_eq!(
+                row.restart_count, full.restart_count,
+                "{} restart count",
+                full.proxy_addr
+            );
+        }
+        // The counters are not all zero, so the agreement above means
+        // something.
+        assert!(
+            tallies
+                .servers
+                .iter()
+                .any(|row| row.reported_record_count > 0),
+            "no server reported a record count, so the row check proves nothing"
+        );
     }
 
     #[test]

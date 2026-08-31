@@ -502,15 +502,17 @@ impl MetaRaftCluster {
         )
     }
 
-    pub fn resource_tallies(&self) -> ResourceTalliesResponse {
+    pub fn metrics_report(&self) -> MetaMetricsReport {
         self.read_meta().map_or_else(
-            |status| ResourceTalliesResponse {
+            |status| MetaMetricsReport {
                 status,
                 tables: StateTally::default(),
                 namespaces: StateTally::default(),
                 proxy_groups: StateTally::default(),
+                servers: Vec::new(),
+                proxies: Vec::new(),
             },
-            |meta| meta.resource_tallies(),
+            |meta| meta.metrics_report(),
         )
     }
 
