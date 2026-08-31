@@ -1221,6 +1221,19 @@ pub(super) fn context_embedding_width_conflicts(left: &[f32], right: &[f32]) -> 
     !left.is_empty() && !right.is_empty() && left.len() != right.len()
 }
 
+/// Whether a stored vector was written by a different encoder than the one asking.
+///
+/// Width conflicts are already refused, but two encoders of the SAME width -- and candidates
+/// routinely are, since any model truncated to 512 looks alike -- produce no width signal and no
+/// error. The recorded hash is the only thing separating them.
+///
+/// Zero on either side means "unknown" and never conflicts: a stored zero predates the hash being
+/// recorded, and an active zero means the caller named no encoder. Treating either as a conflict
+/// would blank retrieval for every existing store and every providerless request.
+pub(super) fn context_embedding_model_conflicts(stored_hash: u64, active_hash: u64) -> bool {
+    stored_hash != 0 && active_hash != 0 && stored_hash != active_hash
+}
+
 pub(super) fn context_embedding_similarity_micros(left: &[f32], right: &[f32]) -> i64 {
     if left.is_empty() || right.is_empty() {
         return 0;
