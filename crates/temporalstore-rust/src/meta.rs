@@ -2477,6 +2477,7 @@ mod tests {
         // history at all.
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-1:9000".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -2532,6 +2533,7 @@ mod tests {
         let meta = SingleNodeMeta::default().with_conviction_lock(true);
         let register_proxy = || {
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2605,6 +2607,7 @@ mod tests {
         register(&meta, "server-a");
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2643,6 +2646,7 @@ mod tests {
         register(&meta, "server-b");
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2796,6 +2800,7 @@ mod tests {
         for (index, addr) in servers.iter().enumerate() {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
                     node_id: index as u64 + 1,
@@ -6099,6 +6104,7 @@ mod tests {
     fn shedding_meta(drop_percent: u8) -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "tenant".to_string(),
             location: "rack-1".to_string(),
@@ -6336,6 +6342,7 @@ mod tests {
                 .ok);
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "node-a".to_string(),
                     node_id: 1,
@@ -6366,6 +6373,7 @@ mod tests {
             for shard_id in [100u64, 103, 104, 107, 108, 111, 115, 200, 99] {
                 assert!(meta
                     .register(RegisterShardRequest {
+                        registered_at_ms: 0,
                         shard_id,
                         server_addr: "node-a".to_string(),
                     })
@@ -6508,6 +6516,7 @@ mod tests {
             .ok);
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -6531,6 +6540,7 @@ mod tests {
         for shard_id in [400u64, 401, 402] {
             assert!(meta
                 .register(RegisterShardRequest {
+                    registered_at_ms: 0,
                     shard_id,
                     server_addr: "node-a".to_string(),
                 })

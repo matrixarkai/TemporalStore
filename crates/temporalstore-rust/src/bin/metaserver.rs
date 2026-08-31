@@ -2670,6 +2670,7 @@ mod tests {
 
     fn joined(meta: &SingleNodeMeta, addr: &str) {
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2742,6 +2743,7 @@ mod tests {
         // had no way to say so.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2764,6 +2766,7 @@ mod tests {
         // trap as the placement figures beside it.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2784,6 +2787,7 @@ mod tests {
     fn a_node_that_has_said_nothing_reports_nothing() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2801,6 +2805,7 @@ mod tests {
         // detected and reported; a proxy doing the same was silent.
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -2867,6 +2872,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for shard_id in [1, 2] {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });
@@ -2921,6 +2927,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for shard_id in 1..=5 {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });

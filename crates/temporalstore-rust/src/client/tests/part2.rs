@@ -699,6 +699,7 @@ fn a_batch_is_split_across_shards_the_table_gained_after_it_was_opened() {
                         &GetShardResponse {
                             status: Status::ok(),
                             location: Some(ShardLocation {
+                                registered_at_ms: 0,
                                 state: crate::meta::MetaEntityState::Normal,
                                 shard_id,
                                 server_addr: backend_for_meta.clone(),

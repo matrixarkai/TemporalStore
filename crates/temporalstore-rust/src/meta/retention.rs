@@ -1041,6 +1041,7 @@ mod tests {
         // tell them aging is keeping up.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -1048,6 +1049,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "p1".to_string(),
             namespace: String::new(),
             location: "rack-1".to_string(),

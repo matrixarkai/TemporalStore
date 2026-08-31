@@ -435,6 +435,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "quiet".to_string(),
                 node_id: 1,

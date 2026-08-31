@@ -1170,6 +1170,7 @@ fn convicted_proxy_cluster(forbid: bool) -> MetaRaftCluster {
     meta.set_conviction_lock(forbid);
     assert!(meta
         .register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -1193,6 +1194,7 @@ fn convicted_proxy_cluster(forbid: bool) -> MetaRaftCluster {
 
 fn rejoin(meta: &MetaRaftCluster) -> Status {
     meta.register_proxy(RegisterProxyRequest {
+        registered_at_ms: 0,
         proxy_addr: "proxy-a".to_string(),
         namespace: "ns".to_string(),
         location: "rack-1".to_string(),

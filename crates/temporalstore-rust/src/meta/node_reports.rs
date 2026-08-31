@@ -179,6 +179,7 @@ mod tests {
 
     fn proxy(addr: &str) -> RegisterProxyRequest {
         RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: addr.to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
