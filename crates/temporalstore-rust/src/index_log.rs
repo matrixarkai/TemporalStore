@@ -482,7 +482,16 @@ impl LocalIndexLogStore {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
         }
-        debug_assert!(serde_json::from_slice::<serde_json::Value>(index_bytes).is_ok());
+        // This once asserted the bytes parse as JSON, from when this appender spliced the whole
+        // index into the record. It no longer does -- it writes a digest and a length, and never
+        // looks inside -- so the JSON demand was a precondition that outlived its reason, and it
+        // fires the moment the index is written in its binary container. Assert what this code
+        // actually needs: that it was handed an index at all, in either format a reader accepts.
+        debug_assert!(
+            crate::engine::bytes_look_like_served_index(index_bytes),
+            "index-log anchor was handed {} bytes that are not a served index in any known format",
+            index_bytes.len()
+        );
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -702,6 +711,8 @@ impl LocalIndexLogStore {
         Ok(bytes)
     }
 
+    /// The records in the window. Says nothing about whether the window was exhausted, which
+    /// is why anything reporting completeness to a caller wants `scan_bounded` instead.
     pub fn scan(
         &self,
         shard_id: ShardId,
@@ -709,11 +720,27 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
+        self.scan_bounded(shard_id, start_offset, end_offset, max_bytes)
+            .map(|(records, _)| records)
+    }
+
+    /// The records in the window, and whether `max_bytes` cut the scan short.
+    ///
+    /// The walk below stops for two unrelated reasons: the window ended, or the byte budget ran
+    /// out. Returning only the records conflates them, and a caller that cannot tell them apart
+    /// reports a truncated read as a complete one.
+    pub fn scan_bounded(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        end_offset: u64,
+        max_bytes: u64,
+    ) -> Result<(Vec<(u64, Vec<u8>)>, bool), IndexLogError> {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         let path = index_log_path(&inner.root, shard_id);
         if !path.exists() {
             inner.stats.scans += 1;
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let _ = last_sequence_at(&inner.root, shard_id)?;
         let mut file = File::open(&path)?;
@@ -721,6 +748,7 @@ impl LocalIndexLogStore {
         let mut reader = BufReader::new(file);
         let mut offset = start_offset;
         let mut total = 0;
+        let mut truncated = false;
         let mut records = Vec::new();
         loop {
             let mut line = Vec::new();
@@ -729,7 +757,12 @@ impl LocalIndexLogStore {
                 break;
             }
             let next_offset = offset.saturating_add(read as u64);
-            if next_offset > end_offset || total + read as u64 > max_bytes {
+            if next_offset > end_offset {
+                break;
+            }
+            if total + read as u64 > max_bytes {
+                // Out of budget with the window not yet walked: there is more to read.
+                truncated = true;
                 break;
             }
             records.push((offset, line));
@@ -738,7 +771,7 @@ impl LocalIndexLogStore {
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
-        Ok(records)
+        Ok((records, truncated))
     }
 
     pub fn gc_before_sequence(

@@ -996,6 +996,24 @@ pub struct StorageManagerPressureDecision {
     pub skip_reason: Option<String>,
 }
 
+/// What a metrics reap actually collected.
+///
+/// The stage used to push the string "reap_metrics" onto the executed list and stop there, so a
+/// cycle reported the stage as having run while nothing was gathered and nothing published. The
+/// WAL's own counters are the clearest example of the cost: they are incremented on every append
+/// and barrier and were never read by anything outside the module that owns them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageMetricsReapReport {
+    /// Durability barriers taken, by the call site that took them.
+    #[serde(default)]
+    pub durability_barriers: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub durability_barriers_total: u64,
+    /// This shard's write-ahead log counters at the moment of the reap.
+    #[serde(default)]
+    pub wal: crate::wal::WriteAheadLogStats,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StorageManagerLoopReport {
     pub shard_id: ShardId,
@@ -1009,6 +1027,10 @@ pub struct StorageManagerLoopReport {
     pub lifecycle_report: Option<StorageLifecycleReport>,
     #[serde(default)]
     pub expired_records_removed: usize,
+    /// Present when the reap stage ran. `None` means it was disabled, not that it found
+    /// nothing -- a reap that gathers nothing still reports zeros.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics_reap: Option<StorageMetricsReapReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_report: Option<CompactionResponse>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1618,6 +1640,10 @@ impl DataNodeRuntime {
     /// [`SharedWalSink`]). Opt-in: with no sink attached the runtime behaves
     /// exactly as before.
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
+        // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
+        // pass through this layer. Give it the same sink, or those deletions reach the local
+        // log alone and a successor replaying the shared log resurrects the keys.
+        self.inner.engine.set_maintenance_wal_mirror(Arc::clone(&sink));
         *self
             .inner
             .shared_wal_sink

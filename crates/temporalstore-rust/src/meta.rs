@@ -531,8 +531,12 @@ pub struct ProxyHeartbeatResponse {
     pub config_version: u64,
     #[serde(default)]
     pub serving_mode: String,
+    /// None means the metaserver has no opinion, which today is always: there is no
+    /// per-proxy drop_percent in the meta model at all -- the one that exists is a TABLE
+    /// serving option. As a bare `u8` this field could not say that, so it said 0, and the
+    /// proxy applied it and lifted whatever drain an operator had put in force.
     #[serde(default)]
-    pub drop_percent: u8,
+    pub drop_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -5922,13 +5926,17 @@ mod tests {
         // response carried a hard-coded zero, so the only way to pull the lever
         // was to restart each proxy with different configuration.
         let meta = shedding_meta(25);
-        assert_eq!(beat_proxy(&meta, 0).drop_percent, 25);
+        assert_eq!(beat_proxy(&meta, 0).drop_percent, Some(25));
     }
 
     #[test]
     fn a_group_that_asks_for_nothing_sheds_nothing() {
         let meta = shedding_meta(0);
-        assert_eq!(beat_proxy(&meta, 0).drop_percent, 0);
+        assert_eq!(
+            beat_proxy(&meta, 0).drop_percent,
+            Some(0),
+            "a group that asks for zero has still spoken, which is not the same as silence"
+        );
     }
 
     #[test]
@@ -5955,7 +5963,7 @@ mod tests {
             "the version did not move, so an attached proxy would never re-read"
         );
         assert!(after.config_changed);
-        assert_eq!(after.drop_percent, 40);
+        assert_eq!(after.drop_percent, Some(40));
     }
 
     #[test]
@@ -5971,7 +5979,11 @@ mod tests {
             .status
             .ok
         );
-        assert_eq!(beat_proxy(&meta, 0).drop_percent, 0);
+        assert_eq!(
+            beat_proxy(&meta, 0).drop_percent,
+            None,
+            "no group is holding an opinion about this proxy, so the heartbeat must not \n             carry one -- it used to carry 0, which erased whatever the proxy was \n             configured with"
+        );
     }
 
     #[test]
@@ -6086,6 +6098,268 @@ mod tests {
         drop(meta);
         let reopened = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert_eq!(reopened.list_namespaces().namespaces.len(), 1);
+    }
+
+    #[test]
+    fn the_learned_shard_index_answers_what_the_scan_answered() {
+        // The index exists because asking every table which shard it owns, once
+        // per shard, cost shards times tables on a background round. It is only
+        // worth having if it says the same thing -- including for two tables
+        // whose ranges overlap, which the scan resolved by table map order.
+        use crate::meta::topology_helpers::{shard_owning_tables, table_for_shard};
+
+        for overlapping in [false, true] {
+            let meta = SingleNodeMeta::default();
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: "ns".to_string()
+                })
+                .status
+                .ok);
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+
+            // "a" owns 100..108. "b" owns 108..116, or 104..112 when the ranges
+            // are made to overlap.
+            let second_first = if overlapping { 104 } else { 108 };
+            for (name, first) in [("a", 100u64), ("b", second_first)] {
+                assert!(meta
+                    .add_table(AddTableRequest {
+                        namespace: "ns".to_string(),
+                        table_name: name.to_string(),
+                        first_shard_id: first,
+                        shard_count: 8,
+                        replica_count: 1,
+                        partition_version: 0,
+                        serving_options: TableServingOptions::default(),
+                    })
+                    .status
+                    .ok);
+            }
+            // Registered shards across both ranges, and two that no table owns.
+            for shard_id in [100u64, 103, 104, 107, 108, 111, 115, 200, 99] {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+
+            let state = meta.inner.read().expect("meta lock poisoned");
+            let learned = shard_owning_tables(&state);
+            for shard_id in state.shards.keys() {
+                let scanned = table_for_shard(&state, *shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                let indexed = learned
+                    .get(shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                assert_eq!(
+                    indexed, scanned,
+                    "shard {shard_id} resolved differently (overlapping={overlapping})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tombstone_with_no_stamp_is_still_left_alone() {
+        // Retention starts from the drop stamps now instead of walking every
+        // resource. That is the same set only because a tombstone with no stamp
+        // is never collected -- it predates the stamps, and treating it as
+        // infinitely old would forget the whole history on the first round after
+        // an upgrade. The scan used to produce it as a candidate for the planner
+        // to reject; starting from the stamps it is simply not a candidate, and
+        // the outcome has to stay identical.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for name in ["stamped", "unstamped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                    first_shard_id: if name == "stamped" { 10 } else { 20 },
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .delete_table(DeleteTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Take the stamp away from one of them, which is what an upgrade from
+        // before the stamps existed leaves behind.
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            let key = dropped_key("table", &table_key("ns", "unstamped"));
+            assert!(state.dropped_since_ms.remove(&key).is_some());
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(
+            report.plan.tables,
+            vec![table_key("ns", "stamped")],
+            "the stamped tombstone is collected and the unstamped one is not"
+        );
+
+        let remaining = meta
+            .list_tables()
+            .tables
+            .into_iter()
+            .map(|table| table.table_name)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec!["unstamped".to_string()]);
+    }
+
+    #[test]
+    fn a_stamp_for_a_resource_that_is_gone_is_not_reported_as_a_purge() {
+        // The round starts from the drop stamps, so a stamp left behind for a
+        // resource that is no longer in the state would become a candidate, and
+        // the round would report forgetting something that was already gone --
+        // the plan is what the metrics and the operator read.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            state
+                .dropped_since_ms
+                .insert(dropped_key("table", &table_key("ns", "vanished")), 1);
+            state
+                .dropped_since_ms
+                .insert(dropped_key("server", "node-gone"), 1);
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert!(
+            report.plan.is_empty(),
+            "reported purging resources that were not there: {:?}",
+            report.plan
+        );
+    }
+
+    #[test]
+    fn a_purged_table_still_takes_its_shard_routes_with_it() {
+        // A round with nothing to collect no longer derives who owns each shard
+        // or which table owns each shard -- neither can change what an empty
+        // round returns, and deriving them walked every registered shard. The
+        // risk in that is a round which does have something to collect quietly
+        // losing the shard routes, and the planner's own test supplies those
+        // maps ready-made, so it would not notice.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+                first_shard_id: 400,
+                shard_count: 3,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        for shard_id in [400u64, 401, 402] {
+            assert!(meta
+                .register(RegisterShardRequest {
+                    shard_id,
+                    server_addr: "node-a".to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Nothing is dropped yet, so the round has nothing to say about shards.
+        let quiet = meta.plan_meta_retention_now(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(quiet.is_empty(), "{quiet:?}");
+
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+            })
+            .status
+            .ok);
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.plan.tables, vec![table_key("ns", "gone")]);
+        assert_eq!(
+            report.plan.shards,
+            vec![400, 401, 402],
+            "the purged table's shard routes were left behind"
+        );
+        assert!(
+            meta.list_shards(ListShardsRequest {
+                server_addr: String::new(),
+                after_shard_id: 0,
+                limit: 0,
+            })
+            .shards
+            .is_empty(),
+            "the routes are still in the state"
+        );
     }
 
     #[test]
@@ -7073,7 +7347,10 @@ mod tests {
         assert!(response.config_changed);
         assert_eq!(response.config_version, 3);
         assert_eq!(response.serving_mode, "serving");
-        assert_eq!(response.drop_percent, 0);
+        assert_eq!(
+            response.drop_percent, None,
+            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear              to set one -- it used to answer 0, which the proxy applied over an operator's drain"
+        );
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
 
         let frozen = meta.freeze_proxy(StateChangeRequest {

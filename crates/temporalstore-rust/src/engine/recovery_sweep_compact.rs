@@ -313,11 +313,15 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // earlier SET/EXPIRE records.
             if !replaying_wal() {
                 for key in &expired_keys {
-                    let _ = self.wal_store.append_with_sync(
-                        request.shard_id,
-                        Command::CommonDelete { key: key.clone() },
-                        false,
-                    );
+                    let command = Command::CommonDelete { key: key.clone() };
+                    let appended = self
+                        .wal_store
+                        .append_with_sync(request.shard_id, command.clone(), false);
+                    // An expiry is a real deletion, so it has to reach every log that a
+                    // successor might replay -- not only this node's.
+                    if appended.is_ok() {
+                        self.mirror_maintenance_write(request.shard_id, &command);
+                    }
                 }
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);

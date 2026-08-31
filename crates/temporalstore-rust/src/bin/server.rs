@@ -1246,6 +1246,31 @@ fn replay_shared_wal_tail(
         Err(err) => warn!(shard_id, %err, "no shared-storage data replayed for shard"),
     }
 }
+/// Read the blocks a set of results points at, so they can travel with them.
+///
+/// A successor installs an address; it can only serve that address if the bytes are reachable.
+/// Locally they are in the block store. Across nodes they are not, unless something carries them.
+fn gather_result_pages(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
+) -> Vec<temporalstore_rust::wal::StagedPage> {
+    let mut pages = Vec::new();
+    for item in outcomes {
+        let Some(address) = item.resolved_address() else {
+            continue;
+        };
+        if let Ok(bytes) = engine.block_store().read(&address) {
+            pages.push(temporalstore_rust::wal::StagedPage {
+                object_id: item.object_id,
+                bytes,
+            });
+        }
+    }
+    let _ = shard_id;
+    pages
+}
+
 
 /// Publish this node's data for `shard_id` to the shared object store so a future
 /// owner can replay it. Reads the shard's write-ahead log (read-only — never
@@ -1301,6 +1326,21 @@ fn publish_shard_checkpoint(
             shard_id,
             wal_index: record.sequence,
             command: record.command,
+            // What the write did travels with it. A successor installs these rather than
+            // re-running the command against its own clock and its own config.
+            outcomes: record.outcomes.clone(),
+            // The pages the results point at, so a successor can actually READ what it
+            // installs. A result names an address in THIS node's block store; a successor has
+            // its own, and the checkpoint only covers what was written before it. Without this
+            // the successor's index is right and every read of the tail returns nothing.
+            //
+            // Empty on the local record for a synchronous write -- that page went to the block
+            // store rather than into the record -- so they are gathered here.
+            staged_pages: if record.staged_pages.is_empty() {
+                gather_result_pages(engine, shard_id, &record.outcomes)
+            } else {
+                record.staged_pages
+            },
         };
         if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
             return PublishShardCheckpointResponse {

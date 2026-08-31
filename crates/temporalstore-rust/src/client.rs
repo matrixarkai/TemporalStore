@@ -23,13 +23,16 @@ use crate::meta::{
 mod client_routing;
 mod client_meta_sync;
 mod commands;
+// The proxy's drop decision hashes the same routing key this builds; it is re-exported
+// rather than copied because the copy that used to live there had drifted.
+pub(crate) use commands::command_routing_key;
 mod table_feature;
 mod table_context;
 mod table_control_state;
 mod retry;
 mod routing;
 
-use commands::{command_is_dropped, command_key, command_routing_key, is_write};
+use commands::{command_is_dropped, command_key, is_write};
 use retry::{
     classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
     sleep_before_retry,
@@ -634,11 +637,20 @@ pub struct TemporalStoreClient {
 #[derive(Debug)]
 struct ClientInner {
     options: ClientOptions,
-    routes: Mutex<HashMap<ShardId, CachedRoute>>,
+    /// Cached routes by shard.
+    ///
+    /// A reader-writer lock: resolving a route is a read now that the round-robin cursor
+    /// is atomic. It writes only when a route is fetched, replaced by a topology sync, or
+    /// cleared.
+    routes: RwLock<HashMap<ShardId, CachedRoute>>,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
-    /// Read on every request for the live options, written only by topology
-    /// sync and open/close. A Mutex made those reads queue behind each other,
-    /// so adding threads cost throughput instead of adding it.
+    /// Table options by "namespace/table".
+    ///
+    /// A reader-writer lock, not a mutex: every table-scoped request reads this at least
+    /// twice -- once to resolve the table and once for its options -- and writes happen
+    /// only when a table is opened, refreshed by the metaserver sync, or dropped. Under a
+    /// mutex those reads serialized against each other for no reason, which made resolving
+    /// a cached table the most expensive thing the proxy did per request.
     tables: RwLock<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
@@ -669,7 +681,7 @@ struct ClientMetaSyncTableState {
     last_forced_sync_unix_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CachedRoute {
     table_key: String,
     partition_id: ShardId,
@@ -679,10 +691,38 @@ struct CachedRoute {
     primary_addr: String,
     replica_addrs: Vec<String>,
     replica_endpoints: Vec<ServerEndpoint>,
-    next_replica_index: usize,
+    /// Round-robin cursor for replica reads.
+    ///
+    /// An atomic, because it is the ONLY thing a route lookup writes -- and only under the
+    /// round-robin policy. While it was a plain field the lookup needed `get_mut`, so the
+    /// whole route cache was taken exclusively on every request to advance one number, and
+    /// under the default pin-primary policy it advanced nothing at all.
+    next_replica_index: std::sync::atomic::AtomicUsize,
     fetched_at: Instant,
     topology_version: u64,
     refresh_reason: String,
+}
+
+impl Clone for CachedRoute {
+    fn clone(&self) -> Self {
+        Self {
+            table_key: self.table_key.clone(),
+            partition_id: self.partition_id,
+            start_bucket: self.start_bucket,
+            end_bucket: self.end_bucket,
+            partition_version: self.partition_version,
+            primary_addr: self.primary_addr.clone(),
+            replica_addrs: self.replica_addrs.clone(),
+            replica_endpoints: self.replica_endpoints.clone(),
+            next_replica_index: std::sync::atomic::AtomicUsize::new(
+                self.next_replica_index
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            fetched_at: self.fetched_at,
+            topology_version: self.topology_version,
+            refresh_reason: self.refresh_reason.clone(),
+        }
+    }
 }
 
 impl CachedRoute {
@@ -696,7 +736,7 @@ impl CachedRoute {
             primary_addr: primary_addr.into(),
             replica_addrs: Vec::new(),
             replica_endpoints: Vec::new(),
-            next_replica_index: 0,
+            next_replica_index: std::sync::atomic::AtomicUsize::new(0),
             fetched_at: Instant::now(),
             topology_version: 0,
             refresh_reason: refresh_reason.to_string(),
@@ -753,7 +793,7 @@ impl TemporalStoreClient {
         Self {
             inner: Arc::new(ClientInner {
                 options,
-                routes: Mutex::default(),
+                routes: RwLock::default(),
                 backend_failures: Mutex::default(),
                 tables: RwLock::default(),
                 meta_sync_tables: Mutex::default(),
@@ -1484,6 +1524,11 @@ impl TemporalStoreTable {
         command_routing_key(command)
             .as_deref()
             .map(|key| self.shard_id_for_key(key))
+            // A command with no routing key pins to the handle's shard, and that is load
+            // bearing rather than a lazy default: a multi-part blob upload is Begin, then
+            // Appends, then Commit, and the staged parts live on the node that served the
+            // Begin. Hashing something per command would scatter the parts of one upload
+            // across shards and none of them would commit.
             .unwrap_or(self.shard_id)
     }
 
@@ -1538,7 +1583,7 @@ impl TemporalStoreTable {
 }
 
 fn choose_cached_route(
-    route: &mut CachedRoute,
+    route: &CachedRoute,
     replica_read_policy: ReplicaReadPolicy,
     preferred_location: Option<&str>,
 ) -> String {
@@ -1556,10 +1601,12 @@ fn choose_cached_route(
             if route.replica_addrs.is_empty() {
                 return route.primary_addr.clone();
             }
-            let replica =
-                route.replica_addrs[route.next_replica_index % route.replica_addrs.len()].clone();
-            route.next_replica_index = (route.next_replica_index + 1) % route.replica_addrs.len();
-            replica
+            // Advance and read in one step. The counter runs unbounded and is taken
+            // modulo the replica count, which keeps the rotation correct across a wrap.
+            let next = route
+                .next_replica_index
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            route.replica_addrs[next % route.replica_addrs.len()].clone()
         }
     }
 }

@@ -389,6 +389,57 @@ _SUBJECT_RESCOPE_DROP = frozenset({
 
 
 
+def _prior_context_probe_window() -> int:
+    """How many newest events the cheap first pass fetches. 0 disables the probe entirely."""
+    import os as _os
+
+    raw = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_PROBE_WINDOW", "").strip()
+    if not raw:
+        return 32
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 32
+
+
+def _prior_context_probe_is_enough(records: list, scope: object) -> bool:
+    """Does this small subset already hold every event the consumer would select?
+
+    The consumer stops at `MAX_PRIOR_MESSAGES` matches walking newest-first, so a subset holding
+    that many matches yields exactly the same selection. Counts scope matches only -- the consumer
+    also accepts a session-key match, so this undercounts, which escalates rather than truncates.
+    """
+    if not isinstance(scope, dict) or not scope:
+        return False
+    try:
+        from tools.matrixark_mcp_core import (
+            MAX_PRIOR_MESSAGES,
+            scope_from_serving_record,
+            scope_matches,
+        )
+    except (ModuleNotFoundError, ImportError):
+        try:
+            from matrixark_mcp_core import (
+                MAX_PRIOR_MESSAGES,
+                scope_from_serving_record,
+                scope_matches,
+            )
+        except (ModuleNotFoundError, ImportError):
+            return False
+    matched = 0
+    for record in records:
+        if not isinstance(record, dict) or record.get("record_type") != "context_event":
+            continue
+        try:
+            if scope_matches(scope_from_serving_record(record), scope):
+                matched += 1
+                if matched >= MAX_PRIOR_MESSAGES:
+                    return True
+        except Exception:  # noqa: BLE001 - an unanswerable match escalates.
+            return False
+    return False
+
+
 def _prior_context_event_window() -> int:
     """How many of a subject's newest events prior context fetches. 0 disables the cap.
 
@@ -1150,6 +1201,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # a FAILED scan means the engine could not answer and the only safe report is True.
         if not callable(getattr(self._client, "matrixark_scan_candidates", None)):
             return super().memory_tombstones_may_exist()
+        # One tombstone is enough to answer yes, and this runs on every add.
+        if self._memory_tombstone_probe():
+            return True
+        # An empty capped answer is NOT conclusive: a location the index still lists but that no
+        # longer resolves is skipped by the fetch, so a store with tombstones could probe empty.
+        # A false negative here skips tombstone filtering and lets deleted memories come back, so
+        # confirm with the full read -- which is cheap exactly when it runs, because a store with
+        # no tombstones has nothing to read.
         records = self._memory_tombstone_records()
         if records is None:
             return True
@@ -1230,6 +1289,23 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
         return self._scan_records_of_types([MEMORY_TOMBSTONE_RECORD_TYPE])
+
+    def _memory_tombstone_probe(self) -> list[Json] | None:
+        """At most one memory tombstone, to answer whether any exist.
+
+        Separate from `_memory_tombstone_records` on purpose: the consumer that tests each pending
+        event against the tombstones genuinely needs all of them, while the guard only needs to
+        know whether the set is non-empty. Reading the whole set to answer that made a per-add
+        guard cost grow with every delete the store had ever seen.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import MEMORY_TOMBSTONE_RECORD_TYPE
+        return self._scan_records_of_types(
+            [MEMORY_TOMBSTONE_RECORD_TYPE],
+            newest_by_type={MEMORY_TOMBSTONE_RECORD_TYPE: 1},
+        )
 
     # Every record type the refresh pass's consumers filter on, enumerated from the consumers
     # themselves. Deliberately absent: context_index -- the store's largest class, whose only
@@ -1919,17 +1995,44 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # fetch, and it counts only matches; the margin is what keeps a busy multi-session subject
         # seeing the same eight it saw before.
         newest_events = _prior_context_event_window()
-        subset = self._scan_records_of_types(
-            [
-                "context_event",
-                "context_summary",
-                "context_pack_audit",
-                MEMORY_TOMBSTONE_RECORD_TYPE,
-                MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
-            ],
-            scope=engine_scope if pinned_hashes else None,
-            newest_by_type=({"context_event": newest_events} if newest_events else None),
-        )
+        wanted_types = [
+            "context_event",
+            "context_summary",
+            "context_pack_audit",
+            MEMORY_TOMBSTONE_RECORD_TYPE,
+            MEMORY_RETENTION_CUTOFF_RECORD_TYPE,
+        ]
+        engine_scope_arg = engine_scope if pinned_hashes else None
+
+        # `collect_prior_context` walks these newest-first and STOPS at the eighth event that
+        # matches the request's session or scope. The window exists for the subject that
+        # interleaves sessions, where the eight matches are scattered among many events -- but on
+        # the common subject the eight newest events ARE the eight matches, and fetching 256 to
+        # hand over a list the consumer abandons after eight is the waste. Measured at steady
+        # state on a 300-memory subject: 384 records and 1.32 MB fetched per add, 89 ms, of which
+        # 256 events were 901 KB.
+        #
+        # So probe with a small window first and escalate only when it cannot satisfy the
+        # consumer. The test is deliberately STRICTER than the consumer's: it counts only events
+        # matching by scope, while the consumer also accepts a session-key match. Undercounting
+        # escalates and costs a second fetch; it can never serve fewer matches than the consumer
+        # would have found.
+        probe_events = _prior_context_probe_window()
+        subset = None
+        if probe_events and newest_events and probe_events < newest_events:
+            probe = self._scan_records_of_types(
+                wanted_types,
+                scope=engine_scope_arg,
+                newest_by_type={"context_event": probe_events},
+            )
+            if probe is not None and _prior_context_probe_is_enough(probe, scope):
+                subset = probe
+        if subset is None:
+            subset = self._scan_records_of_types(
+                wanted_types,
+                scope=engine_scope_arg,
+                newest_by_type=({"context_event": newest_events} if newest_events else None),
+            )
         if subset is None:
             return self.read_all()
         # Summaries and other compact records can live in the latest-state HASH rather than the
@@ -2162,6 +2265,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             "fields_deleted": purged.get("matrixark_delete_fields_deleted"),
             "fields_rewritten": purged.get("matrixark_delete_fields_rewritten"),
             "ids_requested": purged.get("matrixark_delete_ids_requested"),
+            # How much the purge actually READ, not just what it removed. Without this the
+            # caller cannot tell a cheap purge from an expensive one: measured on one subject
+            # with 600 memories, a single update decodes ~11,400 records to remove five.
+            "records_scanned": purged.get("matrixark_delete_records_scanned"),
         }
 
     def update_memory(self, args: Json, hook: Json | None = None) -> Json:
@@ -2414,6 +2521,61 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return None
         return {str(v) for v in values}
 
+    def _lookup_persisted_event_members_many(self, event_ids: list[str]) -> dict[str, set[str]]:
+        """Read many membership entries in one round trip.
+
+        Every entry lives under the same hash key, so a single ``batch_hget`` replaces one read
+        per event. An id the batch response does not answer for is read singly rather than
+        treated as absent -- treating it as absent would let a partial response overwrite a
+        persisted member set with a SMALLER one, and membership is cumulative across the async
+        pipeline. Absent stays absent (omitted from the result), matching the single-key
+        contract that the caller reads with ``or set()``.
+        """
+        found: dict[str, set[str]] = {}
+        wanted = [str(event_id) for event_id in event_ids]
+        if not wanted:
+            return found
+        key = self._event_members_hash_key()
+        entries = [{"key": key, "field": event_id} for event_id in wanted]
+        try:
+            rows = self._client.batch_hget(entries)
+        except Exception:  # noqa: BLE001 - never let a backend read break the write path
+            rows = []
+        raw_by_field: dict[str, str] = {}
+        for index, row in enumerate(rows if isinstance(rows, list) else []):
+            field = ""
+            raw = ""
+            if isinstance(row, dict):
+                field = str(row.get("field") or "")
+                raw = str(row.get("value") or "")
+            elif isinstance(row, str):
+                raw = row
+            if not field and index < len(entries):
+                field = str(entries[index]["field"])
+            if field:
+                raw_by_field[field] = raw
+        for event_id in wanted:
+            if event_id in raw_by_field:
+                members = self._decode_event_members(raw_by_field[event_id])
+            else:
+                # Not answered by the batch: read it singly rather than assume absent.
+                members = self._lookup_persisted_event_members(event_id)
+            if members is not None:
+                found[event_id] = members
+        return found
+
+    @staticmethod
+    def _decode_event_members(raw: str) -> set[str] | None:
+        if not raw:
+            return None
+        try:
+            values = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(values, list):
+            return None
+        return {str(v) for v in values}
+
     def _persist_event_members(self, event_id: str, member_ids: set[str]) -> None:
         try:
             self._hset_with_backoff(
@@ -2456,10 +2618,27 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                     continue
                 for source_id in provenance:
                     additions.setdefault(str(source_id), set()).update(identity_ids)
+        existing_by_event = self._lookup_persisted_event_members_many(list(additions))
+        pending: list[tuple[str, set[str]]] = []
         for event_id, new_members in additions.items():
-            existing = self._lookup_persisted_event_members(event_id) or set()
+            existing = existing_by_event.get(str(event_id)) or set()
             merged = existing | new_members
             if merged != existing:
+                pending.append((str(event_id), merged))
+        if not pending:
+            return
+        entries = [
+            {
+                "key": self._event_members_hash_key(),
+                "field": event_id,
+                "value": json.dumps(sorted(str(m) for m in merged), separators=(",", ":")),
+            }
+            for event_id, merged in pending
+        ]
+        try:
+            self._client.batch_hset(entries)
+        except Exception:  # noqa: BLE001 - best-effort, same as the single-key write it replaces
+            for event_id, merged in pending:
                 self._persist_event_members(event_id, merged)
 
     def __init__(

@@ -189,12 +189,39 @@ def path_candidates_from_query(query: str) -> list[str]:
     return _ordered_unique(values)[:6]
 
 
+def _re_for_cjk_runs():
+    """The same CJK class the resource parser indexes with, so query and ingest agree."""
+    import re as _re_mod
+    ranges = (
+        "㐀-䶿一-鿿豈-﫿"
+        "぀-ヿ가-힯"
+    )
+    return _re_mod.compile("[" + ranges + "]{2,}")
+
+
+# Chinese has no spaces to split on, so the ingest side indexes overlapping character
+# bigrams (see `keywords_for_text`). A bigram is TWO characters, and the length floor below
+# was written for Latin words -- so every CJK posting was unmatchable and the whole Chinese
+# keyword index was write-only. Measured on a CN/EN corpus: 60.2% of emitted keyword terms
+# were under four characters, and a pure Chinese query produced ZERO lookup terms.
+_QUERY_CJK_RUN_RE = _re_for_cjk_runs()
+
+
 def keyword_candidates_from_query(query: str) -> list[str]:
     values = []
     for term in tokens(query):
         if len(term) < 4 or term in QUERY_INDEX_STOPWORDS:
             continue
         values.append(context_index_name("keyword", term))
+    # Mirror the ingest side exactly: same bigrams, or the two halves cannot meet.
+    seen: set[str] = set()
+    for run in _QUERY_CJK_RUN_RE.findall(str(query or "")):
+        for index in range(len(run) - 1):
+            bigram = run[index : index + 2]
+            if bigram in seen:
+                continue
+            seen.add(bigram)
+            values.append(context_index_name("keyword", bigram))
     return _ordered_unique(values)[:8]
 
 

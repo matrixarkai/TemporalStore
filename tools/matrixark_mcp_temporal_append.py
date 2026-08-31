@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import json
 import time
 from typing import Any
@@ -21,10 +23,149 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 _ROUTE_KEYS_WORTH_STORING = (
     "placement_key",
     "placement_hash",
-    "routing_key",
-    "partition_key",
-    "colocation_group",
 )
+# What was dropped and why: `routing_key` and `partition_key` are set to `placement_key` and
+# `colocation_group` to a constant, so all three are copies of something already here. Measured on
+# one add, they cost 25 index postings x ~280 bytes -- about 7 KB per add to say the same thing
+# three more times. The one place that reads them consults `placement_key` first and falls through
+# to `routing_key` / `partition_key` only when it is absent, which it is not.
+
+
+def _drop_derivable_route_enabled() -> bool:
+    """ON by default; MATRIXARK_DROP_DERIVABLE_ROUTE=0 keeps the old persisted route."""
+    return os.environ.get("MATRIXARK_DROP_DERIVABLE_ROUTE", "1").strip().lower() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def _placement_is_derivable(record: Json) -> bool:
+    """Can this record's placement be rebuilt from what it already carries?
+
+    Two ways, and an index posting only has the second:
+
+    * the record states `placement_key` and `placement_hash` at its top level, which
+      `attach_context_placement` writes beside the very route being dropped; or
+    * it states `scope_key` and `node_hash`, from which the pair is a pure function --
+      `placement_key = f"context:{scope_key}:node={node_hash}"` and `placement_hash =
+      stable_hash(placement_key)`.
+
+    Index postings take the second path and are where this matters most: measured over 300
+    ingests, an add writes ~10 postings and each carried 159 bytes of route and 58 of
+    `posting_policy` -- a constant with ONE distinct value in the whole store, and no reader.
+    """
+    if record.get("placement_key") and record.get("placement_hash"):
+        return True
+    if not record.get("scope_key"):
+        return False
+    node_hash = record.get("node_hash")
+    try:
+        return int(node_hash or 0) != 0
+    except (TypeError, ValueError):
+        return False
+
+
+# --------------------------------------------------------------------------------------------- #
+# Backend metadata interning (write side gated, read side always on).
+#
+# `storage_options` is the largest field in the store -- 2,139 KB, 13.2% of all record bytes, with
+# NINE distinct values across 3,610 rows. `INTERN_METADATA_FIELDS` already names it and the local
+# JSONL codec already tokenises it; the primary store does not, so the optimisation landed on the
+# 4-copy/7-day mirror instead of the durable store.
+#
+# The write side is gated OFF. The read side always expands, so a store written with the flag ON
+# still reads correctly if the flag is later turned OFF -- the same asymmetry the JSONL codec uses.
+#
+# NOT yet established, which is why the default is OFF: the JSONL codec's crash-safety argument is
+# "the dict record precedes the data record under the event-log lock". The backend has no such
+# ordering; it would rely on the engine's batch append being atomic, which is a different claim and
+# is unverified. Do not flip this default until that is settled.
+# --------------------------------------------------------------------------------------------- #
+BACKEND_INTERN_METADATA = os.environ.get(
+    "MATRIXARK_INTERN_BACKEND_METADATA", "0").strip().lower() in {"1", "true", "yes", "on"}
+BACKEND_INTERN_FIELDS = ("storage_options",)
+BACKEND_INTERN_TOKEN_KEY = "_bi"
+BACKEND_INTERN_DICT_RECORD_TYPE = "matrixark_backend_intern_dict"
+
+
+def _backend_intern_token(value: Any) -> str:
+    return str(stable_hash(json.dumps(value, sort_keys=True, separators=(",", ":"))))
+
+
+def backend_intern_records(records: list[Json], emitted: set[str]) -> list[Json]:
+    """Replace the interned fields with a token, emitting any new sidecar record FIRST.
+
+    Returns the input unchanged when the flag is off, so the write path is byte-identical to today.
+    """
+    if not BACKEND_INTERN_METADATA:
+        return records
+    dict_records: list[Json] = []
+    encoded: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict) or record.get("record_type") == BACKEND_INTERN_DICT_RECORD_TYPE:
+            encoded.append(record)
+            continue
+        present = {f: record[f] for f in BACKEND_INTERN_FIELDS if f in record}
+        if not present:
+            encoded.append(record)
+            continue
+        out = dict(record)
+        tokens: Json = {}
+        for field, value in present.items():
+            token = _backend_intern_token(value)
+            tokens[field] = token
+            if token not in emitted:
+                emitted.add(token)
+                dict_records.append({
+                    "record_type": BACKEND_INTERN_DICT_RECORD_TYPE,
+                    "bi_field": field,
+                    "bi_token": token,
+                    "bi_value": value,
+                })
+            out.pop(field, None)
+        out[BACKEND_INTERN_TOKEN_KEY] = tokens
+        encoded.append(out)
+    return dict_records + encoded
+
+
+_BACKEND_INTERN_TABLE: dict[str, Any] = {}
+
+
+def backend_intern_learn(records: list[Json]) -> None:
+    """Absorb any sidecar records into the token table."""
+    for record in records:
+        if isinstance(record, dict) and record.get("record_type") == BACKEND_INTERN_DICT_RECORD_TYPE:
+            token = record.get("bi_token")
+            if isinstance(token, str):
+                _BACKEND_INTERN_TABLE[token] = record.get("bi_value")
+
+
+def backend_expand_records(records: list[Json]) -> list[Json]:
+    """Put the interned fields back. ALWAYS runs, flag or no flag.
+
+    A record with no token key is returned untouched, so a store written before this existed -- or
+    with the flag off -- expands as a no-op.
+    """
+    if not records:
+        return records
+    backend_intern_learn(records)
+    out: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict):
+            out.append(record)
+            continue
+        if record.get("record_type") == BACKEND_INTERN_DICT_RECORD_TYPE:
+            continue        # sidecars are storage, not data
+        tokens = record.get(BACKEND_INTERN_TOKEN_KEY)
+        if not isinstance(tokens, dict) or not tokens:
+            out.append(record)
+            continue
+        expanded = dict(record)
+        expanded.pop(BACKEND_INTERN_TOKEN_KEY, None)
+        for field, token in tokens.items():
+            if token in _BACKEND_INTERN_TABLE:
+                expanded[field] = _BACKEND_INTERN_TABLE[token]
+        out.append(expanded)
+    return out
 
 
 def slim_persisted_storage_route(record: Json) -> Json:
@@ -45,6 +186,24 @@ def slim_persisted_storage_route(record: Json) -> Json:
     route = record.get("storage_route")
     if not isinstance(route, dict) or not route:
         return record
+    # The two keys this used to keep -- placement_key and placement_hash -- are written onto the
+    # record's TOP LEVEL by the same function that builds this route
+    # (`attach_context_placement`), so the nested pair was a second copy of fields sitting beside
+    # it. Nothing reads the nested ones: a search for a read of `storage_route["placement_key"]`
+    # or `.get("placement_key")` on a route finds none, while the top-level `placement_key` is what
+    # consumers actually use.
+    #
+    # And the pair is not information either. `placement_key` is
+    # `f"context:{scope_key}:node={node_hash}"` and `placement_hash` is `stable_hash` of it, both
+    # from fields already on the record -- so a reader that wanted them could rebuild them exactly.
+    #
+    # Measured over 300 ingests by walking the page segments, `storage_route` cost 1.76 KB per add
+    # across records, and 161 bytes on every one of the ~10 index postings an add writes.
+    if _drop_derivable_route_enabled() and _placement_is_derivable(record):
+        slim = dict(record)
+        slim.pop("storage_route", None)
+        slim.pop("posting_policy", None)
+        return slim
     kept = {key: route[key] for key in _ROUTE_KEYS_WORTH_STORING if key in route}
     if len(kept) == len(route):
         return record

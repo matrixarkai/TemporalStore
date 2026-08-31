@@ -175,7 +175,7 @@ impl TemporalStoreClient {
                                 .filter(|endpoint| endpoint.server_addr != *primary)
                                 .cloned()
                                 .collect(),
-                            next_replica_index: 0,
+                            next_replica_index: std::sync::atomic::AtomicUsize::new(0),
                             fetched_at: Instant::now(),
                             topology_version: route_topology_version,
                             refresh_reason: "table_topology_sync".to_string(),
@@ -211,7 +211,7 @@ impl TemporalStoreClient {
         let mut route_cache = self
             .inner
             .routes
-            .lock()
+            .write()
             .expect("client route cache lock poisoned");
         let last_shard_id = table
             .first_shard_id
@@ -397,7 +397,7 @@ impl TemporalStoreClient {
             let mut routes = self
                 .inner
                 .routes
-                .lock()
+                .write()
                 .expect("client route cache lock poisoned");
             let before_len = routes.len();
             routes.retain(|_, route| {
@@ -441,7 +441,7 @@ impl TemporalStoreClient {
         let mut tables = self
             .inner
             .tables
-            .write()
+            .read()
             .expect("client table cache lock poisoned")
             .keys()
             .cloned()
@@ -552,7 +552,7 @@ impl TemporalStoreClient {
         if removed {
             self.inner
                 .routes
-                .lock()
+                .write()
                 .expect("client route cache lock poisoned")
                 .clear();
             self.inner
@@ -579,7 +579,7 @@ impl TemporalStoreClient {
         let table_cache_size = self
             .inner
             .tables
-            .write()
+            .read()
             .expect("client table cache lock poisoned")
             .len();
         let backend_failure_count = self
@@ -627,13 +627,13 @@ impl TemporalStoreClient {
         let tables = self
             .inner
             .tables
-            .write()
+            .read()
             .expect("client table cache lock poisoned")
             .clone();
         let routes = self
             .inner
             .routes
-            .lock()
+            .read()
             .expect("client route cache lock poisoned")
             .clone();
         let mut reports = tables
@@ -712,7 +712,7 @@ impl TemporalStoreClient {
         let routes = self
             .inner
             .routes
-            .lock()
+            .read()
             .expect("client route cache lock poisoned")
             .iter()
             .map(|(shard_id, route)| {
@@ -782,7 +782,7 @@ impl TemporalStoreClient {
     pub fn route_cache_size(&self) -> usize {
         self.inner
             .routes
-            .lock()
+            .read()
             .expect("client route cache lock poisoned")
             .len()
     }
@@ -816,7 +816,7 @@ impl TemporalStoreClient {
     pub fn insert_cached_route_for_test(&self, shard_id: ShardId, primary_addr: impl Into<String>) {
         self.inner
             .routes
-            .lock()
+            .write()
             .expect("client route cache lock poisoned")
             .insert(
                 shard_id,

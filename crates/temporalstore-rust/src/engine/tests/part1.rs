@@ -2482,6 +2482,95 @@ fn string_setex_sets_value_and_ttl() {
     assert!(value > 0);
 }
 
+/// A sink that just remembers what it was told, so a test can ask whether a write reached it.
+#[derive(Debug, Default)]
+struct RecordingWalSink {
+    seen: std::sync::Mutex<Vec<(ShardId, Command)>>,
+}
+
+impl crate::data_node::SharedWalSink for RecordingWalSink {
+    fn record_write(&self, shard_id: ShardId, command: &Command) {
+        self.seen
+            .lock()
+            .expect("recording sink lock poisoned")
+            .push((shard_id, command.clone()));
+    }
+}
+
+/// An expiry deletion has to reach the mirror, not only this node's log.
+///
+/// Expiry appends its tombstone straight to the WAL, outside the request path, so nothing at
+/// the data-node layer ever sees it. In shared mode that meant the deletion reached the local
+/// log and no other: a successor replaying the shared log never observed it, reapplied the
+/// earlier write, and the key came back -- which is the very failure the tombstone was added
+/// to prevent, reappearing one level up.
+#[test]
+fn an_expiry_deletion_reaches_the_maintenance_mirror() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    let sink = std::sync::Arc::new(RecordingWalSink::default());
+    engine.set_maintenance_wal_mirror(sink.clone());
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: "expire-me".to_string(),
+                    value: b"gone".to_vec(),
+                    ttl_ms: 1,
+                },
+            })
+            .status
+            .ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+
+    let seen = sink
+        .seen
+        .lock()
+        .expect("recording sink lock poisoned")
+        .clone();
+    assert_eq!(
+        seen,
+        vec![(
+            1u64,
+            Command::CommonDelete {
+                key: "expire-me".to_string()
+            }
+        )],
+        "the expiry tombstone must reach the mirror, not just the local log"
+    );
+}
+
+/// With no mirror attached the sweep behaves exactly as it did before one existed.
+#[test]
+fn an_expiry_sweep_without_a_mirror_is_unchanged() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: "expire-me".to_string(),
+                    value: b"gone".to_vec(),
+                    ttl_ms: 1,
+                },
+            })
+            .status
+            .ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+}
+
 #[test]
 fn expiry_sweep_removes_expired_records_without_lazy_read() {
     let engine = TemporalEngine::default();
@@ -3087,7 +3176,9 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     );
 
     // Container OFF: raw JSON, and JSON is what an older binary would have written.
-    std::env::remove_var("TS_INDEX_BINARY");
+    // Say "0" rather than unsetting: unsetting selects the DEFAULT, which is the container,
+    // so an unset variable stopped meaning "off" the moment the default changed.
+    std::env::set_var("TS_INDEX_BINARY", "0");
     let plain = encode_index_bytes(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
     let decoded = decode_index_bytes(&plain).expect("json index decodes");
@@ -3182,7 +3273,9 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
 
     // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
-    std::env::remove_var("TS_INDEX_BINARY");
+    // "0" rather than unset -- unset now selects the container, which is not what is under
+    // test here.
+    std::env::set_var("TS_INDEX_BINARY", "0");
     let plain = encode_index_bytes(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
     assert_eq!(

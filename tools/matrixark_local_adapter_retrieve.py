@@ -962,7 +962,8 @@ class _LocalAdapterRetrieveMixin:
                 "Python reference packing is disabled unless explicitly overridden for local debug."
             )
         embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(retrieval_query)
+        # The query side takes the query prefix; every other call here embeds document text.
+        query_embedding = embedding_for_text(retrieval_query, role="query")
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
@@ -2300,7 +2301,8 @@ class _LocalAdapterRetrieveMixin:
                 "coordinate_tuples": record.get("coordinate_tuples", []),
                 "non_contiguous": record.get("non_contiguous", False),
                 "source_event_ids": record.get("source_event_ids", []),
-                "source_event_count": len(record.get("source_event_ids", []) or []),
+                "source_event_count": int(record.get("source_event_count") or 0)
+                or len(record.get("source_event_ids", []) or []),
                 "source_record_type": record.get("source_record_type", ""),
                 "segment_origin": record.get("segment_origin", ""),
                 "derived_from_context_events": bool(record.get("derived_from_context_events", False)),

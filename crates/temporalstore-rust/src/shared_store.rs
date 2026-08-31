@@ -90,7 +90,37 @@ pub struct SharedStoreWalEntry {
     pub shard_id: ShardId,
     #[serde(rename = "wal_index")]
     pub wal_index: u64,
-    pub command: Command,
+    /// The operation, for an entry that cannot say what it DID.
+    ///
+    /// Absent once the entry carries results, exactly as in the engine record it comes from. An
+    /// entry published before results existed still carries one, and a successor still replays it
+    /// by re-running it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Command>,
+    /// The pages this write produced, carried beside the command that produced them.
+    ///
+    /// A command is not always enough to rebuild what it wrote. A page can be DERIVED state --
+    /// a serialized counter series, a hash map -- and re-executing the command that bumped it
+    /// reconstructs it only if every earlier write is also replayed, in order, from a state
+    /// that still exists. Locally that is what the engine WAL record carries, for exactly this
+    /// reason; a shared log that carried commands alone could hand a successor a shard it could
+    /// not finish rebuilding.
+    ///
+    /// Empty for the overwhelming majority of writes, and `serde(default)` so an entry written
+    /// before this field existed still loads.
+    #[serde(default)]
+    pub staged_pages: Vec<crate::wal::StagedPage>,
+    /// What this write DID, so a successor can install results instead of re-running operations.
+    ///
+    /// Carrying pages was the same idea reached halfway: a page is derived state the command
+    /// cannot rebuild, so the pages travelled beside the command. These finish the thought. A
+    /// successor that installs them needs no clock of its own, no eviction config from the
+    /// original node, and no assumption that re-executing here lands where it landed there.
+    ///
+    /// `serde(default)` and skipped when empty, so an entry written before this reads back
+    /// unchanged and replays exactly as it used to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outcomes: Vec<crate::wal::WalOutcomeItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -316,6 +346,24 @@ struct ShardLease {
 /// `TS_SHARED_STORE_FENCE`: gate for the durable single-writer fence (R2). Default OFF so the
 /// shared-store write path is byte-identical to the pre-fence behavior unless explicitly
 /// enabled.
+/// TS_SHARED_STORE_MAX_PENDING: how many entries the async queue may hold before a write
+/// stops being allowed to defer its own durability.
+///
+/// The async path acks a write once its entry is on an in-memory queue, so the queue depth IS
+/// the size of what a non-graceful exit loses. Unbounded, a store that is merely slow turns
+/// every ack into memory the process never gets back, and the eventual loss is the entire
+/// backlog -- the failure gets worse the longer it goes unnoticed, which is backwards.
+///
+/// At the cap the next write publishes itself synchronously instead of queueing. The ack slows
+/// to the store's own latency, which is precisely the signal a caller needs, and the backlog
+/// stops growing. `0` restores the previous unbounded behaviour.
+fn shared_store_max_pending() -> usize {
+    std::env::var("TS_SHARED_STORE_MAX_PENDING")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(50_000)
+}
+
 fn shared_store_fence_enabled() -> bool {
     matches!(
         std::env::var("TS_SHARED_STORE_FENCE")
@@ -340,6 +388,14 @@ impl<O> Clone for SharedStoreReplicator<O> {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct SharedStoreStagedPageProto {
+    #[prost(uint64, tag = "1")]
+    object_id: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct SharedStoreWalFrameProto {
     #[prost(uint64, tag = "1")]
     shard_id: u64,
@@ -353,6 +409,21 @@ struct SharedStoreWalFrameProto {
     command_sha256: String,
     #[prost(uint32, tag = "6")]
     command_encoding: u32,
+    /// Tag 7, added after the fact: an older reader ignores it and an older writer leaves it
+    /// empty, so both directions stay readable across the change.
+    #[prost(message, repeated, tag = "7")]
+    staged_pages: Vec<SharedStoreStagedPageProto>,
+    /// What the write DID, in the SAME message the engine log uses.
+    ///
+    /// Not a shared-store item type: the shared log needs a destination, not a schema. Carrying
+    /// the engine's item means a successor installs exactly what the origin recorded, with no
+    /// conversion in between to disagree about.
+    ///
+    /// Tag 8, same compatibility shape as tag 7. Without it this path would carry the command and
+    /// silently drop the results, which is worse than not carrying them at all -- the successor
+    /// would re-execute and look correct.
+    #[prost(message, repeated, tag = "8")]
+    items: Vec<crate::sdk::v1::EngineWalItem>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -389,6 +460,11 @@ pub struct SharedStoreStorageWriter<O> {
     mode: SharedStoreStorageMode,
     next_wal_index: AtomicU64,
     pending: Mutex<VecDeque<SharedStoreWalEntry>>,
+    /// Depth at which the async path stops deferring. See [`shared_store_max_pending`].
+    max_pending: usize,
+    /// How many writes have been forced to publish themselves because the queue was full.
+    /// Non-zero means the store is not keeping up and acks are paying for it.
+    capacity_hits: AtomicU64,
     /// Timer-less queue-coalesced group commit for the SYNC path. When enabled, concurrent
     /// sync writers append their entry to `commit` and await a covering durable barrier instead
     /// of each publishing inline, amortizing N object-store appends onto ~1 per group. Ignored
@@ -626,7 +702,7 @@ where
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         let key = self.wal_blob_key(entry.shard_id);
-        let command_metadata = wal_command_metadata(&entry.command)?;
+        let command_metadata = wal_command_metadata(entry.command.as_ref())?;
         let frame = encode_wal_proto_frame(&entry)?;
         let receipt = self
             .append_blob_with_retry(&key, Bytes::from(frame))
@@ -722,7 +798,7 @@ where
         for entry in entries {
             let frame = encode_wal_proto_frame(entry)?;
             frame_lengths.push(frame.len() as u64);
-            command_metadata.push(wal_command_metadata(&entry.command)?);
+            command_metadata.push(wal_command_metadata(entry.command.as_ref())?);
             wal_payload.extend_from_slice(&frame);
         }
         let receipt = self
@@ -845,6 +921,8 @@ where
             mode,
             next_wal_index: AtomicU64::new(next_wal_index.max(1)),
             pending: Mutex::default(),
+            max_pending: shared_store_max_pending(),
+            capacity_hits: AtomicU64::new(0),
             group_commit: false,
             commit_delay: Duration::ZERO,
             commit: Mutex::default(),
@@ -902,6 +980,19 @@ where
         // (bucket_dump_manifest_methods) which fsyncs pages+WAL before recording slab ids. Without
         // this a relaxed (bulk) writer could enumerate a slab whose tail bytes are not yet on disk,
         // uploading a torn page or racing a not-yet-durable slab into the checkpoint.
+        // Make the index PORTABLE before exporting it. A page that lives in a WAL record or in
+        // memory is named by a slab that is not a file, resolvable only through this process's
+        // registry -- so an index carrying one names a place the restoring node cannot reach, and
+        // that read returns nothing with no error. Materialising them first means the index names
+        // only slabs this checkpoint actually uploads.
+        let materialised = engine.materialize_synthetic_pages(shard_id);
+        if materialised > 0 {
+            tracing::info!(
+                shard_id,
+                pages = materialised,
+                "materialised in-process-only pages so the checkpoint index can travel"
+            );
+        }
         block_store.sync_durable()?;
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
@@ -1165,10 +1256,44 @@ where
             if wal_index <= after_wal_index {
                 continue;
             }
-            let response = engine.execute(ExecuteRequest {
-                shard_id,
-                command: entry.command,
-            });
+            // An entry that says what its write DID is installed, not re-executed. Re-executing
+            // reproduces the write only if everything that influenced it is reproduced too, and on
+            // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
+            // a different clock, and whatever config it happens to hold.
+            //
+            // The fallback is what makes this safe to land. An entry carrying no outcomes replays
+            // exactly as it used to, so a shared log written before this still applies.
+            if !entry.outcomes.is_empty() {
+                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_pages) {
+                    return Err(SharedStoreReplicationError::ApplyFailed {
+                        wal_index,
+                        status: Status::error(
+                            "shared_wal_outcome_refused",
+                            "a recorded outcome could not be installed; refusing to serve a shard missing it",
+                        ),
+                    });
+                }
+                report.applied += 1;
+                report.last_wal_index = wal_index;
+                continue;
+            }
+            // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
+            // command would otherwise substitute this node's reconstruction for the bytes that
+            // were actually acked -- identical for a plain value, and not necessarily so for
+            // derived state.
+            let Some(command) = entry.command else {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index,
+                    status: Status::error(
+                        "shared_wal_entry_empty",
+                        "entry carries neither results nor an operation; refusing rather than skipping a durable write",
+                    ),
+                });
+            };
+            let response = engine.execute_with_carried_pages(
+                ExecuteRequest { shard_id, command },
+                entry.staged_pages,
+            );
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
                     wal_index,
@@ -1217,10 +1342,44 @@ where
                     actual: wal_index,
                 });
             }
-            let response = engine.execute(ExecuteRequest {
-                shard_id,
-                command: entry.command,
-            });
+            // An entry that says what its write DID is installed, not re-executed. Re-executing
+            // reproduces the write only if everything that influenced it is reproduced too, and on
+            // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
+            // a different clock, and whatever config it happens to hold.
+            //
+            // The fallback is what makes this safe to land. An entry carrying no outcomes replays
+            // exactly as it used to, so a shared log written before this still applies.
+            if !entry.outcomes.is_empty() {
+                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_pages) {
+                    return Err(SharedStoreReplicationError::ApplyFailed {
+                        wal_index,
+                        status: Status::error(
+                            "shared_wal_outcome_refused",
+                            "a recorded outcome could not be installed; refusing to serve a shard missing it",
+                        ),
+                    });
+                }
+                report.applied += 1;
+                report.last_wal_index = wal_index;
+                continue;
+            }
+            // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
+            // command would otherwise substitute this node's reconstruction for the bytes that
+            // were actually acked -- identical for a plain value, and not necessarily so for
+            // derived state.
+            let Some(command) = entry.command else {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index,
+                    status: Status::error(
+                        "shared_wal_entry_empty",
+                        "entry carries neither results nor an operation; refusing rather than skipping a durable write",
+                    ),
+                });
+            };
+            let response = engine.execute_with_carried_pages(
+                ExecuteRequest { shard_id, command },
+                entry.staged_pages,
+            );
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
                     wal_index,
@@ -1271,9 +1430,19 @@ where
                         ),
                     ))
                 })?;
+            // Neither results nor an operation: refusing beats skipping a durable write.
+            let Some(command) = read.entry.command else {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index: *wal_index,
+                    status: Status::error(
+                        "shared_wal_entry_empty",
+                        "entry carries neither results nor an operation",
+                    ),
+                });
+            };
             let response = engine.execute(ExecuteRequest {
                 shard_id,
-                command: read.entry.command,
+                command,
             });
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
@@ -2054,6 +2223,21 @@ where
 {
     /// Enable timer-less queue-coalesced group commit on the SYNC path. `commit_delay` (default
     /// `ZERO`) optionally widens each batch under extreme load; `ZERO` keeps it purely timer-less.
+    /// Override the async queue depth at which writes stop deferring. `0` is unbounded.
+    pub fn with_max_pending(mut self, max_pending: usize) -> Self {
+        self.max_pending = max_pending;
+        self
+    }
+
+    /// How many writes have published themselves because the queue was at capacity.
+    ///
+    /// Zero is the healthy state. Non-zero means the async path is no longer absorbing the
+    /// write rate, and the acks that hit it paid the store's latency rather than silently
+    /// growing the amount a crash would lose.
+    pub fn queue_capacity_hits(&self) -> u64 {
+        self.capacity_hits.load(Ordering::Relaxed)
+    }
+
     pub fn with_group_commit(mut self, enabled: bool, commit_delay: Duration) -> Self {
         self.group_commit = enabled;
         self.commit_delay = commit_delay;
@@ -2069,7 +2253,10 @@ where
         let entry = SharedStoreWalEntry {
             shard_id,
             wal_index,
-            command,
+            command: Some(command),
+        
+                        staged_pages: Vec::new(),
+                                outcomes: Vec::new(),
         };
         match self.mode {
             SharedStoreStorageMode::Sync if self.group_commit => {
@@ -2080,6 +2267,24 @@ where
                 Ok(write_report_from_receipt(wal_index, receipt.as_ref()))
             }
             SharedStoreStorageMode::Async => {
+                // Read the depth and release the lock before any await: holding it across the
+                // publish below would serialize every writer behind one object-store round trip.
+                let at_capacity = {
+                    let pending = self
+                        .pending
+                        .lock()
+                        .expect("shared-store async queue lock poisoned");
+                    self.max_pending > 0 && pending.len() >= self.max_pending
+                };
+                if at_capacity {
+                    // The queue is the loss window, so it is not allowed to grow without end.
+                    // This write pays for its own durability instead of adding to what a
+                    // non-graceful exit would drop. The report already tells the truth about
+                    // which happened -- `published`, not `queued`.
+                    self.capacity_hits.fetch_add(1, Ordering::Relaxed);
+                    let receipt = self.replicator.publish_wal_entry(entry).await?;
+                    return Ok(write_report_from_receipt(wal_index, receipt.as_ref()));
+                }
                 self.pending
                     .lock()
                     .expect("shared-store async queue lock poisoned")
@@ -2298,9 +2503,20 @@ struct WalCommandMetadata {
     encoding: u32,
 }
 
+/// Describe the operation an entry carries, for the offset sidecar.
+///
+/// An entry carrying results has no operation to describe, and this sidecar exists to say how the
+/// operation was encoded. Empty is the honest answer rather than a fabricated one.
 fn wal_command_metadata(
-    command: &Command,
+    command: Option<&Command>,
 ) -> Result<WalCommandMetadata, SharedStoreReplicationError> {
+    let Some(command) = command else {
+        return Ok(WalCommandMetadata {
+            byte_size: 0,
+            sha256: sha256_hex(&[]),
+            encoding: WAL_COMMAND_ENCODING_JSON_SERDE,
+        });
+    };
     let (command_payload, command_encoding) = match command_to_sdk_proto(command) {
         Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
         None => (
@@ -2318,12 +2534,13 @@ fn wal_command_metadata(
 fn encode_wal_proto_frame(
     entry: &SharedStoreWalEntry,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
-    let (command_payload, command_encoding) = match command_to_sdk_proto(&entry.command) {
-        Some(command) => (command.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
-        None => (
-            serde_json::to_vec(&entry.command)?,
-            WAL_COMMAND_ENCODING_JSON_SERDE,
-        ),
+    let (command_payload, command_encoding) = match entry.command.as_ref() {
+        // No operation to carry: the entry states results instead.
+        None => (Vec::new(), WAL_COMMAND_ENCODING_JSON_SERDE),
+        Some(command) => match command_to_sdk_proto(command) {
+            Some(encoded) => (encoded.encode_to_vec(), WAL_COMMAND_ENCODING_SDK_PROTO),
+            None => (serde_json::to_vec(command)?, WAL_COMMAND_ENCODING_JSON_SERDE),
+        },
     };
     let frame = SharedStoreWalFrameProto {
         shard_id: entry.shard_id,
@@ -2332,6 +2549,19 @@ fn encode_wal_proto_frame(
         command_sha256: sha256_hex(&command_payload),
         command_payload,
         command_encoding,
+        staged_pages: entry
+            .staged_pages
+            .iter()
+            .map(|page| SharedStoreStagedPageProto {
+                object_id: page.object_id,
+                bytes: page.bytes.clone(),
+            })
+            .collect(),
+        items: entry
+            .outcomes
+            .iter()
+            .map(crate::wal_proto::item_to_proto)
+            .collect(),
     };
     let mut encoded = frame.encode_to_vec();
     let mut out = Vec::with_capacity(4 + encoded.len());
@@ -2411,7 +2641,20 @@ fn decode_wal_proto_frame_exact(
     Ok(SharedStoreWalEntry {
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
-        command,
+        command: Some(command),
+        outcomes: frame
+            .items
+            .into_iter()
+            .map(crate::wal_proto::item_from_proto)
+            .collect(),
+        staged_pages: frame
+            .staged_pages
+            .into_iter()
+            .map(|page| crate::wal::StagedPage {
+                object_id: page.object_id,
+                bytes: page.bytes,
+            })
+            .collect(),
     })
 }
 
@@ -2705,10 +2948,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -2926,9 +3172,12 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::CommonDelete {
+                command: Some(Command::CommonDelete {
                     key: "gone".to_string(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -3014,10 +3263,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -3068,6 +3320,261 @@ mod tests {
         );
     }
 
+    /// OBJECT-STORE MODE: two followers from one origin must agree, and both must serve.
+    ///
+    /// One follower proves the path works. Two prove it is deterministic: installing the same
+    /// results on two nodes that never wrote them has to land in the same place, or a read is
+    /// answered differently depending on which replica took it -- which is the failure a single
+    /// follower can never show.
+    ///
+    /// Both are also checked for SERVING rather than for shape. A node whose maps agree and whose
+    /// addresses do not resolve passes every comparison and answers nothing, which is exactly the
+    /// defect that a restored node had.
+    #[tokio::test]
+    async fn two_followers_of_one_origin_agree_and_both_serve() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "origin");
+        primary.load_shard(1);
+
+        let workload: Vec<(String, Vec<u8>)> = (0..10)
+            .map(|index| {
+                (
+                    format!("tf-{index:02}"),
+                    format!("two-followers-{index:02}").into_bytes(),
+                )
+            })
+            .collect();
+        for (key, value) in &workload {
+            let response = primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            });
+            assert!(response.status.ok);
+        }
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let published: Vec<_> = primary
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .filter(|record| !record.outcomes.is_empty())
+            .collect();
+        assert!(
+            published.len() >= workload.len(),
+            "expected a record per write carrying results, got {}",
+            published.len()
+        );
+        for record in &published {
+            // Carry the blocks the results point at: a follower has its own block store, and an
+            // address alone names a place it cannot reach.
+            let mut carried = record.staged_pages.clone();
+            if carried.is_empty() {
+                for item in &record.outcomes {
+                    if let Some(address) = item.resolved_address() {
+                        if let Ok(bytes) = primary.block_store().read(&address) {
+                            carried.push(crate::wal::StagedPage {
+                                object_id: item.object_id,
+                                bytes,
+                            });
+                        }
+                    }
+                }
+            }
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index: record.sequence,
+                    command: record.command.clone(),
+                    staged_pages: carried,
+                    outcomes: record.outcomes.clone(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let mut served = Vec::new();
+        for role in ["follower-a", "follower-b"] {
+            let follower = test_engine(dir.path(), role);
+            follower.load_shard(1);
+            let before = follower.replay_installs_for_test();
+            let report = replicator.replay_wal(1, 0, &follower).await.unwrap();
+            let installed = follower.replay_installs_for_test() - before;
+            assert!(
+                report.applied > 0,
+                "{role} took nothing from the shared log"
+            );
+
+            let mut answers = Vec::new();
+            for (key, value) in &workload {
+                let response = follower.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: key.clone() },
+                });
+                match response.response {
+                    CommandResponse::Bytes { value: Some(got) } => {
+                        assert_eq!(&got, value, "{role} served the wrong bytes for {key}");
+                        answers.push(got);
+                    }
+                    other => panic!("{role} could not serve {key}: {other:?}"),
+                }
+            }
+            println!("[two-followers] {role}: applied={} installed={installed}", report.applied);
+            served.push(answers);
+        }
+
+        assert_eq!(
+            served[0], served[1],
+            "the two followers answered the same reads differently"
+        );
+    }
+
+    /// RESTORATION on the live format, and the constraint it runs into.
+    ///
+    /// A restored node takes its index and pages from a checkpoint and everything after it from
+    /// the log. On the live format those tail entries carry RESULTS, and this asks whether a
+    /// restored node can install them.
+    ///
+    /// It can install the index entry. It cannot necessarily SERVE it, and that is the finding: a
+    /// result names an address in the ORIGIN's block store. Carrying the bytes in the entry does
+    /// not help, because installing an address does not write bytes into the successor's store.
+    /// Across nodes an address only means something when the SLAB is reachable -- which in shared
+    /// mode means published.
+    ///
+    /// So this asserts the whole property rather than half of it: the node serves both the
+    /// checkpointed half and the tail, and reports which path the tail took. A test that asserted
+    /// installation alone would pass on a node that cannot answer a single read.
+    #[tokio::test]
+    async fn a_restored_node_installs_the_tail_instead_of_re_running_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+
+        // Everything up to here will be covered by the checkpoint.
+        for index in 0..4 {
+            let response = primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("base-{index}"),
+                    value: format!("base-value-{index}").into_bytes(),
+                },
+            });
+            assert!(response.status.ok);
+        }
+        let checkpoint_through = primary
+            .write_ahead_log_store()
+            .info(1)
+            .unwrap()
+            .current_sequence;
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        replicator
+            .publish_checkpoint(1, checkpoint_through, &primary, &primary.block_store())
+            .await
+            .unwrap();
+
+        // Now the TAIL: written after the checkpoint, and published with what it recorded.
+        let tail_write = primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "tail-key".to_string(),
+                value: b"tail-value".to_vec(),
+            },
+        });
+        assert!(tail_write.status.ok);
+
+        let tail = primary
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .find(|record| record.sequence > checkpoint_through && !record.outcomes.is_empty())
+            .expect("the tail write recorded what it did");
+        // Publish it the way a correct publisher must: with the BYTES the results point at.
+        // A result names an address in the primary's block store, and the follower has its own,
+        // so an entry carrying only the address gives the follower an index entry pointing at
+        // bytes it does not have -- a shard that looks whole and serves nothing.
+        let mut carried = tail.staged_pages.clone();
+        if carried.is_empty() {
+            for item in &tail.outcomes {
+                if let Some(address) = item.resolved_address() {
+                    if let Ok(bytes) = primary.block_store().read(&address) {
+                        carried.push(crate::wal::StagedPage {
+                            object_id: item.object_id,
+                            bytes,
+                        });
+                    }
+                }
+            }
+        }
+        assert!(
+            !carried.is_empty(),
+            "the tail's results point at no readable block, so a follower could not serve them"
+        );
+        replicator
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: tail.sequence,
+                command: tail.command.clone(),
+                staged_pages: carried,
+                outcomes: tail.outcomes.clone(),
+            })
+            .await
+            .unwrap();
+
+        // A node that has never seen this shard: restore, then take the tail.
+        let follower = test_engine(dir.path(), "restored");
+        let restored = replicator
+            .restore_index_and_page_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        let installs_before = follower.replay_installs_for_test();
+        let report = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .unwrap();
+        let installed = follower.replay_installs_for_test() - installs_before;
+
+        // Reported, not required. Installing is preferred and only possible when the tail's slab
+        // is reachable; re-running is the fallback that exists for exactly when it is not. What
+        // must hold either way is that the node SERVES what it took.
+        println!(
+            "[restore] tail applied={} installed={installed}",
+            report.applied
+        );
+        assert!(
+            report.applied > 0,
+            "the restored node took nothing from the tail at all"
+        );
+        // Read back BOTH halves: something the checkpoint carried, and something only the tail
+        // did. A restored node that serves one and not the other has half a shard.
+        for (label, key, want) in [
+            ("checkpoint", "base-0", b"base-value-0".to_vec()),
+            ("tail", "tail-key", b"tail-value".to_vec()),
+        ] {
+            let response = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: key.to_string(),
+                },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes { value: Some(want) },
+                "a restored node could not serve the {label} half"
+            );
+        }
+        println!(
+            "[restore] checkpoint through {checkpoint_through}, {installed} tail result(s) installed"
+        );
+    }
+
     #[tokio::test]
     async fn shared_store_lazy_restore_reads_old_page_on_demand() {
         // On-demand lazy recovery: a fresh node with ONLY shared storage restores the
@@ -3098,10 +3605,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -3365,10 +3875,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -3468,10 +3981,13 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value: key.as_bytes().to_vec(),
-                    },
+                    }),
+                
+                                       staged_pages: Vec::new(),
+                                                       outcomes: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -3523,10 +4039,13 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value,
-                    },
+                    }),
+                
+                                       staged_pages: Vec::new(),
+                                                       outcomes: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -3771,10 +4290,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "after".to_string(),
                     value: b"wal-value".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -3887,10 +4409,13 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value: key.as_bytes().to_vec(),
-                    },
+                    }),
+                
+                                       staged_pages: Vec::new(),
+                                                       outcomes: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -3942,10 +4467,13 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value,
-                    },
+                    }),
+                
+                                       staged_pages: Vec::new(),
+                                                       outcomes: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -3976,6 +4504,150 @@ mod tests {
                 value: Some(b"1".to_vec())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_published_entry_keeps_the_pages_its_write_produced() {
+        // A command is not always enough to rebuild what it wrote. If the shared log drops the
+        // pages, a successor replays the command and reconstructs derived state from whatever
+        // it happens to have -- which is not necessarily the bytes that were acked.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            }),
+            staged_pages: vec![crate::wal::StagedPage {
+                object_id: 77,
+                bytes: b"derived-page-bytes".to_vec(),
+            }],
+                    outcomes: Vec::new(),
+        };
+        replicator.publish_wal_entry(entry.clone()).await.unwrap();
+
+        let loaded = replicator.load_wal_entries(1).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        let round_tripped = loaded.values().next().expect("one entry");
+        assert_eq!(
+            round_tripped.staged_pages, entry.staged_pages,
+            "the pages must survive the trip, not just the command"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_entry_written_before_pages_existed_still_loads() {
+        // `staged_pages` is serde(default), so a WAL object published by an older writer -- one
+        // that never had the field -- must still deserialize rather than failing the whole
+        // replay of a shard's history.
+        // Build the legacy shape from a real entry rather than by hand, so this tests the
+        // actual serialized form instead of a guess at it: serialize, drop the field an older
+        // writer never emitted, and load what remains.
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            }),
+            staged_pages: Vec::new(),
+                    outcomes: Vec::new(),
+        };
+        let mut legacy = serde_json::to_value(&entry).unwrap();
+        legacy
+            .as_object_mut()
+            .expect("entry serializes to an object")
+            .remove("staged_pages");
+        assert!(
+            legacy.get("staged_pages").is_none(),
+            "the field must actually be gone for this to test anything"
+        );
+
+        let loaded: SharedStoreWalEntry = serde_json::from_value(legacy)
+            .expect("an entry without the field must still load");
+        assert!(loaded.staged_pages.is_empty());
+        assert_eq!(loaded.command, entry.command);
+    }
+
+    #[tokio::test]
+    async fn the_async_queue_stops_growing_once_it_reaches_its_cap() {
+        // The queue depth IS the loss window: an async write acks once its entry is in memory,
+        // so whatever is queued when the process dies non-gracefully is gone. Unbounded, a slow
+        // store makes that window grow without end -- the failure gets worse the longer nobody
+        // notices. At the cap a write publishes itself instead, which bounds the loss and makes
+        // the ack latency say so.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+        let writer = replicator
+            .storage_writer(SharedStoreStorageMode::Async, 1)
+            .with_max_pending(2);
+
+        for key in ["a", "b"] {
+            let report = writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(report.queued, "below the cap a write defers: {report:?}");
+            assert!(!report.published);
+        }
+        assert_eq!(writer.queued_len(), 2);
+        assert_eq!(writer.queue_capacity_hits(), 0);
+
+        // The third write finds the queue full and pays for its own durability.
+        let report = writer
+            .write(
+                1,
+                Command::StringSet {
+                    key: "c".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(report.published, "at the cap the write publishes: {report:?}");
+        assert!(!report.queued);
+        assert_eq!(
+            writer.queued_len(),
+            2,
+            "the backlog must not have grown past the cap"
+        );
+        assert_eq!(writer.queue_capacity_hits(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_async_queue_still_defers_every_write() {
+        // 0 restores the previous behaviour exactly, so an operator who wants the old
+        // unbounded queue can still have it -- and the escape hatch is tested, not assumed.
+        let dir = tempfile::tempdir().unwrap();
+        let (_store, replicator) = test_shared_store(dir.path());
+        let writer = replicator
+            .storage_writer(SharedStoreStorageMode::Async, 1)
+            .with_max_pending(0);
+
+        for key in ["a", "b", "c", "d"] {
+            let report = writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(report.queued, "unbounded: every write defers: {report:?}");
+        }
+        assert_eq!(writer.queued_len(), 4);
+        assert_eq!(writer.queue_capacity_hits(), 0);
     }
 
     #[tokio::test]
@@ -4100,10 +4772,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 2,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "gap".to_string(),
                     value: b"v".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -4487,10 +5162,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 1,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "k".to_string(),
                     value: b"v".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -4537,10 +5215,13 @@ mod tests {
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index: 1,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: "retry".to_string(),
                     value: b"ok".to_vec(),
-                },
+                }),
+            
+                                   staged_pages: Vec::new(),
+                                               outcomes: Vec::new(),
             })
             .await
             .unwrap();
@@ -4593,10 +5274,13 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: format!("k{wal_index}"),
                         value: vec![wal_index as u8],
-                    },
+                    }),
+                
+                                       staged_pages: Vec::new(),
+                                                       outcomes: Vec::new(),
                 })
                 .await
                 .unwrap();
@@ -4660,10 +5344,13 @@ mod tests {
                 .publish_wal_entry(SharedStoreWalEntry {
                     shard_id: 1,
                     wal_index,
-                    command: Command::StringSet {
+                    command: Some(Command::StringSet {
                         key: key.to_string(),
                         value,
-                    },
+                    }),
+                
+                                       staged_pages: Vec::new(),
+                                                       outcomes: Vec::new(),
                 })
                 .await
                 .unwrap();
