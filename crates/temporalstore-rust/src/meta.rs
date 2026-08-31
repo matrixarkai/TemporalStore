@@ -1160,6 +1160,16 @@ pub struct MetaMutationRecord {
 pub struct LocalMetaMutationLog {
     path: PathBuf,
     write_lock: Arc<Mutex<()>>,
+    /// How many records have been written to the file.
+    ///
+    /// Written under `write_lock`, so it counts the records whose bytes have
+    /// reached the file in the order the lock granted.
+    written: Arc<AtomicU64>,
+    /// How many records a completed sync has covered.
+    ///
+    /// Guarded by its own lock rather than `write_lock`, so a writer waiting for
+    /// durability is not holding up the writer behind it.
+    synced: Arc<Mutex<u64>>,
 }
 
 impl LocalMetaMutationLog {
@@ -1171,26 +1181,55 @@ impl LocalMetaMutationLog {
         Ok(Self {
             path,
             write_lock: Arc::default(),
+            written: Arc::default(),
+            synced: Arc::default(),
         })
     }
 
     pub fn append(&self, mutation: &MetaMutation, at_ms: u64) -> io::Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .expect("meta mutation log lock poisoned");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let record = MetaMutationRecord {
-            at_ms,
-            mutation: mutation.clone(),
+        // The bytes reach the file in the order the write lock grants, and the
+        // record is numbered by that order.
+        let mine = {
+            let _guard = self
+                .write_lock
+                .lock()
+                .expect("meta mutation log lock poisoned");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?;
+            let record = MetaMutationRecord {
+                at_ms,
+                mutation: mutation.clone(),
+            };
+            serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
+            file.write_all(b"\n")?;
+            self.written.fetch_add(1, Ordering::SeqCst) + 1
         };
-        serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
+        self.sync_through(mine)
+    }
+
+    /// Return once a sync that began after record `mine` was written has
+    /// completed.
+    ///
+    /// The barrier a writer needs is not its own: any sync beginning after its
+    /// bytes reached the file covers them, because the file is append-only and
+    /// the writes are ordered. So a writer that finds its record already covered
+    /// has nothing to do, and one that does not takes the barrier for everything
+    /// written so far -- including the writers still queued behind it.
+    fn sync_through(&self, mine: u64) -> io::Result<()> {
+        let mut synced = self.synced.lock().expect("meta mutation log sync poisoned");
+        if *synced >= mine {
+            // Somebody else's barrier already covered this record.
+            return Ok(());
+        }
+        // Read before the barrier, published after it. The other order would
+        // tell a writer its bytes were durable while the sync was still running.
+        let covered = self.written.load(Ordering::SeqCst);
+        let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
         crate::durability_metrics::record_barrier("meta_log_append");
         file.sync_data()?;
+        *synced = (*synced).max(covered);
         Ok(())
     }
 
@@ -6360,6 +6399,77 @@ mod tests {
             .is_empty(),
             "the routes are still in the state"
         );
+    }
+
+    #[test]
+    fn writers_share_a_barrier_without_losing_a_record() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(LocalMetaMutationLog::new(dir.path().join("meta.log")).unwrap());
+
+        // One writer on its own is covered by its own barrier, and its record is
+        // readable the moment append returns.
+        log.append(
+            &MetaMutation::RegisterShard(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: "solo".to_string(),
+            }),
+            10,
+        )
+        .unwrap();
+        assert_eq!(log.load().unwrap().len(), 1, "the first record is not there");
+
+        let writers = 8usize;
+        let each = 12usize;
+        let mut handles = Vec::new();
+        for w in 0..writers {
+            let log = Arc::clone(&log);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..each {
+                    log.append(
+                        &MetaMutation::RegisterShard(RegisterShardRequest {
+                            shard_id: (w * each + i) as u64 + 100,
+                            server_addr: format!("node-{w}"),
+                        }),
+                        i as u64,
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Every record every writer was told was durable is in the log, once.
+        let records = log.load().unwrap();
+        assert_eq!(
+            records.len(),
+            writers * each + 1,
+            "a record a writer was told had landed is missing"
+        );
+        let mut shard_ids = records
+            .iter()
+            .filter_map(|record| match &record.mutation {
+                MetaMutation::RegisterShard(request) => Some(request.shard_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        shard_ids.sort_unstable();
+        shard_ids.dedup();
+        assert_eq!(
+            shard_ids.len(),
+            writers * each + 1,
+            "a record was written twice or read back wrong"
+        );
+
+        // How many barriers this took is deliberately not asserted. The
+        // barrier counter is process-wide and every other test in the binary
+        // adds to it, so a count read here says nothing about this log -- and a
+        // test that passes alone and fails in the suite is worse than no test.
+        // What matters is above: every record a writer was told had landed is
+        // in the log, exactly once.
     }
 
     #[test]
