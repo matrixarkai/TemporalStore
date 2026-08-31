@@ -984,7 +984,6 @@ impl TemporalEngine {
                 // the live in-memory shard between them, and cold reload folds base + deltas.
                 let (items, upsert_record) = match upsert_components
                     .as_ref()
-                    .filter(|_| upsert_deltas_enabled())
                 {
                     Some(components) => (
                         collect_upsert_index_items(
@@ -2077,24 +2076,6 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
 /// one of them lands through the page-upsert path (one new page per component, predecessor
 /// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
-/// Emission gate for upsert delta records. ON by default; TS_INDEXLOG_UPSERT_DELTAS=0 is the
-/// escape hatch. The gate was OFF while a multi-restart scale store that reconstructed EMPTY
-/// on reload was attributed to the fold of a large upsert-record log. The scale
-/// reload-equality suite (tests/upsert_reload_equality.rs: thousands of batch-committed
-/// upsert records, config-log present, threshold dumps, SIGKILL restarts across two
-/// generations, verified under BOTH recovery modes) plus an engine-level reload of the
-/// preserved damaged store under every mode/artifact combination showed the fold reconstructs
-/// the full served view; the observed emptiness came from the serving layer answering
-/// vacuously (a discarded shard-load failure served as an empty store) and is fixed there.
-fn upsert_deltas_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("TS_INDEXLOG_UPSERT_DELTAS")
-            .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true)
-    })
-}
-
 fn command_upsert_components(
     command: &Command,
 ) -> Option<Vec<(&'static str, String, Option<String>)>> {

@@ -62,8 +62,23 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 # coverage needs roughly 76 per chunk, which is only affordable with posting lists.
 INDEX_KEYWORD_LIMIT = int(os.environ.get("MATRIXARK_INDEX_KEYWORD_LIMIT", "12"))
 
+# Default ON. One index record per (chunk, term) pair is 83.3% of everything a skill ingest
+# writes -- 33,020 of the 39,624 records a 1 MB skill produces. Coalescing them into one posting
+# per term, measured on that document:
+#
+#     records   39,624 -> 9,659    (-75.6%)
+#     bytes     18.4 MB -> 6.9 MB  (-62.2%)   amplification 17.5x -> 6.6x
+#     emission   0.656s -> 0.428s  (-34.7%)
+#
+# The index content is unchanged: the same 3,026 terms carrying the same 36,046 references,
+# checked through context_index_ref_hashes, the helper the retrieve path itself uses.
+#
+# This could not be turned on before. Serving resolved a record's identity through the singular
+# fields and never read `ref_hashes`, so a posting carrying two refs had no identity and was
+# dropped outright -- silently, with no length mismatch to raise an error. That is fixed, and
+# the emitter now splits at MAX_SECONDARY_INDEX_REFS_PER_POSTING like the compactor does.
 INDEX_POSTING_LISTS = os.environ.get(
-    "MATRIXARK_INDEX_POSTING_LISTS", "0"
+    "MATRIXARK_INDEX_POSTING_LISTS", "1"
 ) not in {"0", "false", "False", ""}
 
 DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
@@ -80,6 +95,17 @@ DEDUPE_SKILL_CHUNK_EMBEDDING = os.environ.get(
 # only other reader, and it now accepts `skill_section` too.
 #
 # Off restores the second copy.
+try:  # package path
+    from tools.matrixark_mcp_core import (  # noqa: F401
+        MAX_SECONDARY_INDEX_REFS_PER_POSTING,
+        _chunked_refs as chunked_posting_refs,
+    )
+except ImportError:  # top-level path
+    from matrixark_mcp_core import (  # noqa: F401
+        MAX_SECONDARY_INDEX_REFS_PER_POSTING,
+        _chunked_refs as chunked_posting_refs,
+    )
+
 DEDUPE_SKILL_CHUNK_TEXT = os.environ.get(
     "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT", "1"
 ) not in {"0", "false", "False", ""}
@@ -285,23 +311,37 @@ def append_resource_chunk_records(
         if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
             pending_records = _flush_pending_records(adapter, pending_records)
     for index_name, chunk_hashes in index_postings.items():
-        record = resource_record_builders.resource_chunk_index_record(
-            index_name=index_name,
-            ref_type="skill_section" if skill_hash is not None else "resource_chunk",
-            chunk_hash=chunk_hashes[0],
-            resource_hash=resource_manifest_hash if skill_hash is None else skill_hash,
-            source_locator="",
-            node_hash=node_hash,
-            node_path=node_path,
-            scope=resource_record_scope,
-            updated_at_ms=envelope["ingestion_time_ms"],
-        )
-        # The reader takes ref_hashes ahead of the singular fields, so this one record
-        # stands in for every posting of the term.
-        record["ref_hashes"] = chunk_hashes
-        pending_records.append(record)
-        if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
-            pending_records = _flush_pending_records(adapter, pending_records)
+        # Split at the same bound compact_context_index_postings uses. A 1 MB skill puts every
+        # one of its chunks under terms like source_type, so an uncapped posting here reached
+        # 3,303 refs against a cap of 512 -- and a cap that one producer of a record type
+        # observes and another ignores is not a bound on anything.
+        for part, ref_chunk in enumerate(
+            chunked_posting_refs(chunk_hashes, limit=MAX_SECONDARY_INDEX_REFS_PER_POSTING)
+        ):
+            record = resource_record_builders.resource_chunk_index_record(
+                index_name=index_name,
+                ref_type="skill_section" if skill_hash is not None else "resource_chunk",
+                chunk_hash=ref_chunk[0],
+                resource_hash=resource_manifest_hash if skill_hash is None else skill_hash,
+                source_locator="",
+                node_hash=node_hash,
+                node_path=node_path,
+                scope=resource_record_scope,
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
+            # The reader takes ref_hashes ahead of the singular fields, so this record stands
+            # in for every posting of the term that falls in this part.
+            record["ref_hashes"] = ref_chunk
+            record["posting_part"] = part
+            # Same singular/plural rule as the compactor: the scalar exists only when the
+            # posting carries exactly one ref, so the two producers agree on the shape.
+            if len(ref_chunk) == 1:
+                record["ref_hash"] = ref_chunk[0]
+            else:
+                record.pop("ref_hash", None)
+            pending_records.append(record)
+            if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
+                pending_records = _flush_pending_records(adapter, pending_records)
     pending_records = _flush_pending_records(adapter, pending_records)
     # index_dropped_by_cap_count only counts terms lost to the PER-CHUNK term cap, which is
     # applied before the per-operation budget. The budget is what actually truncates a large
