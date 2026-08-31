@@ -200,12 +200,27 @@ impl SingleNodeMeta {
                 break;
             }
             let (namespace, table_name) = shard_tables.get(&shard_id).cloned().unwrap_or_default();
+            // What the owner says about this shard, when it says anything at
+            // all. A server that has never reported its shard states cannot be
+            // read as reporting an empty set.
+            let owner_reports_loaded = state
+                .servers
+                .get(&location.server_addr)
+                .filter(|server| server.reports_shard_states)
+                .map(|server| {
+                    server
+                        .shard_states
+                        .iter()
+                        .any(|reported| reported.shard_id == shard_id && reported.loaded)
+                });
             shards.push(ShardListEntry {
                 shard_id,
                 server_addr: location.server_addr.clone(),
                 namespace,
                 table_name,
                 latest_snapshot: location.latest_snapshot.clone(),
+                state: location.state,
+                owner_reports_loaded,
             });
         }
 

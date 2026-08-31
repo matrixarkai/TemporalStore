@@ -1051,6 +1051,26 @@ pub struct ShardListEntry {
     pub namespace: String,
     pub table_name: String,
     pub latest_snapshot: Option<ShardSnapshotRef>,
+    /// Whether the metaserver considers this shard served.
+    ///
+    /// A shard can be taken out of service on its own, and the listing had no
+    /// way to show it: you could freeze a shard and then not see, here, that it
+    /// was frozen.
+    #[serde(default)]
+    pub state: MetaEntityState,
+    /// Whether the owning server still reports this shard as loaded.
+    ///
+    /// Freezing a shard is a decision the metaserver records immediately, but
+    /// the datanode holding it has work to do before it has really let go. Until
+    /// then the shard is frozen in the metadata and still resident on the node,
+    /// and nothing said which. For a shard that is still serving this reads the
+    /// other way: an owner that is not holding it is a divergence.
+    ///
+    /// `None` means the owner does not report shard states at all, which is not
+    /// the same as reporting that it holds nothing -- the same distinction the
+    /// divergence check makes before it is willing to judge a server.
+    #[serde(default)]
+    pub owner_reports_loaded: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6607,6 +6627,131 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 shard.replicas
             );
         }
+    }
+
+    /// One shard registered to a server that has not said anything yet.
+    fn drainable() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: "node-a".to_string(),
+        });
+        meta
+    }
+
+    /// A heartbeat reporting exactly the shards named as loaded.
+    fn report_loaded(meta: &SingleNodeMeta, loaded: &[ShardId]) {
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "node-a".to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: loaded
+                .iter()
+                .map(|shard_id| ServerShardServingState {
+                    shard_id: *shard_id,
+                    serving_state: "serving".to_string(),
+                    worker_index: 0,
+                    worker_threads: 1,
+                    loaded: true,
+                    readonly: false,
+                    load_version: 1,
+                    table_name: "ns.orders".to_string(),
+                    shard_uri: String::new(),
+                    start_routing_bucket: 0,
+                    end_routing_bucket: u32::MAX,
+                    total_records: 0,
+                    storage_bytes: 0,
+                    cache_memory_bytes: 0,
+                    storage: ShardCanonicalStorageStats::default(),
+                    block_store_bytes_written: 0,
+                    wal_sequence: 0,
+                    dirty_object_count: 0,
+                    dirty_bucket_count: 0,
+                })
+                .collect(),
+        });
+    }
+
+    fn only_shard(meta: &SingleNodeMeta) -> ShardListEntry {
+        meta.list_shards(ListShardsRequest::default())
+            .shards
+            .into_iter()
+            .next()
+            .expect("one shard")
+    }
+
+    #[test]
+    fn the_listing_says_whether_a_shard_is_serving() {
+        // A shard can be taken out of service on its own, and the listing had
+        // no way to show it.
+        let meta = drainable();
+        assert_eq!(only_shard(&meta).state, MetaEntityState::Normal);
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 1 }).status.ok);
+        assert_eq!(only_shard(&meta).state, MetaEntityState::Frozen);
+    }
+
+    #[test]
+    fn a_frozen_shard_still_held_by_its_owner_is_not_drained_yet() {
+        // Freezing is recorded the moment it is asked for, but the datanode
+        // holding the shard has work to do before it has really let go. Until
+        // now nothing distinguished "frozen and gone" from "frozen and still
+        // resident".
+        let meta = drainable();
+        report_loaded(&meta, &[1]);
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 1 }).status.ok);
+
+        let entry = only_shard(&meta);
+        assert_eq!(entry.state, MetaEntityState::Frozen);
+        assert_eq!(
+            entry.owner_reports_loaded,
+            Some(true),
+            "the owner still holds it, and the listing should say so"
+        );
+    }
+
+    #[test]
+    fn once_the_owner_lets_go_the_shard_reads_as_drained() {
+        let meta = drainable();
+        report_loaded(&meta, &[1]);
+        meta.freeze_shard(ShardStateRequest { shard_id: 1 });
+        assert_eq!(only_shard(&meta).owner_reports_loaded, Some(true));
+
+        // The next heartbeat no longer names it.
+        report_loaded(&meta, &[]);
+        assert_eq!(only_shard(&meta).owner_reports_loaded, Some(false));
+    }
+
+    #[test]
+    fn a_server_that_never_reports_is_not_read_as_reporting_nothing() {
+        // The distinction the divergence check already makes before it is
+        // willing to judge a server: silence is not a claim.
+        let meta = drainable();
+        assert_eq!(
+            only_shard(&meta).owner_reports_loaded,
+            None,
+            "silence was read as an empty report"
+        );
+    }
+
+    #[test]
+    fn a_serving_shard_its_owner_does_not_hold_is_visible_too() {
+        // The same field read the other way round: this is a divergence, and
+        // it shows up in the listing rather than only in a checker's report.
+        let meta = drainable();
+        report_loaded(&meta, &[2]);
+        let entry = only_shard(&meta);
+        assert_eq!(entry.state, MetaEntityState::Normal);
+        assert_eq!(entry.owner_reports_loaded, Some(false));
     }
 
     /// A proxy attached to a group serving one namespace.
