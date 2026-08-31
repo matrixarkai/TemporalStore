@@ -33,14 +33,37 @@ VALUES = [0, 1, -1, 127, -128, 3036, -1649, 10000, -10000, 32767, -32768]
 
 
 class TheTwoContainersAreOneVector(unittest.TestCase):
-    def test_the_flag_is_off_by_default(self):
+    def test_the_container_is_on_by_default(self):
         os.environ.pop("MATRIXARK_EMBEDDING_VECTOR_BASE64", None)
         for name in [m for m in list(sys.modules) if m.startswith("matrixark_mcp_core")]:
             del sys.modules[name]
         core = importlib.import_module("matrixark_mcp_core")
-        self.assertFalse(
+        self.assertTrue(
             core.EMBEDDING_VECTOR_BASE64,
-            "every reader must go through decode_stored_vector before this is enabled")
+            "the container halves stored vectors losslessly and every reader decodes both forms")
+
+    def test_the_write_path_actually_produces_the_encoded_form(self):
+        """The default being on is worth nothing if the writer still emits a list.
+
+        The codec, the readers and the flag were all in place for a while before the record
+        builders were wired, and the footprint did not move at all -- a default that changes no
+        bytes is the easiest kind of change to believe in and be wrong about.
+        """
+        os.environ.pop("MATRIXARK_EMBEDDING_VECTOR_BASE64", None)
+        for name in [m for m in list(sys.modules) if m.startswith("matrixark_")]:
+            del sys.modules[name]
+        records = importlib.import_module("matrixark_mcp_ingest_resource_records")
+        core = importlib.import_module("matrixark_mcp_core")
+        record = records.context_embedding_record(
+            embedding_type="skill_section", ref_type="skill_section", ref_hash=1,
+            node_hash=2, node_path=["a"], vector=[0.1, -0.2, 0.3],
+            scope={}, updated_at_ms=1)
+        self.assertIsInstance(
+            record["vector"], str,
+            "the record builder still stored a list, so the container saves nothing")
+        self.assertTrue(record["vector"].startswith("i16:"))
+        self.assertTrue(core.decode_stored_vector(record["vector"]),
+                        "the stored form must decode back to a usable vector")
 
     def test_round_trip_is_exact(self):
         core = _core(True)

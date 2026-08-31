@@ -3221,11 +3221,20 @@ def _int8_scale(dims: int) -> float:
 # 10,000 (all mass on one axis), against a signed range of 32,767. Measured over 500 real
 # vectors the range was -1,649..3,036.
 #
-# Default OFF. Every reader must go through decode_stored_vector before this is turned on;
-# a reader that expects a list would see a string and treat the vector as absent, which is
-# silent -- the node would simply stop being scored.
+# Default ON. Measured on a 1 MB skill: vectors 2,727 -> 1,374 bytes, the whole ingest
+# 12.6 MB -> 9.2 MB, amplification 11.8x -> 8.6x, 12.6 GB -> 9.2 GB per thousand documents.
+# The footprint stops being vector-dominated: 59.5% -> 44.6%.
+#
+# This was gated off until every reader went through decode_stored_vector, because the failure
+# mode is silent rather than loud: a reader that expects a list and receives a string does not
+# raise, it reads the vector as absent, and the node simply stops being scored. Twenty-four
+# extraction sites and five isinstance(..., list) checks -- one on the context-node path, one
+# skipping context_node embeddings outright -- had to be fixed first.
+#
+# Set MATRIXARK_EMBEDDING_VECTOR_BASE64=0 to write lists again. Reads accept both forms either
+# way, so a store written under one setting serves under the other.
 EMBEDDING_VECTOR_BASE64 = os.environ.get(
-    "MATRIXARK_EMBEDDING_VECTOR_BASE64", "0"
+    "MATRIXARK_EMBEDDING_VECTOR_BASE64", "1"
 ).strip().lower() not in {"0", "false", "no", "off", ""}
 
 _VECTOR_BASE64_PREFIX = "i16:"

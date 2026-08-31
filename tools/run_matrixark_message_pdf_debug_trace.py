@@ -617,6 +617,11 @@ def compact_trace(trace: Json) -> Json:
 
 def vector_preview(record: Json) -> Json:
     vector = record.get("vector")
+    # The stored vector has two forms; a preview that only understood the list would
+    # report an encoded vector as missing.
+    if isinstance(vector, str):
+        from matrixark_mcp_core import decode_stored_vector
+        vector = decode_stored_vector(vector)
     if not isinstance(vector, list):
         return {"dim": record.get("dim", 0), "preview": []}
     return {
