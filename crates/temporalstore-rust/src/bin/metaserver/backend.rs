@@ -6,8 +6,15 @@
 impl MetaBackend {
     fn from_env() -> std::io::Result<Self> {
         if env_bool("TS_META_RAFT", false) || std::env::var("TS_META_RAFT_NODES").is_ok() {
+            let options = runtime_options_from_env();
+            if let Some(warning) = unreplicated_meta_raft_warning(&options.nodes) {
+                tracing::warn!(
+                    nodes = options.nodes.len(),
+                    "{warning}"
+                );
+            }
             return Ok(Self::Raft(
-                ProductionMetaRaftRuntime::start(runtime_options_from_env())
+                ProductionMetaRaftRuntime::start(options)
                     .expect("failed to initialize metaserver raft runtime"),
             ));
         }

@@ -8,6 +8,10 @@ pub fn ingest_extract_context(
     engine: &TemporalEngine,
     request: ContextIngestExtractRequest,
 ) -> ContextIngestExtractReport {
+    // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
+    // Context* write would otherwise rebuild the first-index over every live page in the shard --
+    // eight walks of the store for one add.
+    let reconstruct_window = crate::engine::IngestReconstructWindow::open();
     let policy = ContextWorkflowPolicy::default();
     let mut extracts = Vec::new();
     let mut failed_sources = Vec::new();
@@ -55,6 +59,10 @@ pub fn ingest_extract_context(
             });
         }
     }
+
+    // Close the window BEFORE reconstructing: the reconstruct itself must not be deferred.
+    drop(reconstruct_window);
+    engine.reconstruct_bucket_index_now(request.shard_id);
 
     node_hashes.sort_unstable();
     node_hashes.dedup();

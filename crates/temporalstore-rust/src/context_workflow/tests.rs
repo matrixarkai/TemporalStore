@@ -2934,4 +2934,101 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
         .insert("inline_payload".to_string(), serde_json::Value::Bool(false));
     let stated: ContextResourceLifecycleRecord = serde_json::from_value(external).unwrap();
     assert!(!stated.inline_payload);
+
+}
+
+/// End-to-end add latency, and whether it stays flat as the corpus grows.
+///
+/// The WAL numbers elsewhere are per-append: 69 us for a length-framed record. An add is not
+/// one append. It goes through `ingest_extract_context` -- the same entry the live hook uses,
+/// whose records the batch ingester documents as identical to live ingestion -- and that writes
+/// eight records and eight barriers per add. So the interesting quantity is not the per-record
+/// constant but what one add costs end to end, and whether it grows.
+///
+/// Growth is the whole point. A configuration that starts at 100ms and degrades 3.8x over a run
+/// is worse than one that starts higher and stays put, because the corpus only goes one way.
+/// This reports the first and last thirty adds separately and their ratio, which is the shape
+/// that distinguishes them; a single average would hide it.
+///
+///   cargo test -p temporalstore-rust --lib what_one_add_costs_end_to_end -- --ignored --nocapture
+#[test]
+#[ignore]
+fn what_one_add_costs_end_to_end() {
+    fn run(adds: usize) -> (f64, f64, f64, (u64, u64, u64, u64)) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Pages visited per site, which is where an O(corpus) add would show itself: a per-write
+        // rebuild that scans a bucket grows with the bucket, so its visit count grows with the
+        // square of the ingest while the call count stays linear. Counting the work beats timing
+        // it -- a duration on a loaded machine cannot tell those two apart.
+        crate::engine::bucket_visit_sites::reset();
+        crate::engine::layout_by_caller::reset();
+        let mut timings = Vec::with_capacity(adds);
+        for index in 0..adds {
+            let started = std::time::Instant::now();
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 4242,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 4242,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("ADD-{index:06}"),
+                        title: format!("add {index}"),
+                        // ~4KB, the size the earlier flag comparison used, so the two are
+                        // talking about the same unit of work.
+                        body: format!(
+                            "{}{}",
+                            format!("add {index} body "),
+                            "context payload sentence. ".repeat(150)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(
+                report.status.ok,
+                "add {index} failed, so the timings below measure a rejection: {:?}",
+                report.status
+            );
+            timings.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+
+        let visits = crate::engine::bucket_visit_sites::snapshot();
+        for (site, pages) in crate::engine::layout_by_caller::snapshot().iter().take(4) {
+            println!("      {adds:>4} adds  {pages:>10} pages  {site}");
+        }
+        let window = 30.min(timings.len() / 3).max(1);
+        let mean = |slice: &[f64]| slice.iter().sum::<f64>() / slice.len() as f64;
+        let first = mean(&timings[..window]);
+        let last = mean(&timings[timings.len() - window..]);
+        (first, last, last / first.max(f64::MIN_POSITIVE), visits)
+    }
+
+    println!(
+        "
+  adds   first 30    last 30   degrade      layout   clear_dirty   refresh   per add
+"
+    );
+    for adds in [150usize, 300, 600] {
+        let (first, last, ratio, (layout, clear_dirty, refresh, _)) = run(adds);
+        println!(
+            "  {adds:>4}  {first:>7.1}ms  {last:>7.1}ms  {ratio:>7.2}x  {layout:>10}  {clear_dirty:>12}  {refresh:>8}  {:>8.0}",
+            (layout + clear_dirty + refresh) as f64 / adds as f64,
+        );
+    }
 }

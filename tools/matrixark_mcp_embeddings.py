@@ -74,8 +74,75 @@ def embedding_cache_stats() -> dict:
 _EMBEDDING_FALLBACK_USED = False
 
 
-def embedding_for_text(text: str) -> list[float]:
+# Some encoder families are trained with an instruction prefix on the input and score materially
+# worse without it. The e5 family is the case that matters here: on a 298-pair benchmark, adding the
+# prefixes moved hit@1 from 68.8% to 74.8% at no cost -- six of the fifteen points the model is worth
+# over the previous default.
+#
+# The prefix differs by SIDE. A query and a passage carrying identical text embed to different
+# vectors, which is the point, and which is why the role reaches the cache key below: caching them
+# together would serve a query vector where a passage vector was asked for.
+# THE DEFAULT. multilingual-e5-large, stored at 512 dimensions, is the best configuration measured
+# on a 298-pair retrieval benchmark: 76.2% hit@1 and 92.3% hit@5, against 59.4% and 82.2% for the
+# MiniLM default it replaces. It scores higher truncated to 512 than at its native 1024 while
+# halving the bytes per vector.
+#
+# It encodes roughly six times slower than a small model, which is affordable because embedding
+# belongs off the ingest path: MATRIXARK_BACKFILL_RAW_FIRST=1 with context_embed_backfill measured
+# 62x faster ingest, and moves encode cost to a pass that runs behind the import rather than inside
+# it.
+#
+# MIGRATION. Embeddings are keyed by a model-specific ref, so a populated store gains no vectors
+# under the new model until context_embed_backfill runs. Retrieval on an un-backfilled store falls
+# back to lexical and recency, which is a quiet degradation rather than an error. Run the backfill
+# as part of the upgrade, or pin the previous model with MATRIXARK_EMBEDDING_MODEL until you can.
+_PREFIXED_MODEL_MARKERS = ("e5",)
+
+
+# Storing fewer dimensions than the model emits is a real lever, and not only for memory: on a
+# 298-pair benchmark e5-large scored HIGHER truncated to 512 than at its native 1024 (76.2% against
+# 74.2% hit@1) while halving the bytes per vector. Early dimensions carry the signal; the tail adds
+# size and, here, a little noise.
+#
+# Truncation must re-normalise. Cosine ignores a uniform scale, but a truncated vector has lost part
+# of its magnitude, so the remainder has to be rescaled to unit length or scores drift against
+# vectors that were stored whole.
+def embedding_target_dims() -> int:
+    """Dimensions to keep, or 0 to store whatever the model emits."""
+    try:
+        return max(0, int(os.environ.get("MATRIXARK_EMBEDDING_DIMS", "512")))
+    except ValueError:
+        return 0
+
+
+def truncate_embedding(vector: list) -> list:
+    """Keep the leading dimensions and re-normalise, when a target width is configured."""
+    target = embedding_target_dims()
+    if target <= 0 or target >= len(vector):
+        return vector
+    head = vector[:target]
+    norm = math.sqrt(sum(value * value for value in head))
+    if norm <= 0.0:
+        return head
+    return [round(value / norm, 6) for value in head]
+
+
+def embedding_input_prefix(role: str) -> str:
+    """The instruction prefix this model expects for `role`, or "" when it expects none."""
+    model = embedding_model_name().lower()
+    base = model.rsplit("/", 1)[-1]
+    if not any(marker in base.split("-") for marker in _PREFIXED_MODEL_MARKERS):
+        return ""
+    return "query: " if role == "query" else "passage: "
+
+
+def _with_prefix(text: str, role: str) -> str:
+    return embedding_input_prefix(role) + text
+
+
+def embedding_for_text(text: str, role: str = "passage") -> list[float]:
     model = embedding_model_name()
+    text = _with_prefix(text, role)
     cache_key = (model, text)
     with _EMBEDDING_VECTOR_CACHE_LOCK:
         cached = _cache_get(cache_key)
@@ -83,12 +150,12 @@ def embedding_for_text(text: str) -> list[float]:
             return list(cached)
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        vector = oss_embedding_for_text(text)
+        vector = truncate_embedding(oss_embedding_for_text(text))
         with _EMBEDDING_VECTOR_CACHE_LOCK:
             _cache_put(cache_key, vector)
         return vector
     if provider in _API_EMBEDDING_PROVIDERS:
-        vector = api_embedding_for_text(text, provider)
+        vector = truncate_embedding(api_embedding_for_text(text, provider))
         with _EMBEDDING_VECTOR_CACHE_LOCK:
             _cache_put(cache_key, vector)
         return vector
@@ -108,10 +175,11 @@ def embedding_for_text(text: str) -> list[float]:
     return result
 
 
-def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
+def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[float]]:
     """Batch-friendly embedding helper with the same cache as embedding_for_text."""
     if not texts:
         return []
+    texts = [_with_prefix(text, role) for text in texts]
     model = embedding_model_name()
     results: list[list[float] | None] = []
     missing: list[tuple[int, str]] = []
@@ -128,13 +196,13 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
         vectors = api_embedding_for_texts([text for _index, text in missing], provider)
         with _EMBEDDING_VECTOR_CACHE_LOCK:
             for (index, text), vector in zip(missing, vectors):
-                materialized = [round(float(value), 6) for value in vector]
+                materialized = truncate_embedding([round(float(value), 6) for value in vector])
                 _cache_put((model, text), materialized)
                 results[index] = materialized
     elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
+            "intfloat/multilingual-e5-large",
         )
         try:
             encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
@@ -146,7 +214,7 @@ def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
             vectors = encoder.encode([text for _index, text in missing], normalize_embeddings=True, show_progress_bar=False)
             with _EMBEDDING_VECTOR_CACHE_LOCK:
                 for (index, text), vector in zip(missing, vectors):
-                    materialized = [round(float(value), 6) for value in vector]
+                    materialized = truncate_embedding([round(float(value), 6) for value in vector])
                     _cache_put((model, text), materialized)
                     results[index] = materialized
         except Exception:
@@ -163,7 +231,7 @@ def embedding_model_name() -> str:
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
+            "intfloat/multilingual-e5-large",
         )
     if provider in _API_EMBEDDING_PROVIDERS:
         _endpoint, _api_key, model, _key_env = _api_embedding_config(provider)
@@ -295,7 +363,7 @@ def oss_embedding_for_text(text: str) -> list[float]:
     global _EMBEDDING_FALLBACK_USED
     model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
         "MATRIXARK_EMBEDDING_MODEL",
-        "sentence-transformers/all-MiniLM-L6-v2",
+        "intfloat/multilingual-e5-large",
     )
     try:
         encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)

@@ -2306,6 +2306,29 @@ fn parse_meta_raft_nodes() -> Vec<ProductionRaftNode> {
         })
 }
 
+/// What to say about a metaserver raft group's node list, if anything.
+///
+/// A metaserver raft group is built entirely inside the process that starts it,
+/// and no meta raft entry is ever sent between processes. With one node that is
+/// simply the truth: the group is this process. With more, the list describes
+/// peers that will never be dialled -- and if a second metaserver is started
+/// from the same list it keeps its own metadata, makes the same node leader,
+/// and answers ok to writes the first never sees.
+///
+/// Returned rather than logged so it can be tested; the caller logs it.
+fn unreplicated_meta_raft_warning(nodes: &[ProductionRaftNode]) -> Option<String> {
+    if nodes.len() <= 1 {
+        return None;
+    }
+    Some(format!(
+        "metaserver raft is configured with {} nodes, but meta raft entries are never sent \
+         between processes: this group is built inside this process alone. One metaserver \
+         started from this list is consistent; a second one started from it keeps its own \
+         metadata and the two diverge silently.",
+        nodes.len()
+    ))
+}
+
 fn parse_meta_raft_node(index: usize, value: &str) -> Option<ProductionRaftNode> {
     if let Some((id, addr)) = value.split_once('=') {
         return Some(ProductionRaftNode {
@@ -2570,6 +2593,29 @@ mod tests {
                 "temporalstore_meta_topology_query_bytes_total {total}"
             )),
             "the second answer did not add to the total"
+        );
+    }
+
+    #[test]
+    fn a_meta_raft_group_says_it_does_not_span_processes() {
+        // The group is built inside the process that starts it and no meta raft
+        // entry is ever sent between processes, so a list of peers describes
+        // addresses that will never be dialled. One node is that truth stated
+        // plainly and needs nothing said; more than one is worth saying, because
+        // a second metaserver started from the same list diverges in silence.
+        let node = |node_id| ProductionRaftNode {
+            node_id,
+            addr: format!("10.0.0.{node_id}:17001"),
+        };
+        assert_eq!(unreplicated_meta_raft_warning(&[]), None);
+        assert_eq!(unreplicated_meta_raft_warning(&[node(1)]), None);
+
+        let warning = unreplicated_meta_raft_warning(&[node(1), node(2), node(3)])
+            .expect("three nodes is worth saying something about");
+        assert!(warning.contains("3"), "it should say how many: {warning}");
+        assert!(
+            warning.contains("diverge"),
+            "it should say what goes wrong: {warning}"
         );
     }
 

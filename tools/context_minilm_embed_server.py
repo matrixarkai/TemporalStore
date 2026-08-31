@@ -24,7 +24,7 @@ from sentence_transformers import SentenceTransformer
 MODEL_NAME = (
     os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH", "").strip()
     or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
-    or "sentence-transformers/all-MiniLM-L6-v2"
+    or "intfloat/multilingual-e5-large"
 )
 print("loading model...", file=sys.stderr, flush=True)
 _MODEL = SentenceTransformer(MODEL_NAME)
