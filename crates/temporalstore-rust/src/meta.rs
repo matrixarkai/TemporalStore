@@ -2228,6 +2228,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "silent".to_string(),
                 namespace: "ns".to_string(),
                 location: "zone-a".to_string(),
