@@ -1406,6 +1406,25 @@ fn record_ref_hash(record: &Value) -> Option<String> {
             }
         }
     }
+    // `ref_hashes` fallback, last so nothing that resolves today changes branch.
+    //
+    // The posting builder writes the singular `ref_hash` ONLY when the posting carries exactly one
+    // ref; a multi-ref posting has the array and no singular field. Without this a posting like
+    // that returns None here, and two serving sites drop the record outright rather than score it
+    // (`let Some(profile_hash) = record_ref_hash(..) else { continue; }`), with nothing logged.
+    //
+    // No caller passes more than one ref today, which is precisely why the day one does the loss
+    // would be silent.
+    if let Some(Value::Array(refs)) = record.get("ref_hashes") {
+        for value in refs {
+            if let Some(number) = value.as_u64() {
+                return Some(number.to_string());
+            }
+            if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+                return Some(text.to_string());
+            }
+        }
+    }
     None
 }
 
@@ -7113,6 +7132,40 @@ mod tests {
             Some(7),
             "sibling bundle metadata is preserved on rewrite"
         );
+    }
+
+
+    /// A posting carrying SEVERAL refs has no singular `ref_hash` -- the builder only writes that
+    /// when there is exactly one -- so before the `ref_hashes` fallback this returned None and two
+    /// serving sites dropped the record instead of scoring it.
+    #[test]
+    fn a_multi_ref_posting_still_has_an_identity() {
+        let single = json!({
+            "record_type": "context_index",
+            "ref_hash": 4242_u64,
+            "ref_hashes": [4242_u64],
+        });
+        assert_eq!(record_ref_hash(&single).as_deref(), Some("4242"),
+                   "a single-ref posting keeps resolving through the singular field");
+
+        let multi = json!({
+            "record_type": "context_index",
+            "ref_hashes": [7001_u64, 7002_u64, 7003_u64],
+        });
+        assert_eq!(record_ref_hash(&multi).as_deref(), Some("7001"),
+                   "a multi-ref posting resolves through the array");
+
+        let identity_wins = json!({
+            "record_type": "context_entity",
+            "entity_hash": 900_u64,
+            "ref_hashes": [111_u64],
+        });
+        assert_eq!(record_ref_hash(&identity_wins).as_deref(), Some("900"),
+                   "an identity field still takes precedence over the array");
+
+        let neither = json!({"record_type": "context_index"});
+        assert_eq!(record_ref_hash(&neither), None,
+                   "a record with no identity at all is still unidentified");
     }
 
     #[test]
