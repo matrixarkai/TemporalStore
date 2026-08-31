@@ -1895,6 +1895,7 @@ fn verify_proxy_route_quarantine_recovery() {
     let meta = SingleNodeMeta::default();
     let bad_server = "127.0.0.1:1".to_string();
     meta.register_server(RegisterServerRequest {
+        registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: bad_server.clone(),
         node_id: 1,
@@ -1903,6 +1904,7 @@ fn verify_proxy_route_quarantine_recovery() {
     });
     assert!(
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: bad_server.clone(),
         })
@@ -1934,6 +1936,7 @@ fn verify_proxy_route_quarantine_recovery() {
     std::thread::sleep(Duration::from_millis(10));
 
     meta.register_server(RegisterServerRequest {
+        registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: server_addr.clone(),
         node_id: 2,
@@ -1942,6 +1945,7 @@ fn verify_proxy_route_quarantine_recovery() {
     });
     assert!(
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: server_addr.clone(),
         })
@@ -2055,6 +2059,7 @@ fn verify_proxy_topology_churn_convergence() {
 
     let meta = SingleNodeMeta::default();
     meta.register_server(RegisterServerRequest {
+        registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: server_a.clone(),
         node_id: 1,
@@ -2063,6 +2068,7 @@ fn verify_proxy_topology_churn_convergence() {
     });
     assert!(
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: server_a.clone(),
         })
@@ -2107,6 +2113,7 @@ fn verify_proxy_topology_churn_convergence() {
     }
 
     meta.register_server(RegisterServerRequest {
+        registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: server_b.clone(),
         node_id: 2,
@@ -2115,6 +2122,7 @@ fn verify_proxy_topology_churn_convergence() {
     });
     assert!(
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: server_b.clone(),
         })
@@ -2786,6 +2794,7 @@ fn verify_metaserver_scheduler_control_plane() {
         (3, "127.0.0.1:27113", "zone-c"),
     ] {
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: addr.to_string(),
             node_id,
@@ -2819,6 +2828,7 @@ fn verify_metaserver_scheduler_control_plane() {
     let second = 1;
     assert!(
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: first,
             server_addr: "127.0.0.1:27111".to_string(),
         })

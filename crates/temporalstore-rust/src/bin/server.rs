@@ -338,6 +338,7 @@ fn main() {
         );
     } else {
         let server_registration = RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: advertised_addr.clone(),
             node_id,
@@ -368,6 +369,7 @@ fn main() {
 
         if !join_empty {
             let registration = RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: advertised_addr.clone(),
             };

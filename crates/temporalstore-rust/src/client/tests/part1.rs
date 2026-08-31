@@ -266,6 +266,7 @@ fn table_typed_methods_and_pipeline_match_client_shape() {
                     &GetShardResponse {
                         status: Status::ok(),
                         location: Some(ShardLocation {
+                            registered_at_ms: 0,
                             preferred_location: String::new(),
                             state: crate::meta::MetaEntityState::Normal,
                             shard_id: 1,
@@ -539,6 +540,7 @@ fn direct_client_refreshes_cached_route_after_failure() {
                     &GetShardResponse {
                         status: Status::ok(),
                         location: Some(ShardLocation {
+                            registered_at_ms: 0,
                             preferred_location: String::new(),
                             state: crate::meta::MetaEntityState::Normal,
                             shard_id: 1,
@@ -735,6 +737,7 @@ fn client_backend_pool_skips_cached_route_after_continuous_failure_threshold() {
                     &GetShardResponse {
                         status: Status::ok(),
                         location: Some(ShardLocation {
+                            registered_at_ms: 0,
                             preferred_location: String::new(),
                             state: crate::meta::MetaEntityState::Normal,
                             shard_id: 1,

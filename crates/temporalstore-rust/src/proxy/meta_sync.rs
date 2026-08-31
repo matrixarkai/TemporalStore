@@ -183,6 +183,7 @@ impl ProxyService {
             &options.meta_addr,
             "/proxies/register",
             &RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: options.proxy_addr.clone(),
                 namespace: options.namespace.clone(),
                 location: options.location.clone(),

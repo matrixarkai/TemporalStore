@@ -6,10 +6,11 @@
 use super::*;
 
 impl SingleNodeMeta {
-    pub fn register_server(&self, request: RegisterServerRequest) -> AckResponse {
+    pub fn register_server(&self, mut request: RegisterServerRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
+        request.registered_at_ms = now_ms();
         self.record_mutation(MetaMutation::RegisterServer(request.clone()));
         self.apply_register_server(request)
     }
@@ -46,6 +47,14 @@ impl SingleNodeMeta {
             }
         }
         let now = now_ms();
+        // Kept from the first registration: a node that restarted and
+        // registered again has not newly joined the cluster.
+        let registered_at_ms = state
+            .servers
+            .get(&request.server_addr)
+            .map(|server| server.registered_at_ms)
+            .filter(|first| *first != 0)
+            .unwrap_or(request.registered_at_ms);
         let server_addr = request.server_addr.clone();
         state.servers.insert(
             server_addr.clone(),
@@ -79,6 +88,7 @@ impl SingleNodeMeta {
                 shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
+                registered_at_ms,
             },
         );
         // Coming back clears the drop clock. Without this the tombstone
@@ -279,10 +289,11 @@ impl SingleNodeMeta {
         }
     }
 
-    pub fn register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
+    pub fn register_proxy(&self, mut request: RegisterProxyRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
+        request.registered_at_ms = now_ms();
         self.record_mutation(MetaMutation::RegisterProxy(request.clone()));
         self.apply_register_proxy(request)
     }
@@ -291,6 +302,12 @@ impl SingleNodeMeta {
         let mut state = self.inner.write().expect("meta lock poisoned");
         self.counters.proxy_register_total.fetch_add(1, Ordering::Relaxed);
         let proxy_addr = request.proxy_addr.clone();
+        let registered_at_ms = state
+            .proxies
+            .get(&request.proxy_addr)
+            .map(|proxy| proxy.registered_at_ms)
+            .filter(|first| *first != 0)
+            .unwrap_or(request.registered_at_ms);
         if let Some(existing) = state.proxies.get(&request.proxy_addr) {
             let now = now_ms();
             if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
@@ -331,6 +348,7 @@ impl SingleNodeMeta {
                 binary_version: request.binary_version,
                 boot_time_ms: 0,
                 restart_count: 0,
+                registered_at_ms,
             },
         );
         // Coming back clears the drop clock. Without this the tombstone

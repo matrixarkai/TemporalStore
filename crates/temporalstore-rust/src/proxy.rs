@@ -3340,6 +3340,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_328),
             node_id: 1,
@@ -3347,6 +3348,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_328),
         });
@@ -3378,6 +3380,7 @@ mod tests {
         assert_eq!(proxy.info().route_cache_size, 1);
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_329),
             node_id: 2,
@@ -3385,6 +3388,7 @@ mod tests {
             binary_version: "v-b".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_329),
         });
@@ -3454,6 +3458,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_340),
             node_id: 1,
@@ -3461,6 +3466,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_340),
         });
@@ -3504,6 +3510,7 @@ mod tests {
         }
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_341),
             node_id: 2,
@@ -3511,6 +3518,7 @@ mod tests {
             binary_version: "v-b".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_341),
         });
@@ -5374,6 +5382,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_321),
             })
@@ -5904,6 +5913,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_318),
             })
@@ -5912,6 +5922,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 2,
                 server_addr: test_addr(18_319),
             })
@@ -6002,6 +6013,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_321),
             })
@@ -6125,6 +6137,7 @@ mod tests {
     fn proxy_heartbeat_applies_metaserver_config_version_like_native() {
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-config".to_string(),
             namespace: "serving-ns".to_string(),
             location: "zone-a".to_string(),
@@ -6174,6 +6187,7 @@ mod tests {
     fn proxy_heartbeat_applies_metaserver_serving_policy_transition() {
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-frozen-policy".to_string(),
             namespace: "policy-ns".to_string(),
             location: "zone-a".to_string(),
@@ -6298,6 +6312,7 @@ mod tests {
                         &GetShardResponse {
                             status: Status::ok(),
                             location: Some(ShardLocation {
+                                registered_at_ms: 0,
                                 preferred_location: String::new(),
                                 state: crate::meta::MetaEntityState::Normal,
                                 shard_id: 1,
@@ -6584,6 +6599,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_384),
             node_id: 1,
@@ -6591,6 +6607,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_384),
         });
@@ -6690,6 +6707,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_380),
             node_id: 1,
@@ -6697,6 +6715,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_380),
         });
@@ -6953,6 +6972,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_374),
             node_id: 1,
@@ -6960,6 +6980,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_374),
         });
@@ -6996,6 +7017,7 @@ mod tests {
 
         // The shard moves to the second datanode.
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_375),
             node_id: 2,
@@ -7003,6 +7025,7 @@ mod tests {
             binary_version: "v-b".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_375),
         });
@@ -7250,6 +7273,7 @@ mod tests {
             .ok);
         assert!(meta
             .register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_360),
             })

@@ -146,6 +146,7 @@ fn main() {
 
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
             preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 55,
@@ -161,6 +162,7 @@ fn main() {
     runtime.cluster().set_alive(lagging_node_id, false).unwrap();
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
             preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 56,
@@ -235,6 +237,7 @@ fn main() {
         meta_membership_summary(runtime.apply_membership([10, 12, 13]).unwrap());
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
             preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 58,
@@ -252,6 +255,7 @@ fn main() {
         meta_membership_summary(runtime.apply_membership([10, 13]).unwrap());
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
             preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 59,
@@ -269,6 +273,7 @@ fn main() {
     runtime.cluster().set_alive(13, false).unwrap();
     let unavailable_without_majority = runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
             preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 57,

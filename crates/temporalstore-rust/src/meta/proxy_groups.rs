@@ -570,6 +570,7 @@ mod tests {
 
     fn proxy(addr: &str, location: &str, attached: &str) -> ProxyMetaInfo {
         ProxyMetaInfo {
+            registered_at_ms: 0,
             // These helpers build proxies that HAVE reported in; the tests that want a silent
             // one set this back to zero themselves.
             heartbeats_total: 1,
@@ -782,6 +783,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "p1".to_string(),
                 namespace: String::new(),
                 location: "us-east/dc1/az1".to_string(),
@@ -842,6 +844,7 @@ mod tests {
     fn dropping_a_group_releases_its_proxy_back_to_idle() {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "p1".to_string(),
             namespace: String::new(),
             location: "rack-1".to_string(),

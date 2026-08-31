@@ -162,6 +162,7 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
         .servers
         .entry(server_addr.to_string())
         .or_insert_with(|| ServerMetaInfo {
+            registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,
             numa_nodes: Vec::new(),
