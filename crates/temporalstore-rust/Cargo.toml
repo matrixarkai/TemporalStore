@@ -39,6 +39,14 @@ tonic-build = "0.12"
 default = ["temporal-raft-engine"]
 temporal-raft-engine = []
 open-source-surface = []
+# Installs a counting global allocator in TEST builds so a request path's allocations can be
+# measured directly; process RSS cannot resolve a per-request change. Off by default and never
+# part of a normal `cargo test`: a global allocator wrapper adds two atomics to every allocation
+# in the process, and with it installed a full single-threaded run turned 17 socket-bound proxy
+# and raft tests red that pass individually, as a group, and in a run without it. A measurement
+# tool has no business perturbing the suite that is meant to be checking the change.
+#   cargo test --features alloc-probe --lib what_a_retrieve_allocates -- --ignored --nocapture
+alloc-probe = []
 # The matrixobject backend links the enterprise-only MatrixObjectStore crate,
 # which has no public source. It is intentionally left as an inert feature
 # stub in the open-source tree (off by default; the code is fully gated by
