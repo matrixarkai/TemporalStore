@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1159,7 +1159,16 @@ pub struct MetaMutationRecord {
 #[derive(Debug, Clone)]
 pub struct LocalMetaMutationLog {
     path: PathBuf,
-    write_lock: Arc<Mutex<()>>,
+    /// The handle records are appended through, opened once.
+    ///
+    /// Opening the file per record cost more than it looked like: with the
+    /// barrier split out so writers can share one, a record was opening it
+    /// twice.
+    write_lock: Arc<Mutex<Option<File>>>,
+    /// A second handle for the barrier, so it can run without the write lock
+    /// and let the next writer get its bytes down meanwhile. Syncing is per
+    /// file, not per handle, so this covers what the other one wrote.
+    sync_file: Arc<Mutex<Option<File>>>,
     /// How many records have been written to the file.
     ///
     /// Written under `write_lock`, so it counts the records whose bytes have
@@ -1181,6 +1190,7 @@ impl LocalMetaMutationLog {
         Ok(Self {
             path,
             write_lock: Arc::default(),
+            sync_file: Arc::default(),
             written: Arc::default(),
             synced: Arc::default(),
         })
@@ -1190,19 +1200,21 @@ impl LocalMetaMutationLog {
         // The bytes reach the file in the order the write lock grants, and the
         // record is numbered by that order.
         let mine = {
-            let _guard = self
+            let mut handle = self
                 .write_lock
                 .lock()
                 .expect("meta mutation log lock poisoned");
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?;
+            let file = match handle.as_mut() {
+                Some(file) => file,
+                None => handle.insert(
+                    OpenOptions::new().create(true).append(true).open(&self.path)?,
+                ),
+            };
             let record = MetaMutationRecord {
                 at_ms,
                 mutation: mutation.clone(),
             };
-            serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
+            serde_json::to_writer(&mut *file, &record).map_err(io::Error::other)?;
             file.write_all(b"\n")?;
             self.written.fetch_add(1, Ordering::SeqCst) + 1
         };
@@ -1226,7 +1238,16 @@ impl LocalMetaMutationLog {
         // Read before the barrier, published after it. The other order would
         // tell a writer its bytes were durable while the sync was still running.
         let covered = self.written.load(Ordering::SeqCst);
-        let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut handle = self
+            .sync_file
+            .lock()
+            .expect("meta mutation log sync handle poisoned");
+        let file = match handle.as_mut() {
+            Some(file) => file,
+            None => handle.insert(
+                OpenOptions::new().create(true).append(true).open(&self.path)?,
+            ),
+        };
         crate::durability_metrics::record_barrier("meta_log_append");
         file.sync_data()?;
         *synced = (*synced).max(covered);
