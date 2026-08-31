@@ -49,6 +49,16 @@ except ImportError:  # Direct script execution from tools/.
     from matrixark_asgi import make_asgi_app, _api_key  # type: ignore
     from matrixark_http import apply_ingest_route_defaults, mcp_http_dispatch  # type: ignore
 
+# The write side of /v1/admin/config (a closed registry of operator-settable model settings) and the
+# edge request metrics. Both are self-contained stdlib modules; a deployment missing them degrades to
+# the previous read-only config surface rather than failing to import.
+try:
+    from tools import matrixark_gateway_config as _gwconfig  # type: ignore
+    from tools import matrixark_gateway_metrics as _gwmetrics  # type: ignore
+except ImportError:  # Direct script execution from tools/.
+    import matrixark_gateway_config as _gwconfig  # type: ignore
+    import matrixark_gateway_metrics as _gwmetrics  # type: ignore
+
 # Canonical tool -> required-scopes map. The SAME map the backend gates with
 # (matrixark_access.MatrixArkAccessManager.authenticate), so the edge per-tool gate on /v1/mcp
 # mirrors the backend exactly: unmapped tool -> empty set -> no scope requirement. Falls back to an
@@ -1044,6 +1054,78 @@ def _ingestion_portal_html_bytes() -> bytes:
     return data
 
 
+_SETUP_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+_CATALOG_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+
+
+def _portal_page(cache: dict, filename: str, fallback: str) -> bytes:
+    """A bundled portal page (cached per process), read from tools/portal/ next to this module."""
+    cached = cache.get("bytes")
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", filename)
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception:  # pragma: no cover - deployments without the file bundled
+        data = fallback.encode("utf-8")
+    cache["bytes"] = data
+    return data
+
+
+_OVERVIEW_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+_EXPLORE_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+
+
+def _overview_portal_html_bytes() -> bytes:
+    return _portal_page(
+        _OVERVIEW_PORTAL_CACHE, "overview_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk</title><h1>MatrixArk</h1>"
+        "<p>The bundled page (<code>tools/portal/overview_portal.html</code>) was not found. "
+        "<a href='/v1/admin/setup'>Setup</a> · <a href='/v1/admin/catalog'>Catalog</a> · "
+        "<a href='/v1/admin/ingestion'>Ingestion</a> · <a href='/v1/admin/portal'>Keys</a></p>")
+
+
+def _explore_portal_html_bytes() -> bytes:
+    return _portal_page(
+        _EXPLORE_PORTAL_CACHE, "explore_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk Explore</title>"
+        "<h1>MatrixArk Explore</h1><p>The bundled page "
+        "(<code>tools/portal/explore_portal.html</code>) was not found. The JSON endpoints still "
+        "work: <code>POST /v1/retrieve</code>, <code>GET /v1/memories</code>, "
+        "<code>GET /v1/users</code>, and <code>POST /v1/ingest</code>.</p>")
+
+
+_API_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+
+
+def _api_portal_html_bytes() -> bytes:
+    return _portal_page(
+        _API_PORTAL_CACHE, "api_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk API</title><h1>MatrixArk API</h1>"
+        "<p>The bundled page (<code>tools/portal/api_portal.html</code>) was not found. The same "
+        "list is served as JSON at <code>GET /v1/admin/routes</code>.</p>")
+
+
+def _setup_portal_html_bytes() -> bytes:
+    return _portal_page(
+        _SETUP_PORTAL_CACHE, "setup_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk Setup</title>"
+        "<h1>MatrixArk Setup</h1><p>The bundled page (<code>tools/portal/setup_portal.html</code>) "
+        "was not found. The JSON endpoints still work: <code>GET|POST /v1/admin/config</code>, "
+        "<code>POST /v1/admin/config/preset</code>, and <code>POST /v1/admin/config/test</code>.</p>")
+
+
+def _catalog_portal_html_bytes() -> bytes:
+    return _portal_page(
+        _CATALOG_PORTAL_CACHE, "catalog_portal.html",
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk Catalog</title>"
+        "<h1>MatrixArk Catalog</h1><p>The bundled page "
+        "(<code>tools/portal/catalog_portal.html</code>) was not found. The JSON endpoints still "
+        "work: <code>GET /v1/skills</code>, <code>GET /v1/resources</code>, and "
+        "<code>POST /v1/resource/content</code>.</p>")
+
+
 def _portal_html_bytes() -> bytes:
     """The portal HTML (cached). Reads the committed file next to this module; falls back to a small
     inline notice page so the route always returns valid HTML."""
@@ -1167,6 +1249,454 @@ def _model_config_snapshot() -> Json:
         "skills": skills,
         "warnings": warnings,
     }
+
+
+# Every scope the backend gates on, in the order a customer meets them, with what it actually
+# permits. The set is verified against MATRIXARK_TOOL_SCOPES by
+# test_matrixark_gateway_portal.ScopeCatalogTest -- a scope the backend enforces and this does not
+# describe would be one a customer cannot discover, and a scope described here that the backend
+# does not know would be one they could grant to no effect.
+SCOPE_CATALOG: List[Json] = [
+    {"scope": "context:ingest", "label": "Write memories",
+     "detail": "Ingest turns and documents, commit a session, and supersede a memory."},
+    {"scope": "context:retrieve", "label": "Read memories",
+     "detail": "Retrieve context packs, list memories and subjects, read one memory and its "
+               "history, and read a resource's stored text."},
+    {"scope": "context:forget", "label": "Delete memories",
+     "detail": "Forget, delete and reset. Destructive; a serving agent does not need it."},
+    {"scope": "context:feedback", "label": "Rate memories",
+     "detail": "Record whether a retrieved memory was useful."},
+    {"scope": "context:replay", "label": "Replay",
+     "detail": "Re-run a stored request for debugging, and read the ingestion dashboard."},
+    {"scope": "skill:read", "label": "List skills",
+     "detail": "See which skills this scope can draw on."},
+    {"scope": "skill:manage", "label": "Manage skills",
+     "detail": "Enable, disable and re-tag a skill in the registry."},
+    {"scope": "resource:read", "label": "List resources",
+     "detail": "See which documents are stored."},
+    {"scope": "portal:read", "label": "Portal",
+     "detail": "Read the management portal payload."},
+    {"scope": "admin:account", "label": "Manage accounts",
+     "detail": "Create and list accounts and tenants."},
+    {"scope": "admin:user", "label": "Manage users",
+     "detail": "Create users and link external identities."},
+    {"scope": "admin:sso", "label": "Map SSO identities",
+     "detail": "Link a verified Google, GitHub, Okta or Azure AD subject to a MatrixArk user."},
+    {"scope": "admin:api_key", "label": "Manage keys",
+     "detail": "Create, rotate and revoke API keys, and read per-key usage. This is the scope the "
+               "portal's own admin actions need."},
+    {"scope": "admin:audit", "label": "Read the audit log",
+     "detail": "Read admin activity, and per-key usage."},
+]
+
+# Four shapes that cover almost every key anyone actually issues. Named for the job rather than the
+# permission, because the question a customer is answering is "what is this key for".
+SCOPE_PRESETS: List[Json] = [
+    {"id": "agent", "label": "Agent key",
+     "detail": "A serving agent: writes what it learns, reads context back, rates what helped. "
+               "Cannot delete, and cannot manage anything.",
+     "scopes": ["context:ingest", "context:retrieve", "context:feedback",
+                "skill:read", "resource:read"]},
+    {"id": "read_only", "label": "Read-only key",
+     "detail": "Dashboards, evaluation harnesses, anything that must not write.",
+     "scopes": ["context:retrieve", "skill:read", "resource:read"]},
+    {"id": "ingest", "label": "Ingest-only key",
+     "detail": "A one-way pipe for a loader or a hook: writes, and cannot read another "
+               "workload's memory back.",
+     "scopes": ["context:ingest"]},
+    {"id": "admin", "label": "Admin key",
+     "detail": "Runs this portal: configuration, keys, usage and the audit log. Issue as few as "
+               "you can.",
+     "scopes": ["admin:api_key", "admin:audit", "admin:account", "admin:user", "portal:read"]},
+]
+
+
+# ================================================================================================
+# The API surface, described
+# ================================================================================================
+# Served at GET /v1/admin/routes and rendered on the portal's API page, so the contract a customer
+# reads is the one this process actually serves. test_matrixark_gateway_routes compares this list
+# against the path literals in this file, in both directions: an undocumented route is one a
+# customer cannot find, and a documented route that no longer exists is worse -- they will write
+# against it.
+#
+# `body` is a request that works as written, so the page can offer a curl that runs rather than a
+# schema to interpret.
+ROUTE_DOCS: List[Json] = [
+    # ---- health -------------------------------------------------------------------------------
+    {"group": "Health", "method": "GET", "path": "/v1/healthz", "scope": None,
+     "summary": "Liveness. Answers as long as the process is up."},
+    {"group": "Health", "method": "GET", "path": "/v1/readyz", "scope": None,
+     "summary": "Readiness, including whether the datanode answers."},
+    {"group": "Health", "method": "GET", "path": "/v1/metrics", "scope": None,
+     "summary": "Prometheus scrape. Aggregate counters only, so it needs no credentials."},
+
+    # ---- memory -------------------------------------------------------------------------------
+    {"group": "Memory", "method": "POST", "path": "/v1/ingest", "scope": "context:ingest",
+     "summary": "Write turns or records. Fast-acks 202; extraction runs behind it unless you "
+                "pass finalize.",
+     "body": {"scope": {"user_id": "alice"},
+              "messages": [{"role": "user", "content": "We ship on Thursday."}]}},
+    {"group": "Memory", "method": "POST", "path": "/v1/ingest_file", "scope": "context:ingest",
+     "summary": "Stream a file to the blob tier and ingest it in one call. Headers: X-Filename, "
+                "X-Resource-Kind, X-Resource-Type, X-Scope (a JSON scope object), X-Wait, "
+                "X-Sharing-Scope. The body is the raw file.",
+     "raw_body": True},
+    {"group": "Memory", "method": "POST", "path": "/v1/session/commit", "scope": "context:ingest",
+     "summary": "Close a session and roll its turns into summaries.",
+     "body": {"scope": {"user_id": "alice", "session_id": "s-42"}}},
+    {"group": "Memory", "method": "POST", "path": "/v1/retrieve", "scope": "context:retrieve",
+     "summary": "Build a context pack for a query, inside a token budget.",
+     "body": {"scope": {"user_id": "alice"}, "query": "when do we ship?",
+              "max_budget_tokens": 2048}},
+    {"group": "Memory", "method": "GET", "path": "/v1/memories", "scope": "context:retrieve",
+     "summary": "List a scope's live memories. Query: user_id, agent_id, session_id, limit.",
+     "query": "user_id=alice&limit=50"},
+    {"group": "Memory", "method": "POST", "path": "/v1/memories", "scope": "context:retrieve",
+     "summary": "The same listing with a JSON body.",
+     "body": {"scope": {"user_id": "alice"}, "limit": 50}},
+    {"group": "Memory", "method": "GET", "path": "/v1/memory/{id}", "scope": "context:retrieve",
+     "summary": "One memory's stored record."},
+    {"group": "Memory", "method": "GET", "path": "/v1/memory/{id}/history",
+     "scope": "context:retrieve", "summary": "How that memory changed over time."},
+    {"group": "Memory", "method": "GET", "path": "/v1/memory/by-key", "scope": "context:retrieve",
+     "summary": "The single live value for an identity_key in a scope. identity_key is required.",
+     "query": "identity_key=ship_date&user_id=alice"},
+    {"group": "Memory", "method": "POST", "path": "/v1/memory/feedback", "scope": "context:ingest",
+     "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
+     "body": {"memory_id": "mem_7f21", "rating": 1}},
+    {"group": "Memory", "method": "POST", "path": "/v1/update", "scope": "context:ingest",
+     "summary": "Supersede a memory: ingest the amended text and tombstone the old id.",
+     "body": {"memory_id": "mem_7f21", "text": "We ship on Friday."}},
+    {"group": "Memory", "method": "POST", "path": "/v1/forget", "scope": "context:forget",
+     "summary": "Forget one memory.", "body": {"memory_id": "mem_7f21"}},
+    {"group": "Memory", "method": "POST", "path": "/v1/delete", "scope": "context:forget",
+     "summary": "Delete a memory outright.", "body": {"memory_id": "mem_7f21"}},
+    {"group": "Memory", "method": "POST", "path": "/v1/reset", "scope": "context:forget",
+     "summary": "Drop everything in a scope. Destructive; there is no undo.",
+     "body": {"scope": {"user_id": "alice"}}},
+    {"group": "Memory", "method": "GET", "path": "/v1/users", "scope": "context:retrieve",
+     "summary": "Which users, agents and runs hold memories. Query: user_id, agent_id, "
+                "session_id, limit.",
+     "query": "limit=50"},
+    {"group": "Memory", "method": "POST", "path": "/v1/users", "scope": "context:retrieve",
+     "summary": "The same listing with a JSON body.", "body": {"scope": {}}},
+
+    # ---- catalogue ----------------------------------------------------------------------------
+    {"group": "Catalogue", "method": "GET", "path": "/v1/skills", "scope": "skill:read",
+     "summary": "Skills visible to a scope. Query: user_id, agent_id, session_id, limit "
+                "(clamped at 500), include_disabled.",
+     "query": "user_id=alice&limit=100"},
+    {"group": "Catalogue", "method": "GET", "path": "/v1/resources", "scope": "resource:read",
+     "summary": "Resources visible to a scope. Query: as above, plus resource_type.",
+     "query": "user_id=alice&resource_type=md"},
+    {"group": "Catalogue", "method": "POST", "path": "/v1/resource/content",
+     "scope": "context:retrieve",
+     "summary": "One resource's or skill's stored text, a page at a time.",
+     "body": {"resource_hash": 901, "chunk_offset": 0, "chunk_limit": 20}},
+    {"group": "Catalogue", "method": "POST", "path": "/v1/skills/update", "scope": "skill:manage",
+     "summary": "Enable, disable or re-tag a skill without rewriting its manifest.",
+     "body": {"skill_hash": 111, "status": "disabled"}},
+
+    # ---- blobs and MCP ------------------------------------------------------------------------
+    {"group": "Blobs", "method": "PUT", "path": "/v1/blob/{key}", "scope": "context:ingest",
+     "summary": "Stream bytes to the blob tier, tenant-isolated. POST is accepted as an alias.",
+     "raw_body": True},
+    {"group": "Blobs", "method": "GET", "path": "/v1/blob/{key}", "scope": "context:retrieve",
+     "summary": "Stream those bytes back."},
+    {"group": "Blobs", "method": "POST", "path": "/v1/mcp", "scope": "per tool",
+     "summary": "MCP over HTTP. Gated per tool from the body, not at the route.",
+     "body": {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}},
+
+    # ---- administration -----------------------------------------------------------------------
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/overview", "scope": "admin",
+     "summary": "The readiness checklist, counts and traffic in one call."},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/config", "scope": "admin",
+     "summary": "Effective model configuration, warnings, the writable registry and the "
+                "read-only deployment inventory."},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/config", "scope": "admin",
+     "summary": "Write settings. A null value resets one to its built-in default.",
+     "body": {"settings": {"embedding.provider": "openai_compatible",
+                           "embedding.api_base": "http://127.0.0.1:8400/v1"}}},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/config/export",
+     "scope": "admin",
+     "summary": "The configuration as a patch body for another deployment. Secrets omitted.",
+     "query": "include_defaults=0"},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/config/preset",
+     "scope": "admin", "summary": "Apply a provider preset.", "body": {"preset": "deepseek"}},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/config/test", "scope": "admin",
+     "summary": "Call the configured extraction and embedding endpoints and report what came back.",
+     "body": {}},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/scopes", "scope": "admin",
+     "summary": "What each scope permits, plus four ready-made key shapes."},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/api_key_usage",
+     "scope": "admin", "summary": "Per-key edge counters: totals, ingest/retrieve split, bytes, "
+                                  "first and last use."},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/ingestion/jobs",
+     "scope": "admin", "summary": "Bulk import jobs on this worker."},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/ingestion/jobs",
+     "scope": "admin",
+     "summary": "Start a bulk import. Every path resolves inside MATRIXARK_INGESTION_ROOT; pass "
+                "preview to count what would be sent without importing it.",
+     "body": {"directory": "/srv/playbooks", "globs": ["*.md"], "preview": True},
+     "needs": "MATRIXARK_INGESTION_ROOT"},
+    {"group": "Administration", "method": "POST",
+     "path": "/v1/admin/ingestion/jobs/{id}/retry", "scope": "admin",
+     "summary": "Re-run a finished job's failed documents as a new job, linked to it. By default "
+                "only the failures worth retrying -- a timeout or an exhausted 5xx, not a 4xx. "
+                "Pass only_retryable=false to resubmit everything that failed.",
+     "body": {"only_retryable": True}},
+    {"group": "Administration", "method": "POST",
+     "path": "/v1/admin/ingestion/jobs/{id}/cancel", "scope": "admin",
+     "summary": "Stop a job before its next document. What is imported stays imported; ingest is "
+                "a keyed upsert, so re-running replaces rather than duplicates."},
+
+    # ---- portal pages -------------------------------------------------------------------------
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin", "scope": None,
+     "summary": "Overview. Fetching any page needs nothing; every action on it is gated."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/setup", "scope": None,
+     "summary": "Setup and metrics."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/catalog", "scope": None,
+     "summary": "Skills and resources."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/explore", "scope": None,
+     "summary": "Ask, add, upload, browse."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/ingestion", "scope": None,
+     "summary": "Bulk import."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/portal", "scope": None,
+     "summary": "API keys."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/api", "scope": None,
+     "summary": "This list."},
+    {"group": "Portal pages", "method": "GET", "path": "/v1/admin/routes", "scope": None,
+     "summary": "This list as JSON."},
+]
+
+
+def _import_progress() -> Json:
+    """What the bulk importer is doing, summarised.
+
+    A running import and a pile of failures waiting for a retry are both states a customer only
+    finds by opening the Ingestion page, which is not where anyone starts. Summarised here so the
+    landing page can say so, and so a check can be made of it without walking the job list.
+    """
+    empty: Json = {"running": 0, "documents_total": 0, "documents_done": 0,
+                   "documents_failed": 0, "documents_remaining": 0, "retryable": 0,
+                   "eta_s": 0, "active": []}
+    try:
+        import matrixark_ingestion_jobs as _jobs
+        snapshots = _jobs.REGISTRY.list()
+    except Exception:  # pragma: no cover - the registry is optional at import
+        return empty
+    active = [s for s in snapshots if s.get("state") in ("running", "queued")]
+    result: Json = {
+        "running": len(active),
+        "documents_total": sum(int(s.get("total") or 0) for s in active),
+        "documents_done": sum(int(s.get("done") or 0) for s in active),
+        "documents_failed": sum(int(s.get("failed") or 0) for s in snapshots),
+        "documents_remaining": sum(int(s.get("remaining") or 0) for s in active),
+        # Across concurrent imports the honest figure is the one that finishes LAST, not the sum.
+        "eta_s": max([float(s.get("eta_s") or 0) for s in active] or [0]),
+        "retryable": sum(int(s.get("retryable_failures") or 0) for s in snapshots),
+        "active": [{"job_id": s.get("job_id"), "state": s.get("state"),
+                    "total": s.get("total"), "done": s.get("done"),
+                    "failed": s.get("failed"), "current": s.get("current"),
+                    "eta_s": s.get("eta_s")} for s in active[:5]],
+    }
+    return result
+
+
+def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
+                      request_total: float = 0.0,
+                      imports: Optional[Json] = None) -> List[Json]:
+    """The deployment's setup state as an ordered checklist.
+
+    A customer standing up MatrixArk has to get several independent things right, and every one of
+    them fails QUIETLY: an unconfigured extraction provider still answers 200, an unset ingestion
+    root only shows up when a bulk import is refused, and an empty store looks exactly like a store
+    whose retrieval is broken. Each check below is one of those, phrased as the thing to do next
+    rather than as the flag that is off.
+
+    Computed here rather than in the page so the portal makes ONE request for it, and so the same
+    answer is available to anyone scripting a deployment check.
+    """
+    extraction = config_snapshot.get("extraction") or {}
+    embedding = config_snapshot.get("embedding") or {}
+    deterministic = {"", "deterministic", "rules", "local"}
+    checks: List[Json] = []
+
+    def plural(count: int, one: str, many: str = "") -> str:
+        return "%d %s" % (count, one if count == 1 else (many or one + "s"))
+
+    def add(check_id: str, title: str, status: str, detail: str,
+            href: str = "", action: str = "", how: Optional[List[str]] = None) -> None:
+        # `how` is the steps, in order, for the state the check is IN -- an item that is already ok
+        # carries none, because the useful thing there is that there is nothing to do.
+        checks.append({"id": check_id, "title": title, "status": status, "detail": detail,
+                       "href": href, "action": action,
+                       "how": list(how or []) if status != "ok" else []})
+
+    model_on = str(extraction.get("provider", "")).lower() not in deterministic
+    add("extraction", "Extraction model", "ok" if model_on else "todo",
+        ("Ingest calls " + str(extraction.get("model") or extraction.get("provider")) + ".")
+        if model_on else
+        "No model is configured, so ingest stores only what the local rules extract. This is the "
+        "dev default and is rarely what a production deployment wants.",
+        "/v1/admin/setup", "Configure",
+        how=[
+            "Open Setup and pick a provider preset — DeepSeek, OpenAI or Ollama — or fill the "
+            "extraction fields by hand.",
+            "The base URL must end in /v1: the request is built as <base>/chat/completions, so a "
+            "URL without it never reaches the endpoint.",
+            "Name the variable that holds the key (DEEPSEEK_API_KEY for DeepSeek), then paste the "
+            "key into the field below it.",
+            "Save, then restart the gateway: the endpoint and model are read once at startup.",
+            "Run Test endpoints. A stored key and an accepted key look identical until you probe.",
+        ])
+
+    if model_on:
+        add("extraction_key", "Extraction key",
+            "ok" if extraction.get("api_key_configured") else "warn",
+            (str(extraction.get("api_key_env")) + " is set. Use Test endpoints to confirm the "
+             "provider accepts it — a stored key and an accepted key look identical here.")
+            if extraction.get("api_key_configured") else
+            str(extraction.get("api_key_env")) + " is empty, so every extraction call falls back "
+            "to the local rules.", "/v1/admin/setup", "Set the key",
+            how=[
+                "Setup → Extraction model → paste the key into “Extraction API key”.",
+                "It lands in the variable named just above it, which is the one the provider code "
+                "reads — so it is live on the next extraction, with no restart.",
+                "The key is stored owner-only and is never returned by any read.",
+            ])
+
+    semantic = str(embedding.get("provider", "")).lower() not in deterministic
+    add("embedding", "Embedding model", "ok" if semantic else "todo",
+        ("Retrieval encodes with " + str(embedding.get("model") or embedding.get("provider")) + ".")
+        if semantic else
+        "Retrieval is running on hash vectors. It answers, and the answers are not semantic.",
+        "/v1/admin/setup", "Configure",
+        how=[
+            "DeepSeek has no embeddings API, so pair it with an encoder: the Local MiniLM preset "
+            "points at the co-located server in tools/context_minilm_embed_server.py.",
+            "The base URL must end in /v1 — the request is <base>/embeddings.",
+            "A LOCAL encoder still needs a non-empty key value: the call is skipped before it is "
+            "attempted when the variable is empty.",
+            "Turn on \u201cFail instead of falling back\u201d so an encoder outage errors rather "
+            "than quietly returning hash vectors.",
+            "Run Test endpoints — it reports the vector dimensions the encoder actually returned.",
+        ])
+
+    if semantic:
+        add("fail_closed", "Fail closed on the encoder",
+            "ok" if embedding.get("require_model_embeddings") else "warn",
+            "An unreachable encoder fails the request instead of degrading."
+            if embedding.get("require_model_embeddings") else
+            "If the encoder becomes unreachable the gateway silently falls back to hash vectors. "
+            "Turn on \u201cFail instead of falling back\u201d so an outage is visible.",
+            "/v1/admin/setup", "Turn on",
+            how=[
+                "Setup → Embedding model → “Fail instead of falling back” → on.",
+                "It is live immediately; no restart.",
+                "The trade is real: an encoder outage becomes failed requests instead of silently "
+                "worse retrieval. Failed requests are the ones you find out about.",
+            ])
+
+    warnings = config_snapshot.get("warnings") or []
+    add("config_warnings", "Configuration warnings", "ok" if not warnings else "warn",
+        "None." if not warnings else
+        plural(len(warnings), "warning") + " the gateway can see in its own configuration.",
+        "/v1/admin/setup", "Review",
+        how=list(warnings))
+
+    root_set = bool(os.environ.get("MATRIXARK_INGESTION_ROOT", "").strip())
+    add("ingestion_root", "Ingestion root", "ok" if root_set else "todo",
+        "Bulk import can resolve server-side paths."
+        if root_set else
+        "Unset, so submitting server-side paths is refused outright — bulk import will not run "
+        "until this names a directory.", "/v1/admin/setup", "Set it",
+        how=[
+            "Put the documents somewhere the gateway process can read, then set the ingestion "
+            "root to that directory on Setup (group: Ingestion pipeline).",
+            "Every path the import accepts is resolved inside it, which is what stops the "
+            "endpoint becoming a way to read the filesystem.",
+            "Single documents can be uploaded from Explore without this — the bytes come from "
+            "your browser, not a server path.",
+        ])
+
+    skills, resources = counts.get("skills"), counts.get("resources")
+    if skills is None and resources is None:
+        add("content", "Skills and resources", "warn",
+            "Could not read the catalog with this key.", "/v1/admin/catalog", "Open")
+    else:
+        total = (skills or 0) + (resources or 0)
+        add("content", "Skills and resources", "ok" if total else "todo",
+            (plural(skills or 0, "skill") + " and " + plural(resources or 0, "resource")
+             + " stored.")
+            if total else
+            "Nothing has been ingested yet. Import a directory of documents, or POST one to "
+            "/v1/ingest.", "/v1/admin/ingestion", "Import",
+            how=[
+                "Fastest check: Explore → Add → upload one document, and watch it appear in the "
+                "catalogue.",
+                "For a corpus: set the ingestion root, then Ingestion → preview the selection "
+                "before committing to a long run.",
+                "Re-importing a document replaces it rather than duplicating it, so a stopped "
+                "import can simply be run again.",
+            ])
+
+    users = counts.get("users")
+    add("memory", "Memory", "ok" if users else ("todo" if users == 0 else "warn"),
+        (plural(users, "subject") + (" holds" if users == 1 else " hold") + " memories.")
+        if users else
+        ("No memories yet. Run a retrieve from Explore once something is ingested — that is the "
+         "end-to-end check." if users == 0 else "Could not read the memory list with this key."),
+        "/v1/admin/explore", "Explore",
+        how=[
+            "Explore → Add a memory, with “extract immediately” on so you do not have to wait "
+            "for the background pass.",
+            "Then Explore → Ask, with a question about what you just wrote.",
+            "A retrieve that returns the right thing is the only check that covers ingestion, "
+            "extraction, encoding and ranking at once.",
+            "An empty result on a non-empty store almost always means the embedding provider is "
+            "still deterministic: hash vectors do not match on meaning.",
+        ])
+
+    retryable = int((imports or {}).get("retryable") or 0)
+    if retryable:
+        add("import_retries", "Import failures waiting", "warn",
+            plural(retryable, "document") + " failed an import for a reason worth retrying — a "
+            "timeout or an exhausted 5xx rather than a rejected request.",
+            "/v1/admin/ingestion", "Retry them",
+            how=["Open Ingestion and find the job.",
+                 "Retry resubmits only those documents, not the whole directory.",
+                 "A 4xx failure is listed separately: the request itself is wrong and the same "
+                 "send will be rejected again."])
+
+    add("metrics", "Metrics", "ok" if request_total else "warn",
+        (str(int(request_total)) + " requests recorded on this worker; /v1/metrics is being "
+         "served.") if request_total else
+        "No requests recorded yet on this worker. The scrape endpoint is live either way.",
+        "/v1/admin/setup", "Scrape config")
+
+    enforced = bool(getattr(cfg, "require_auth", False))
+    add("auth", "Authentication", "ok" if enforced else "warn",
+        "Requests without a valid key are refused."
+        if enforced else
+        "Auth is OFF: this deployment answers anonymous requests. That is the developer default; "
+        "production should set MATRIXARK_REQUIRE_AUTH=1.", "", "",
+        how=[
+            "Set MATRIXARK_REQUIRE_AUTH=1 and MATRIXARK_ACCESS_MODE=enforced where the gateway "
+            "process is started — this is a launcher decision, so the portal shows it and does "
+            "not change it.",
+            "Issue keys first, from the API keys page, or the restart locks you out of the "
+            "portal's own actions along with everyone else.",
+            "Give each workload the narrowest preset that fits: an agent key writes and reads and "
+            "cannot delete.",
+        ])
+
+    split = _single_writer_warning()
+    if split is not None:
+        add("single_writer", "Worker processes", "warn", split, "", "")
+
+    return checks
 
 
 def _single_writer_warning(
@@ -1551,7 +2081,21 @@ async def _ingest_file(app: Callable, scope: Json, receive: Callable, send: Call
         # same key -> dedup. Tenant-isolate exactly like the /v1/blob route.
         logical_key = f"resources/{sha[:2]}/{sha}"
         dkey = _isolate_key(logical_key, tenant, account)
-        status, raw = await _stream_spool_to_datanode(cfg, spool_path, size, dkey, content_type)
+        try:
+            status, raw = await _stream_spool_to_datanode(cfg, spool_path, size, dkey, content_type)
+        except Exception as exc:
+            # The blob tier being unreachable is an ordinary operational state -- a datanode
+            # restarting, a wrong MATRIXARK_DATANODE_URL -- and it was the one failure on this
+            # route that escaped as an unhandled exception. The caller got a bare 500 with no
+            # reason and the server logged a stack trace, which reads like a bug in the upload
+            # rather than a backend that is down.
+            _LOG.warning("ingest_file: blob store unreachable: %s", exc)
+            return await _json(send, 502, {
+                "error": "blob_store_unreachable",
+                "detail": "Could not reach the blob tier at %s: %s"
+                          % (getattr(cfg, "datanode_url", "the configured datanode"),
+                             exc.__class__.__name__),
+            })
         if status >= 400:
             detail: Any = None
             if raw:
@@ -1570,9 +2114,32 @@ async def _ingest_file(app: Callable, scope: Json, receive: Callable, send: Call
     ingest_body: Json = {"kind": kind, "raw_uri": raw_uri, "resource_type": resource_type}
     if _truthy_header(hmap.get("x-wait")):
         ingest_body["finalize"] = True
+    # X-Scope is documented (docs/enterprise_onboarding.html) as a JSON scope OBJECT --
+    # {"user_id":"alice","session_id":"s-42"} -- so parse it. Passing the raw header string
+    # through reached _apply_identity's string branch, which reads a bare string as a NAMESPACE
+    # LABEL: the upload was filed under namespace `acme/{"user_id":"alice"}` and the user_id was
+    # dropped. No error at any layer, and the file lands in the wrong scope. A string that is not
+    # a JSON object still means a namespace label, so anyone relying on that keeps it.
     x_scope = hmap.get("x-scope")
     if x_scope:
-        ingest_body["scope"] = x_scope
+        text = x_scope.strip()
+        if text.startswith("{"):
+            try:
+                parsed_scope = json.loads(text)
+            except ValueError:
+                return await _json(send, 400, {
+                    "error": "invalid_scope",
+                    "detail": "X-Scope looks like JSON but does not parse; send a scope object "
+                              "such as {\"user_id\": \"alice\"}",
+                })
+            if not isinstance(parsed_scope, dict):
+                return await _json(send, 400, {
+                    "error": "invalid_scope",
+                    "detail": "X-Scope must be a JSON object when it starts with '{'",
+                })
+            ingest_body["scope"] = parsed_scope
+        else:
+            ingest_body["scope"] = text
     if sharing_scope is not None:
         ingest_body["sharing_scope"] = sharing_scope
 
@@ -1821,8 +2388,16 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     # A multi-worker deployment on the spawning backend silently splits the store; say so
     # loudly here rather than letting writes scatter across per-worker embedded stores.
     _enforce_single_writer()
+    # Seed the process environment from what the portal stored, WITHOUT overriding anything the
+    # launcher exported: default < stored config < explicit environment, the same precedence
+    # matrixark_load_config uses. Best-effort -- a deployment must still start with an unreadable
+    # config file.
+    try:
+        _gwconfig.apply_boot()
+    except Exception:  # pragma: no cover - never block startup on stored config
+        _LOG.warning("MATRIXARK GATEWAY: stored runtime config could not be applied", exc_info=True)
 
-    async def app(scope: Json, receive: Callable, send: Callable) -> None:
+    async def _serve(scope: Json, receive: Callable, send: Callable) -> None:
         # ASGI lifespan: start the background stream-materializer on startup (so a non-finalized
         # streaming ingest becomes retrievable on its own) and stop it cleanly on shutdown. Started
         # per uvicorn worker process; idempotent with the eager start in create_v1_app().
@@ -1878,6 +2453,26 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if method == "GET" and path == "/v1/admin/portal":
             return await _html(send, 200, _portal_html_bytes())
 
+        # ---- setup + catalog pages (static HTML, no auth to FETCH) ---------------------------
+        # Same posture as the key portal: the page is inert without an admin key, because every
+        # action on it calls an admin-gated JSON endpoint.
+        if method == "GET" and path in ("/v1/admin", "/v1/admin/"):
+            return await _html(send, 200, _overview_portal_html_bytes())
+        if method == "GET" and path == "/v1/admin/explore":
+            return await _html(send, 200, _explore_portal_html_bytes())
+        if method == "GET" and path == "/v1/admin/api":
+            return await _html(send, 200, _api_portal_html_bytes())
+
+        # ---- the API surface, as data (no auth: it is the published contract) -----------------
+        # Served rather than written down separately so what a customer reads is what this process
+        # serves. No credentials: this is documentation, and every route it names enforces its own.
+        if method == "GET" and path == "/v1/admin/routes":
+            return await _json(send, 200, {"status": "ok", "routes": ROUTE_DOCS})
+        if method == "GET" and path == "/v1/admin/setup":
+            return await _html(send, 200, _setup_portal_html_bytes())
+        if method == "GET" and path == "/v1/admin/catalog":
+            return await _html(send, 200, _catalog_portal_html_bytes())
+
         # ---- per-key usage read (auth + admin scope) ----------------------------------------
         # Returns the in-process edge counters (per-key totals, ingest/retrieve split, bytes,
         # first/last-used). Gated behind a valid key that carries `admin:api_key`/`admin:audit`
@@ -1905,7 +2500,185 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             denied = _usage_read_denied(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
-            return await _json(send, 200, _model_config_snapshot())
+            snapshot = _model_config_snapshot()
+            try:
+                snapshot["settings"] = _gwconfig.snapshot()
+            except Exception as exc:  # never let the write-side registry break the read
+                snapshot["settings"] = {"status": "unavailable", "detail": str(exc)}
+            return await _json(send, 200, snapshot)
+
+        # ---- write the model configuration (auth + admin scope) ------------------------------
+        # The customer-facing half of the same surface: a closed registry of settings (see
+        # matrixark_gateway_config.SETTINGS) written to an owner-only file and pushed into the
+        # process environment. Only registered keys are accepted, so this is not a general
+        # environment-variable setter. The response reports which keys are already in effect and
+        # which wait on a restart -- several of these variables are captured into module constants
+        # at import, and reporting a write as live when it is not is how a customer ends up
+        # convinced they configured DeepSeek while ingest still runs the local rules.
+        if method == "POST" and path == "/v1/admin/config":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 18)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            if not isinstance(payload, dict):
+                return await _json(send, 400, {"error": "invalid_json",
+                                               "detail": "body must be a JSON object"})
+            patch = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+            try:
+                result = _gwconfig.update(patch, actor=account or tenant or "portal")
+            except _gwconfig.UnknownSetting as exc:
+                return await _json(send, 400, {"error": "unknown_setting", "detail": str(exc)})
+            except _gwconfig.InvalidValue as exc:
+                return await _json(send, 400, {"error": "invalid_value", "detail": str(exc)})
+            except OSError as exc:
+                return await _json(send, 500, {"error": "config_write_failed", "detail": str(exc)})
+            result["config"] = _model_config_snapshot()
+            return await _json(send, 200, result)
+
+        # ---- apply a provider preset (auth + admin scope) -------------------------------------
+        # A preset only writes values for keys the registry already allows, so it can do nothing a
+        # hand-typed write could not. It exists because getting DeepSeek right by hand means knowing
+        # that the base URL needs /v1 and that DeepSeek has no embeddings API.
+        if method == "POST" and path == "/v1/admin/config/preset":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 16)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            name = str((payload or {}).get("preset", "")).strip()
+            try:
+                result = _gwconfig.apply_preset(name, actor=account or tenant or "portal")
+            except _gwconfig.UnknownSetting as exc:
+                return await _json(send, 400, {"error": "unknown_preset", "detail": str(exc)})
+            except OSError as exc:
+                return await _json(send, 500, {"error": "config_write_failed", "detail": str(exc)})
+            result["config"] = _model_config_snapshot()
+            return await _json(send, 200, result)
+
+        # ---- export the configuration as a patch (auth + admin scope) ------------------------
+        # Emits exactly what POST /v1/admin/config accepts, so "make staging match production" is
+        # one request rather than 79 fields read off one page and retyped into another. Secrets are
+        # omitted rather than blanked: a blank is a write that would clear the target's working key.
+        if method == "GET" and path == "/v1/admin/config/export":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            include = (params.get("include_defaults") or [""])[0].strip().lower() in ("1", "true")
+            return await _json(send, 200, _gwconfig.export_settings(include_defaults=include))
+
+        # ---- probe the configured model endpoints (auth + admin scope) -----------------------
+        # Reading configuration back proves only that it was stored. This calls the endpoints as
+        # configured and reports what came back, which is the only way to separate a working key
+        # from one that is present and rejected: both look identical in the snapshot, and both
+        # degrade to the deterministic path at ingest time with no error the caller ever sees.
+        if method == "POST" and path == "/v1/admin/config/test":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 16)
+            if too_big:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads((raw or b"").decode("utf-8") or "{}")
+            except Exception:
+                payload = {}
+            targets = payload.get("targets") if isinstance(payload.get("targets"), list) else None
+            timeout = float(payload.get("timeout_s") or 10.0)
+            timeout = min(max(timeout, 1.0), 30.0)
+            result = await asyncio.to_thread(_gwconfig.probe, targets, timeout)
+            return await _json(send, 200, result)
+
+        # ---- deployment readiness (auth + admin scope) ---------------------------------------
+        # One request for the whole setup state. Each item is a thing that fails silently on its
+        # own -- an unconfigured provider, an unset ingestion root, an empty store -- so a customer
+        # standing the deployment up has no way to notice it short of a checklist like this.
+        if method == "GET" and path == "/v1/admin/overview":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            # Three listings, each of which walks the record log. Run them together: done in
+            # sequence the page waits for the sum, and this is the page someone leaves open.
+            async def _count(label: str, tool: str) -> Tuple[str, Optional[int]]:
+                args: Json = {"scope": {}, "limit": 500}
+                _apply_identity(args, key, tenant, account)
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(server.call_tool, tool, args), cfg.backend_timeout)
+                except Exception:
+                    # A backend that cannot answer a listing must not take the whole checklist
+                    # down with it -- the config half is exactly what an operator needs when the
+                    # backend is the thing that is broken.
+                    return label, None
+                if isinstance(result, dict) and isinstance(result.get("count"), int):
+                    return label, result["count"]
+                rows = (result or {}).get(label) if isinstance(result, dict) else None
+                return label, (len(rows) if isinstance(rows, list) else None)
+
+            counts: Json = dict(await asyncio.gather(
+                _count("skills", "matrixark_list_skills"),
+                _count("resources", "matrixark_list_resources"),
+                _count("users", "matrixark_list_users"),
+            ))
+            config_snapshot = _model_config_snapshot()
+            try:
+                traffic = _gwmetrics.METRICS.snapshot()
+            except Exception:
+                traffic = {"total_requests": 0}
+            imports = _import_progress()
+            checks = _readiness_checks(config_snapshot, counts, cfg,
+                                       float(traffic.get("total_requests") or 0), imports)
+            done = sum(1 for c in checks if c["status"] == "ok")
+            return await _json(send, 200, {
+                "status": "ok",
+                "checks": checks,
+                "done": done,
+                "total": len(checks),
+                "ready": all(c["status"] != "todo" for c in checks),
+                "counts": counts,
+                "traffic": traffic,
+                "imports": imports,
+                "config": config_snapshot,
+            })
+
+        # ---- scope catalogue (auth + admin scope) --------------------------------------------
+        # What each scope permits, and four ready-made key shapes. Served rather than hard-coded in
+        # the page so the descriptions live next to the map the backend gates with.
+        if method == "GET" and path == "/v1/admin/scopes":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            return await _json(send, 200, {"status": "ok", "scopes": SCOPE_CATALOG,
+                                           "presets": SCOPE_PRESETS})
 
         # ---- Prometheus scrape (no auth: counters only, no tenant data) ----------------------
         # The gateway had no /metrics, so the customer-facing API surface was invisible to the
@@ -1913,11 +2686,17 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # ingestion counters -- no keys, no tenant identifiers, nothing per-user -- so the endpoint
         # is safe to scrape without credentials, the way an exporter normally is.
         if method == "GET" and path == "/v1/metrics":
+            extra: list[str] = []
             try:
                 import matrixark_ingestion_jobs as _jobs
-                body = _jobs.prometheus_text()
+                extra = _jobs.prometheus_text().rstrip(chr(10)).split(chr(10))
             except Exception:
-                body = "# ingestion job registry unavailable" + chr(10)
+                extra = ["# ingestion job registry unavailable"]
+            try:
+                config_snapshot = _model_config_snapshot()
+            except Exception:
+                config_snapshot = None
+            body = _gwmetrics.prometheus_text(config_snapshot, extra)
             return await _text(send, 200, body, content_type="text/plain; version=0.0.4")
 
         # ---- ingestion portal page (static HTML, no auth to FETCH) ---------------------------
@@ -1995,6 +2774,51 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             })
             return await _json(send, 202, job.snapshot())
 
+        # ---- retry a job's failed documents (auth + admin scope) -----------------------------
+        # Only the failures, and by default only the ones worth retrying. Ingest is a keyed upsert
+        # so re-running everything is safe -- which is why it is the tempting thing to do, and why
+        # a thousand-document import with three failures gets re-run in full. A 4xx will fail again
+        # identically; a timeout very likely will not.
+        if method == "POST" and path.startswith("/v1/admin/ingestion/jobs/") \
+                and path.endswith("/retry"):
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 16)
+            if too_big:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads((raw or b"").decode("utf-8") or "{}")
+            except Exception:
+                payload = {}
+            only_retryable = payload.get("only_retryable")
+            only_retryable = True if only_retryable is None else bool(only_retryable)
+            import matrixark_ingestion_jobs as _jobs
+            job_id = path[len("/v1/admin/ingestion/jobs/"):-len("/retry")]
+            parent = _jobs.REGISTRY.get(job_id)
+            if parent is None:
+                return await _json(send, 404, {"error": "unknown_job", "job_id": job_id})
+            if parent.snapshot()["state"] == "running":
+                return await _json(send, 409, {
+                    "error": "job_still_running",
+                    "detail": "Wait for the import to finish, or cancel it first — retrying while "
+                              "it is still working would submit documents it is about to retry "
+                              "itself.",
+                })
+            child = _jobs.REGISTRY.retry(job_id, only_retryable=only_retryable)
+            if child is None:
+                return await _json(send, 400, {
+                    "error": "nothing_to_retry",
+                    "detail": ("No retryable failures. Failures that are 4xx are the request's "
+                               "own fault and will fail again identically; pass "
+                               "only_retryable=false to resubmit them anyway.")
+                    if parent.snapshot()["failed"] else "This job had no failures.",
+                })
+            return await _json(send, 202, child.snapshot())
+
         # ---- cancel a running ingestion job (auth + admin scope) -----------------------------
         # Stops the job before its next document; documents already imported stay imported, which
         # is safe because ingest is a keyed upsert and a later re-run replaces rather than duplicates.
@@ -2047,6 +2871,134 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             try:
                 result = await asyncio.wait_for(
                     asyncio.to_thread(server.call_tool, "matrixark_get_all", args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            return await _json(send, 200, _ok_body(result))
+
+        # ---- who holds memories: GET /v1/users (auth + context:retrieve) ---------------------
+        # POST /v1/users has always worked through the data-route dispatch; this is the GET form,
+        # matching GET /v1/memories, so the same read is reachable from a browser or a plain curl.
+        if method == "GET" and path == "/v1/users":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "context:retrieve")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            user_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                values = params.get(field)
+                if values and values[0]:
+                    user_scope[field] = values[0]
+            args: Json = {"scope": user_scope}
+            limits = params.get("limit")
+            if limits and limits[0].strip().isdigit():
+                args["limit"] = min(int(limits[0]), 500)
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_list_users", args),
+                    cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            return await _json(send, 200, _ok_body(result))
+
+        # ---- skill / resource catalog (auth + resource:read / skill:read) --------------------
+        # The backend has had matrixark_list_skills / matrixark_list_resources since the skill lane
+        # landed, but they were reachable only through /v1/mcp -- so a customer on the documented
+        # REST contract could ingest skills and had no way to see what was stored. These are the two
+        # missing reads, gated on the same per-tool scopes the backend enforces.
+        if method == "GET" and path in ("/v1/skills", "/v1/resources"):
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            is_skills = path == "/v1/skills"
+            denied = _scope_denied(key_record, "skill:read" if is_skills else "resource:read")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+
+            def _qc(name: str) -> Optional[str]:
+                values = params.get(name)
+                return values[0] if values else None
+
+            catalog_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                value = _qc(field)
+                if value:
+                    catalog_scope[field] = value
+            args: Json = {"scope": catalog_scope}
+            limit = _qc("limit")
+            if limit and limit.strip().isdigit():
+                args["limit"] = min(int(limit), 500)
+            if is_skills:
+                if str(_qc("include_disabled") or "").strip().lower() in ("1", "true", "yes"):
+                    args["include_disabled"] = True
+            else:
+                resource_type = _qc("resource_type")
+                if resource_type:
+                    args["resource_type"] = resource_type
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            tool = "matrixark_list_skills" if is_skills else "matrixark_list_resources"
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, tool, args), cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            return await _json(send, 200, _ok_body(result))
+
+        # ---- enable / disable a skill (auth + skill:manage) ----------------------------------
+        # Listing skills without being able to retire one leaves a customer with a catalog that
+        # only grows: a superseded playbook keeps competing for pack slots with its replacement,
+        # and the only way to stop it was to edit the registry out of band.
+        if method == "POST" and path == "/v1/skills/update":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _scope_denied(key_record, "skill:manage")
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 18)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            if not isinstance(payload, dict) or not isinstance(payload.get("skill_hash"), int):
+                return await _json(send, 400, {"error": "bad_request",
+                                               "detail": "skill_hash (integer) is required"})
+            args = {k: v for k, v in payload.items()
+                    if k in ("skill_hash", "status", "precedence", "owner_scope", "version",
+                             "triggers", "allowed_tools", "scope")}
+            args.setdefault("scope", {})
+            _apply_identity(args, key, tenant, account)
+            denied = _identity_denied(key_record, args)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_update_skill", args),
+                    cfg.backend_timeout)
             except asyncio.TimeoutError:
                 return await _json(send, 504, {"error": "backend_timeout",
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
@@ -2350,6 +3302,50 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                         pass
             return await _json(send, 202, out, rl_headers)
         return await _json(send, 200, _ok_body(result), rl_headers)
+
+    async def app(scope: Json, receive: Callable, send: Callable) -> None:
+        """Record one edge observation per HTTP request, then serve it.
+
+        Wrapping here rather than instrumenting each branch means a route added later is measured
+        for free, and a route that returns early (401, 429, 404) is measured too -- which is exactly
+        the traffic an operator most needs to see and the traffic a per-branch counter always
+        misses. Recording never raises: a metrics failure must not be able to fail a request.
+        """
+        if scope.get("type") != "http":
+            return await _serve(scope, receive, send)
+        started = time.time()
+        observed = {"status": 0, "response_bytes": 0, "request_bytes": 0}
+
+        async def _observed_receive() -> Json:
+            message = await receive()
+            if message.get("type") == "http.request":
+                observed["request_bytes"] += len(message.get("body") or b"")
+            return message
+
+        async def _observed_send(message: Json) -> None:
+            mtype = message.get("type")
+            if mtype == "http.response.start":
+                try:
+                    observed["status"] = int(message.get("status") or 0)
+                except (TypeError, ValueError):
+                    observed["status"] = 0
+            elif mtype == "http.response.body":
+                observed["response_bytes"] += len(message.get("body") or b"")
+            await send(message)
+
+        _gwmetrics.METRICS.begin()
+        try:
+            return await _serve(scope, _observed_receive, _observed_send)
+        finally:
+            _gwmetrics.METRICS.end()
+            try:
+                _gwmetrics.METRICS.record(
+                    scope.get("path", ""), scope.get("method", ""), observed["status"],
+                    time.time() - started,
+                    request_bytes=observed["request_bytes"],
+                    response_bytes=observed["response_bytes"])
+            except Exception:  # pragma: no cover - metrics must never break a response
+                pass
 
     return app
 

@@ -46,6 +46,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_GLOBS = ("*.md", "*.markdown", "*.json")
 RETRY_BACKOFF_S = (1.0, 3.0, 8.0)
+# Ceiling on an honoured Retry-After. The header is remote input; one of them must not be able to
+# park an import for an hour.
+MAX_RETRY_AFTER_S = 30.0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -141,6 +144,24 @@ def resource_type_for(path: str) -> str:
 # ---------------------------------------------------------------------------------------------
 # ingest
 # ---------------------------------------------------------------------------------------------
+def _retry_after_seconds(exc: "urllib.error.HTTPError") -> float:
+    """The server's own answer to "when should I try again", bounded.
+
+    Capped because the header is remote input: an import must not be parked for an hour by one
+    header, and the caller's own backoff is a reasonable floor to fall back to.
+    """
+    try:
+        raw = exc.headers.get("Retry-After") if exc.headers else None
+    except Exception:  # pragma: no cover - headers absent or malformed
+        raw = None
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, min(float(str(raw).strip()), MAX_RETRY_AFTER_S))
+    except ValueError:
+        return 0.0  # an HTTP-date form; fall back to the caller's own backoff
+
+
 def post_document(
     base_url: str,
     path: str,
@@ -196,7 +217,16 @@ def post_document(
                 last = "http %d" % response.status
         except urllib.error.HTTPError as exc:
             last = "http %d" % exc.code
-            # A 4xx is the caller's fault and will not improve on retry.
+            # 429 is back-pressure and 408 is a timeout: both are the server ASKING for the
+            # request again later, not rejecting it. Giving up on them meant a large import
+            # against a busy deployment abandoned exactly the documents it was told to resend.
+            # The gateway sends retry-after on 429, so honour it rather than guessing.
+            if exc.code in (408, 429):
+                wait = _retry_after_seconds(exc)
+                if wait:
+                    time.sleep(wait)
+                continue
+            # Any other 4xx is the caller's fault and will not improve on retry.
             if 400 <= exc.code < 500:
                 return False, last
         except Exception as exc:  # network/timeout: worth retrying

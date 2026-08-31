@@ -1,0 +1,96 @@
+# Alerts for the customer-facing MatrixArk gateway (`GET /v1/metrics`).
+#
+# The first two are the ones that do not exist anywhere else. Extraction and embedding both fall
+# back to a local deterministic path when they are unconfigured or unreachable; that path answers
+# 200 with rule-extracted memories and hash vectors, so a deployment in that state is
+# indistinguishable from a healthy one on latency, error rate, and every storage metric. Without
+# these rules the failure mode is silent for as long as nobody looks at retrieval quality.
+groups:
+  - name: matrixark-gateway-config
+    rules:
+      - alert: MatrixArkRetrievalNotSemantic
+        expr: matrixark_gateway_embedding_semantic == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Retrieval is running on hash vectors ({{ $labels.instance }})"
+          description: >-
+            The embedding provider is deterministic, so every vector is a hash fallback and
+            retrieval is not semantic. Requests still return 200. Fix it on the portal's setup page
+            (/v1/admin/setup) or by setting MATRIXARK_EMBEDDING_PROVIDER and
+            MATRIXARK_EMBEDDING_API_BASE, then set MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1 so a future
+            encoder outage fails loudly instead of degrading.
+
+      - alert: MatrixArkExtractionNotUsingAModel
+        expr: matrixark_gateway_extraction_model_active == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ingest is storing rule-extracted memories only ({{ $labels.instance }})"
+          description: >-
+            No extraction model is configured, so ingest stores only what the local rules extract.
+            Intended for a dev deployment; in production it means the memories being written are
+            much thinner than the customer expects.
+
+      - alert: MatrixArkGatewayConfigWarnings
+        expr: matrixark_gateway_config_warnings > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} gateway configuration warnings ({{ $labels.instance }})"
+          description: >-
+            The gateway can see problems in its own configuration. The text of each is on
+            /v1/admin/setup and in GET /v1/admin/config.
+
+  - name: matrixark-gateway-serving
+    rules:
+      - alert: MatrixArkGatewayServerErrors
+        expr: >-
+          sum by (instance) (rate(matrixark_gateway_requests_total{status=~"5.."}[5m]))
+            / sum by (instance) (rate(matrixark_gateway_requests_total[5m])) > 0.01
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Over 1% of gateway requests are failing ({{ $labels.instance }})"
+          description: >-
+            5xx only -- 4xx is the caller's to fix and is deliberately excluded so an expired
+            customer key cannot page the operator.
+
+      - alert: MatrixArkGatewayBackendTimeouts
+        expr: sum by (instance) (rate(matrixark_gateway_requests_total{status="504"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway is timing out on the backend ({{ $labels.instance }})"
+          description: >-
+            The edge gave up waiting for the backend. Check the datanode, and check whether an
+            extraction endpoint is answering slowly enough to hold a request open.
+
+      - alert: MatrixArkGatewayRetrieveLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, sum by (instance, le) (
+            rate(matrixark_gateway_request_duration_seconds_bucket{route="/v1/retrieve"}[5m]))) > 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Retrieve p95 above 1s ({{ $labels.instance }})"
+          description: >-
+            Retrieval is normally tens of milliseconds. Seconds usually means a model call in the
+            path, not the store.
+
+      - alert: MatrixArkGatewayNoTraffic
+        expr: sum by (instance) (rate(matrixark_gateway_requests_total[15m])) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Gateway is serving no requests ({{ $labels.instance }})"
+          description: >-
+            Expected on an idle deployment; on a live one it means clients are not reaching the
+            edge at all, which no error-rate alert can tell you.

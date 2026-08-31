@@ -30,6 +30,42 @@ MAX_RETAINED_JOBS = 50
 MAX_PATHS_PER_JOB = 100_000
 
 
+# Failures kept per job. A 10k-document import that fails wholesale would otherwise hold every
+# path twice. The snapshot says when it truncated, so a retry cannot quietly cover only the first
+# slice of a larger problem.
+MAX_FAILURES_KEPT = 500
+# Completed documents kept for the progress view. A ring, not a log: enough to see the import
+# moving and what it is chewing through, bounded so a long run cannot grow.
+RECENT_KEPT = 25
+
+
+def classify_failure(detail: str) -> bool:
+    """Is this failure worth retrying?
+
+    post_document already retries transient failures with backoff and gives up immediately on a
+    4xx, so a 4xx here means the request itself is wrong -- a malformed document, a rejected key,
+    a body over the limit -- and will fail again identically. Anything else (a timeout, a refused
+    connection, an exhausted 5xx) is the deployment having a bad minute, which is exactly what a
+    retry is for. Distinguishing them is the difference between "retry the 12 that timed out" and
+    "re-run all 1000 and get the same 3 failures".
+    """
+    text = (detail or "").strip().lower()
+    if text.startswith("http "):
+        try:
+            code = int(text.split()[1])
+        except (IndexError, ValueError):
+            return True
+        # 429 (back-pressure) and 408 (timeout) are the server asking for the request again,
+        # not rejecting it -- they are the most retryable failures there are, and a plain
+        # "4xx is permanent" rule gets them exactly backwards.
+        if code in (408, 429):
+            return True
+        return not (400 <= code < 500)
+    if text.startswith("read failed"):
+        return False  # the file did not open; retrying reads the same missing file
+    return True
+
+
 class IngestionRootNotConfigured(Exception):
     """Raised when a job is submitted but no ingestion root bounds it."""
 
@@ -95,8 +131,13 @@ class Job:
         self.bytes = 0
         self.started_at = time.time()
         self.finished_at: Optional[float] = None
-        self.failures: List[Dict[str, str]] = []
+        self.failures: List[Dict[str, object]] = []
+        self.failures_truncated = False
+        self.recent: List[Dict[str, object]] = []
         self.current: Optional[str] = None
+        self.current_started: Optional[float] = None
+        self.retry_of: Optional[str] = str(options.get("retry_of") or "") or None
+        self.retried_by: Optional[str] = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -118,9 +159,46 @@ class Job:
                 "docs_per_s": round(rate, 3),
                 "eta_s": round(remaining / rate, 1) if rate > 0 and remaining else 0,
                 "current": self.current,
-                "failures": list(self.failures[:20]),
+                "current_elapsed_s": (round(time.time() - self.current_started, 1)
+                                      if self.current_started else None),
+                "failures": [dict(f) for f in self.failures[:20]],
+                "failure_count": len(self.failures),
+                "failures_truncated": self.failures_truncated,
+                "retryable_failures": sum(1 for f in self.failures if f.get("retryable")),
+                "recent": [dict(r) for r in self.recent],
+                "retry_of": self.retry_of,
+                "retried_by": self.retried_by,
                 "user_id": self.options.get("user_id"),
             }
+
+    def record(self, path: str, ok: bool, took_ms: float, size: int, detail: str = "") -> None:
+        """Record one document's outcome: the counters, the failure list, and the recent ring.
+
+        One place rather than inline in the runner, so the two bounds -- MAX_FAILURES_KEPT and
+        RECENT_KEPT -- cannot be honoured by one caller and forgotten by the next.
+        """
+        with self._lock:
+            if ok:
+                self.done += 1
+                self.bytes += size
+            else:
+                self.failed += 1
+                if len(self.failures) < MAX_FAILURES_KEPT:
+                    self.failures.append({
+                        "path": path, "detail": detail, "bytes": size,
+                        "retryable": classify_failure(detail),
+                    })
+                else:
+                    self.failures_truncated = True
+            self.recent.append({"path": path, "ok": ok, "ms": took_ms, "bytes": size})
+            if len(self.recent) > RECENT_KEPT:
+                del self.recent[0]
+
+    def failed_paths(self, only_retryable: bool = True) -> List[str]:
+        """The documents to hand a retry. Ordered as the original run saw them."""
+        with self._lock:
+            return [str(f["path"]) for f in self.failures
+                    if not only_retryable or f.get("retryable")]
 
     def cancel(self) -> None:
         self._stop.set()
@@ -139,9 +217,12 @@ class Job:
                     self.state = "cancelled"
                     self.finished_at = time.time()
                     self.current = None
+                    self.current_started = None
                 return
+            started = time.time()
             with self._lock:
                 self.current = path
+                self.current_started = started
             try:
                 size = os.path.getsize(path)
             except OSError:
@@ -149,18 +230,12 @@ class Job:
             ok, detail = batch.post_document(
                 base_url, path, user_id=user_id, api_key=api_key, timeout_s=timeout_s
             )
-            with self._lock:
-                if ok:
-                    self.done += 1
-                    self.bytes += size
-                else:
-                    self.failed += 1
-                    if len(self.failures) < 100:
-                        self.failures.append({"path": path, "detail": detail})
+            self.record(path, ok, round((time.time() - started) * 1000.0, 1), size, detail)
         with self._lock:
             self.state = "failed" if self.failed and not self.done else "completed"
             self.finished_at = time.time()
             self.current = None
+            self.current_started = None
 
 
 class JobRegistry:
@@ -182,6 +257,28 @@ class JobRegistry:
         threading.Thread(target=job.run, name="ingest-job-%s" % job.id, daemon=True).start()
         return job
 
+    def retry(self, job_id: str, only_retryable: bool = True) -> Optional[Job]:
+        """Re-run a finished job's failed documents as a new job.
+
+        Only the failures, not the whole list. Ingest is a keyed upsert, so re-running everything
+        is *safe* -- which is exactly why it is the tempting thing to do, and why a thousand-document
+        import with three failures gets re-run in full and takes as long the second time. The two
+        jobs are linked in both directions so the history reads as one import rather than two
+        unrelated ones.
+        """
+        parent = self.get(job_id)
+        if parent is None:
+            return None
+        paths = parent.failed_paths(only_retryable=only_retryable)
+        if not paths:
+            return None
+        options = dict(parent.options)
+        options["retry_of"] = parent.id
+        child = self.submit(paths, options)
+        with parent._lock:  # noqa: SLF001 - same module, same object's lock
+            parent.retried_by = child.id
+        return child
+
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
             return self._jobs.get(job_id)
@@ -201,6 +298,8 @@ class JobRegistry:
             "documents_total": 0.0,
             "documents_done": 0.0,
             "documents_failed": 0.0,
+            "documents_retried": 0.0,
+            "documents_retryable": 0.0,
             "bytes_total": 0.0,
         }
         for job in jobs:
@@ -211,6 +310,9 @@ class JobRegistry:
             totals["documents_done"] += float(snap["done"])
             totals["documents_failed"] += float(snap["failed"])
             totals["bytes_total"] += float(snap["bytes"])
+            if snap.get("retry_of"):
+                totals["documents_retried"] += float(snap["total"])
+            totals["documents_retryable"] += float(snap.get("retryable_failures") or 0)
         return totals
 
 
@@ -236,6 +338,14 @@ def prometheus_text(extra: Optional[Dict[str, float]] = None) -> str:
         "# HELP matrixark_ingestion_documents_failed Documents that failed to ingest.",
         "# TYPE matrixark_ingestion_documents_failed counter",
         "matrixark_ingestion_documents_failed %g" % totals["documents_failed"],
+        "# HELP matrixark_ingestion_documents_retried Documents submitted as part of a retry.",
+        "# TYPE matrixark_ingestion_documents_retried counter",
+        "matrixark_ingestion_documents_retried %g" % totals["documents_retried"],
+        "# HELP matrixark_ingestion_documents_retryable Failed documents that are worth retrying "
+        "-- a timeout or an exhausted 5xx rather than a rejected request. Non-zero after an import "
+        "means work is waiting for someone to press retry.",
+        "# TYPE matrixark_ingestion_documents_retryable gauge",
+        "matrixark_ingestion_documents_retryable %g" % totals["documents_retryable"],
         "# HELP matrixark_ingestion_bytes_total Source bytes ingested.",
         "# TYPE matrixark_ingestion_bytes_total counter",
         "matrixark_ingestion_bytes_total %g" % totals["bytes_total"],

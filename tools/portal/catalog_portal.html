@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MatrixArk — Skills & Resources</title>
+<style>
+  /* --faint carries the help text under every field, so it is body copy rather than
+     decoration: it is set to clear 4.5:1 against --panel in both schemes (measured 4.95
+     light / 5.76 dark). A lighter grey looks tidier and drops it to about 3:1. */
+  :root{
+    --bg:#f2f5f7; --panel:#fff; --panel-2:#f7f9fb;
+    --ink:#141a20; --muted:#5c6773; --faint:#667180; --line:#dce3ea;
+    --accent:#0d6b68; --accent-ink:#fff; --accent-soft:#d9ecea;
+    --ok:#1c7a58; --ok-soft:#dbeee5;
+    --warn:#93610f; --warn-soft:#f7ead2;
+    --crit:#a6423a; --crit-soft:#f7dfdc;
+    --shadow:0 1px 2px rgba(20,26,32,.05), 0 4px 14px rgba(20,26,32,.05);
+    --radius:10px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d1115; --panel:#151b21; --panel-2:#1a212a;
+      --ink:#e4e9ef; --muted:#8d99a7; --faint:#8996a5; --line:#27303a;
+      --accent:#3fb3a8; --accent-ink:#06231f; --accent-soft:#11302e;
+      --ok:#4cb68b; --ok-soft:#113126;
+      --warn:#d9a441; --warn-soft:#31270f;
+      --crit:#d7756a; --crit-soft:#341e1b;
+      --shadow:0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.28);
+    }
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 72px}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  /* header */
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:24px;margin:0;letter-spacing:-.015em;font-weight:650}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block;
+       margin-right:6px;vertical-align:middle}
+  .dot.live{background:var(--ok)} .dot.down{background:var(--crit)}
+  .conn{font-size:13px;color:var(--muted)}
+  .lede{color:var(--muted);margin:2px 0 22px;max-width:64ch}
+
+  /* summary */
+  .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:14px 16px;box-shadow:var(--shadow)}
+  .stat b{display:block;font-size:26px;line-height:1.1;font-weight:650;
+          font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace}
+  .stat span{display:block;font-size:12.5px;color:var(--muted);margin-top:5px}
+  .stat.ok b{color:var(--ok)} .stat.warn b{color:var(--warn)} .stat.crit b{color:var(--crit)}
+
+  section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+          padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  h2{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+     margin:0 0 14px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .aux{margin-left:auto;text-transform:none;letter-spacing:0;font-size:12px;font-weight:400}
+
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px;font-weight:500}
+  input[type=text],input[type=password],textarea{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+    background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  textarea{min-height:74px;resize:vertical;font-family:"IBM Plex Mono",monospace;font-size:13px}
+  input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:620px){.grid2{grid-template-columns:1fr}}
+
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;align-items:center}
+  button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:7px;
+         padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.link{background:none;border:0;color:var(--accent);padding:4px 2px;font-weight:500;
+              text-decoration:underline;text-underline-offset:2px}
+  button.danger{background:transparent;color:var(--crit);border:1px solid var(--crit);
+                padding:5px 11px;font-size:13px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .check{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
+
+  .msg{padding:10px 13px;border-radius:7px;font-size:14px;margin-top:14px;line-height:1.5}
+  .msg.err{background:var(--crit-soft);color:var(--crit)}
+  .msg.ok{background:var(--ok-soft);color:var(--ok)}
+  .msg.info{background:var(--accent-soft);color:var(--accent)}
+  .note{background:var(--warn-soft);color:var(--warn);padding:10px 13px;border-radius:7px;
+        font-size:13.5px;margin-bottom:9px;line-height:1.5}
+  /* Config warnings and errors quote long unbreakable tokens (env var names, endpoints, paths).
+     Without this they force the whole page to scroll sideways on a narrow viewport. */
+  .note,.msg,.hint,td,.job-stats,.lede{overflow-wrap:anywhere}
+  .hint{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5}
+
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+     font-weight:600;white-space:nowrap}
+  td.num{text-align:right;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+
+  .job{border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-bottom:10px;
+       background:var(--panel-2)}
+  .job-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .job-id{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--muted)}
+  .pill{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+        padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .pill.running{background:var(--accent-soft);color:var(--accent)}
+  .pill.completed{background:var(--ok-soft);color:var(--ok)}
+  .pill.queued{background:var(--line);color:var(--muted)}
+  .pill.failed,.pill.cancelled{background:var(--crit-soft);color:var(--crit)}
+  .job-meta{margin-left:auto;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .bar{height:7px;background:var(--line);border-radius:5px;overflow:hidden;margin:11px 0 8px}
+  .bar>i{display:block;height:100%;background:var(--accent);transition:width .45s ease}
+  .bar>i.done{background:var(--ok)} .bar>i.bad{background:var(--crit)}
+  .job-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+             font-variant-numeric:tabular-nums}
+  .job-stats b{color:var(--ink);font-weight:600}
+  .current{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);
+           margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  details{margin-top:9px}
+  summary{cursor:pointer;font-size:13px;color:var(--crit)}
+  details ul{margin:7px 0 0;padding-left:18px;font-size:12.5px;color:var(--muted)}
+  details li{margin-bottom:3px;font-family:"IBM Plex Mono",monospace;word-break:break-all}
+
+  pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
+  .empty{color:var(--faint);font-size:14px;padding:6px 0}
+  a{color:var(--accent)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .lineage{font-size:12.5px;color:var(--muted);margin-top:7px}
+  .lineage .mono{font-family:"IBM Plex Mono",monospace}
+  table.failures{margin-top:8px;font-size:13px}
+  table.failures td{vertical-align:top;overflow-wrap:anywhere}
+  table.failures td.mono{font-family:"IBM Plex Mono",monospace;font-size:12px}
+  details ul li{list-style:none;margin-left:-18px}
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+
+  /* setup + catalog additions */
+  .field{margin-bottom:2px}
+  .field .env{font-size:11.5px;color:var(--faint);font-family:"IBM Plex Mono",monospace}
+  .badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+         padding:2px 7px;border-radius:20px;margin-left:7px;white-space:nowrap}
+  .badge.restart{background:var(--warn-soft);color:var(--warn)}
+  .badge.essential{background:var(--crit-soft);color:var(--crit)}
+  .badge.portal{background:var(--accent-soft);color:var(--accent)}
+  .badge.environment{background:var(--line);color:var(--muted)}
+  select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+         background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  .presets{display:flex;gap:8px;flex-wrap:wrap}
+  .preset{flex:1 1 210px;text-align:left;background:var(--panel-2);color:var(--ink);
+          border:1px solid var(--line);border-radius:8px;padding:11px 13px;font-weight:500}
+  .preset b{display:block;font-weight:650;margin-bottom:3px}
+  .preset span{display:block;font-size:12.5px;color:var(--muted);font-weight:400;line-height:1.45}
+  .preset:hover{border-color:var(--accent)}
+  .probe{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+         background:var(--panel-2)}
+  .probe.ok{border-color:var(--ok)} .probe.bad{border-color:var(--crit)}
+  .probe h3{margin:0 0 5px;font-size:14px;font-weight:650;display:flex;gap:9px;align-items:center}
+  .probe p{margin:0;font-size:13px;color:var(--muted)}
+  tr.rowlink{cursor:pointer} tr.rowlink:hover td{background:var(--panel-2)}
+  .tag{font-size:11px;background:var(--line);color:var(--muted);border-radius:4px;padding:1px 6px;
+       margin-right:5px;white-space:nowrap}
+  /* setup page: grouped, filterable settings */
+  details.group{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+                padding:0;margin-bottom:12px;box-shadow:var(--shadow);overflow:hidden}
+  details.group>summary{list-style:none;cursor:pointer;padding:15px 20px;display:flex;
+                        align-items:baseline;gap:10px;flex-wrap:wrap}
+  details.group>summary::-webkit-details-marker{display:none}
+  details.group>summary::before{content:"B8";color:var(--faint);font-size:12px;
+                                transition:transform .15s ease;display:inline-block}
+  details.group[open]>summary::before{transform:rotate(90deg)}
+  details.group>summary b{font-size:15px;font-weight:650;letter-spacing:-.01em}
+  details.group>summary .n{font-size:11.5px;color:var(--faint);
+                           font-family:"IBM Plex Mono",monospace}
+  details.group>summary .adv{font-size:10px;font-weight:700;text-transform:uppercase;
+                             letter-spacing:.05em;color:var(--muted);background:var(--line);
+                             border-radius:20px;padding:2px 7px}
+  details.group>summary .dirty{font-size:10px;font-weight:700;text-transform:uppercase;
+                               letter-spacing:.05em;color:var(--warn);background:var(--warn-soft);
+                               border-radius:20px;padding:2px 7px}
+  .group-body{padding:0 20px 18px}
+  .group-note{color:var(--muted);font-size:13.5px;margin:0 0 14px;max-width:70ch;line-height:1.55}
+  .field.changed input,.field.changed select{border-color:var(--warn);
+                                             background:var(--warn-soft)}
+  .field .row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .field .reset{margin-left:auto}
+  .field.hidden{display:none}
+  .helptext{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5;max-width:70ch}
+  .helptext.long{max-height:3.6em;overflow:hidden;position:relative;cursor:pointer}
+  .helptext.long::after{content:"more";position:absolute;right:0;bottom:0;background:var(--panel);
+                        padding-left:10px;color:var(--accent);font-weight:600}
+  .helptext.long.open{max-height:none}
+  .helptext.long.open::after{content:none}
+  .savebar{position:sticky;bottom:0;z-index:5;background:var(--panel);border:1px solid var(--line);
+           border-radius:var(--radius);box-shadow:var(--shadow);padding:12px 16px;margin:16px 0;
+           display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .savebar .count{font-size:13.5px;color:var(--muted);margin-right:auto}
+  .savebar .count b{color:var(--warn)}
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .toolbar input[type=text]{flex:1 1 240px;width:auto}
+  .inv{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:16px}
+  .inv th{width:1%;white-space:nowrap;text-align:left;padding:6px 14px 6px 0;font-weight:500;
+          color:var(--muted);text-transform:none;letter-spacing:0;font-size:13.5px}
+  .inv td{padding:6px 0;border-bottom:1px solid var(--line);
+          font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere}
+  .inv td.unset{color:var(--faint);font-style:italic;font-family:inherit}
+  .inv .envname{display:block;font-size:11px;color:var(--faint);
+                font-family:"IBM Plex Mono",monospace}
+  #history td div{font-family:"IBM Plex Mono",monospace;font-size:12.5px;padding:1px 0;
+                  overflow-wrap:anywhere}
+  #history em{font-style:normal;color:var(--muted)}
+  /* overview checklist + explore */
+  .checkrow{display:flex;gap:13px;align-items:flex-start;padding:13px 0;
+            border-bottom:1px solid var(--line)}
+  .checkrow:last-child{border-bottom:0}
+  .checkrow .mark{flex:0 0 20px;height:20px;border-radius:50%;display:grid;place-items:center;
+                  font-size:12px;font-weight:800;margin-top:1px}
+  .checkrow .mark.ok{background:var(--ok-soft);color:var(--ok)}
+  .checkrow .mark.warn{background:var(--warn-soft);color:var(--warn)}
+  .checkrow .mark.todo{background:var(--crit-soft);color:var(--crit)}
+  .checkrow .body{flex:1 1 auto;min-width:0}
+  .checkrow .body b{display:block;font-size:14.5px;font-weight:650;margin-bottom:2px}
+  .checkrow .body span{font-size:13.5px;color:var(--muted);line-height:1.5;
+                       overflow-wrap:anywhere;display:block}
+  .checkrow .go{flex:0 0 auto;font-size:13px;white-space:nowrap}
+  .importrow{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+             background:var(--panel-2)}
+  .importhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .importhead .mono{font-family:"IBM Plex Mono",monospace;font-size:12.5px}
+  .importmeta{margin-left:auto;font-size:12.5px;color:var(--muted);
+              font-variant-numeric:tabular-nums}
+  .importcur{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--faint);
+             margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .how{margin-top:8px}
+  .how>summary{cursor:pointer;font-size:12.5px;color:var(--accent);font-weight:550;
+               list-style:none;display:inline-block}
+  .how>summary::-webkit-details-marker{display:none}
+  .how>summary::before{content:"B8 ";font-size:10px}
+  .how[open]>summary::before{content:"BE "}
+  .how ol{margin:8px 0 0;padding-left:20px}
+  .how li{font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:5px;
+          overflow-wrap:anywhere}
+  .progress{height:8px;border-radius:5px;background:var(--line);overflow:hidden;margin:4px 0 18px}
+  .progress>i{display:block;height:100%;background:var(--ok);transition:width .5s ease}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;
+         margin-bottom:6px}
+  .tile{display:block;text-decoration:none;color:inherit;background:var(--panel);
+        border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;
+        box-shadow:var(--shadow)}
+  .tile:hover{border-color:var(--accent)}
+  .tile b{display:block;font-size:14.5px;font-weight:650;margin-bottom:3px}
+  .tile span{font-size:12.5px;color:var(--muted);line-height:1.45;display:block}
+  .packitem{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:7px;
+            padding:11px 13px;margin-bottom:9px;background:var(--panel-2)}
+  .packitem .meta{font-size:11.5px;color:var(--faint);margin-bottom:5px;
+                  font-family:"IBM Plex Mono",monospace}
+  .packitem p{margin:0;font-size:13.5px;line-height:1.55;overflow-wrap:anywhere}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+  .tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+               padding:8px 12px;font-weight:550;font-size:13.5px;margin-bottom:-1px;
+               border-radius:0}
+  .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  .pane[hidden]{display:none}
+  .upl{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:9px;
+       background:var(--panel-2)}
+  .upl-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .upl-name{font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere;
+            flex:1 1 auto;min-width:0}
+  .upl-size{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .upl-bar{height:5px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+  .upl-bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .2s linear}
+  .upl.done .upl-bar>i{background:var(--ok)}
+  .upl.failed .upl-bar>i{background:var(--crit)}
+  .upl-detail{font-size:12.5px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}
+  .upl-actions{margin-top:8px}
+  /* API page */
+  .route{border-bottom:1px solid var(--line);padding:14px 0}
+  .route:last-child{border-bottom:0}
+  .route-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .verb{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:700;letter-spacing:.04em;
+        padding:2px 7px;border-radius:4px;background:var(--line);color:var(--muted)}
+  .verb.GET{background:var(--accent-soft);color:var(--accent)}
+  .verb.POST{background:var(--ok-soft);color:var(--ok)}
+  .verb.PUT{background:var(--warn-soft);color:var(--warn)}
+  .route-path{font-family:"IBM Plex Mono",monospace;font-size:13.5px;font-weight:600;
+              overflow-wrap:anywhere}
+  .route-scope{margin-left:auto;font-size:11.5px;font-family:"IBM Plex Mono",monospace;
+               color:var(--faint);white-space:nowrap}
+  .route p{margin:6px 0 0;font-size:13.5px;color:var(--muted);line-height:1.55;max-width:78ch}
+  .route .curl{margin-top:9px}
+  .route pre{margin-top:8px;display:none}
+  .route.open pre{display:block}
+  .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+                   clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Skills &amp; resources</h1>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+  <nav class="portalnav">
+    <a href="/v1/admin">Overview</a>
+    <a href="/v1/admin/setup">Setup &amp; metrics</a>
+    <a href="/v1/admin/catalog" aria-current="page">Skills &amp; resources</a>
+    <a href="/v1/admin/explore">Explore</a>
+    <a href="/v1/admin/ingestion">Ingestion</a>
+    <a href="/v1/admin/portal">API keys</a>
+    <a href="/v1/admin/api">API</a>
+  </nav>
+  <p class="lede">What this deployment actually holds: every governed skill and resource visible to a
+    scope, and the stored text behind any one of them.</p>
+
+  <div class="summary" id="summary"></div>
+
+  <section>
+    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <label for="key">API key</label>
+    <input id="key" type="password" placeholder="Key carrying skill:read / resource:read" autocomplete="off" spellcheck="false">
+    <div class="hint">These are ordinary scoped reads, not admin actions: a key with
+      <span class="mono">skill:read</span> and <span class="mono">resource:read</span> is enough. The
+      tenant is pinned from the key, so a key can never list another tenant’s catalog.</div>
+  </section>
+
+  <section>
+    <h2>Scope</h2>
+    <div class="grid2">
+      <div>
+        <label for="user">User</label>
+        <input id="user" type="text" placeholder="leave blank for the whole tenant" spellcheck="false">
+        <label for="agent">Agent</label>
+        <input id="agent" type="text" placeholder="optional" spellcheck="false">
+      </div>
+      <div>
+        <label for="session">Session</label>
+        <input id="session" type="text" placeholder="optional" spellcheck="false">
+        <label for="limit">Limit</label>
+        <input id="limit" type="text" value="100" spellcheck="false">
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label for="filter">Filter</label>
+        <input id="filter" type="text" placeholder="name, URI, trigger or type" spellcheck="false">
+      </div>
+      <div>
+        <label for="rtype">Resource type</label>
+        <input id="rtype" type="text" placeholder="md, json, pdf — blank for all" spellcheck="false">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="refresh" type="button">List catalog</button>
+      <label class="check"><input type="checkbox" id="disabled"> include disabled skills</label>
+    </div>
+    <div id="listMsg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>Skills</h2>
+    <div id="skills"><div class="empty">Not loaded.</div></div>
+  </section>
+
+  <section>
+    <h2>Resources</h2>
+    <div id="resources"><div class="empty">Not loaded.</div></div>
+  </section>
+
+  <section>
+    <h2>Stored text <span class="aux" id="contentTitle"></span></h2>
+    <p class="hint" style="margin-top:0">Select a row above to read what was actually stored — the
+      chunks retrieval will draw from, not the source file on disk.</p>
+    <pre id="content">Nothing selected.</pre>
+  </section>
+
+</div>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+
+  function auth() {
+    var k = $("key").value.trim();
+    return k ? { Authorization: "Bearer " + k } : {};
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function say(el, text, cls) {
+    el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
+  }
+  function conn(state, text) {
+    $("dot").className = "dot " + state;
+    $("conn").textContent = text;
+  }
+  function when(ms) { return ms ? new Date(ms).toLocaleString() : "—"; }
+
+  function query() {
+    var parts = [];
+    ["user", "agent", "session"].forEach(function (f) {
+      var v = $(f).value.trim();
+      if (v) { parts.push(f + "_id=" + encodeURIComponent(v)); }
+    });
+    var limit = parseInt($("limit").value, 10);
+    parts.push("limit=" + (limit > 0 ? Math.min(limit, 500) : 100));
+    return parts;
+  }
+
+  function renderSummary(skills, resources) {
+    var chunks = 0, tokens = 0;
+    resources.forEach(function (r) {
+      chunks += r.chunk_count || 0;
+      tokens += r.token_estimate || 0;
+    });
+    var cards = [
+      { n: skills.length, l: skills.length === 1 ? "skill" : "skills" },
+      { n: resources.length, l: resources.length === 1 ? "resource" : "resources" },
+      { n: chunks, l: "stored chunks" },
+      { n: tokens ? tokens.toLocaleString() : "—", l: "estimated tokens" }
+    ];
+    $("summary").innerHTML = cards.map(function (c) {
+      return '<div class="stat"><b>' + esc(c.n) + "</b><span>" + esc(c.l) + "</span></div>";
+    }).join("");
+  }
+
+  function skillsHtml(rows) {
+    if (!rows.length) { return '<div class="empty">No skills in this scope.</div>'; }
+    return "<table><thead><tr><th>Name</th><th>Status</th><th>Triggers</th><th>Version</th>" +
+      "<th>Updated</th><th></th></tr></thead><tbody>" + rows.map(function (s) {
+        var triggers = (s.triggers || []).slice(0, 4).map(function (t) {
+          return '<span class="tag">' + esc(t) + "</span>";
+        }).join("");
+        var disabled = s.status === "disabled";
+        var toggle = '<button type="button" class="' + (disabled ? "ghost" : "danger") +
+          '" data-toggle="' + esc(s.skill_hash) + '" data-to="' +
+          (disabled ? "active" : "disabled") + '">' + (disabled ? "Enable" : "Disable") + "</button>";
+        return '<tr class="rowlink" data-hash="' + esc(s.skill_hash) + '" data-name="' +
+          esc(s.name || s.raw_uri) + '"><td><b>' + esc(s.name || "—") + "</b><br>" +
+          '<span class="hint" style="margin:0">' + esc((s.description || "").slice(0, 110)) +
+          "</span></td><td>" + '<span class="pill ' +
+          (disabled ? "queued" : "completed") + '">' + esc(s.status) + "</span></td><td>" +
+          (triggers || "—") + "</td><td>" + esc(s.version) + "</td><td>" + esc(when(s.updated_at_ms)) +
+          "</td><td>" + toggle + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  /* A disabled skill stops competing for pack slots with the one that replaced it. Retiring it
+     from here is the difference between a catalog that only grows and one a customer curates. */
+  function toggleSkill(hash, to) {
+    say($("listMsg"), "");
+    fetch("/v1/skills/update", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({ skill_hash: parseInt(hash, 10), status: to })
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          return { ok: r.ok, status: r.status, body: b };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          say($("listMsg"), res.status === 403
+            ? "This key cannot change skills. It needs skill:manage."
+            : (res.body.detail || res.body.error || "Could not update the skill."), "err");
+          return;
+        }
+        /* load() clears the message area, so refresh first and confirm after -- otherwise the
+           only feedback for the action is the row quietly changing state. */
+        load(true);
+        say($("listMsg"), "Skill " + (to === "disabled" ? "disabled" : "enabled") + ".", "ok");
+      })
+      .catch(function () { say($("listMsg"), "Could not reach the gateway.", "err"); });
+  }
+
+  function resourcesHtml(rows) {
+    if (!rows.length) { return '<div class="empty">No resources in this scope.</div>'; }
+    return "<table><thead><tr><th>Resource</th><th>Type</th><th>Chunks</th><th>Tokens</th>" +
+      "<th>Updated</th></tr></thead><tbody>" + rows.map(function (r) {
+        var uri = r.requested_raw_uri || r.raw_uri || "";
+        var warn = (r.parse_warning_count || 0)
+          ? ' <span class="tag">' + r.parse_warning_count + " parse warnings</span>" : "";
+        return '<tr class="rowlink" data-hash="' + esc(r.resource_hash) + '" data-name="' +
+          esc(uri) + '"><td><span class="mono">' + esc(uri) + "</span>" + warn + "</td><td>" +
+          esc(r.resource_type || "—") + "</td><td class='num'>" + (r.chunk_count || 0) +
+          "</td><td class='num'>" + (r.token_estimate || 0) + "</td><td>" +
+          esc(when(r.updated_at_ms)) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  function matches(row, text) {
+    if (!text) { return true; }
+    return JSON.stringify(row).toLowerCase().indexOf(text) >= 0;
+  }
+
+  function load(keepMessage) {
+    var qs = query().join("&");
+    var skillQs = qs + ($("disabled").checked ? "&include_disabled=1" : "");
+    var rtype = $("rtype").value.trim();
+    if (rtype) { qs += "&resource_type=" + encodeURIComponent(rtype); }
+    if (!keepMessage) { say($("listMsg"), ""); }
+    Promise.all([
+      fetch("/v1/skills?" + skillQs, { headers: auth() }),
+      fetch("/v1/resources?" + qs, { headers: auth() })
+    ]).then(function (responses) {
+      var bad = responses.filter(function (r) { return !r.ok; })[0];
+      if (bad) { return Promise.reject(bad.status); }
+      return Promise.all(responses.map(function (r) { return r.json(); }));
+    }).then(function (bodies) {
+      conn("live", "connected");
+      var text = $("filter").value.trim().toLowerCase();
+      var skills = (bodies[0].skills || []).filter(function (s) { return matches(s, text); });
+      var resources = (bodies[1].resources || []).filter(function (r) { return matches(r, text); });
+      renderSummary(skills, resources);
+      $("skills").innerHTML = skillsHtml(skills);
+      $("resources").innerHTML = resourcesHtml(resources);
+    }).catch(function (e) {
+      if (e === 401 || e === 403) {
+        conn("live", "connected");
+        say($("listMsg"), "This key cannot read the catalog. It needs skill:read and resource:read.",
+            "err");
+      } else {
+        conn("down", "gateway unreachable");
+        say($("listMsg"), "Could not reach the gateway.", "err");
+      }
+    });
+  }
+
+  function openContent(hash, name) {
+    $("contentTitle").textContent = name;
+    $("content").textContent = "Loading…";
+    var body = { resource_hash: parseInt(hash, 10), chunk_limit: 40, max_chars: 40000, scope: {} };
+    ["user", "agent", "session"].forEach(function (f) {
+      var v = $(f).value.trim();
+      if (v) { body.scope[f + "_id"] = v; }
+    });
+    fetch("/v1/resource/content", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify(body)
+    })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        var chunks = d.chunks || [];
+        $("content").textContent = chunks.length
+          ? chunks.map(function (c) { return c.text || c.chunk_text || ""; }).join("\n\n")
+          : (d.text || "No stored text returned.");
+      })
+      .catch(function (e) {
+        $("content").textContent = e === 401 || e === 403
+          ? "This key cannot read resource content (needs context:retrieve)."
+          : "Could not read the stored text.";
+      });
+  }
+
+  ["skills", "resources"].forEach(function (id) {
+    $(id).addEventListener("click", function (ev) {
+      var toggle = ev.target.closest ? ev.target.closest("[data-toggle]") : null;
+      if (toggle) {
+        /* The button sits inside a clickable row; without this the row handler also fires and
+           the stored text panel swaps under the operator as they retire a skill. */
+        ev.stopPropagation();
+        toggleSkill(toggle.dataset.toggle, toggle.dataset.to);
+        return;
+      }
+      var row = ev.target.closest ? ev.target.closest("tr.rowlink") : null;
+      if (row) { openContent(row.dataset.hash, row.dataset.name); }
+    });
+  });
+  $("refresh").addEventListener("click", function () { load(); });
+  $("filter").addEventListener("input", function () { load(); });
+  $("rtype").addEventListener("change", function () { load(); });
+  $("disabled").addEventListener("change", function () { load(); });
+  $("key").addEventListener("change", function () {
+    if ($("remember").checked) {
+      try { sessionStorage.setItem("matrixark_admin_key", $("key").value); } catch (e) { /* ignore */ }
+    }
+    load();
+  });
+  $("remember").addEventListener("change", function () {
+    try {
+      if ($("remember").checked) { sessionStorage.setItem("matrixark_admin_key", $("key").value); }
+      else { sessionStorage.removeItem("matrixark_admin_key"); }
+    } catch (e) { /* ignore */ }
+  });
+
+  try {
+    var saved = sessionStorage.getItem("matrixark_admin_key");
+    if (saved) { $("key").value = saved; $("remember").checked = true; }
+  } catch (e) { /* ignore */ }
+  conn("live", "ready");
+  load();
+}());
+</script>
+</body>
+</html>

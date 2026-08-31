@@ -1,0 +1,866 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MatrixArk — Explore</title>
+<style>
+  /* --faint carries the help text under every field, so it is body copy rather than
+     decoration: it is set to clear 4.5:1 against --panel in both schemes (measured 4.95
+     light / 5.76 dark). A lighter grey looks tidier and drops it to about 3:1. */
+  :root{
+    --bg:#f2f5f7; --panel:#fff; --panel-2:#f7f9fb;
+    --ink:#141a20; --muted:#5c6773; --faint:#667180; --line:#dce3ea;
+    --accent:#0d6b68; --accent-ink:#fff; --accent-soft:#d9ecea;
+    --ok:#1c7a58; --ok-soft:#dbeee5;
+    --warn:#93610f; --warn-soft:#f7ead2;
+    --crit:#a6423a; --crit-soft:#f7dfdc;
+    --shadow:0 1px 2px rgba(20,26,32,.05), 0 4px 14px rgba(20,26,32,.05);
+    --radius:10px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d1115; --panel:#151b21; --panel-2:#1a212a;
+      --ink:#e4e9ef; --muted:#8d99a7; --faint:#8996a5; --line:#27303a;
+      --accent:#3fb3a8; --accent-ink:#06231f; --accent-soft:#11302e;
+      --ok:#4cb68b; --ok-soft:#113126;
+      --warn:#d9a441; --warn-soft:#31270f;
+      --crit:#d7756a; --crit-soft:#341e1b;
+      --shadow:0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.28);
+    }
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 72px}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  /* header */
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:24px;margin:0;letter-spacing:-.015em;font-weight:650}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block;
+       margin-right:6px;vertical-align:middle}
+  .dot.live{background:var(--ok)} .dot.down{background:var(--crit)}
+  .conn{font-size:13px;color:var(--muted)}
+  .lede{color:var(--muted);margin:2px 0 22px;max-width:64ch}
+
+  /* summary */
+  .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:14px 16px;box-shadow:var(--shadow)}
+  .stat b{display:block;font-size:26px;line-height:1.1;font-weight:650;
+          font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace}
+  .stat span{display:block;font-size:12.5px;color:var(--muted);margin-top:5px}
+  .stat.ok b{color:var(--ok)} .stat.warn b{color:var(--warn)} .stat.crit b{color:var(--crit)}
+
+  section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+          padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  h2{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+     margin:0 0 14px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .aux{margin-left:auto;text-transform:none;letter-spacing:0;font-size:12px;font-weight:400}
+
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px;font-weight:500}
+  input[type=text],input[type=password],textarea{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+    background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  textarea{min-height:74px;resize:vertical;font-family:"IBM Plex Mono",monospace;font-size:13px}
+  input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:620px){.grid2{grid-template-columns:1fr}}
+
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;align-items:center}
+  button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:7px;
+         padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.link{background:none;border:0;color:var(--accent);padding:4px 2px;font-weight:500;
+              text-decoration:underline;text-underline-offset:2px}
+  button.danger{background:transparent;color:var(--crit);border:1px solid var(--crit);
+                padding:5px 11px;font-size:13px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .check{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
+
+  .msg{padding:10px 13px;border-radius:7px;font-size:14px;margin-top:14px;line-height:1.5}
+  .msg.err{background:var(--crit-soft);color:var(--crit)}
+  .msg.ok{background:var(--ok-soft);color:var(--ok)}
+  .msg.info{background:var(--accent-soft);color:var(--accent)}
+  .note{background:var(--warn-soft);color:var(--warn);padding:10px 13px;border-radius:7px;
+        font-size:13.5px;margin-bottom:9px;line-height:1.5}
+  /* Config warnings and errors quote long unbreakable tokens (env var names, endpoints, paths).
+     Without this they force the whole page to scroll sideways on a narrow viewport. */
+  .note,.msg,.hint,td,.job-stats,.lede{overflow-wrap:anywhere}
+  .hint{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5}
+
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+     font-weight:600;white-space:nowrap}
+  td.num{text-align:right;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+
+  .job{border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-bottom:10px;
+       background:var(--panel-2)}
+  .job-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .job-id{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--muted)}
+  .pill{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+        padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .pill.running{background:var(--accent-soft);color:var(--accent)}
+  .pill.completed{background:var(--ok-soft);color:var(--ok)}
+  .pill.queued{background:var(--line);color:var(--muted)}
+  .pill.failed,.pill.cancelled{background:var(--crit-soft);color:var(--crit)}
+  .job-meta{margin-left:auto;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .bar{height:7px;background:var(--line);border-radius:5px;overflow:hidden;margin:11px 0 8px}
+  .bar>i{display:block;height:100%;background:var(--accent);transition:width .45s ease}
+  .bar>i.done{background:var(--ok)} .bar>i.bad{background:var(--crit)}
+  .job-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+             font-variant-numeric:tabular-nums}
+  .job-stats b{color:var(--ink);font-weight:600}
+  .current{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);
+           margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  details{margin-top:9px}
+  summary{cursor:pointer;font-size:13px;color:var(--crit)}
+  details ul{margin:7px 0 0;padding-left:18px;font-size:12.5px;color:var(--muted)}
+  details li{margin-bottom:3px;font-family:"IBM Plex Mono",monospace;word-break:break-all}
+
+  pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
+  .empty{color:var(--faint);font-size:14px;padding:6px 0}
+  a{color:var(--accent)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .lineage{font-size:12.5px;color:var(--muted);margin-top:7px}
+  .lineage .mono{font-family:"IBM Plex Mono",monospace}
+  table.failures{margin-top:8px;font-size:13px}
+  table.failures td{vertical-align:top;overflow-wrap:anywhere}
+  table.failures td.mono{font-family:"IBM Plex Mono",monospace;font-size:12px}
+  details ul li{list-style:none;margin-left:-18px}
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+
+  /* setup + catalog additions */
+  .field{margin-bottom:2px}
+  .field .env{font-size:11.5px;color:var(--faint);font-family:"IBM Plex Mono",monospace}
+  .badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+         padding:2px 7px;border-radius:20px;margin-left:7px;white-space:nowrap}
+  .badge.restart{background:var(--warn-soft);color:var(--warn)}
+  .badge.essential{background:var(--crit-soft);color:var(--crit)}
+  .badge.portal{background:var(--accent-soft);color:var(--accent)}
+  .badge.environment{background:var(--line);color:var(--muted)}
+  select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+         background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  .presets{display:flex;gap:8px;flex-wrap:wrap}
+  .preset{flex:1 1 210px;text-align:left;background:var(--panel-2);color:var(--ink);
+          border:1px solid var(--line);border-radius:8px;padding:11px 13px;font-weight:500}
+  .preset b{display:block;font-weight:650;margin-bottom:3px}
+  .preset span{display:block;font-size:12.5px;color:var(--muted);font-weight:400;line-height:1.45}
+  .preset:hover{border-color:var(--accent)}
+  .probe{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+         background:var(--panel-2)}
+  .probe.ok{border-color:var(--ok)} .probe.bad{border-color:var(--crit)}
+  .probe h3{margin:0 0 5px;font-size:14px;font-weight:650;display:flex;gap:9px;align-items:center}
+  .probe p{margin:0;font-size:13px;color:var(--muted)}
+  tr.rowlink{cursor:pointer} tr.rowlink:hover td{background:var(--panel-2)}
+  .tag{font-size:11px;background:var(--line);color:var(--muted);border-radius:4px;padding:1px 6px;
+       margin-right:5px;white-space:nowrap}
+  /* setup page: grouped, filterable settings */
+  details.group{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+                padding:0;margin-bottom:12px;box-shadow:var(--shadow);overflow:hidden}
+  details.group>summary{list-style:none;cursor:pointer;padding:15px 20px;display:flex;
+                        align-items:baseline;gap:10px;flex-wrap:wrap}
+  details.group>summary::-webkit-details-marker{display:none}
+  details.group>summary::before{content:"B8";color:var(--faint);font-size:12px;
+                                transition:transform .15s ease;display:inline-block}
+  details.group[open]>summary::before{transform:rotate(90deg)}
+  details.group>summary b{font-size:15px;font-weight:650;letter-spacing:-.01em}
+  details.group>summary .n{font-size:11.5px;color:var(--faint);
+                           font-family:"IBM Plex Mono",monospace}
+  details.group>summary .adv{font-size:10px;font-weight:700;text-transform:uppercase;
+                             letter-spacing:.05em;color:var(--muted);background:var(--line);
+                             border-radius:20px;padding:2px 7px}
+  details.group>summary .dirty{font-size:10px;font-weight:700;text-transform:uppercase;
+                               letter-spacing:.05em;color:var(--warn);background:var(--warn-soft);
+                               border-radius:20px;padding:2px 7px}
+  .group-body{padding:0 20px 18px}
+  .group-note{color:var(--muted);font-size:13.5px;margin:0 0 14px;max-width:70ch;line-height:1.55}
+  .field.changed input,.field.changed select{border-color:var(--warn);
+                                             background:var(--warn-soft)}
+  .field .row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .field .reset{margin-left:auto}
+  .field.hidden{display:none}
+  .helptext{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5;max-width:70ch}
+  .helptext.long{max-height:3.6em;overflow:hidden;position:relative;cursor:pointer}
+  .helptext.long::after{content:"more";position:absolute;right:0;bottom:0;background:var(--panel);
+                        padding-left:10px;color:var(--accent);font-weight:600}
+  .helptext.long.open{max-height:none}
+  .helptext.long.open::after{content:none}
+  .savebar{position:sticky;bottom:0;z-index:5;background:var(--panel);border:1px solid var(--line);
+           border-radius:var(--radius);box-shadow:var(--shadow);padding:12px 16px;margin:16px 0;
+           display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .savebar .count{font-size:13.5px;color:var(--muted);margin-right:auto}
+  .savebar .count b{color:var(--warn)}
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .toolbar input[type=text]{flex:1 1 240px;width:auto}
+  .inv{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:16px}
+  .inv th{width:1%;white-space:nowrap;text-align:left;padding:6px 14px 6px 0;font-weight:500;
+          color:var(--muted);text-transform:none;letter-spacing:0;font-size:13.5px}
+  .inv td{padding:6px 0;border-bottom:1px solid var(--line);
+          font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere}
+  .inv td.unset{color:var(--faint);font-style:italic;font-family:inherit}
+  .inv .envname{display:block;font-size:11px;color:var(--faint);
+                font-family:"IBM Plex Mono",monospace}
+  #history td div{font-family:"IBM Plex Mono",monospace;font-size:12.5px;padding:1px 0;
+                  overflow-wrap:anywhere}
+  #history em{font-style:normal;color:var(--muted)}
+  /* overview checklist + explore */
+  .checkrow{display:flex;gap:13px;align-items:flex-start;padding:13px 0;
+            border-bottom:1px solid var(--line)}
+  .checkrow:last-child{border-bottom:0}
+  .checkrow .mark{flex:0 0 20px;height:20px;border-radius:50%;display:grid;place-items:center;
+                  font-size:12px;font-weight:800;margin-top:1px}
+  .checkrow .mark.ok{background:var(--ok-soft);color:var(--ok)}
+  .checkrow .mark.warn{background:var(--warn-soft);color:var(--warn)}
+  .checkrow .mark.todo{background:var(--crit-soft);color:var(--crit)}
+  .checkrow .body{flex:1 1 auto;min-width:0}
+  .checkrow .body b{display:block;font-size:14.5px;font-weight:650;margin-bottom:2px}
+  .checkrow .body span{font-size:13.5px;color:var(--muted);line-height:1.5;
+                       overflow-wrap:anywhere;display:block}
+  .checkrow .go{flex:0 0 auto;font-size:13px;white-space:nowrap}
+  .importrow{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+             background:var(--panel-2)}
+  .importhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .importhead .mono{font-family:"IBM Plex Mono",monospace;font-size:12.5px}
+  .importmeta{margin-left:auto;font-size:12.5px;color:var(--muted);
+              font-variant-numeric:tabular-nums}
+  .importcur{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--faint);
+             margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .how{margin-top:8px}
+  .how>summary{cursor:pointer;font-size:12.5px;color:var(--accent);font-weight:550;
+               list-style:none;display:inline-block}
+  .how>summary::-webkit-details-marker{display:none}
+  .how>summary::before{content:"B8 ";font-size:10px}
+  .how[open]>summary::before{content:"BE "}
+  .how ol{margin:8px 0 0;padding-left:20px}
+  .how li{font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:5px;
+          overflow-wrap:anywhere}
+  .progress{height:8px;border-radius:5px;background:var(--line);overflow:hidden;margin:4px 0 18px}
+  .progress>i{display:block;height:100%;background:var(--ok);transition:width .5s ease}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;
+         margin-bottom:6px}
+  .tile{display:block;text-decoration:none;color:inherit;background:var(--panel);
+        border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;
+        box-shadow:var(--shadow)}
+  .tile:hover{border-color:var(--accent)}
+  .tile b{display:block;font-size:14.5px;font-weight:650;margin-bottom:3px}
+  .tile span{font-size:12.5px;color:var(--muted);line-height:1.45;display:block}
+  .packitem{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:7px;
+            padding:11px 13px;margin-bottom:9px;background:var(--panel-2)}
+  .packitem .meta{font-size:11.5px;color:var(--faint);margin-bottom:5px;
+                  font-family:"IBM Plex Mono",monospace}
+  .packitem p{margin:0;font-size:13.5px;line-height:1.55;overflow-wrap:anywhere}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+  .tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+               padding:8px 12px;font-weight:550;font-size:13.5px;margin-bottom:-1px;
+               border-radius:0}
+  .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  .pane[hidden]{display:none}
+  .upl{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:9px;
+       background:var(--panel-2)}
+  .upl-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .upl-name{font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere;
+            flex:1 1 auto;min-width:0}
+  .upl-size{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .upl-bar{height:5px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+  .upl-bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .2s linear}
+  .upl.done .upl-bar>i{background:var(--ok)}
+  .upl.failed .upl-bar>i{background:var(--crit)}
+  .upl-detail{font-size:12.5px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}
+  .upl-actions{margin-top:8px}
+  /* API page */
+  .route{border-bottom:1px solid var(--line);padding:14px 0}
+  .route:last-child{border-bottom:0}
+  .route-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .verb{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:700;letter-spacing:.04em;
+        padding:2px 7px;border-radius:4px;background:var(--line);color:var(--muted)}
+  .verb.GET{background:var(--accent-soft);color:var(--accent)}
+  .verb.POST{background:var(--ok-soft);color:var(--ok)}
+  .verb.PUT{background:var(--warn-soft);color:var(--warn)}
+  .route-path{font-family:"IBM Plex Mono",monospace;font-size:13.5px;font-weight:600;
+              overflow-wrap:anywhere}
+  .route-scope{margin-left:auto;font-size:11.5px;font-family:"IBM Plex Mono",monospace;
+               color:var(--faint);white-space:nowrap}
+  .route p{margin:6px 0 0;font-size:13.5px;color:var(--muted);line-height:1.55;max-width:78ch}
+  .route .curl{margin-top:9px}
+  .route pre{margin-top:8px;display:none}
+  .route.open pre{display:block}
+  .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+                   clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Explore</h1>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+  <nav class="portalnav">
+    <a href="/v1/admin">Overview</a>
+    <a href="/v1/admin/setup">Setup &amp; metrics</a>
+    <a href="/v1/admin/catalog">Skills &amp; resources</a>
+    <a href="/v1/admin/explore" aria-current="page">Explore</a>
+    <a href="/v1/admin/ingestion">Ingestion</a>
+    <a href="/v1/admin/portal">API keys</a>
+    <a href="/v1/admin/api">API</a>
+  </nav>
+  <p class="lede">Run the pipeline against your own data: ingest a note, ask a question, read what
+    comes back. A retrieve that returns the right thing is the only check that covers ingestion,
+    extraction, encoding and ranking at once.</p>
+
+  <section>
+    <h2>Access</h2>
+    <div class="grid2">
+      <div>
+        <label for="key">API key</label>
+        <input id="key" type="password" placeholder="Key with context:ingest and context:retrieve" autocomplete="off" spellcheck="false">
+      </div>
+      <div>
+        <label for="user">User</label>
+        <input id="user" type="text" value="default" spellcheck="false">
+      </div>
+    </div>
+    <div class="grid2">
+      <div>
+        <label for="agent">Agent</label>
+        <input id="agent" type="text" placeholder="optional" spellcheck="false">
+      </div>
+      <div>
+        <label for="session">Session</label>
+        <input id="session" type="text" placeholder="optional" spellcheck="false">
+      </div>
+    </div>
+    <div class="hint">The tenant is pinned from the key. These fields choose the scope WITHIN it.</div>
+  </section>
+
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" id="tab-ask" aria-controls="pane-ask" data-pane="ask" aria-selected="true">Ask</button>
+    <button type="button" role="tab" id="tab-add" aria-controls="pane-add" data-pane="add" aria-selected="false">Add a memory</button>
+    <button type="button" role="tab" id="tab-browse" aria-controls="pane-browse" data-pane="browse" aria-selected="false">Browse</button>
+  </div>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-ask" id="pane-ask">
+    <h2>Ask <span class="aux" id="askStats"></span></h2>
+    <label for="query">Question</label>
+    <input id="query" type="text" placeholder="What did we decide about the checkout coupon?" spellcheck="false">
+    <div class="grid2">
+      <div>
+        <label for="budget">Token budget</label>
+        <input id="budget" type="text" value="2048" spellcheck="false">
+      </div>
+      <div>
+        <label for="topk">Max items</label>
+        <input id="topk" type="text" value="10" spellcheck="false">
+      </div>
+    </div>
+    <div class="actions"><button id="ask" type="button">Retrieve</button>
+      <span class="hint" style="margin:0">Calls <span class="mono">POST /v1/retrieve</span> exactly as an agent would.</span></div>
+    <div id="askMsg" role="status" aria-live="polite"></div>
+    <div id="pack"><div class="empty">Nothing retrieved yet.</div></div>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-add" id="pane-add" hidden>
+    <h2>Add a memory</h2>
+    <p class="hint" style="margin-top:0">Writes one turn through <span class="mono">POST /v1/ingest</span>,
+      the same path an agent hook uses. Useful for checking that extraction and encoding are
+      working before you point a real workload at the deployment.</p>
+    <label for="note">Text</label>
+    <textarea id="note" placeholder="The team agreed to keep the coupon stacking rule for ACME until Q4."></textarea>
+    <div class="actions"><button id="add" type="button">Ingest</button>
+      <label class="check"><input type="checkbox" id="finalize" checked> extract immediately</label></div>
+    <div id="addMsg" role="status" aria-live="polite"></div>
+    <div class="hint">Without “extract immediately” the write is acknowledged and extraction runs in
+      the background, which is how a production ingest behaves — it just means a retrieve issued a
+      moment later may not see it yet.</div>
+
+    <div class="panel-head compact section-gap"><h2 style="margin-top:22px">Upload a document</h2></div>
+    <p class="hint" style="margin-top:0">Streams the file through
+      <span class="mono">POST /v1/ingest_file</span> to the blob tier and ingests it in one call —
+      the same path the SDK uses. For a whole directory, use
+      <a href="/v1/admin/ingestion">Ingestion</a> instead.</p>
+    <div class="grid2">
+      <div>
+        <label for="file">Files</label>
+        <input id="file" type="file" multiple>
+        <div class="hint">Uploaded one at a time so a failure stops at the file it failed on.</div>
+      </div>
+      <div>
+        <label for="kind">Store as</label>
+        <select id="kind"><option value="skill">Skill</option><option value="resource">Resource</option></select>
+        <label for="sharing">Visibility</label>
+        <select id="sharing">
+          <option value="">server default</option>
+          <option value="private_user">private to this user</option>
+          <option value="tenant_shared">shared across the tenant</option>
+          <option value="global_shared">shared globally</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions"><button id="upload" type="button">Upload</button>
+      <label class="check"><input type="checkbox" id="wait" checked> wait for extraction</label>
+      <button id="clearDone" class="link" type="button">clear finished</button></div>
+    <div id="uploadMsg" role="status" aria-live="polite"></div>
+    <div id="uploadQueue"></div>
+    <div class="hint" id="retryNote" hidden>Retry re-sends the file from this browser, so it works
+      only while this tab stays open — the bytes never existed on the server. A bulk import from a
+      server directory is retryable after a restart; see <a href="/v1/admin/ingestion">Ingestion</a>.</div>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-browse" id="pane-browse" hidden>
+    <h2>Browse <span class="aux"><button class="link" id="refresh" type="button">refresh</button></span></h2>
+    <div id="users" class="metric-list"></div>
+    <div id="browseMsg" role="status" aria-live="polite"></div>
+    <div id="memories"><div class="empty">Not loaded.</div></div>
+    <div class="panel-head compact"><h2 style="margin-top:18px">Memory detail</h2></div>
+    <pre id="detail">Select a memory to see its stored record and change history.</pre>
+  </section>
+
+</div>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  function auth() {
+    var k = $("key").value.trim();
+    return k ? { Authorization: "Bearer " + k } : {};
+  }
+  function jsonAuth() {
+    return Object.assign({ "Content-Type": "application/json" }, auth());
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function say(el, text, cls) {
+    el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
+  }
+  function conn(state, text) {
+    $("dot").className = "dot " + state;
+    $("conn").textContent = text;
+  }
+  function scope() {
+    var s = {};
+    ["user", "agent", "session"].forEach(function (f) {
+      var v = $(f).value.trim();
+      if (v) { s[f + "_id"] = v; }
+    });
+    return s;
+  }
+  function scopeQuery() {
+    return Object.keys(scope()).map(function (k) {
+      return k + "=" + encodeURIComponent(scope()[k]);
+    }).join("&");
+  }
+  function failure(status) {
+    if (status === 401) { return "This key was not accepted."; }
+    if (status === 403) { return "This key lacks the scope for that call."; }
+    if (status === 413) { return "That file is larger than this deployment accepts."; }
+    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
+    if (status === 502) { return "The gateway could not reach the storage behind it."; }
+    if (status === 504) { return "The backend did not answer in time."; }
+    return "The gateway answered " + status + ".";
+  }
+  /* `detail` is a sentence when the server has something specific to say; `error` is a code word
+     like "unauthorized", which is the machine's word for it and answers nothing. Prefer the
+     sentence, then our own phrasing, and fall back to the code word only when neither exists. */
+  function reason(body, status) {
+    return (body && body.detail) || failure(status) || (body && body.error) || "";
+  }
+
+  /* ---------- tabs ---------- */
+  Array.prototype.forEach.call(document.querySelectorAll(".tabs button"), function (button) {
+    button.addEventListener("click", function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".tabs button"), function (b) {
+        b.setAttribute("aria-selected", String(b === button));
+      });
+      Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
+        pane.hidden = pane.id !== "pane-" + button.dataset.pane;
+      });
+      if (button.dataset.pane === "browse") { loadBrowse(); }
+    });
+  });
+
+  /* ---------- ask ---------- */
+  /* The response shape differs between backends and versions; pick the first list of items that
+     looks like a pack rather than insisting on one field name, so this keeps working. */
+  function packItems(d) {
+    var candidates = [d.pack, d.context_pack, d.items, d.results, d.memories, d.refs];
+    for (var i = 0; i < candidates.length; i++) {
+      if (Array.isArray(candidates[i])) { return candidates[i]; }
+    }
+    if (d.context_pack && Array.isArray(d.context_pack.items)) { return d.context_pack.items; }
+    return [];
+  }
+  function itemText(it) {
+    if (typeof it === "string") { return it; }
+    return it.text || it.content || it.memory || it.summary || it.value || JSON.stringify(it);
+  }
+  function itemMeta(it) {
+    if (typeof it === "string") { return ""; }
+    var bits = [];
+    ["layer", "kind", "record_type", "source", "session_id"].forEach(function (k) {
+      if (it[k]) { bits.push(k + "=" + it[k]); }
+    });
+    if (typeof it.score === "number") { bits.push("score=" + it.score.toFixed(3)); }
+    if (it.id || it.memory_id) { bits.push(String(it.id || it.memory_id)); }
+    return bits.join(" · ");
+  }
+
+  function ask() {
+    var q = $("query").value.trim();
+    if (!q) { say($("askMsg"), "Type a question first.", "info"); return; }
+    var body = { query: q, scope: scope() };
+    var budget = parseInt($("budget").value, 10);
+    if (budget > 0) { body.max_budget_tokens = budget; }
+    var topk = parseInt($("topk").value, 10);
+    if (topk > 0) { body.limit = topk; }
+    $("ask").disabled = true;
+    say($("askMsg"), "");
+    $("pack").innerHTML = '<div class="empty">Retrieving…</div>';
+    var started = Date.now();
+    fetch("/v1/retrieve", { method: "POST", headers: jsonAuth(), body: JSON.stringify(body) })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        $("ask").disabled = false;
+        conn("live", "connected");
+        var items = packItems(d);
+        var ms = Date.now() - started;
+        $("askStats").textContent = items.length + " item" + (items.length === 1 ? "" : "s") +
+          (d.tokens ? " · " + d.tokens + " tokens" : "") + " · " + ms + " ms";
+        if (!items.length) {
+          $("pack").innerHTML = '<div class="empty">Nothing matched. If the store is not empty, ' +
+            "the usual cause is an embedding provider that is still deterministic — hash vectors " +
+            "do not match on meaning.</div>";
+          return;
+        }
+        $("pack").innerHTML = items.map(function (it) {
+          var meta = itemMeta(it);
+          return '<div class="packitem">' +
+            (meta ? '<div class="meta">' + esc(meta) + "</div>" : "") +
+            "<p>" + esc(itemText(it)) + "</p></div>";
+        }).join("");
+      })
+      .catch(function (e) {
+        $("ask").disabled = false;
+        $("pack").innerHTML = '<div class="empty">Nothing retrieved.</div>';
+        say($("askMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.", "err");
+      });
+  }
+
+  /* ---------- add ---------- */
+  function add() {
+    var text = $("note").value.trim();
+    if (!text) { say($("addMsg"), "Type something to ingest.", "info"); return; }
+    var body = {
+      scope: scope(),
+      messages: [{ role: "user", content: text }],
+      finalize: $("finalize").checked
+    };
+    $("add").disabled = true;
+    fetch("/v1/ingest", { method: "POST", headers: jsonAuth(), body: JSON.stringify(body) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          return { ok: r.ok, status: r.status, body: b };
+        });
+      })
+      .then(function (res) {
+        $("add").disabled = false;
+        if (!res.ok) { say($("addMsg"), reason(res.body, res.status), "err"); return; }
+        say($("addMsg"), $("finalize").checked
+          ? "Ingested and extracted. Ask a question about it on the Ask tab."
+          : "Accepted. Extraction runs in the background, so a retrieve issued right now may not "
+            + "see it yet.", "ok");
+        $("note").value = "";
+      })
+      .catch(function () {
+        $("add").disabled = false;
+        say($("addMsg"), "Could not reach the gateway.", "err");
+      });
+  }
+
+  /* ---------- browse ---------- */
+  function loadBrowse() {
+    say($("browseMsg"), "");
+    fetch("/v1/users?" + scopeQuery(), { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        var rows = d.users || d.results || [];
+        $("users").innerHTML = rows.length
+          ? rows.map(function (u) {
+              var name = typeof u === "string" ? u : (u.user_id || u.agent_id || u.run_id || u.id);
+              var n = typeof u === "object" && u.count != null ? u.count : "";
+              return "<div><span>" + esc(name) + "</span><b>" + esc(n) + "</b></div>";
+            }).join("")
+          : '<div class="empty">No subjects hold memories in this scope yet.</div>';
+      })
+      .catch(function () { $("users").innerHTML = ""; });
+
+    $("memories").innerHTML = '<div class="empty">Loading…</div>';
+    fetch("/v1/memories?" + scopeQuery() + "&limit=50", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        conn("live", "connected");
+        var rows = d.memories || d.results || d.records || [];
+        if (!rows.length) {
+          $("memories").innerHTML = '<div class="empty">No memories in this scope.</div>';
+          return;
+        }
+        $("memories").innerHTML = "<table><thead><tr><th>Memory</th><th>Kind</th><th>Updated</th>" +
+          "</tr></thead><tbody>" + rows.map(function (m) {
+            var id = m.id || m.memory_id || "";
+            var when = m.updated_at_ms || m.created_at_ms;
+            return '<tr class="rowlink" data-id="' + esc(id) + '"><td>' +
+              esc(String(m.memory || m.text || m.content || "").slice(0, 160)) + "</td><td>" +
+              esc(m.record_type || m.kind || "—") + "</td><td>" +
+              esc(when ? new Date(when).toLocaleString() : "—") + "</td></tr>";
+          }).join("") + "</tbody></table>";
+      })
+      .catch(function (e) {
+        $("memories").innerHTML = '<div class="empty">Not loaded.</div>';
+        say($("browseMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+            "err");
+      });
+  }
+
+  $("memories").addEventListener("click", function (ev) {
+    var row = ev.target.closest ? ev.target.closest("tr.rowlink") : null;
+    if (!row || !row.dataset.id) { return; }
+    $("detail").textContent = "Loading…";
+    var id = encodeURIComponent(row.dataset.id);
+    Promise.all([
+      fetch("/v1/memory/" + id, { headers: auth() }).then(function (r) { return r.ok ? r.json() : null; }),
+      fetch("/v1/memory/" + id + "/history", { headers: auth() }).then(function (r) { return r.ok ? r.json() : null; })
+    ]).then(function (parts) {
+      $("detail").textContent = JSON.stringify({ memory: parts[0], history: parts[1] }, null, 2);
+    }).catch(function () {
+      $("detail").textContent = "Could not read that memory.";
+    });
+  });
+
+  /* ---------- upload ---------- */
+  /* A queue of {file, state, sent, detail}. The File object is kept so a failure can be retried
+     without asking for the file again -- the bytes came from this browser and were never on the
+     server, so nothing else could resend them. */
+  var queue = [], uploading = false, nextId = 1;
+
+  function fmtBytes(n) {
+    if (!n) { return "0 B"; }
+    var units = ["B", "KB", "MB", "GB"], i = Math.floor(Math.log(n) / Math.log(1024));
+    return (n / Math.pow(1024, i)).toFixed(i ? 1 : 0) + " " + units[i];
+  }
+
+  function renderQueue() {
+    $("retryNote").hidden = !queue.some(function (item) { return item.state === "failed"; });
+    $("uploadQueue").innerHTML = queue.map(function (item) {
+      var pct = item.file.size ? Math.round((item.sent / item.file.size) * 100) : 0;
+      if (item.state === "done") { pct = 100; }
+      var label = { queued: "waiting", uploading: pct + "%", extracting: "extracting",
+                    done: "stored", failed: "failed" }[item.state] || item.state;
+      return '<div class="upl ' + item.state + '" data-item="' + item.id + '">' +
+        '<div class="upl-head"><span class="upl-name">' + esc(item.file.name) + "</span>" +
+        '<span class="upl-size">' + fmtBytes(item.file.size) + " · " + esc(label) + "</span></div>" +
+        '<div class="upl-bar"><i style="width:' + pct + '%"></i></div>' +
+        (item.detail ? '<div class="upl-detail">' + esc(item.detail) + "</div>" : "") +
+        (item.state === "failed"
+          ? '<div class="upl-actions"><button type="button" class="ghost" data-retry="' +
+            item.id + '">Retry</button></div>'
+          : "") +
+        /* A large upload with no way out is a page you have to reload to escape. Cancelling
+           leaves the item as a failure with a Retry, which is what it is. */
+        (item.state === "uploading" || item.state === "extracting"
+          ? '<div class="upl-actions"><button type="button" class="danger" data-cancel="' +
+            item.id + '">Cancel</button></div>'
+          : "") +
+        (item.state === "queued"
+          ? '<div class="upl-actions"><button type="button" class="link" data-drop="' +
+            item.id + '">remove from queue</button></div>'
+          : "") + "</div>";
+    }).join("");
+  }
+
+  function sendOne(item) {
+    return new Promise(function (resolve) {
+      var request = new XMLHttpRequest();
+      item.request = request;
+      request.open("POST", "/v1/ingest_file", true);
+      var headers = Object.assign({
+        "Content-Type": item.file.type || "application/octet-stream",
+        "X-Filename": item.file.name,
+        "X-Resource-Kind": item.kind,
+        /* X-Scope is a JSON scope OBJECT, not a label -- the gateway parses it. */
+        "X-Scope": JSON.stringify(item.scope)
+      }, auth());
+      if (item.wait) { headers["X-Wait"] = "1"; }
+      if (item.sharing) { headers["X-Sharing-Scope"] = item.sharing; }
+      Object.keys(headers).forEach(function (name) {
+        request.setRequestHeader(name, headers[name]);
+      });
+
+      /* fetch() reports nothing until the request finishes, so a large upload was a disabled
+         button and a sentence. This is the only upload-progress event the platform has. */
+      request.upload.onprogress = function (ev) {
+        if (!ev.lengthComputable) { return; }
+        item.sent = ev.loaded;
+        /* Bytes are on the wire; what happens after the last byte is the server extracting, and
+           saying so is the difference between "stuck at 100%" and "nearly there". */
+        item.state = ev.loaded >= ev.total ? "extracting" : "uploading";
+        renderQueue();
+      };
+      request.onload = function () {
+        var body = {};
+        try { body = JSON.parse(request.responseText || "{}"); } catch (e) { body = {}; }
+        if (request.status >= 200 && request.status < 300) {
+          item.state = "done";
+          item.sent = item.file.size;
+          item.detail = "Stored as a " + item.kind +
+            (item.wait ? "." : ". Extraction is running in the background.");
+        } else {
+          item.state = "failed";
+          item.detail = reason(body, request.status);
+        }
+        renderQueue();
+        resolve();
+      };
+      request.onerror = function () {
+        item.state = "failed";
+        item.detail = "Could not reach the gateway.";
+        renderQueue();
+        resolve();
+      };
+      request.onabort = function () {
+        item.state = "failed";
+        item.detail = "Cancelled before it finished.";
+        renderQueue();
+        resolve();
+      };
+      item.state = "uploading";
+      item.sent = 0;
+      renderQueue();
+      request.send(item.file);
+    });
+  }
+
+  /* One at a time: a failure then stops at the file it failed on rather than being one line in a
+     pile of parallel errors, and the progress bar means something. */
+  function drain() {
+    if (uploading) { return; }
+    var next = queue.filter(function (item) { return item.state === "queued"; })[0];
+    if (!next) {
+      uploading = false;
+      $("upload").disabled = false;
+      var failed = queue.filter(function (i) { return i.state === "failed"; }).length;
+      var done = queue.filter(function (i) { return i.state === "done"; }).length;
+      if (done || failed) {
+        say($("uploadMsg"), done + " stored" + (failed ? ", " + failed + " failed" : "") +
+          (done ? ". They should appear on the catalog page." : ""), failed ? "err" : "ok");
+      }
+      return;
+    }
+    uploading = true;
+    $("upload").disabled = true;
+    sendOne(next).then(function () { uploading = false; drain(); });
+  }
+
+  function enqueue(files) {
+    Array.prototype.forEach.call(files, function (file) {
+      queue.push({
+        id: nextId++, file: file, state: "queued", sent: 0, detail: "",
+        kind: $("kind").value, sharing: $("sharing").value, wait: $("wait").checked,
+        scope: scope()
+      });
+    });
+    renderQueue();
+    drain();
+  }
+
+  function upload() {
+    var input = $("file");
+    if (!input.files || !input.files.length) {
+      say($("uploadMsg"), "Choose a file first.", "info");
+      return;
+    }
+    say($("uploadMsg"), "");
+    enqueue(input.files);
+    input.value = "";
+  }
+
+  function itemById(id) {
+    return queue.filter(function (i) { return String(i.id) === String(id); })[0];
+  }
+
+  $("uploadQueue").addEventListener("click", function (ev) {
+    var target = ev.target.closest ? ev.target : null;
+    if (!target) { return; }
+
+    var retry = target.closest("[data-retry]");
+    if (retry) {
+      var item = itemById(retry.dataset.retry);
+      if (!item) { return; }
+      item.state = "queued";
+      item.detail = "";
+      item.sent = 0;
+      renderQueue();
+      drain();
+      return;
+    }
+
+    var cancel = target.closest("[data-cancel]");
+    if (cancel) {
+      var running = itemById(cancel.dataset.cancel);
+      if (running && running.request) { running.request.abort(); }
+      return;
+    }
+
+    var drop = target.closest("[data-drop]");
+    if (drop) {
+      queue = queue.filter(function (i) { return String(i.id) !== drop.dataset.drop; });
+      renderQueue();
+    }
+  });
+  $("clearDone").addEventListener("click", function () {
+    queue = queue.filter(function (i) { return i.state !== "done"; });
+    renderQueue();
+  });
+  $("upload").addEventListener("click", upload);
+  $("ask").addEventListener("click", ask);
+  $("query").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ask(); } });
+  $("add").addEventListener("click", add);
+  $("refresh").addEventListener("click", loadBrowse);
+  $("key").addEventListener("change", function () {
+    try { sessionStorage.setItem("matrixark_admin_key", $("key").value); } catch (e) { /* ignore */ }
+  });
+  try {
+    var saved = sessionStorage.getItem("matrixark_admin_key");
+    if (saved) { $("key").value = saved; }
+  } catch (e) { /* ignore */ }
+  conn("live", "ready");
+}());
+</script>
+</body>
+</html>

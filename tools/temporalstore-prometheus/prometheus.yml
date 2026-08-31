@@ -5,9 +5,21 @@ global:
 
 rule_files:
   - /etc/prometheus/temporalstore-alerts.yml
+  - /etc/prometheus/matrixark-gateway-alerts.yml
 
 scrape_configs:
   - job_name: temporalstore_node_exporter
     static_configs:
       - targets:
           - node-exporter:9100
+
+  # The customer-facing /v1 edge. Aggregate counters only -- no keys, no tenant identifiers -- so it
+  # needs no credentials, the way an exporter normally does not. The two gauges worth alerting on
+  # (matrixark_gateway_embedding_semantic, matrixark_gateway_extraction_model_active) are the only
+  # signals that catch a deployment whose model fallbacks have silently engaged: every other series
+  # here looks healthy while retrieval runs on hash vectors.
+  - job_name: matrixark_gateway
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets:
+          - gateway:8080
