@@ -2423,6 +2423,107 @@ mod tests {
         )
     }
 
+    #[test]
+    fn opening_and_closing_a_table_report_its_version_and_state() {
+        use temporalstore_rust::meta::{
+            AddTableRequest, DeleteTableRequest, GetTableTopologyRequest, RegisterServerRequest,
+            RegisterShardRequest,
+        };
+
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            numa_nodes: Vec::new(),
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            first_shard_id: 1,
+            shard_count: 4,
+            replica_count: 1,
+            partition_version: 1,
+            serving_options: Default::default(),
+        });
+        for shard in 1..=4u64 {
+            meta.register(RegisterShardRequest {
+                shard_id: shard,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        let expected_version = meta
+            .get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                old_topology_version: 0,
+                client_location: String::new(),
+            })
+            .table
+            .expect("the table is there")
+            .topology_version;
+
+        let backend = MetaBackend::Single(meta);
+        let scheduler = MetaTaskScheduler::default();
+        let post = |path: &str, namespace: &str, table_name: &str| {
+            handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "POST".to_string(),
+                    path: path.to_string(),
+                    body: serde_json::to_vec(&serde_json::json!({
+                        "namespace": namespace,
+                        "table_name": table_name,
+                    }))
+                    .unwrap(),
+                },
+            )
+        };
+
+        // Opening reports the version the caller must quote to get a topology.
+        let (code, body) = post("/MasterService/OpenTable", "ns", "t");
+        assert_eq!(code, 200);
+        let opened: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            opened["open_version"].as_u64(),
+            Some(expected_version),
+            "opening a table reported the wrong version: {opened}"
+        );
+        assert_eq!(opened["status"]["ok"].as_bool(), Some(true));
+
+        // Closing reports whether it could be served.
+        let (code, body) = post("/MasterService/CloseTable", "ns", "t");
+        assert_eq!(code, 200);
+        let closed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(closed["status"]["ok"].as_bool(), Some(true));
+
+        // A table that was never created is refused by both, rather than
+        // answered with a zero version.
+        let (_, body) = post("/MasterService/OpenTable", "ns", "absent");
+        let missing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(missing["status"]["ok"].as_bool(), Some(false));
+        assert_eq!(missing["status"]["code"].as_str(), Some("table_not_found"));
+
+        let (_, body) = post("/MasterService/CloseTable", "ns", "absent");
+        let missing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(missing["status"]["ok"].as_bool(), Some(false));
+
+        // And a dropped table is refused too, not reported as openable.
+        let dropped = match &backend {
+            MetaBackend::Single(meta) => meta.delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+            }),
+            MetaBackend::Raft(_) => unreachable!("single-node backend"),
+        };
+        assert!(dropped.status.ok);
+        let (_, body) = post("/MasterService/OpenTable", "ns", "t");
+        let gone: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(gone["status"]["ok"].as_bool(), Some(false));
+    }
+
     fn node_body(node_id: u64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({ "node_id": node_id })).unwrap()
     }
