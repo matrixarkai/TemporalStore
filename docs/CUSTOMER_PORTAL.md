@@ -74,6 +74,54 @@ Presets for DeepSeek, OpenAI, Ollama and the local MiniLM encoder fill in the sa
 type by hand — they can write nothing the closed registry below does not already allow, and no
 preset carries a secret.
 
+Both model names are free text on the wire, and a name that is merely misspelt does not fail
+loudly: extraction falls back to the local rules and embedding to hash vectors, and both answer
+`200`. So the **Models** section offers a picker instead of a text box. `GET /v1/admin/models`
+(admin scope) returns three things per role:
+
+* a **catalogue** of models worth suggesting;
+* what the configured endpoint says it **actually serves** — an OpenAI-compatible server answers
+  `GET <base>/models`, so asking it turns a guess into a choice. This runs only when asked
+  (`probe=1`), because it is a request against the customer's own provider;
+* for embeddings, what the **stored vectors were made with**, which is the fact that decides
+  whether a change is safe.
+
+Choosing fills the field below and leaves it unsaved, next to whatever else is pending — a model
+change saved on click is one nobody reviewed.
+
+#### Changing the embedding model
+
+This is the one setting on the page that can silently invalidate data you already have. Changing it
+does not re-encode anything: existing vectors stay in the old model's space, vectors from two
+models cannot be compared, and those memories stop matching queries.
+
+The trap is not a width change — a width change at least has a width to notice. Two encoders are
+frequently the **same width**: `all-MiniLM-L6-v2` and `paraphrase-multilingual-MiniLM-L12-v2` are
+both 384, `BAAI/bge-m3` and `voyage-3` are both 1024. Nothing in the stack sees a mismatch to
+complain about. The portal therefore states each encoder's width and names the others it collides
+with, derived from the catalogue rather than written into prose — a note only warns about the
+collisions whoever wrote it thought of, and the first draft of that note called out the 384 pair and
+said nothing about the 1024 one.
+
+The warning is shown only when the choice would actually strand something: never when the store is
+empty, and never when you are picking the encoder the store was already written with. A warning on
+every render is one people learn to click past.
+
+Behind it, three guards in the engine make a change survivable rather than silent. All three were
+broken and none had a test, which is how they came to be broken; each now has one, and each test
+was checked by breaking its guard again on purpose:
+
+1. similarity **refuses** mismatched vector lengths. It used to score the shared prefix, which
+   returns a perfectly plausible cosine across two unrelated spaces — worse than no number, because
+   it ranks;
+2. ingest and the background drainer hash the **same** thing. Ingest hashed `provider.model`, the
+   *chat* model, so the two paths recorded different hashes for the same encoder and neither pair
+   could be compared;
+3. retrieve **skips** vectors whose recorded encoder differs from the active one, scoring nothing,
+   so the node falls through to the hybrid lexical pass exactly as an un-embedded node does. A hash
+   of `0` means *unknown*, not foreign, and is still scored — every store written before the field
+   existed carries `0`, and refusing those would turn an upgrade into silently dark retrieval.
+
 ### What is writable
 
 79 settings across seven groups: extraction, embedding, retrieval and context budget, skills and
@@ -252,7 +300,7 @@ chunks retrieval will actually draw from, not the source file on disk.
 
 ## Explore
 
-Three tabs over the ordinary data contract, so a customer can exercise the pipeline against their
+Five tabs over the ordinary data contract, so a customer can exercise the pipeline against their
 own data before pointing a workload at it:
 
 * **Ask** — `POST /v1/retrieve` exactly as an agent would, showing each pack item with its layer,
@@ -267,8 +315,56 @@ own data before pointing a workload at it:
   ingests it in one call. Choose whether it is stored as a skill or a resource, and its visibility.
   For a whole directory, the Ingestion page is the right tool.
 * **Browse** — `GET /v1/users`, `GET /v1/memories`, and a memory's record plus its change history.
+* **mem0 API** — a console over every method of the mem0 API, listed by the name you call it by
+  rather than by the URL that serves it. See below.
+* **Batch ingest** — many memories in one submission, run as a server-side job. See below.
 
-Two things this surfaced, both fixed:
+### The mem0 console
+
+A customer arrives holding mem0 code — `add`, `search`, `get_all`, `update`, `delete_all` — and the
+route list answers a different question, because it is organised by URL. The console is the mapping.
+Each operation renders its own form, shows the request before it is sent and the raw answer after,
+and offers the equivalent `curl` — which names `$MATRIXARK_API_KEY` rather than carrying the key,
+because that text lands on a clipboard and often in a ticket.
+
+The forms are generated from one table, `MEM0_OPERATIONS` in the gateway, so an operation that
+gains an argument gains a field. Two tests hold the table to the routes in both directions: an
+operation naming a route that does not exist is a button that 404s, and a memory route no operation
+reaches is a capability nothing in the portal can exercise. A third asserts that an operation's
+declared scope matches what the gateway actually gates on — printing a scope next to the button
+that disagrees with the enforcement sends a customer to issue the wrong key and read a `403` naming
+a third thing.
+
+The three `context:forget` operations are marked destructive from the route's own scope rather than
+by hand, and a destructive operation will not run until its name is typed into a confirm box. The
+confirmation is cleared after a successful run, or the next click repeats it against a box that
+still says the magic word.
+
+### Batch ingest
+
+Each line is one memory: plain text, or a JSON object carrying a per-line `user_id`, `agent_id`,
+`session_id`, `identity_key`, `role` or `metadata`. A pasted dump usually already says whose memory
+each line is, and filing them all under one subject would be silent and unrecoverable without
+re-ingesting, so a per-record identity overrides the batch's.
+
+`POST /v1/admin/ingestion/records` runs it as a **server-side job**, not a loop in the tab. A
+browser loop over ten thousand records is one closed laptop away from a half-finished import nobody
+can resume or even count. As a job it inherits everything the directory import already had: a
+background worker, progress, failure classification, retry of only the retryable failures, cancel,
+and the metrics. The job registry's items are now either a path or a record, and a record carries
+its own text so a retry can re-send it — a failure list keys by label, and a label cannot be turned
+back into a record.
+
+Blank records are dropped and counted rather than queued: an empty record fails identically every
+time, so letting it into the job would fill the failure list with entries no retry can ever clear,
+and a retryable-looking failure that never succeeds is how a retry button stops being trusted.
+`empty record` is classified permanent for the same reason.
+
+**Check what would be sent** resolves and counts without ingesting, so a paste can be confirmed
+before it is committed to. The batch is capped at 8 MB and 20,000 records — both well above a
+plausible paste, and past either a directory import is the right tool.
+
+Two things Explore surfaced, both fixed:
 
 * `X-Scope` on `/v1/ingest_file` is documented as a JSON scope object and was passed through
   unparsed. It reached the string branch of `_apply_identity`, which reads a bare string as a

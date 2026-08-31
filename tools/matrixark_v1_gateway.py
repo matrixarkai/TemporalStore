@@ -1322,6 +1322,143 @@ SCOPE_PRESETS: List[Json] = [
 #
 # `body` is a request that works as written, so the page can offer a curl that runs rather than a
 # schema to interpret.
+# ================================================================================================
+# The mem0 API, as operations rather than routes
+# ================================================================================================
+# A customer arrives holding mem0 code: `add`, `search`, `get_all`, `update`, `delete_all`. The
+# route list answers a different question -- it is organised by URL -- so matching a method to a
+# request means reading every entry and inferring. This table is the mapping, and it is the source
+# the portal's console builds its forms from, so a method that gains an argument gains a field.
+#
+# Every entry names a path that appears in ROUTE_DOCS; a test asserts both directions, because an
+# operation pointing at a route that does not exist is a console button that 404s, and a memory
+# route no operation reaches is a capability nothing in the portal can exercise.
+#
+# Field placement, by `in`:
+#   body     a top-level key of the JSON body
+#   scope    a key inside the body's `scope` object
+#   query    a query-string parameter
+#   path     substituted into {id} in the path
+#   message  the text of a single user turn -- the shape /v1/ingest wants
+# A batch arrives in the request body, so these two are the only things standing between a paste
+# and a worker thread holding it all. 8 MB and 20,000 records are both well above a plausible paste
+# and well below anything that would hurt; past either, a directory import is the right tool.
+MAX_BATCH_RECORDS_BYTES = 8 << 20
+MAX_BATCH_RECORDS = 20_000
+
+MEM0_OPERATIONS: List[Json] = [
+    {"id": "add", "label": "add()", "group": "Write", "method": "POST", "path": "/v1/ingest",
+     "scope": "context:ingest", "destructive": False, "needs_scope": True,
+     "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is "
+                "why a search issued immediately afterwards can legitimately not see it yet.",
+     "fields": [
+         {"name": "content", "in": "message", "kind": "textarea", "required": True,
+          "label": "Message",
+          "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
+          "help": "Sent as one user turn."},
+         {"name": "finalize", "in": "body", "kind": "bool", "default": True,
+          "label": "Extract before answering",
+          "help": "Off is how production behaves: the write is acknowledged and extraction runs "
+                  "in the background."},
+         {"name": "metadata", "in": "body", "kind": "json", "label": "Metadata",
+          "placeholder": '{"source": "portal"}',
+          "help": "Stored alongside the memory and returned with it."},
+     ]},
+    {"id": "search", "label": "search()", "group": "Read", "method": "POST",
+     "path": "/v1/retrieve", "scope": "context:retrieve", "destructive": False,
+     "needs_scope": True,
+     "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
+     "fields": [
+         {"name": "query", "in": "body", "kind": "text", "required": True, "label": "Query",
+          "placeholder": "when do we ship?"},
+         {"name": "max_budget_tokens", "in": "body", "kind": "number", "default": 2048,
+          "label": "Token budget",
+          "help": "The pack is built to fit this. A budget far below what the answer needs is "
+                  "indistinguishable from poor retrieval."},
+     ]},
+    {"id": "get_all", "label": "get_all()", "group": "Read", "method": "POST",
+     "path": "/v1/memories", "scope": "context:retrieve", "destructive": False,
+     "needs_scope": True,
+     "summary": "Every live memory in the scope, unranked. This is the listing, not the search.",
+     "fields": [
+         {"name": "limit", "in": "body", "kind": "number", "default": 50, "label": "Limit"},
+     ]},
+    {"id": "get", "label": "get()", "group": "Read", "method": "GET", "path": "/v1/memory/{id}",
+     "scope": "context:retrieve", "destructive": False, "needs_scope": False,
+     "summary": "One memory's stored record, by id.",
+     "fields": [
+         {"name": "id", "in": "path", "kind": "text", "required": True, "label": "Memory id",
+          "placeholder": "mem_7f21"},
+     ]},
+    {"id": "history", "label": "history()", "group": "Read", "method": "GET",
+     "path": "/v1/memory/{id}/history", "scope": "context:retrieve", "destructive": False,
+     "needs_scope": False,
+     "summary": "How that memory changed: each supersede, with what it said before.",
+     "fields": [
+         {"name": "id", "in": "path", "kind": "text", "required": True, "label": "Memory id",
+          "placeholder": "mem_7f21"},
+     ]},
+    {"id": "get_by_key", "label": "by identity key", "group": "Read", "method": "GET",
+     "path": "/v1/memory/by-key", "scope": "context:retrieve", "destructive": False,
+     "needs_scope": False,
+     "summary": "The one live value for an identity key in a scope — the shape a profile field "
+                "wants, where the answer is a value and not a ranked list.",
+     "fields": [
+         {"name": "identity_key", "in": "query", "kind": "text", "required": True,
+          "label": "Identity key", "placeholder": "ship_date"},
+         {"name": "user_id", "in": "query", "kind": "text", "label": "User", "from_scope": "user"},
+     ]},
+    {"id": "users", "label": "users()", "group": "Read", "method": "POST", "path": "/v1/users",
+     "scope": "context:retrieve", "destructive": False, "needs_scope": True,
+     "summary": "Which users, agents and runs hold memories in this tenant.",
+     "fields": []},
+    {"id": "update", "label": "update()", "group": "Write", "method": "POST", "path": "/v1/update",
+     "scope": "context:ingest", "destructive": False, "needs_scope": False,
+     "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so "
+                "history keeps both.",
+     "fields": [
+         {"name": "memory_id", "in": "body", "kind": "text", "required": True,
+          "label": "Memory id", "placeholder": "mem_7f21"},
+         {"name": "text", "in": "body", "kind": "textarea", "required": True, "label": "New text",
+          "placeholder": "We ship on Friday."},
+     ]},
+    {"id": "feedback", "label": "feedback()", "group": "Write", "method": "POST",
+     "path": "/v1/memory/feedback", "scope": "context:ingest", "destructive": False,
+     "needs_scope": False,
+     "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
+     "fields": [
+         {"name": "memory_id", "in": "body", "kind": "text", "required": True,
+          "label": "Memory id", "placeholder": "mem_7f21"},
+         {"name": "rating", "in": "body", "kind": "number", "default": 1, "label": "Rating",
+          "help": "1 useful, -1 not."},
+     ]},
+    {"id": "session_commit", "label": "commit a session", "group": "Write", "method": "POST",
+     "path": "/v1/session/commit", "scope": "context:ingest", "destructive": False,
+     "needs_scope": True,
+     "summary": "Close a session and roll its turns into summaries. Until this runs the turns are "
+                "stored but not summarised.",
+     "fields": []},
+    {"id": "forget", "label": "forget()", "group": "Forget", "method": "POST", "path": "/v1/forget",
+     "scope": "context:forget", "destructive": True, "needs_scope": False,
+     "summary": "Stop returning one memory. The record stays, so history still explains it.",
+     "fields": [
+         {"name": "memory_id", "in": "body", "kind": "text", "required": True,
+          "label": "Memory id", "placeholder": "mem_7f21"},
+     ]},
+    {"id": "delete", "label": "delete()", "group": "Forget", "method": "POST", "path": "/v1/delete",
+     "scope": "context:forget", "destructive": True, "needs_scope": False,
+     "summary": "Delete one memory outright.",
+     "fields": [
+         {"name": "memory_id", "in": "body", "kind": "text", "required": True,
+          "label": "Memory id", "placeholder": "mem_7f21"},
+     ]},
+    {"id": "delete_all", "label": "delete_all()", "group": "Forget", "method": "POST",
+     "path": "/v1/reset", "scope": "context:forget", "destructive": True, "needs_scope": True,
+     "summary": "Drop everything in the scope shown above. There is no undo, and an empty user "
+                "field means the default scope, not none of them.",
+     "fields": []},
+]
+
 ROUTE_DOCS: List[Json] = [
     # ---- health -------------------------------------------------------------------------------
     {"group": "Health", "method": "GET", "path": "/v1/healthz", "scope": None,
@@ -1427,6 +1564,11 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Administration", "method": "POST", "path": "/v1/admin/config/test", "scope": "admin",
      "summary": "Call the configured extraction and embedding endpoints and report what came back.",
      "body": {}},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/models", "scope": "admin",
+     "summary": "Models to choose from: a curated catalogue, what the configured endpoint says it "
+                "serves, and — for embeddings — what the stored vectors were actually made with. "
+                "Query: target (extraction|embedding), probe (1 to ask the endpoint).",
+     "query": "target=extraction&probe=0"},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/monitoring/{asset}",
      "scope": "admin",
      "summary": "A monitoring asset as this build defines it: gateway or ingestion for a Grafana "
@@ -1454,6 +1596,13 @@ ROUTE_DOCS: List[Json] = [
                 "preview to count what would be sent without importing it.",
      "body": {"directory": "/srv/playbooks", "globs": ["*.md"], "preview": True},
      "needs": "MATRIXARK_INGESTION_ROOT"},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/ingestion/records",
+     "scope": "admin",
+     "summary": "Ingest a batch of memories as a background job. Each record needs text; "
+                "user_id, agent_id, session_id, identity_key, role and metadata are optional and "
+                "override the batch's. Pass preview to count and check without ingesting.",
+     "body": {"records": [{"text": "We ship on Thursday.", "user_id": "alice"}],
+              "user_id": "alice", "preview": True}},
     {"group": "Administration", "method": "POST",
      "path": "/v1/admin/ingestion/jobs/{id}/retry", "scope": "admin",
      "summary": "Re-run a finished job's failed documents as a new job, linked to it. By default "
@@ -1645,6 +1794,49 @@ def _grafana_asset(name: str) -> Tuple[Optional[bytes], str]:
         data = None
     _GRAFANA_CACHE[name] = data
     return data, content_type
+
+
+# Said in full wherever a customer is one click from changing the encoder. The trap is not the
+# obvious one: a width change at least has a width to notice. Two encoders of the SAME width mix
+# two unrelated vector spaces with nothing anywhere to raise an error.
+_EMBEDDING_CHANGE_WARNING = (
+    "Changing the embedding model does not re-encode what is already stored. Every existing vector "
+    "stays in the old model's space, and vectors from two models cannot be compared -- so those "
+    "memories stop matching queries. Note that two encoders are often the SAME WIDTH "
+    "(all-MiniLM-L6-v2 and BGE-M3 truncated to 384 are both 384), in which case nothing in the "
+    "stack sees a mismatch to complain about. Re-encode the store after changing this, or accept "
+    "that everything ingested before the change is no longer semantically searchable."
+)
+
+
+async def _embedding_models_in_store(server: Any, cfg: GatewayConfig, key: Optional[str],
+                                     tenant: Optional[str], account: Optional[str]) -> Json:
+    """Which encoders the stored vectors were actually made with.
+
+    The question a customer needs answered before switching is not "what can I pick" but "what is
+    already in there" -- switching to the model the store was written with is free, and switching
+    away from it is not.
+    """
+    args: Json = {"scope": {}}
+    _apply_identity(args, key, tenant, account)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(server.call_tool, "matrixark_embedding_status", args),
+            cfg.backend_timeout)
+    except Exception:
+        # Unknown is not the same as none: saying "nothing stored" here would make a destructive
+        # change look free.
+        return {"known": False,
+                "detail": "The backend could not be asked what the stored vectors were made with."}
+    if not isinstance(result, dict):
+        return {"known": False, "detail": "The backend gave no usable answer."}
+    return {
+        "known": True,
+        "models": result.get("models") or [],
+        "dimensions": result.get("dimensions") or [],
+        "mixed_dimensions": bool(result.get("mixed_dimensions")),
+        "total": result.get("total") or 0,
+    }
 
 
 def _encoder_summary() -> Json:
@@ -2863,6 +3055,43 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "config": config_snapshot,
             })
 
+        # ---- model choices (auth + admin scope) -----------------------------------------------
+        # A model name typed into a text box is a guess that fails hours later, at ingest, as a
+        # silent fall back to the deterministic path. This offers the catalogue, asks the endpoint
+        # what it actually serves, and -- for embeddings -- reports what the STORE was written with,
+        # because that is what decides whether a change is safe.
+        if method == "GET" and path == "/v1/admin/models":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            target = (params.get("target") or ["extraction"])[0].strip().lower()
+            if target not in ("extraction", "embedding"):
+                return await _json(send, 400, {
+                    "error": "bad_request",
+                    "detail": "target must be extraction or embedding",
+                })
+            discovered = {"available": False, "reason": "not_probed"}
+            if (params.get("probe") or ["1"])[0].strip().lower() in ("1", "true", "yes"):
+                discovered = await asyncio.to_thread(_gwconfig.discover_models, target)
+            body: Json = {
+                "status": "ok",
+                "target": target,
+                "catalogue": _gwconfig.model_catalogue(target),
+                "discovered": discovered,
+                "current": (os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
+                            if target == "embedding"
+                            else os.environ.get("MATRIXARK_EXTRACTION_MODEL", "").strip()),
+            }
+            if target == "embedding":
+                body["in_store"] = await _embedding_models_in_store(server, cfg, key, tenant,
+                                                                   account)
+                body["change_warning"] = _EMBEDDING_CHANGE_WARNING
+            return await _json(send, 200, body)
+
         # ---- monitoring assets (auth + admin scope) -------------------------------------------
         # The portal used to name a repo path. A customer running this as a managed service has no
         # checkout, and even with one the file on their disk is whatever their copy is rather than
@@ -3039,6 +3268,88 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "timeout_s": payload.get("timeout_s") or 1800.0,
             })
             return await _json(send, 202, job.snapshot())
+
+        # ---- ingestion jobs: submit records (auth + admin scope) -----------------------------
+        # The batch a customer pastes or uploads. Unlike the directory import there is no path and
+        # no ingestion root to police: the content arrives in the request, so the only limits that
+        # matter are the body cap and the record count.
+        if method == "POST" and path == "/v1/admin/ingestion/records":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, MAX_BATCH_RECORDS_BYTES)
+            if too_big or raw is None:
+                return await _json(send, 413, {
+                    "error": "body_too_large",
+                    "detail": "A batch is capped at %d bytes. Split it, or import from a "
+                              "directory instead." % MAX_BATCH_RECORDS_BYTES,
+                })
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            rows = payload.get("records")
+            if not isinstance(rows, list) or not rows:
+                return await _json(send, 400, {
+                    "error": "no_records",
+                    "detail": "Send a non-empty records array.",
+                })
+            if len(rows) > MAX_BATCH_RECORDS:
+                return await _json(send, 400, {
+                    "error": "too_many_records",
+                    "detail": "A batch is capped at %d records; this one has %d."
+                              % (MAX_BATCH_RECORDS, len(rows)),
+                })
+            user_id = str(payload.get("user_id") or "default")
+            records: Json = []
+            skipped = 0
+            for row in rows:
+                if not isinstance(row, dict):
+                    row = {"text": str(row)}
+                text = str(row.get("text") or row.get("content") or "")
+                if not text.strip():
+                    # Dropped here rather than queued to fail one at a time: an empty record fails
+                    # identically every time, so letting it into the job would fill the failure
+                    # list with entries no retry can ever clear.
+                    skipped += 1
+                    continue
+                entry = {"text": text,
+                         "user_id": str(row.get("user_id") or user_id)}
+                for name in ("agent_id", "session_id", "identity_key", "role"):
+                    value = str(row.get(name) or payload.get(name) or "")
+                    if value:
+                        entry[name] = value
+                if isinstance(row.get("metadata"), dict) and row["metadata"]:
+                    entry["metadata"] = row["metadata"]
+                records.append(entry)
+            if not records:
+                return await _json(send, 400, {
+                    "error": "no_usable_records",
+                    "detail": "Every record was empty. %d skipped." % skipped,
+                })
+            import matrixark_ingestion_jobs as _jobs
+            if payload.get("preview"):
+                return await _json(send, 200, {
+                    "status": "preview",
+                    "total": len(records),
+                    "skipped": skipped,
+                    "user_id": user_id,
+                    "sample": records[:10],
+                    "truncated": len(records) > 10,
+                })
+            job = _jobs.REGISTRY.submit(_jobs.record_items(records), {
+                "base_url": payload.get("base_url") or ("http://127.0.0.1:%d" % cfg.port
+                                                        if getattr(cfg, "port", None) else None),
+                "user_id": user_id,
+                "api_key_env": payload.get("api_key_env") or "MATRIXARK_API_KEY",
+                "timeout_s": payload.get("timeout_s") or 1800.0,
+            })
+            snapshot = job.snapshot()
+            snapshot["skipped"] = skipped
+            return await _json(send, 202, snapshot)
 
         # ---- retry a job's failed documents (auth + admin scope) -----------------------------
         # Only the failures, and by default only the ones worth retrying. Ingest is a keyed upsert

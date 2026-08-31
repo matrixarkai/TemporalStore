@@ -63,6 +63,10 @@ def classify_failure(detail: str) -> bool:
         return not (400 <= code < 500)
     if text.startswith("read failed"):
         return False  # the file did not open; retrying reads the same missing file
+    if text.startswith("empty record"):
+        # A batch line with no text. It will fail identically forever, and a failure that is
+        # marked retryable and never succeeds is how a retry button stops being trusted.
+        return False
     return True
 
 
@@ -117,15 +121,66 @@ def resolve_request_paths(
     return unique[:MAX_PATHS_PER_JOB]
 
 
-class Job:
-    """One import: its counters, and the thread walking the document list."""
+MAX_RECORD_CHARS = 200_000
 
-    def __init__(self, job_id: str, paths: List[str], options: Dict[str, object]) -> None:
+
+def path_items(paths: List[str]) -> List[Dict[str, object]]:
+    return [{"kind": "path", "label": str(p), "path": str(p)} for p in paths]
+
+
+def record_items(records: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Batch records as job items.
+
+    The label has to identify the item well enough to appear in a failure list and to be re-sent by
+    a retry, and a record has no path to borrow. The line number plus a prefix of the text is what a
+    human can match back to the input; the record itself rides along so a retry does not need the
+    original paste.
+    """
+    items: List[Dict[str, object]] = []
+    for index, record in enumerate(records):
+        text = str(record.get("text") or record.get("content") or "")
+        preview = " ".join(text.split())[:60]
+        items.append({
+            "kind": "record",
+            "label": "record %d: %s" % (index + 1, preview or "(empty)"),
+            "record": record,
+            "bytes": len(text.encode("utf-8")),
+        })
+    return items
+
+
+def normalize_items(items: List[object]) -> List[Dict[str, object]]:
+    """Accept a list of paths or a list of items, and always return items.
+
+    submit() took paths for its whole life and the gateway still calls it that way; making every
+    caller convert would have been a change to make in several places at once, which is how one
+    gets missed.
+    """
+    out: List[Dict[str, object]] = []
+    for entry in items:
+        if isinstance(entry, str):
+            out.append({"kind": "path", "label": entry, "path": entry})
+        elif isinstance(entry, dict) and entry.get("kind") in ("path", "record"):
+            out.append(dict(entry))
+        elif isinstance(entry, dict):
+            out.extend(record_items([entry]))
+        else:
+            raise TypeError("job items must be paths or item dicts, got %r" % type(entry))
+    return out
+
+
+class Job:
+    """One import: its counters, and the thread walking the item list."""
+
+    def __init__(self, job_id: str, items: List[object], options: Dict[str, object]) -> None:
         self.id = job_id
-        self.paths = paths
+        self.items = normalize_items(items)
+        # Kept because the whole surface -- the gateway, the tests, the retry route -- speaks in
+        # paths, and a record job simply has none.
+        self.paths = [str(i["path"]) for i in self.items if i["kind"] == "path"]
         self.options = options
         self.state = "queued"
-        self.total = len(paths)
+        self.total = len(self.items)
         self.done = 0
         self.failed = 0
         self.bytes = 0
@@ -169,9 +224,15 @@ class Job:
                 "retry_of": self.retry_of,
                 "retried_by": self.retried_by,
                 "user_id": self.options.get("user_id"),
+                # What this job is walking. A records job has no paths, and a UI that assumed
+                # paths would render its failures as blank rows.
+                "source": ("records"
+                           if any(i["kind"] == "record" for i in self.items)
+                           else "paths"),
             }
 
-    def record(self, path: str, ok: bool, took_ms: float, size: int, detail: str = "") -> None:
+    def record(self, path: str, ok: bool, took_ms: float, size: int, detail: str = "",
+               item_kind: str = "path") -> None:
         """Record one document's outcome: the counters, the failure list, and the recent ring.
 
         One place rather than inline in the runner, so the two bounds -- MAX_FAILURES_KEPT and
@@ -187,6 +248,7 @@ class Job:
                     self.failures.append({
                         "path": path, "detail": detail, "bytes": size,
                         "retryable": classify_failure(detail),
+                        "item_kind": item_kind,
                     })
                 else:
                     self.failures_truncated = True
@@ -198,7 +260,21 @@ class Job:
         """The documents to hand a retry. Ordered as the original run saw them."""
         with self._lock:
             return [str(f["path"]) for f in self.failures
-                    if not only_retryable or f.get("retryable")]
+                    if (not only_retryable or f.get("retryable"))
+                    and f.get("item_kind", "path") == "path"]
+
+    def failed_items(self, only_retryable: bool = True) -> List[Dict[str, object]]:
+        """The items to hand a retry -- paths and records alike, in the order they were tried.
+
+        A record cannot be looked up again from a label, so the item carries its own record and a
+        retry re-sends that. Without it, a records job could report retryable failures and then
+        have nothing to retry, which reads as the retry silently doing nothing.
+        """
+        with self._lock:
+            wanted = [str(f["path"]) for f in self.failures
+                      if not only_retryable or f.get("retryable")]
+        by_label = {str(i["label"]): i for i in self.items}
+        return [dict(by_label[label]) for label in wanted if label in by_label]
 
     def cancel(self) -> None:
         self._stop.set()
@@ -211,7 +287,7 @@ class Job:
 
         with self._lock:
             self.state = "running"
-        for path in self.paths:
+        for item in self.items:
             if self._stop.is_set():
                 with self._lock:
                     self.state = "cancelled"
@@ -219,18 +295,28 @@ class Job:
                     self.current = None
                     self.current_started = None
                 return
+            label = str(item["label"])
             started = time.time()
             with self._lock:
-                self.current = path
+                self.current = label
                 self.current_started = started
-            try:
-                size = os.path.getsize(path)
-            except OSError:
-                size = 0
-            ok, detail = batch.post_document(
-                base_url, path, user_id=user_id, api_key=api_key, timeout_s=timeout_s
-            )
-            self.record(path, ok, round((time.time() - started) * 1000.0, 1), size, detail)
+            if item["kind"] == "record":
+                record = item.get("record") or {}
+                size = int(item.get("bytes") or 0)
+                ok, detail = batch.post_record(
+                    base_url, record, user_id=user_id, api_key=api_key, timeout_s=timeout_s
+                )
+            else:
+                path = str(item["path"])
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                ok, detail = batch.post_document(
+                    base_url, path, user_id=user_id, api_key=api_key, timeout_s=timeout_s
+                )
+            self.record(label, ok, round((time.time() - started) * 1000.0, 1), size, detail,
+                        item_kind=str(item["kind"]))
         with self._lock:
             self.state = "failed" if self.failed and not self.done else "completed"
             self.finished_at = time.time()
@@ -246,8 +332,8 @@ class JobRegistry:
         self._order: List[str] = []
         self._lock = threading.Lock()
 
-    def submit(self, paths: List[str], options: Dict[str, object]) -> Job:
-        job = Job(uuid.uuid4().hex[:12], paths, options)
+    def submit(self, items: List[object], options: Dict[str, object]) -> Job:
+        job = Job(uuid.uuid4().hex[:12], items, options)
         with self._lock:
             self._jobs[job.id] = job
             self._order.insert(0, job.id)
@@ -269,12 +355,12 @@ class JobRegistry:
         parent = self.get(job_id)
         if parent is None:
             return None
-        paths = parent.failed_paths(only_retryable=only_retryable)
-        if not paths:
+        items = parent.failed_items(only_retryable=only_retryable)
+        if not items:
             return None
         options = dict(parent.options)
         options["retry_of"] = parent.id
-        child = self.submit(paths, options)
+        child = self.submit(items, options)
         with parent._lock:  # noqa: SLF001 - same module, same object's lock
             parent.retried_by = child.id
         return child

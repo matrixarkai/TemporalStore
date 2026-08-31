@@ -1103,9 +1103,11 @@ pub struct ContextFanoutPlanReport {
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
-    // Candidate nodes whose node record carries no vector at all -- un-embedded, scored by the
-    // hybrid lexical pass instead. (Named for the retired separate-row fallback it once
-    // counted; the rows are gone, so any nonzero here means the backfill has work to do.)
+    // Candidate nodes handed to the hybrid lexical pass instead of being scored: either the node
+    // record carries no vector at all, or its vector was made by a different encoder from the one
+    // doing the retrieve and is therefore not comparable. (Named for the retired separate-row
+    // fallback it once counted; the rows are gone, so any nonzero here means either the backfill
+    // has work to do or the embedding model has changed under the store.)
     #[serde(default)]
     pub l0_row_fallback_nodes: usize,
     #[serde(default)]
@@ -1705,7 +1707,13 @@ pub(crate) fn extract_context_gated(
             // fresh ingest -- only the drainer's deferred path would ever fill it, so the
             // fallback to the separate record could never be retired.
             node.vector = vector.clone();
-            node.embedding_model_hash = context_embedding_model_hash(&provider.model);
+            // `provider.model` is the CHAT model. Hashing it here recorded something that does
+            // not identify the embedding model at all, and disagreed with the drainer, which
+            // hashes `provider.embedding_model` -- so an inline-embedded node and a
+            // drainer-embedded node carried different hashes for the same encoder, and neither
+            // pair could be compared.
+            node.embedding_model_hash =
+                context_embedding_model_hash(&provider.embedding_model);
             node.embedding_updated_at_ms = timestamp_ms;
         }
         if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
@@ -1910,6 +1918,11 @@ pub fn retrieve_context(
     // because a single oversized command is rejected outright, not truncated, and an unscored
     // node silently collapses to the lexical/recency fallback.
     let mut l0_row_fallback: Vec<u64> = Vec::new();
+    // The encoder this retrieve is using. A stored vector made by a different one is not
+    // comparable, and a hash of 0 means "unknown" -- those must still be scored, or every store
+    // written before the hash existed would go dark.
+    let active_embedding_model_hash =
+        context_embedding_model_hash(&retrieval_provider.embedding_model);
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
@@ -1925,7 +1938,13 @@ pub fn retrieve_context(
         if let CommandResponse::ContextNodes { nodes } = response.response {
             for node in nodes {
                 returned.insert(node.node_hash);
-                if node.vector.is_empty() {
+                let foreign_model = node.embedding_model_hash != 0
+                    && active_embedding_model_hash != 0
+                    && node.embedding_model_hash != active_embedding_model_hash;
+                if node.vector.is_empty() || foreign_model {
+                    // A vector from another encoder is treated exactly as an un-embedded node:
+                    // handed to the hybrid lexical pass, scoring nothing. Two encoders are often
+                    // the same width, so nothing else in the stack would have noticed.
                     l0_row_fallback.push(node.node_hash);
                 } else {
                     let score =

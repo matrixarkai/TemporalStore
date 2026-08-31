@@ -48,6 +48,18 @@ class FailureClassificationTest(unittest.TestCase):
         self.assertTrue(jobs.classify_failure("http not-a-number"))
 
 
+def _labels(items):
+    """The label of each item, whether it arrived as a path string or as an item dict.
+
+    A retry hands submit() items now -- a batch record has no path to hand instead -- so anything
+    stubbing submit() sees dicts where it used to see strings.
+    """
+    out = []
+    for item in items:
+        out.append(item if isinstance(item, str) else str(item["label"]))
+    return out
+
+
 class _StubJob(jobs.Job):
     """A job whose documents resolve from a script instead of an HTTP call."""
 
@@ -164,10 +176,10 @@ class RetryRouteTest(unittest.TestCase):
         self._register(job)
         submitted = {}
 
-        def capture(paths, options):
-            submitted["paths"] = list(paths)
+        def capture(items, options):
+            submitted["paths"] = _labels(items)
             submitted["options"] = dict(options)
-            child = _StubJob([(p, (True, "http 200")) for p in paths])
+            child = _StubJob([(p, (True, "http 200")) for p in submitted["paths"]])
             child.id = "child"
             child.retry_of = options.get("retry_of")
             self._register(child)
@@ -198,9 +210,9 @@ class RetryRouteTest(unittest.TestCase):
         self._register(job)
         submitted = {}
 
-        def capture(paths, options):
-            submitted["paths"] = list(paths)
-            child = _StubJob([(p, (True, "http 200")) for p in paths])
+        def capture(items, options):
+            submitted["paths"] = _labels(items)
+            child = _StubJob([(p, (True, "http 200")) for p in submitted["paths"]])
             child.id = "child2"
             self._register(child)
             return child

@@ -169,6 +169,39 @@ EXTRA_CSS = """
                border-radius:0}
   .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
   .pane[hidden]{display:none}
+  .opgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px;
+          margin-bottom:6px}
+  .opbtn{text-align:left;background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+         border-radius:7px;padding:8px 10px;cursor:pointer;font-size:13px;font-weight:550;
+         font-family:"IBM Plex Mono",monospace}
+  .opbtn:hover{border-color:var(--accent)}
+  .opbtn[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);
+                            color:var(--accent)}
+  .opbtn.danger[aria-pressed=true]{border-color:var(--crit);background:var(--crit-soft);
+                                   color:var(--crit)}
+  .opgroup{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+           color:var(--faint);margin:12px 0 6px}
+  .opform{border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin-top:12px;
+          background:var(--panel-2)}
+  .opform h3{margin:0 0 4px;font-size:15px;font-weight:650}
+  .opform .route{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                 margin-bottom:8px}
+  .opform .route .scope{color:var(--faint)}
+  .mblock{border:1px solid var(--line);border-radius:9px;padding:13px 15px;margin-bottom:11px;
+          background:var(--panel-2)}
+  .mblock h3{margin:0 0 3px;font-size:14.5px;font-weight:650;display:flex;gap:9px;
+             align-items:baseline;flex-wrap:wrap}
+  .mblock h3 .cur{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                  font-weight:400}
+  .mblock .mnote{font-size:13px;color:var(--muted);line-height:1.5;margin:9px 0 0;max-width:70ch}
+  .mrow{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .mrow select,.mrow input[type=text]{flex:1 1 240px;width:auto;margin:0}
+  .mrow button{flex:0 0 auto}
+  .mstore{font-size:12.5px;color:var(--faint);margin-top:9px;line-height:1.5}
+  .mstore b{color:var(--muted);font-weight:600}
+  .mwarn{border:1px solid var(--crit);background:var(--crit-soft);border-radius:8px;
+         padding:11px 13px;margin-top:11px;font-size:13px;line-height:1.55;max-width:78ch}
+  .mwarn b{display:block;margin-bottom:4px;font-size:13.5px}
   .upl{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:9px;
        background:var(--panel-2)}
   .upl-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
@@ -264,6 +297,16 @@ SETUP_BODY = """
     <p class="hint" style="margin-top:0">A preset only fills the fields below — it writes nothing you
       could not type by hand. Review, add your key, then save.</p>
     <div class="presets" id="presets"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Models <span class="aux"><button class="link" id="probeModels" type="button">ask the
+      endpoints what they serve</button></span></h2>
+    <p class="hint" style="margin-top:0">Both of these are free text on the wire, and a name that is
+      merely misspelt does not fail loudly: extraction falls back to the local rules and embedding to
+      hash vectors, both answering 200. Pick from the catalogue, or ask the configured endpoint for
+      its own list. Choosing here fills the field below — nothing is written until you save.</p>
+    <div id="models"><div class="empty">Enter an admin key to choose models.</div></div>
   </section>
 
   <form id="settingsForm">
@@ -691,6 +734,205 @@ function liveStream(options) {
       });
   }
 
+  /* ---------- model picker ---------- */
+  /* Kept as a chooser over the SAME fields the form below writes: one save path, one entry in the
+     change log. A second write path for models would be a second thing to keep correct. */
+  var modelData = {};
+  /* What is selected in the dropdown but not yet applied to the form. The risk of an encoder
+     change has to be visible while it is being chosen; showing it only after the field is filled
+     in tells someone about a decision they have already made. */
+  var pendingPick = {};
+
+  var MODEL_TARGETS = [
+    { target: "extraction", key: "extraction.model", title: "Extraction model",
+      note: "The model that reads a document and decides what is worth remembering. When it is " +
+            "unset or unreachable, ingest keeps working — it stores only what the local rules " +
+            "pull out, and says nothing." },
+    { target: "embedding", key: "embedding.model", title: "Embedding model",
+      note: "The encoder that turns text into the vectors retrieval searches. Changing it is the " +
+            "one setting on this page that can quietly invalidate data you already have." }
+  ];
+
+  function loadModels(probe) {
+    if (!$("key").value.trim()) { return Promise.resolve(); }
+    return Promise.all(MODEL_TARGETS.map(function (t) {
+      return fetch("/v1/admin/models?target=" + t.target + "&probe=" + (probe ? "1" : "0"),
+                   { headers: auth() })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (d) { modelData[t.target] = d; })
+        .catch(function (status) {
+          modelData[t.target] = { error: failure(typeof status === "number" ? status : 0) };
+        });
+    })).then(renderModels);
+  }
+
+  /* The catalogue, whatever the endpoint reported, and the value in use -- deduplicated, because a
+     model appearing twice in a list reads as two different models. */
+  function modelOptions(target) {
+    var d = modelData[target] || {};
+    var seen = {}, out = [];
+    function push(name, note) {
+      name = String(name || "").trim();
+      if (!name || seen[name]) { return; }
+      seen[name] = 1;
+      out.push({ model: name, note: note || "" });
+    }
+    if (d.current) { push(d.current, "currently configured"); }
+    ((d.discovered || {}).models || []).forEach(function (m) {
+      push(m, "offered by the configured endpoint");
+    });
+    (d.catalogue || []).forEach(function (c) {
+      /* The width collision belongs in the option text, not in a footnote: it is the reason a
+         switch that looks harmless is not. Two encoders of the same width raise no error. */
+      var same = (c.same_width_as || []).length
+        ? " — same width as " + (c.same_width_as || []).join(", ") + ", different space"
+        : "";
+      push(c.model, c.note + (c.dim ? " (" + c.dim + " dimensions" + same + ")" : ""));
+    });
+    return out;
+  }
+
+  /* The backend reports models and widths as {model, count} / {dim, count} rows, not bare names. */
+  function storedModelNames(s) {
+    return (s.models || []).map(function (m) {
+      return typeof m === "string" ? m : String((m || {}).model || "");
+    }).filter(function (m) { return m; });
+  }
+
+  function storedModelLine(d) {
+    var s = d.in_store || {};
+    if (!s.known) {
+      return '<div class="mstore">' + esc(s.detail || "The store was not asked.") + "</div>";
+    }
+    if (!s.total) {
+      return '<div class="mstore">Nothing is stored yet, so there is nothing a change could ' +
+        "strand. This is the moment to settle on an encoder.</div>";
+    }
+    var models = storedModelNames(s);
+    var widths = (s.dimensions || []).map(function (x) {
+      return typeof x === "number" ? String(x) : String((x || {}).dim || "");
+    }).filter(function (x) { return x; });
+    return '<div class="mstore"><b>' + esc(s.total) + "</b> stored vector" +
+      (s.total === 1 ? "" : "s") +
+      (models.length ? ", made with <b>" + models.map(esc).join("</b>, <b>") + "</b>" :
+        ", made with an encoder this build did not record") +
+      (widths.length ? " · " + esc(widths.join(", ")) + " dimensions" : "") +
+      (s.mixed_dimensions ? " · <b>widths already differ</b>, so some of this store is already " +
+        "unsearchable against the rest" : "") + "</div>";
+  }
+
+  /* Show the warning only when the choice in the box would actually strand something. Warning on
+     every render trains people to click past it, and then it is not there when it matters. */
+  function embeddingRisk(d, chosen) {
+    var s = d.in_store || {};
+    if (!chosen) { return ""; }
+    if (s.known && !s.total) { return ""; }
+    var models = storedModelNames(s);
+    if (s.known && models.length === 1 && models[0] === chosen) { return ""; }
+    if (!s.known || !models.length) {
+      if (chosen === (d.current || "")) { return ""; }
+    }
+    return '<div class="mwarn"><b>Changing this strands what is already stored</b>' +
+      esc(d.change_warning || "") + "</div>";
+  }
+
+  function renderModels() {
+    $("models").innerHTML = MODEL_TARGETS.map(function (t) {
+      var d = modelData[t.target] || {};
+      if (d.error) {
+        return '<div class="mblock"><h3>' + esc(t.title) + '</h3><div class="mnote">' +
+          esc(d.error) + "</div></div>";
+      }
+      var chosen = Object.prototype.hasOwnProperty.call(pendingPick, t.target)
+        ? pendingPick[t.target]
+        : ((Object.prototype.hasOwnProperty.call(edits, t.key) && edits[t.key] !== null)
+            ? edits[t.key] : (d.current || ""));
+      var options = modelOptions(t.target);
+      var known = options.some(function (o) { return o.model === chosen; });
+      var disc = d.discovered || {};
+      var discLine = disc.available
+        ? "The endpoint lists " + disc.count + " model" + (disc.count === 1 ? "" : "s") + "."
+        : (disc.reason === "not_probed"
+            ? "The endpoint has not been asked what it serves."
+            : esc(disc.detail || "The endpoint could not be asked."));
+      return '<div class="mblock" data-target="' + esc(t.target) + '"><h3>' + esc(t.title) +
+        '<span class="cur">' + (d.current ? esc(d.current) : "not set") + "</span></h3>" +
+        '<div class="mnote">' + esc(t.note) + "</div>" +
+        '<div class="mrow"><select data-pick="' + esc(t.target) + '">' +
+        options.map(function (o) {
+          return '<option value="' + esc(o.model) + '"' +
+            (o.model === chosen ? " selected" : "") + ">" + esc(o.model) +
+            (o.note ? " — " + esc(o.note) : "") + "</option>";
+        }).join("") +
+        '<option value="__other__"' + (known || !chosen ? "" : " selected") +
+        ">something else — type it</option></select>" +
+        '<input type="text" data-other="' + esc(t.target) + '" placeholder="model name" value="' +
+        (known ? "" : esc(chosen)) + '"' + (known || !chosen ? " hidden" : "") +
+        ' spellcheck="false">' +
+        '<button type="button" class="ghost" data-use="' + esc(t.target) + '">Use this</button>' +
+        "</div>" +
+        '<div class="mnote" style="margin-top:7px">' + discLine + "</div>" +
+        (t.target === "embedding" ? storedModelLine(d) + embeddingRisk(d, chosen) : "") +
+        "</div>";
+    }).join("");
+  }
+
+  function pickedModel(target) {
+    var select = $("models").querySelector('[data-pick="' + target + '"]');
+    var other = $("models").querySelector('[data-other="' + target + '"]');
+    if (!select) { return ""; }
+    return select.value === "__other__" ? (other ? other.value.trim() : "") : select.value;
+  }
+
+  $("models").addEventListener("change", function (ev) {
+    var dataset = ev.target && ev.target.dataset ? ev.target.dataset : {};
+    var target = dataset.pick || dataset.other;
+    if (!target) { return; }
+    if (dataset.pick && ev.target.value === "__other__") {
+      /* Do not re-render: it would replace the text box the customer is about to type into. */
+      var other = $("models").querySelector('[data-other="' + target + '"]');
+      if (other) { other.hidden = false; other.focus(); }
+      return;
+    }
+    pendingPick[target] = pickedModel(target);
+    renderModels();
+  });
+
+  $("models").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-use]") : null;
+    if (!button) { return; }
+    ev.preventDefault();
+    var target = button.dataset.use;
+    var entry = MODEL_TARGETS.filter(function (t) { return t.target === target; })[0];
+    var value = pickedModel(target);
+    if (!entry || !value) {
+      say($("saveMsg"), "Type a model name first.", "warn");
+      return;
+    }
+    var el = $("groups").querySelector('[data-key="' + entry.key + '"]');
+    if (!el) {
+      say($("saveMsg"), "That field is not loaded — enter an admin key first.", "warn");
+      return;
+    }
+    el.value = value;
+    edits[entry.key] = value;
+    pendingPick[target] = value;
+    markDirty();
+    renderModels();
+    var group = el.closest("details");
+    if (group) { group.open = true; }
+    el.scrollIntoView({ block: "center" });
+    /* Deliberately not saved here. A model change is worth seeing next to whatever else is
+       pending -- a key that has not been filled in yet, most of all. */
+    say($("saveMsg"), entry.title + " set to " + value + " — not saved yet. Save configuration " +
+      "below to apply it.", "info");
+  });
+
+  $("probeModels").addEventListener("click", function () {
+    say($("saveMsg"), "Asking the endpoints what they serve…", "info");
+    loadModels(true).then(function () { say($("saveMsg"), "", "info"); });
+  });
+
   /* ---------- deployment inventory (read-only) ---------- */
   function renderInventory(settings) {
     var blocks = (settings || {}).inventory || [];
@@ -792,6 +1034,7 @@ function liveStream(options) {
         renderHistory(d.settings);
         renderInventory(d.settings);
         loadEncoding();
+        loadModels(false);
         startLive();
       })
       .catch(function (e) {
@@ -800,6 +1043,7 @@ function liveStream(options) {
           $("groups").innerHTML = '<section><div class="empty">Enter an admin-scoped key above to ' +
             "load and change this deployment’s configuration.</div></section>";
           $("presets").innerHTML = '<div class="empty">Enter an admin key to see the presets.</div>';
+          $("models").innerHTML = '<div class="empty">Enter an admin key to choose models.</div>';
         } else {
           conn("down", "gateway unreachable");
           $("groups").innerHTML = '<section><div class="msg err">Could not reach the gateway.</div></section>';
@@ -1962,6 +2206,8 @@ EXPLORE_BODY = """
     <button type="button" role="tab" id="tab-ask" aria-controls="pane-ask" data-pane="ask" aria-selected="true">Ask</button>
     <button type="button" role="tab" id="tab-add" aria-controls="pane-add" data-pane="add" aria-selected="false">Add a memory</button>
     <button type="button" role="tab" id="tab-browse" aria-controls="pane-browse" data-pane="browse" aria-selected="false">Browse</button>
+    <button type="button" role="tab" id="tab-api" aria-controls="pane-api" data-pane="api" aria-selected="false">mem0 API</button>
+    <button type="button" role="tab" id="tab-batch" aria-controls="pane-batch" data-pane="batch" aria-selected="false">Batch ingest</button>
   </div>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-ask" id="pane-ask">
@@ -2029,6 +2275,51 @@ EXPLORE_BODY = """
     <div class="hint" id="retryNote" hidden>Retry re-sends the file from this browser, so it works
       only while this tab stays open — the bytes never existed on the server. A bulk import from a
       server directory is retryable after a restart; see <a href="/v1/admin/ingestion">Ingestion</a>.</div>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-api" id="pane-api" hidden>
+    <h2>Run a mem0 operation</h2>
+    <p class="hint" style="margin-top:0">Every method of the mem0 API, listed by the name you call
+      it by rather than by the URL that serves it. The request is shown before it is sent and the
+      raw answer after, so this doubles as the worked example for writing the call yourself. The
+      scope comes from the fields above.</p>
+    <div id="ops"></div>
+    <div id="opForm"><div class="empty">Choose an operation.</div></div>
+    <div id="opMsg" role="status" aria-live="polite"></div>
+    <div id="opResult"></div>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-batch" id="pane-batch" hidden>
+    <h2>Batch ingest</h2>
+    <p class="hint" style="margin-top:0">Many memories in one submission. Each line is one memory:
+      plain text, or a JSON object to set a per-line user, agent, session or metadata. The batch
+      runs on the SERVER as a tracked job — closing this tab does not stop it, and its failures are
+      retryable from <a href="/v1/admin/ingestion">Ingestion</a> exactly like a directory import.</p>
+    <label for="batchText">Records</label>
+    <textarea id="batchText" style="min-height:170px" spellcheck="false"
+      placeholder='The team agreed to keep the coupon stacking rule for ACME until Q4.
+{"text": "Renewal moved to March.", "user_id": "alice", "metadata": {"source": "crm"}}'></textarea>
+    <div class="grid2">
+      <div>
+        <label for="batchFile">…or load a file</label>
+        <input id="batchFile" type="file" accept=".txt,.jsonl,.ndjson,.json">
+        <div class="hint">Read in this browser and put in the box above, so what will be sent is
+          in front of you before you send it.</div>
+      </div>
+      <div>
+        <label for="batchKeyEnv">Server-side key variable</label>
+        <input id="batchKeyEnv" type="text" value="MATRIXARK_API_KEY" spellcheck="false">
+        <div class="hint">The job runs on the server and authenticates with the key in this
+          environment variable. The key in your browser is not handed to the worker.</div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="batchPreview" class="ghost" type="button">Check what would be sent</button>
+      <button id="batchRun" type="button">Start batch</button>
+      <span class="hint" style="margin:0" id="batchCount">Nothing entered yet.</span>
+    </div>
+    <div id="batchMsg" role="status" aria-live="polite"></div>
+    <div id="batchResult"></div>
   </section>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-browse" id="pane-browse" hidden>
@@ -2248,6 +2539,617 @@ EXPLORE_JS = r"""
             "err");
       });
   }
+
+
+  /* ---------- mem0 console ---------- */
+  /* Generated from the gateway's own MEM0_OPERATIONS, so an operation that gains an argument gains
+     a field here without anyone remembering to add one. */
+  var MEM0_OPS = [
+  {
+    "id": "add",
+    "label": "add()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/ingest",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Write a turn. Acknowledged at 202 with extraction running behind it, which is why a search issued immediately afterwards can legitimately not see it yet.",
+    "fields": [
+      {
+        "name": "content",
+        "in": "message",
+        "kind": "textarea",
+        "required": true,
+        "label": "Message",
+        "placeholder": "The team agreed to keep the coupon stacking rule for ACME until Q4.",
+        "help": "Sent as one user turn."
+      },
+      {
+        "name": "finalize",
+        "in": "body",
+        "kind": "bool",
+        "default": true,
+        "label": "Extract before answering",
+        "help": "Off is how production behaves: the write is acknowledged and extraction runs in the background."
+      },
+      {
+        "name": "metadata",
+        "in": "body",
+        "kind": "json",
+        "label": "Metadata",
+        "placeholder": "{\"source\": \"portal\"}",
+        "help": "Stored alongside the memory and returned with it."
+      }
+    ]
+  },
+  {
+    "id": "search",
+    "label": "search()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/retrieve",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "The retrieval path an agent uses: ranked, then packed to fit a token budget.",
+    "fields": [
+      {
+        "name": "query",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Query",
+        "placeholder": "when do we ship?"
+      },
+      {
+        "name": "max_budget_tokens",
+        "in": "body",
+        "kind": "number",
+        "default": 2048,
+        "label": "Token budget",
+        "help": "The pack is built to fit this. A budget far below what the answer needs is indistinguishable from poor retrieval."
+      }
+    ]
+  },
+  {
+    "id": "get_all",
+    "label": "get_all()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/memories",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Every live memory in the scope, unranked. This is the listing, not the search.",
+    "fields": [
+      {
+        "name": "limit",
+        "in": "body",
+        "kind": "number",
+        "default": 50,
+        "label": "Limit"
+      }
+    ]
+  },
+  {
+    "id": "get",
+    "label": "get()",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/{id}",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "One memory's stored record, by id.",
+    "fields": [
+      {
+        "name": "id",
+        "in": "path",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "history",
+    "label": "history()",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/{id}/history",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "How that memory changed: each supersede, with what it said before.",
+    "fields": [
+      {
+        "name": "id",
+        "in": "path",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "get_by_key",
+    "label": "by identity key",
+    "group": "Read",
+    "method": "GET",
+    "path": "/v1/memory/by-key",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "The one live value for an identity key in a scope \u2014 the shape a profile field wants, where the answer is a value and not a ranked list.",
+    "fields": [
+      {
+        "name": "identity_key",
+        "in": "query",
+        "kind": "text",
+        "required": true,
+        "label": "Identity key",
+        "placeholder": "ship_date"
+      },
+      {
+        "name": "user_id",
+        "in": "query",
+        "kind": "text",
+        "label": "User",
+        "from_scope": "user"
+      }
+    ]
+  },
+  {
+    "id": "users",
+    "label": "users()",
+    "group": "Read",
+    "method": "POST",
+    "path": "/v1/users",
+    "scope": "context:retrieve",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Which users, agents and runs hold memories in this tenant.",
+    "fields": []
+  },
+  {
+    "id": "update",
+    "label": "update()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/update",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "Supersede a memory: the amended text is ingested and the old id tombstoned, so history keeps both.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      },
+      {
+        "name": "text",
+        "in": "body",
+        "kind": "textarea",
+        "required": true,
+        "label": "New text",
+        "placeholder": "We ship on Friday."
+      }
+    ]
+  },
+  {
+    "id": "feedback",
+    "label": "feedback()",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/memory/feedback",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": false,
+    "summary": "Rate a retrieved memory. A write about a memory, so it gates like a write.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      },
+      {
+        "name": "rating",
+        "in": "body",
+        "kind": "number",
+        "default": 1,
+        "label": "Rating",
+        "help": "1 useful, -1 not."
+      }
+    ]
+  },
+  {
+    "id": "session_commit",
+    "label": "commit a session",
+    "group": "Write",
+    "method": "POST",
+    "path": "/v1/session/commit",
+    "scope": "context:ingest",
+    "destructive": false,
+    "needs_scope": true,
+    "summary": "Close a session and roll its turns into summaries. Until this runs the turns are stored but not summarised.",
+    "fields": []
+  },
+  {
+    "id": "forget",
+    "label": "forget()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/forget",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": false,
+    "summary": "Stop returning one memory. The record stays, so history still explains it.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "delete",
+    "label": "delete()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/delete",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": false,
+    "summary": "Delete one memory outright.",
+    "fields": [
+      {
+        "name": "memory_id",
+        "in": "body",
+        "kind": "text",
+        "required": true,
+        "label": "Memory id",
+        "placeholder": "mem_7f21"
+      }
+    ]
+  },
+  {
+    "id": "delete_all",
+    "label": "delete_all()",
+    "group": "Forget",
+    "method": "POST",
+    "path": "/v1/reset",
+    "scope": "context:forget",
+    "destructive": true,
+    "needs_scope": true,
+    "summary": "Drop everything in the scope shown above. There is no undo, and an empty user field means the default scope, not none of them.",
+    "fields": []
+  }
+];
+
+  var currentOp = null;
+
+  function opGroups() {
+    var order = [], byGroup = {};
+    MEM0_OPS.forEach(function (op) {
+      if (!byGroup[op.group]) { byGroup[op.group] = []; order.push(op.group); }
+      byGroup[op.group].push(op);
+    });
+    return order.map(function (name) { return { name: name, ops: byGroup[name] }; });
+  }
+
+  function renderOps() {
+    $("ops").innerHTML = opGroups().map(function (group) {
+      return '<div class="opgroup">' + esc(group.name) + '</div><div class="opgrid">' +
+        group.ops.map(function (op) {
+          return '<button type="button" class="opbtn' + (op.destructive ? " danger" : "") +
+            '" data-op="' + esc(op.id) + '" aria-pressed="' +
+            (currentOp && currentOp.id === op.id ? "true" : "false") + '">' +
+            esc(op.label) + "</button>";
+        }).join("") + "</div>";
+    }).join("");
+  }
+
+  function fieldControl(op, f) {
+    var id = "op_" + op.id + "_" + f.name;
+    var value = f["default"] == null ? "" : String(f["default"]);
+    if (f.kind === "bool") {
+      return '<label class="check"><input type="checkbox" id="' + id + '" data-f="' +
+        esc(f.name) + '"' + (f["default"] ? " checked" : "") + "> " + esc(f.label) + "</label>" +
+        (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
+    }
+    var control;
+    if (f.kind === "textarea" || f.kind === "json") {
+      control = '<textarea id="' + id + '" data-f="' + esc(f.name) + '" spellcheck="false"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">" +
+        esc(f.kind === "json" ? "" : value) + "</textarea>";
+    } else {
+      control = '<input type="text" id="' + id + '" data-f="' + esc(f.name) +
+        '" spellcheck="false" value="' + esc(value) + '"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : "") + ">";
+    }
+    return '<label for="' + id + '">' + esc(f.label) + (f.required ? " *" : "") + "</label>" +
+      control + (f.help ? '<div class="hint">' + esc(f.help) + "</div>" : "");
+  }
+
+  function renderOpForm() {
+    var op = currentOp;
+    if (!op) {
+      $("opForm").innerHTML = '<div class="empty">Choose an operation.</div>';
+      renderOps();
+      return;
+    }
+    var scopeLine = op.needs_scope
+      ? " · scope from the fields above"
+      : " · not scoped — it addresses one memory by id";
+    $("opForm").innerHTML = '<div class="opform"><h3>' + esc(op.label) + "</h3>" +
+      '<div class="route">' + esc(op.method) + " " + esc(op.path) +
+      '<span class="scope"> · needs ' + esc(op.scope) + esc(scopeLine) + "</span></div>" +
+      '<p class="hint" style="margin-top:0">' + esc(op.summary) + "</p>" +
+      op.fields.map(function (f) { return fieldControl(op, f); }).join("") +
+      (op.destructive
+        ? '<div class="mwarn"><b>This cannot be undone</b>Type <span class="mono">' + esc(op.id) +
+          '</span> to confirm, then run.</div><label for="opConfirm">Confirm</label>' +
+          '<input id="opConfirm" type="text" spellcheck="false" autocomplete="off">'
+        : "") +
+      '<div class="actions"><button id="opRun" type="button">Run</button>' +
+      '<button id="opCurl" class="ghost" type="button">Copy as curl</button></div>' +
+      '<pre id="opPreview"></pre></div>';
+    renderOps();
+    updatePreview();
+  }
+
+  function opFieldValue(op, f) {
+    var el = document.getElementById("op_" + op.id + "_" + f.name);
+    if (!el) { return null; }
+    if (f.kind === "bool") { return el.checked; }
+    var raw = el.value.trim();
+    if (!raw) { return null; }
+    if (f.kind === "number") {
+      var n = Number(raw);
+      return isNaN(n) ? null : n;
+    }
+    if (f.kind === "json") {
+      try { return JSON.parse(raw); } catch (e) { return { __bad__: raw }; }
+    }
+    return raw;
+  }
+
+  /* One builder for the preview, the curl and the send. Three code paths would let the preview
+     drift from what is actually sent -- and the preview is the thing a customer copies into their
+     own client, so a preview that lies is worse than none. */
+  function buildRequest(op) {
+    var body = {}, query = [], path = op.path, messages = [], problems = [];
+    if (op.needs_scope) { body.scope = scope(); }
+    op.fields.forEach(function (f) {
+      var value = opFieldValue(op, f);
+      if (value && value.__bad__ !== undefined) {
+        problems.push(f.label + " is not valid JSON.");
+        return;
+      }
+      if (f.required && (value === null || value === "")) {
+        problems.push(f.label + " is required.");
+        return;
+      }
+      if (value === null) { return; }
+      if (f["in"] === "message") { messages.push({ role: "user", content: value }); }
+      else if (f["in"] === "body") { body[f.name] = value; }
+      else if (f["in"] === "scope") { (body.scope = body.scope || {})[f.name] = value; }
+      else if (f["in"] === "query") {
+        query.push(encodeURIComponent(f.name) + "=" + encodeURIComponent(value));
+      } else if (f["in"] === "path") {
+        path = path.replace("{" + f.name + "}", encodeURIComponent(value));
+      }
+    });
+    if (messages.length) { body.messages = messages; }
+    if (path.indexOf("{") >= 0) { problems.push("The id is required."); }
+    return {
+      method: op.method,
+      url: path + (query.length ? "?" + query.join("&") : ""),
+      problems: problems,
+      body: op.method === "GET" ? null : body
+    };
+  }
+
+  function updatePreview() {
+    if (!currentOp) { return; }
+    var pre = $("opPreview");
+    if (!pre) { return; }
+    var request = buildRequest(currentOp);
+    pre.textContent = request.method + " " + request.url +
+      (request.body ? "\n\n" + JSON.stringify(request.body, null, 2) : "");
+  }
+
+  $("ops").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-op]") : null;
+    if (!button) { return; }
+    currentOp = MEM0_OPS.filter(function (o) { return o.id === button.dataset.op; })[0] || null;
+    $("opResult").innerHTML = "";
+    say($("opMsg"), "");
+    renderOpForm();
+  });
+
+  $("opForm").addEventListener("input", updatePreview);
+  $("opForm").addEventListener("change", updatePreview);
+
+  $("opForm").addEventListener("click", function (ev) {
+    if (!currentOp) { return; }
+    if (ev.target.id === "opCurl") {
+      var request = buildRequest(currentOp);
+      var lines = ["curl -X " + request.method + " " + location.origin + request.url,
+                   "  -H 'Authorization: Bearer $MATRIXARK_API_KEY'"];
+      if (request.body) {
+        lines.push("  -H 'Content-Type: application/json'");
+        lines.push("  -d '" + JSON.stringify(request.body) + "'");
+      }
+      /* The key is named, never pasted: this goes on a clipboard and often into a ticket. */
+      var text = lines.join(" \\\n");
+      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
+      say($("opMsg"), "Copied. It reads $MATRIXARK_API_KEY from your environment rather than " +
+        "carrying your key.", "ok");
+      return;
+    }
+    if (ev.target.id === "opRun") { runOp(); }
+  });
+
+  function runOp() {
+    var op = currentOp;
+    if (!$("key").value.trim()) { say($("opMsg"), "Enter an API key first.", "info"); return; }
+    var request = buildRequest(op);
+    if (request.problems.length) {
+      say($("opMsg"), request.problems.join(" "), "warn");
+      return;
+    }
+    if (op.destructive) {
+      var confirmEl = $("opConfirm");
+      if (!confirmEl || confirmEl.value.trim() !== op.id) {
+        say($("opMsg"), "Type " + op.id + " in the confirm box to run this.", "warn");
+        return;
+      }
+    }
+    say($("opMsg"), "Running " + op.label + "…", "info");
+    var started = Date.now();
+    var init = { method: request.method, headers: auth() };
+    if (request.body) {
+      init.headers = Object.assign({ "Content-Type": "application/json" }, init.headers);
+      init.body = JSON.stringify(request.body);
+    }
+    fetch(request.url, init)
+      .then(function (r) {
+        return r.text().then(function (text) {
+          return { status: r.status, ok: r.ok, text: text };
+        });
+      })
+      .then(function (res) {
+        var ms = Date.now() - started;
+        var pretty = res.text, parsed = null;
+        try { parsed = JSON.parse(res.text); pretty = JSON.stringify(parsed, null, 2); }
+        catch (e) { /* leave it raw */ }
+        say($("opMsg"), res.ok
+          ? op.label + " answered " + res.status + " in " + ms + " ms."
+          : op.label + " answered " + res.status + " — " + reason(parsed, res.status),
+          res.ok ? "ok" : "err");
+        $("opResult").innerHTML = "<pre>" + esc(pretty) + "</pre>";
+        /* Clear the confirmation after a destructive op succeeds, or the next click runs it again
+           against a box that still says the magic word. */
+        if (res.ok && op.destructive && $("opConfirm")) { $("opConfirm").value = ""; }
+      })
+      .catch(function () { say($("opMsg"), "Could not reach the gateway.", "err"); });
+  }
+
+  renderOps();
+
+  /* ---------- batch ingest ---------- */
+  /* Parsed here so the count and the unusable lines are visible before anything is submitted, and
+     parsed AGAIN on the server, which is the copy that decides. This one is a courtesy. */
+  function parseBatch(text) {
+    var records = [], problems = [];
+    text.split(/\r?\n/).forEach(function (line, index) {
+      var trimmed = line.trim();
+      if (!trimmed) { return; }
+      if (trimmed.charAt(0) === "{") {
+        try {
+          var parsed = JSON.parse(trimmed);
+          if (!parsed.text && !parsed.content) {
+            problems.push("Line " + (index + 1) + " is JSON with no text in it.");
+            return;
+          }
+          records.push(parsed);
+        } catch (e) {
+          problems.push("Line " + (index + 1) + " starts like JSON but does not parse.");
+        }
+        return;
+      }
+      records.push({ text: trimmed });
+    });
+    return { records: records, problems: problems };
+  }
+
+  function batchCount() {
+    var parsed = parseBatch($("batchText").value);
+    $("batchCount").textContent = parsed.records.length
+      ? parsed.records.length + " record" + (parsed.records.length === 1 ? "" : "s") +
+        (parsed.problems.length
+          ? ", " + parsed.problems.length + " line(s) unusable and skipped" : "")
+      : "Nothing entered yet.";
+    return parsed;
+  }
+
+  $("batchText").addEventListener("input", batchCount);
+
+  $("batchFile").addEventListener("change", function () {
+    var file = $("batchFile").files && $("batchFile").files[0];
+    if (!file) { return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      $("batchText").value = String(reader.result || "");
+      batchCount();
+      say($("batchMsg"), "Loaded " + file.name + ". Nothing has been sent yet.", "info");
+    };
+    reader.onerror = function () { say($("batchMsg"), "Could not read that file.", "err"); };
+    reader.readAsText(file);
+  });
+
+  function submitBatch(preview) {
+    if (!$("key").value.trim()) { say($("batchMsg"), "Enter an API key first.", "info"); return; }
+    var parsed = batchCount();
+    if (!parsed.records.length) {
+      say($("batchMsg"), "There is nothing to send." +
+        (parsed.problems.length ? " " + parsed.problems[0] : ""), "warn");
+      return;
+    }
+    var sc = scope();
+    fetch("/v1/admin/ingestion/records", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({
+        records: parsed.records,
+        preview: !!preview,
+        user_id: sc.user_id || "default",
+        agent_id: sc.agent_id || "",
+        session_id: sc.session_id || "",
+        api_key_env: $("batchKeyEnv").value.trim() || "MATRIXARK_API_KEY"
+      })
+    })
+      .then(function (r) {
+        return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          say($("batchMsg"), reason(res.body, res.status), "err");
+          return;
+        }
+        if (preview) {
+          say($("batchMsg"), "Nothing was sent. " + res.body.total + " record" +
+            (res.body.total === 1 ? "" : "s") + " would be ingested as " +
+            (res.body.user_id || "default") + ".", "info");
+          $("batchResult").innerHTML = "<pre>" +
+            esc(JSON.stringify(res.body.sample || [], null, 2)) + "</pre>";
+          return;
+        }
+        say($("batchMsg"), "Started job " + res.body.job_id + " over " + res.body.total +
+          " records. It runs on the server — this tab can be closed.", "ok");
+        $("batchResult").innerHTML = '<p class="hint">Watch it, and retry any failures, on ' +
+          '<a href="/v1/admin/ingestion">Ingestion</a>.</p>';
+      })
+      .catch(function () { say($("batchMsg"), "Could not reach the gateway.", "err"); });
+  }
+
+  $("batchPreview").addEventListener("click", function () { submitBatch(true); });
+  $("batchRun").addEventListener("click", function () { submitBatch(false); });
 
   $("memories").addEventListener("click", function (ev) {
     var row = ev.target.closest ? ev.target.closest("tr.rowlink") : null;

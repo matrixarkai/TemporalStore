@@ -279,6 +279,39 @@
                border-radius:0}
   .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
   .pane[hidden]{display:none}
+  .opgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px;
+          margin-bottom:6px}
+  .opbtn{text-align:left;background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+         border-radius:7px;padding:8px 10px;cursor:pointer;font-size:13px;font-weight:550;
+         font-family:"IBM Plex Mono",monospace}
+  .opbtn:hover{border-color:var(--accent)}
+  .opbtn[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);
+                            color:var(--accent)}
+  .opbtn.danger[aria-pressed=true]{border-color:var(--crit);background:var(--crit-soft);
+                                   color:var(--crit)}
+  .opgroup{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+           color:var(--faint);margin:12px 0 6px}
+  .opform{border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin-top:12px;
+          background:var(--panel-2)}
+  .opform h3{margin:0 0 4px;font-size:15px;font-weight:650}
+  .opform .route{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                 margin-bottom:8px}
+  .opform .route .scope{color:var(--faint)}
+  .mblock{border:1px solid var(--line);border-radius:9px;padding:13px 15px;margin-bottom:11px;
+          background:var(--panel-2)}
+  .mblock h3{margin:0 0 3px;font-size:14.5px;font-weight:650;display:flex;gap:9px;
+             align-items:baseline;flex-wrap:wrap}
+  .mblock h3 .cur{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                  font-weight:400}
+  .mblock .mnote{font-size:13px;color:var(--muted);line-height:1.5;margin:9px 0 0;max-width:70ch}
+  .mrow{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .mrow select,.mrow input[type=text]{flex:1 1 240px;width:auto;margin:0}
+  .mrow button{flex:0 0 auto}
+  .mstore{font-size:12.5px;color:var(--faint);margin-top:9px;line-height:1.5}
+  .mstore b{color:var(--muted);font-weight:600}
+  .mwarn{border:1px solid var(--crit);background:var(--crit-soft);border-radius:8px;
+         padding:11px 13px;margin-top:11px;font-size:13px;line-height:1.55;max-width:78ch}
+  .mwarn b{display:block;margin-bottom:4px;font-size:13.5px}
   .upl{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:9px;
        background:var(--panel-2)}
   .upl-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
@@ -351,6 +384,16 @@
     <p class="hint" style="margin-top:0">A preset only fills the fields below — it writes nothing you
       could not type by hand. Review, add your key, then save.</p>
     <div class="presets" id="presets"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Models <span class="aux"><button class="link" id="probeModels" type="button">ask the
+      endpoints what they serve</button></span></h2>
+    <p class="hint" style="margin-top:0">Both of these are free text on the wire, and a name that is
+      merely misspelt does not fail loudly: extraction falls back to the local rules and embedding to
+      hash vectors, both answering 200. Pick from the catalogue, or ask the configured endpoint for
+      its own list. Choosing here fills the field below — nothing is written until you save.</p>
+    <div id="models"><div class="empty">Enter an admin key to choose models.</div></div>
   </section>
 
   <form id="settingsForm">
@@ -777,6 +820,205 @@ function liveStream(options) {
       });
   }
 
+  /* ---------- model picker ---------- */
+  /* Kept as a chooser over the SAME fields the form below writes: one save path, one entry in the
+     change log. A second write path for models would be a second thing to keep correct. */
+  var modelData = {};
+  /* What is selected in the dropdown but not yet applied to the form. The risk of an encoder
+     change has to be visible while it is being chosen; showing it only after the field is filled
+     in tells someone about a decision they have already made. */
+  var pendingPick = {};
+
+  var MODEL_TARGETS = [
+    { target: "extraction", key: "extraction.model", title: "Extraction model",
+      note: "The model that reads a document and decides what is worth remembering. When it is " +
+            "unset or unreachable, ingest keeps working — it stores only what the local rules " +
+            "pull out, and says nothing." },
+    { target: "embedding", key: "embedding.model", title: "Embedding model",
+      note: "The encoder that turns text into the vectors retrieval searches. Changing it is the " +
+            "one setting on this page that can quietly invalidate data you already have." }
+  ];
+
+  function loadModels(probe) {
+    if (!$("key").value.trim()) { return Promise.resolve(); }
+    return Promise.all(MODEL_TARGETS.map(function (t) {
+      return fetch("/v1/admin/models?target=" + t.target + "&probe=" + (probe ? "1" : "0"),
+                   { headers: auth() })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (d) { modelData[t.target] = d; })
+        .catch(function (status) {
+          modelData[t.target] = { error: failure(typeof status === "number" ? status : 0) };
+        });
+    })).then(renderModels);
+  }
+
+  /* The catalogue, whatever the endpoint reported, and the value in use -- deduplicated, because a
+     model appearing twice in a list reads as two different models. */
+  function modelOptions(target) {
+    var d = modelData[target] || {};
+    var seen = {}, out = [];
+    function push(name, note) {
+      name = String(name || "").trim();
+      if (!name || seen[name]) { return; }
+      seen[name] = 1;
+      out.push({ model: name, note: note || "" });
+    }
+    if (d.current) { push(d.current, "currently configured"); }
+    ((d.discovered || {}).models || []).forEach(function (m) {
+      push(m, "offered by the configured endpoint");
+    });
+    (d.catalogue || []).forEach(function (c) {
+      /* The width collision belongs in the option text, not in a footnote: it is the reason a
+         switch that looks harmless is not. Two encoders of the same width raise no error. */
+      var same = (c.same_width_as || []).length
+        ? " — same width as " + (c.same_width_as || []).join(", ") + ", different space"
+        : "";
+      push(c.model, c.note + (c.dim ? " (" + c.dim + " dimensions" + same + ")" : ""));
+    });
+    return out;
+  }
+
+  /* The backend reports models and widths as {model, count} / {dim, count} rows, not bare names. */
+  function storedModelNames(s) {
+    return (s.models || []).map(function (m) {
+      return typeof m === "string" ? m : String((m || {}).model || "");
+    }).filter(function (m) { return m; });
+  }
+
+  function storedModelLine(d) {
+    var s = d.in_store || {};
+    if (!s.known) {
+      return '<div class="mstore">' + esc(s.detail || "The store was not asked.") + "</div>";
+    }
+    if (!s.total) {
+      return '<div class="mstore">Nothing is stored yet, so there is nothing a change could ' +
+        "strand. This is the moment to settle on an encoder.</div>";
+    }
+    var models = storedModelNames(s);
+    var widths = (s.dimensions || []).map(function (x) {
+      return typeof x === "number" ? String(x) : String((x || {}).dim || "");
+    }).filter(function (x) { return x; });
+    return '<div class="mstore"><b>' + esc(s.total) + "</b> stored vector" +
+      (s.total === 1 ? "" : "s") +
+      (models.length ? ", made with <b>" + models.map(esc).join("</b>, <b>") + "</b>" :
+        ", made with an encoder this build did not record") +
+      (widths.length ? " · " + esc(widths.join(", ")) + " dimensions" : "") +
+      (s.mixed_dimensions ? " · <b>widths already differ</b>, so some of this store is already " +
+        "unsearchable against the rest" : "") + "</div>";
+  }
+
+  /* Show the warning only when the choice in the box would actually strand something. Warning on
+     every render trains people to click past it, and then it is not there when it matters. */
+  function embeddingRisk(d, chosen) {
+    var s = d.in_store || {};
+    if (!chosen) { return ""; }
+    if (s.known && !s.total) { return ""; }
+    var models = storedModelNames(s);
+    if (s.known && models.length === 1 && models[0] === chosen) { return ""; }
+    if (!s.known || !models.length) {
+      if (chosen === (d.current || "")) { return ""; }
+    }
+    return '<div class="mwarn"><b>Changing this strands what is already stored</b>' +
+      esc(d.change_warning || "") + "</div>";
+  }
+
+  function renderModels() {
+    $("models").innerHTML = MODEL_TARGETS.map(function (t) {
+      var d = modelData[t.target] || {};
+      if (d.error) {
+        return '<div class="mblock"><h3>' + esc(t.title) + '</h3><div class="mnote">' +
+          esc(d.error) + "</div></div>";
+      }
+      var chosen = Object.prototype.hasOwnProperty.call(pendingPick, t.target)
+        ? pendingPick[t.target]
+        : ((Object.prototype.hasOwnProperty.call(edits, t.key) && edits[t.key] !== null)
+            ? edits[t.key] : (d.current || ""));
+      var options = modelOptions(t.target);
+      var known = options.some(function (o) { return o.model === chosen; });
+      var disc = d.discovered || {};
+      var discLine = disc.available
+        ? "The endpoint lists " + disc.count + " model" + (disc.count === 1 ? "" : "s") + "."
+        : (disc.reason === "not_probed"
+            ? "The endpoint has not been asked what it serves."
+            : esc(disc.detail || "The endpoint could not be asked."));
+      return '<div class="mblock" data-target="' + esc(t.target) + '"><h3>' + esc(t.title) +
+        '<span class="cur">' + (d.current ? esc(d.current) : "not set") + "</span></h3>" +
+        '<div class="mnote">' + esc(t.note) + "</div>" +
+        '<div class="mrow"><select data-pick="' + esc(t.target) + '">' +
+        options.map(function (o) {
+          return '<option value="' + esc(o.model) + '"' +
+            (o.model === chosen ? " selected" : "") + ">" + esc(o.model) +
+            (o.note ? " — " + esc(o.note) : "") + "</option>";
+        }).join("") +
+        '<option value="__other__"' + (known || !chosen ? "" : " selected") +
+        ">something else — type it</option></select>" +
+        '<input type="text" data-other="' + esc(t.target) + '" placeholder="model name" value="' +
+        (known ? "" : esc(chosen)) + '"' + (known || !chosen ? " hidden" : "") +
+        ' spellcheck="false">' +
+        '<button type="button" class="ghost" data-use="' + esc(t.target) + '">Use this</button>' +
+        "</div>" +
+        '<div class="mnote" style="margin-top:7px">' + discLine + "</div>" +
+        (t.target === "embedding" ? storedModelLine(d) + embeddingRisk(d, chosen) : "") +
+        "</div>";
+    }).join("");
+  }
+
+  function pickedModel(target) {
+    var select = $("models").querySelector('[data-pick="' + target + '"]');
+    var other = $("models").querySelector('[data-other="' + target + '"]');
+    if (!select) { return ""; }
+    return select.value === "__other__" ? (other ? other.value.trim() : "") : select.value;
+  }
+
+  $("models").addEventListener("change", function (ev) {
+    var dataset = ev.target && ev.target.dataset ? ev.target.dataset : {};
+    var target = dataset.pick || dataset.other;
+    if (!target) { return; }
+    if (dataset.pick && ev.target.value === "__other__") {
+      /* Do not re-render: it would replace the text box the customer is about to type into. */
+      var other = $("models").querySelector('[data-other="' + target + '"]');
+      if (other) { other.hidden = false; other.focus(); }
+      return;
+    }
+    pendingPick[target] = pickedModel(target);
+    renderModels();
+  });
+
+  $("models").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-use]") : null;
+    if (!button) { return; }
+    ev.preventDefault();
+    var target = button.dataset.use;
+    var entry = MODEL_TARGETS.filter(function (t) { return t.target === target; })[0];
+    var value = pickedModel(target);
+    if (!entry || !value) {
+      say($("saveMsg"), "Type a model name first.", "warn");
+      return;
+    }
+    var el = $("groups").querySelector('[data-key="' + entry.key + '"]');
+    if (!el) {
+      say($("saveMsg"), "That field is not loaded — enter an admin key first.", "warn");
+      return;
+    }
+    el.value = value;
+    edits[entry.key] = value;
+    pendingPick[target] = value;
+    markDirty();
+    renderModels();
+    var group = el.closest("details");
+    if (group) { group.open = true; }
+    el.scrollIntoView({ block: "center" });
+    /* Deliberately not saved here. A model change is worth seeing next to whatever else is
+       pending -- a key that has not been filled in yet, most of all. */
+    say($("saveMsg"), entry.title + " set to " + value + " — not saved yet. Save configuration " +
+      "below to apply it.", "info");
+  });
+
+  $("probeModels").addEventListener("click", function () {
+    say($("saveMsg"), "Asking the endpoints what they serve…", "info");
+    loadModels(true).then(function () { say($("saveMsg"), "", "info"); });
+  });
+
   /* ---------- deployment inventory (read-only) ---------- */
   function renderInventory(settings) {
     var blocks = (settings || {}).inventory || [];
@@ -878,6 +1120,7 @@ function liveStream(options) {
         renderHistory(d.settings);
         renderInventory(d.settings);
         loadEncoding();
+        loadModels(false);
         startLive();
       })
       .catch(function (e) {
@@ -886,6 +1129,7 @@ function liveStream(options) {
           $("groups").innerHTML = '<section><div class="empty">Enter an admin-scoped key above to ' +
             "load and change this deployment’s configuration.</div></section>";
           $("presets").innerHTML = '<div class="empty">Enter an admin key to see the presets.</div>';
+          $("models").innerHTML = '<div class="empty">Enter an admin key to choose models.</div>';
         } else {
           conn("down", "gateway unreachable");
           $("groups").innerHTML = '<section><div class="msg err">Could not reach the gateway.</div></section>';

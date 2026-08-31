@@ -197,6 +197,22 @@ def post_document(
         # report 1000 successes and read back nothing.
         "finalize": finalize,
     }
+    return post_ingest_body(base_url, body, api_key=api_key, timeout_s=timeout_s)
+
+
+def post_ingest_body(
+    base_url: str,
+    body: Dict[str, object],
+    *,
+    api_key: str,
+    timeout_s: float,
+) -> Tuple[bool, str]:
+    """POST one ingest envelope, with the retry policy. Returns (ok, detail).
+
+    Split out from post_document so a record typed into the portal and a file read off disk take
+    the same wire path -- one place that knows which failures are worth repeating, rather than a
+    second copy that would drift from it.
+    """
     payload = json.dumps(body).encode("utf-8")
     url = base_url.rstrip("/") + "/v1/ingest"
 
@@ -232,6 +248,55 @@ def post_document(
         except Exception as exc:  # network/timeout: worth retrying
             last = ("%s: %s" % (type(exc).__name__, exc))[:120]
     return False, last
+
+
+def record_body(record: Dict[str, object], default_user: str) -> Dict[str, object]:
+    """Turn one batch line into an ingest envelope.
+
+    A per-record user, agent or session overrides the batch's, because the common case for a paste
+    is a dump that already carries whose memory each line is; ignoring that would file everybody's
+    memories under one subject with nothing to say it had happened.
+    """
+    text = str(record.get("text") or record.get("content") or "")
+    scope: Dict[str, object] = {"user_id": str(record.get("user_id") or default_user)}
+    for name in ("agent_id", "session_id"):
+        value = str(record.get(name) or "")
+        if value:
+            scope[name] = value
+    body: Dict[str, object] = {
+        "scope": scope,
+        "user_id": scope["user_id"],
+        "messages": [{"role": str(record.get("role") or "user"), "content": text}],
+        # A batch line is a complete unit, like a document and unlike a streaming turn. Without
+        # this the gateway acks it as a deferred event and a batch reports successes for records
+        # that are not yet retrievable.
+        "wait": True,
+        "finalize": True,
+    }
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict) and metadata:
+        body["metadata"] = metadata
+    if record.get("identity_key"):
+        body["identity_key"] = str(record["identity_key"])
+    return body
+
+
+def post_record(
+    base_url: str,
+    record: Dict[str, object],
+    *,
+    user_id: str,
+    api_key: str,
+    timeout_s: float,
+) -> Tuple[bool, str]:
+    """Ingest one batch record. Returns (ok, detail)."""
+    text = str(record.get("text") or record.get("content") or "")
+    if not text.strip():
+        # Not retryable, and worth saying plainly: an empty line reaching here is a bug in whoever
+        # built the batch, and repeating it would fail identically forever.
+        return False, "empty record"
+    return post_ingest_body(base_url, record_body(record, user_id),
+                            api_key=api_key, timeout_s=timeout_s)
 
 
 # ---------------------------------------------------------------------------------------------

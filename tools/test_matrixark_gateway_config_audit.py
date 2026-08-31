@@ -76,6 +76,9 @@ _DISPLAY_ONLY = {
     ("matrixark_v1_gateway.py", "_readiness_checks"),
 }
 
+# Full qualnames. `make_v1_app` is the app FACTORY -- its own body runs once per worker -- but the
+# request handler nested inside it (`make_v1_app._serve`) runs per request and must not inherit the
+# factory's classification.
 _STARTUP_ONLY = {
     ("matrixark_v1_gateway.py", "GatewayConfig.from_env"),
     ("matrixark_v1_gateway.py", "_coerce_config"),
@@ -152,8 +155,10 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
                 continue
             if qual is None:
                 scope = "import-time"
-            elif (entry, qual) in _STARTUP_ONLY or any(
-                    (entry, part) in _STARTUP_ONLY for part in (qual.split(".")[0], qual)):
+            # FULL qualname only. Matching the outermost segment classified everything nested
+            # inside a startup function as startup too -- and the ASGI request handler is nested
+            # inside make_v1_app, so every per-request read in it read as captured-at-boot.
+            elif (entry, qual) in _STARTUP_ONLY:
                 scope = "import-time"
             else:
                 scope = "per-call"

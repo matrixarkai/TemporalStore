@@ -553,6 +553,117 @@ PRESETS: Dict[str, Json] = {
 }
 
 
+# Models worth suggesting, with the one property that decides whether a switch is safe. Dimensions
+# matter because two encoders are frequently the SAME width -- all-MiniLM-L6-v2 and BGE-M3
+# truncated to 384 are both 384 -- so a same-width swap mixes two incompatible vector spaces with
+# no length mismatch anywhere to raise an error.
+#
+# A catalogue, not a whitelist: the field stays free text, and an endpoint's own list wins over this
+# when one can be fetched.
+EMBEDDING_CATALOGUE: List[Json] = [
+    {"model": "paraphrase-multilingual-MiniLM-L12-v2", "dim": 384,
+     "note": "Multilingual, CPU-friendly. Holds up on mixed Chinese/English where an "
+             "English-only MiniLM does not."},
+    {"model": "all-MiniLM-L6-v2", "dim": 384,
+     "note": "English only, fastest of these."},
+    {"model": "BAAI/bge-m3", "dim": 1024,
+     "note": "Strong multilingual retrieval. Truncates cleanly to 384 at little cost at rank 1, "
+             "which is a storage lever rather than a compute one — the full forward pass still "
+             "runs."},
+    {"model": "text-embedding-3-small", "dim": 1536, "note": "OpenAI, inexpensive."},
+    {"model": "text-embedding-3-large", "dim": 3072, "note": "OpenAI, highest quality of the two."},
+    {"model": "voyage-3", "dim": 1024, "note": "Voyage; needs the voyage provider."},
+]
+
+EXTRACTION_CATALOGUE: List[Json] = [
+    {"model": "deepseek-chat", "note": "DeepSeek's general model. No embeddings API — pair it "
+                                       "with a local encoder."},
+    {"model": "deepseek-reasoner", "note": "Slower and more deliberate; raise the timeout."},
+    {"model": "gpt-4o-mini", "note": "OpenAI, inexpensive, good enough for extraction."},
+    {"model": "gpt-4o", "note": "OpenAI, stronger and dearer."},
+    {"model": "qwen2.5:7b", "note": "Runs locally under Ollama."},
+    {"model": "qwen2.5:1.5b", "note": "Small enough for a laptop; extraction quality drops."},
+]
+
+
+def _get_json(url: str, headers: Dict[str, str], timeout: float) -> Tuple[int, Any]:
+    request = urllib.request.Request(url, method="GET", headers=headers)
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310 - operator URL
+        raw = response.read()
+        try:
+            return response.getcode(), json.loads(raw.decode("utf-8"))
+        except ValueError:
+            return response.getcode(), None
+
+
+def discover_models(target: str, timeout: float = 8.0) -> Json:
+    """Ask the configured endpoint what it serves.
+
+    An OpenAI-compatible server answers `GET <base>/models`. Asking beats typing: a name that is
+    merely misspelled fails at ingest time, hours later, as a silent fall back to the deterministic
+    path -- which answers 200 and looks like a working deployment.
+    """
+    document = load()
+    values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
+    if target == "embedding":
+        base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
+                or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip())
+        key_env = _env_name(SETTINGS_BY_KEY["embedding.api_key"], values)
+    else:
+        base = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", "").strip()
+        key_env = _env_name(SETTINGS_BY_KEY["extraction.api_key"], values)
+    base = base.rstrip("/")
+    if not base:
+        return {"available": False, "reason": "no_base_url",
+                "detail": "Set the base URL first; there is nothing to ask."}
+    key = os.environ.get(key_env, "")
+    headers = {"Authorization": "Bearer " + key} if key else {}
+    try:
+        status, parsed = _get_json(base + "/models", headers, timeout)
+    except urllib.error.HTTPError as exc:
+        return {"available": False, "reason": "http_%d" % exc.code,
+                "detail": "The endpoint refused the model listing (HTTP %d). Some servers do not "
+                          "implement it; the field is still free text." % exc.code}
+    except Exception as exc:
+        return {"available": False, "reason": exc.__class__.__name__,
+                "detail": "Could not reach %s/models: %s" % (base, str(exc)[:160])}
+    if not isinstance(parsed, dict):
+        return {"available": False, "reason": "unexpected_body",
+                "detail": "The endpoint answered %d with something that is not a model list."
+                          % status}
+    rows = parsed.get("data")
+    models = []
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and row.get("id"):
+                models.append(str(row["id"]))
+            elif isinstance(row, str):
+                models.append(row)
+    return {"available": True, "base_url": base, "models": sorted(set(models))[:200],
+            "count": len(set(models))}
+
+
+def model_catalogue(target: str) -> List[Json]:
+    """The catalogue, with each encoder told which others it cannot be told apart from by width.
+
+    Derived rather than written down. A note only warns about the collisions whoever wrote it
+    happened to think of -- the widths are in the data, so the whole set falls out of them, and a
+    model added later annotates itself.
+    """
+    if target != "embedding":
+        return [dict(entry) for entry in EXTRACTION_CATALOGUE]
+    by_width: Dict[int, List[str]] = {}
+    for entry in EMBEDDING_CATALOGUE:
+        by_width.setdefault(int(entry["dim"]), []).append(str(entry["model"]))
+    out: List[Json] = []
+    for entry in EMBEDDING_CATALOGUE:
+        row = dict(entry)
+        row["same_width_as"] = [name for name in by_width[int(entry["dim"])]
+                                if name != entry["model"]]
+        out.append(row)
+    return out
+
+
 # ================================================================================================
 # Persistence
 # ================================================================================================

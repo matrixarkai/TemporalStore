@@ -1210,7 +1210,15 @@ pub(super) fn context_embedding_similarity_micros(left: &[f32], right: &[f32]) -
     if left.is_empty() || right.is_empty() {
         return 0;
     }
-    let len = left.len().min(right.len());
+    // Vectors of different widths are from different models, and cosine over the shared prefix of
+    // two unrelated spaces returns a perfectly plausible number -- which is worse than no number,
+    // because it ranks. Scoring the prefix was how a store that had seen two encoders kept
+    // answering with confident nonsense. No score means the node falls through to the hybrid
+    // lexical pass, exactly as an un-embedded node does.
+    if left.len() != right.len() {
+        return 0;
+    }
+    let len = left.len();
     let mut dot = 0.0_f32;
     let mut left_norm = 0.0_f32;
     let mut right_norm = 0.0_f32;
