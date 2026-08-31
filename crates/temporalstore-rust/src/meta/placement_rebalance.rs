@@ -503,7 +503,7 @@ impl SingleNodeMeta {
                 // somebody says otherwise.
                 let pinned = state
                     .shards
-                    .get(shard_id)
+                    .get(&shard_id)
                     .map(|location| location.preferred_location.clone())
                     .unwrap_or_default();
                 let preferred_location = if pinned.is_empty() {

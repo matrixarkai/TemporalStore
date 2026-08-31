@@ -703,6 +703,9 @@ fn a_batch_is_split_across_shards_the_table_gained_after_it_was_opened() {
                                 shard_id,
                                 server_addr: backend_for_meta.clone(),
                                 latest_snapshot: None,
+                                // This stub pins nothing, which is what every
+                                // shard means until somebody says otherwise.
+                                preferred_location: String::new(),
                             }),
                         },
                     )
