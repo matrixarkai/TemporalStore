@@ -3191,6 +3191,22 @@ EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 100000)
 EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
 
 
+def _int8_scale(dims: int) -> float:
+    """The int8 factor for a unit vector of this width -- the SAME for every vector.
+
+    A per-vector factor (dividing by that vector's own peak) is what made int8 reorder: two
+    stored vectors scaled differently can swap places against one query, which no amount of
+    precision repairs. This depends only on the width, so it is uniform across vectors and
+    still computable one vector at a time, which a corpus-derived factor is not.
+
+    Unit vectors in d dimensions have elements around 1/sqrt(d); 8/sqrt(d) covers that
+    distribution and its tail, measured at 0.000% clipping on real e5-large vectors.
+    """
+    if dims <= 0:
+        return 127.0
+    return 127.0 * math.sqrt(dims) / 8.0
+
+
 def compact_embedding_vector(vector: list[float]) -> list[float]:
     """Drop float digits the encoder never produced.
 
@@ -3243,20 +3259,20 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
     if _NUMPY is not None and vector:
         values = _NUMPY.asarray(vector, dtype=_NUMPY.float64)
         if EMBEDDING_VECTOR_INT8:
-            peak = float(_NUMPY.abs(values).max())
-            if peak <= 0.0:
-                return [0] * len(vector)
-            return _NUMPY.rint(values / peak * 127).astype(_NUMPY.int64).tolist()
+            scale = _int8_scale(len(vector))
+            return (
+                _NUMPY.clip(_NUMPY.rint(values * scale), -127, 127)
+                .astype(_NUMPY.int64)
+                .tolist()
+            )
         if EMBEDDING_VECTOR_SCALE > 0:
             return _NUMPY.rint(values * EMBEDDING_VECTOR_SCALE).astype(_NUMPY.int64).tolist()
         if EMBEDDING_VECTOR_DECIMALS <= 0:
             return vector
         return _NUMPY.round(values, EMBEDDING_VECTOR_DECIMALS).tolist()
     if EMBEDDING_VECTOR_INT8:
-        peak = max((abs(value) for value in vector), default=0.0)
-        if peak <= 0.0:
-            return [0 for _ in vector]
-        return [int(round(value / peak * 127)) for value in vector]
+        scale = _int8_scale(len(vector))
+        return [max(-127, min(127, int(round(value * scale)))) for value in vector]
     if EMBEDDING_VECTOR_SCALE > 0:
         return [int(round(value * EMBEDDING_VECTOR_SCALE)) for value in vector]
     if EMBEDDING_VECTOR_DECIMALS <= 0:

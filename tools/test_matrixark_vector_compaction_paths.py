@@ -115,9 +115,42 @@ class TheTwoPathsAreOneBehaviour(unittest.TestCase):
         for seed in range(20):
             for out in _both(core, _unit(seed)):
                 self.assertLessEqual(max(out), 127)
-                self.assertGreaterEqual(min(out), -128)
-                self.assertEqual(127, max(abs(v) for v in out),
-                                 "the peak element must anchor the scale")
+                self.assertGreaterEqual(min(out), -127)
+
+    def test_the_scale_does_not_depend_on_the_vector(self):
+        """The property the whole encoding depends on, tested where the two rules DIVERGE.
+
+        Dividing each vector by its own peak is what made int8 reorder: two stored vectors scaled
+        by different factors can swap places against one query, which no amount of precision
+        repairs. The clean discriminator is doubling a vector. Under a per-vector peak, a vector
+        and its double normalise to the SAME output, because the peak divides the magnitude away.
+        Under a width-derived scale the output doubles with the input.
+
+        Recovering the factor by dividing output by input does not work: quantisation rounding on
+        small elements swamps it, which is what made an earlier version of this test fail against
+        correct code.
+        """
+        core = _core("int8")
+        vector = _unit(3)
+        once = core.compact_embedding_vector(vector)
+        twice = core.compact_embedding_vector([v * 2 for v in vector])
+        self.assertNotEqual(
+            once, twice,
+            "a vector and its double produced identical output, which is the per-vector peak "
+            "behaviour: the magnitude was normalised away and two vectors can be scaled "
+            "differently")
+        # And it really is doubling, not merely differing.
+        big = [v for v in zip(once, twice) if abs(v[0]) > 8]
+        self.assertTrue(big, "no elements large enough to compare a ratio against")
+        for small, large in big:
+            self.assertAlmostEqual(2.0, large / small, delta=0.25)
+
+    def test_the_scale_follows_the_width(self):
+        core = _core("int8")
+        self.assertAlmostEqual(127.0 * (64 ** 0.5) / 8.0, core._int8_scale(64), places=6)
+        self.assertAlmostEqual(127.0 * (512 ** 0.5) / 8.0, core._int8_scale(512), places=6)
+        self.assertGreater(core._int8_scale(512), core._int8_scale(64),
+                           "a wider vector has smaller elements and needs a larger factor")
 
     @_NEEDS_BOTH
     def test_float_encoding_keeps_its_declared_precision(self):
