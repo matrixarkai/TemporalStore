@@ -3238,17 +3238,30 @@ EMBEDDING_VECTOR_BASE64 = os.environ.get(
 ).strip().lower() not in {"0", "false", "no", "off", ""}
 
 _VECTOR_BASE64_PREFIX = "i16:"
+_VECTOR_INT8_PREFIX = "i8:"
 
 
 def encode_stored_vector(values: list) -> Any:
-    """The stored form of an already-compacted vector: a list, or a tagged base64 string."""
+    """The stored form of an already-compacted vector: a list, or a tagged base64 string.
+
+    Width follows the values. int8 vectors fit in a byte, and packing them as int16 would waste
+    half of every element -- the encoding and the container have to agree or the smaller encoding
+    buys nothing. The tag records which was used, so a store holding both serves both.
+    """
     if not EMBEDDING_VECTOR_BASE64 or not values:
         return values
     try:
-        packed = _struct.pack("<%dh" % len(values), *[int(v) for v in values])
+        ints = [int(v) for v in values]
+    except (ValueError, TypeError):
+        return values          # a float encoding cannot use this container
+    try:
+        if all(-128 <= v <= 127 for v in ints):
+            return _VECTOR_INT8_PREFIX + _base64.b64encode(
+                _struct.pack("<%db" % len(ints), *ints)).decode("ascii")
+        packed = _struct.pack("<%dh" % len(ints), *ints)
     except (struct_error, ValueError, TypeError):
-        # Non-integer or out-of-range values (a float encoding, or a scale too large for
-        # int16) cannot use this container; store the list rather than lose precision.
+        # Outside int16 as well -- a scale too large for this container. Store the list rather
+        # than lose precision silently.
         return values
     return _VECTOR_BASE64_PREFIX + _base64.b64encode(packed).decode("ascii")
 
@@ -3261,10 +3274,13 @@ def decode_stored_vector(value: Any) -> list:
     the string form as "no vector" would stop scoring those nodes with nothing to notice.
     """
     if isinstance(value, str):
-        if not value.startswith(_VECTOR_BASE64_PREFIX):
-            return []
-        blob = _base64.b64decode(value[len(_VECTOR_BASE64_PREFIX):])
-        return list(_struct.unpack("<%dh" % (len(blob) // 2), blob))
+        if value.startswith(_VECTOR_INT8_PREFIX):
+            blob = _base64.b64decode(value[len(_VECTOR_INT8_PREFIX):])
+            return list(_struct.unpack("<%db" % len(blob), blob))
+        if value.startswith(_VECTOR_BASE64_PREFIX):
+            blob = _base64.b64decode(value[len(_VECTOR_BASE64_PREFIX):])
+            return list(_struct.unpack("<%dh" % (len(blob) // 2), blob))
+        return []
     if isinstance(value, list):
         return value
     return []

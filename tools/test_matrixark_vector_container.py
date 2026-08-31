@@ -131,6 +131,43 @@ class TheTwoContainersAreOneVector(unittest.TestCase):
         self.assertEqual(worst, core.decode_stored_vector(core.encode_stored_vector(worst)))
         self.assertGreater(32767 / 10000, 3.0, "int16 headroom over the worst case")
 
+    def test_a_byte_sized_vector_packs_in_one_byte(self):
+        """Width follows the values, or the smaller encoding buys nothing.
+
+        int8 vectors fit in a byte. Packing them as int16 would store a zero beside every value
+        and halve the saving, which is the kind of waste that looks like it is working.
+        """
+        core = _core(True)
+        small = [1, -2, 127, -128]
+        encoded = core.encode_stored_vector(small)
+        self.assertTrue(encoded.startswith("i8:"), "expected the one-byte form: %r" % encoded)
+        self.assertEqual(small, core.decode_stored_vector(encoded))
+
+    def test_a_wider_vector_still_uses_two_bytes(self):
+        core = _core(True)
+        wide = [1, -2, 3036, -1649]
+        encoded = core.encode_stored_vector(wide)
+        self.assertTrue(encoded.startswith("i16:"), "expected the two-byte form: %r" % encoded)
+        self.assertEqual(wide, core.decode_stored_vector(encoded))
+
+    def test_the_one_byte_form_is_actually_smaller(self):
+        # The whole point. Both encode four values; one must cost about half the other.
+        core = _core(True)
+        narrow = core.encode_stored_vector([1] * 64)
+        wide = core.encode_stored_vector([3000] * 64)
+        self.assertLess(len(narrow), len(wide) * 0.7,
+                        "one-byte form is not smaller: %d vs %d" % (len(narrow), len(wide)))
+
+    def test_the_two_tags_do_not_decode_each_other(self):
+        # A tag read as the wrong width returns numbers, not an error -- so the tags must be
+        # distinct and each must only be read by its own branch.
+        core = _core(True)
+        as8 = core.encode_stored_vector([1, 2, 3, 4])
+        as16 = core.encode_stored_vector([3000, 3001, 3002, 3003])
+        self.assertNotEqual(as8[:4], as16[:4])
+        self.assertEqual([1, 2, 3, 4], core.decode_stored_vector(as8))
+        self.assertEqual([3000, 3001, 3002, 3003], core.decode_stored_vector(as16))
+
 
 if __name__ == "__main__":
     unittest.main()
