@@ -9,6 +9,9 @@ adapter that can be replaced with TemporalStore RPC calls later.
 """
 
 from __future__ import annotations
+import base64 as _base64
+import struct as _struct
+from struct import error as struct_error
 
 import argparse
 import secrets
@@ -3208,6 +3211,59 @@ def _int8_scale(dims: int) -> float:
     if dims <= 0:
         return 127.0
     return 127.0 * math.sqrt(dims) / 8.0
+
+
+# base64 of int16 little-endian, instead of JSON decimal digits. A 512-dim vector at
+# scale=1e4 is 2,745 bytes as JSON text and 1,368 as base64 int16 -- the same integers, half
+# the bytes, because JSON spends a character per digit on numbers no human reads.
+#
+# int16 fits by construction: at scale=1e4 the largest value a UNIT vector can produce is
+# 10,000 (all mass on one axis), against a signed range of 32,767. Measured over 500 real
+# vectors the range was -1,649..3,036.
+#
+# Default OFF. Every reader must go through decode_stored_vector before this is turned on;
+# a reader that expects a list would see a string and treat the vector as absent, which is
+# silent -- the node would simply stop being scored.
+EMBEDDING_VECTOR_BASE64 = os.environ.get(
+    "MATRIXARK_EMBEDDING_VECTOR_BASE64", "0"
+).strip().lower() not in {"0", "false", "no", "off", ""}
+
+_VECTOR_BASE64_PREFIX = "i16:"
+
+
+def encode_stored_vector(values: list) -> Any:
+    """The stored form of an already-compacted vector: a list, or a tagged base64 string."""
+    if not EMBEDDING_VECTOR_BASE64 or not values:
+        return values
+    try:
+        packed = _struct.pack("<%dh" % len(values), *[int(v) for v in values])
+    except (struct_error, ValueError, TypeError):
+        # Non-integer or out-of-range values (a float encoding, or a scale too large for
+        # int16) cannot use this container; store the list rather than lose precision.
+        return values
+    return _VECTOR_BASE64_PREFIX + _base64.b64encode(packed).decode("ascii")
+
+
+def decode_stored_vector(value: Any) -> list:
+    """Read a stored vector in either form.
+
+    Dual read is the whole point: a store written before this existed holds lists, and one
+    written with it holds tagged strings. Both must serve, and a reader that silently treated
+    the string form as "no vector" would stop scoring those nodes with nothing to notice.
+    """
+    if isinstance(value, str):
+        if not value.startswith(_VECTOR_BASE64_PREFIX):
+            return []
+        blob = _base64.b64decode(value[len(_VECTOR_BASE64_PREFIX):])
+        return list(_struct.unpack("<%dh" % (len(blob) // 2), blob))
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def record_vector(record: Json) -> list:
+    """The vector on a record, in either stored form."""
+    return decode_stored_vector((record or {}).get("vector"))
 
 
 def compact_embedding_vector(vector: list[float]) -> list[float]:

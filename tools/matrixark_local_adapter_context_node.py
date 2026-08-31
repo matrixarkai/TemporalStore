@@ -74,7 +74,7 @@ class _LocalAdapterContextNodeMixin:
             if (
                 record.get("embedding_type") != "context_node"
                 or str(record.get("model_ref") or "") != current_model_ref
-                or not isinstance(record.get("vector"), list)
+                or not record_vector(record)
                 or not record.get("vector")
             ):
                 continue
@@ -291,7 +291,7 @@ class _LocalAdapterContextNodeMixin:
             existing_model_ref = str((existing or {}).get("model_ref") or "")
             if (
                 existing
-                and isinstance(existing.get("vector"), list)
+                and record_vector(existing)
                 and existing_model_ref == current_model_ref
                 and existing_updated_at_ms >= source_updated_at_ms
             ):

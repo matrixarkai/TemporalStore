@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import Json
+    from tools.matrixark_mcp_core import record_vector, Json
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json
+    from matrixark_mcp_core import record_vector, Json
 
 
 def add_context_embedding_vector(
@@ -24,7 +24,7 @@ def add_context_embedding_vector(
     if record.get("record_type") != "context_embedding":
         return False
     ref_hash = record.get("ref_hash")
-    vector = record.get("vector", [])
+    vector = record_vector(record)
     embedding_type = record.get("embedding_type")
     if embedding_type == "event_text":
         event_embedding_vectors[ref_hash] = vector
