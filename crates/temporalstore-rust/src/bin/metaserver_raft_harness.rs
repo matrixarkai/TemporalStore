@@ -147,6 +147,7 @@ fn main() {
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
             registered_at_ms: 0,
+            preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 55,
             server_addr: "meta-snapshot-server".to_string(),
@@ -162,6 +163,7 @@ fn main() {
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
             registered_at_ms: 0,
+            preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 56,
             server_addr: "meta-after-lag".to_string(),
@@ -236,6 +238,7 @@ fn main() {
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
             registered_at_ms: 0,
+            preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 58,
             server_addr: "meta-after-replace".to_string(),
@@ -253,6 +256,7 @@ fn main() {
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
             registered_at_ms: 0,
+            preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 59,
             server_addr: "meta-after-second-scale-down".to_string(),
@@ -270,6 +274,7 @@ fn main() {
     let unavailable_without_majority = runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
             registered_at_ms: 0,
+            preferred_location: String::new(),
             state: temporalstore_rust::meta::MetaEntityState::Normal,
             shard_id: 57,
             server_addr: "must-not-commit-without-majority".to_string(),

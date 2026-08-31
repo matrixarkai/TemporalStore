@@ -7584,7 +7584,12 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                             node.state.shards.insert(
                                 request.shard_id,
                                 ShardLocation {
+<<<<<<< HEAD
                                     registered_at_ms: 0,
+||||||| a7277311
+=======
+                                    preferred_location: String::new(),
+>>>>>>> matrixark/main
                                     state: crate::meta::MetaEntityState::Normal,
                                     shard_id: request.shard_id,
                                     server_addr: request.server_addr.clone(),
@@ -7596,7 +7601,12 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                             node.state.shards.insert(
                                 request.shard_id,
                                 ShardLocation {
+<<<<<<< HEAD
                                     registered_at_ms: 0,
+||||||| a7277311
+=======
+                                    preferred_location: String::new(),
+>>>>>>> matrixark/main
                                     state: crate::meta::MetaEntityState::Normal,
                                     shard_id: request.shard_id,
                                     server_addr: request.server_addr.clone(),

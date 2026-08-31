@@ -6312,7 +6312,12 @@ mod tests {
                         &GetShardResponse {
                             status: Status::ok(),
                             location: Some(ShardLocation {
+<<<<<<< HEAD
                                 registered_at_ms: 0,
+||||||| a7277311
+=======
+                                preferred_location: String::new(),
+>>>>>>> matrixark/main
                                 state: crate::meta::MetaEntityState::Normal,
                                 shard_id: 1,
                                 server_addr: server_addr.clone(),
