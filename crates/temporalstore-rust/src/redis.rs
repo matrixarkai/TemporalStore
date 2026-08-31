@@ -466,6 +466,338 @@ mod tests {
             "EXPIRE on a missing key must return 0"
         );
         assert_eq!(run(&mut state, vec!["EXPIRE", "k", "100"]), RespValue::Integer(1));
+
+        // PERSIST removes the timeout without touching the value: 1 when a timeout came off,
+        // 0 for a key with none, 0 for a missing key -- and TTL reads -1 afterwards.
+        assert_eq!(run(&mut state, vec!["PERSIST", "k"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["TTL", "k"]), RespValue::Integer(-1));
+        assert_eq!(
+            run(&mut state, vec!["GET", "k"]),
+            RespValue::Bulk(Some(b"v".to_vec())),
+            "PERSIST must not disturb the value"
+        );
+        assert_eq!(
+            run(&mut state, vec!["PERSIST", "k"]),
+            RespValue::Integer(0),
+            "a key with no timeout answers 0"
+        );
+        assert_eq!(
+            run(&mut state, vec!["PERSIST", "missing"]),
+            RespValue::Integer(0),
+            "a missing key answers 0"
+        );
+    }
+
+    /// Lists behave like the native ones: push answers the growing length, order is
+    /// head-to-tail with LPUSH walking the head, pops drain the chosen end, negative LRANGE
+    /// indices count from the tail, and TYPE says "list".
+    #[test]
+    fn list_commands_match_native() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        assert_eq!(run(&mut state, vec!["RPUSH", "l", "b"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["RPUSH", "l", "c", "d"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["LPUSH", "l", "a"]), RespValue::Integer(4));
+        assert_eq!(run(&mut state, vec!["LLEN", "l"]), RespValue::Integer(4));
+        assert_eq!(run(&mut state, vec!["TYPE", "l"]), RespValue::SimpleString("list".to_string()));
+
+        let full = RespValue::Array(vec![
+            RespValue::Bulk(Some(b"a".to_vec())),
+            RespValue::Bulk(Some(b"b".to_vec())),
+            RespValue::Bulk(Some(b"c".to_vec())),
+            RespValue::Bulk(Some(b"d".to_vec())),
+        ]);
+        assert_eq!(run(&mut state, vec!["LRANGE", "l", "0", "-1"]), full);
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "l", "-2", "-1"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"c".to_vec())),
+                RespValue::Bulk(Some(b"d".to_vec())),
+            ]),
+            "negative indices count from the tail"
+        );
+        assert_eq!(
+            run(&mut state, vec!["LRANGE", "l", "5", "9"]),
+            RespValue::Array(Vec::new()),
+            "an out-of-window range answers empty, never an error"
+        );
+
+        assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"a".to_vec())));
+        assert_eq!(run(&mut state, vec!["RPOP", "l"]), RespValue::Bulk(Some(b"d".to_vec())));
+        assert_eq!(
+            run(&mut state, vec!["LPOP", "l", "5"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"b".to_vec())),
+                RespValue::Bulk(Some(b"c".to_vec())),
+            ]),
+            "a COUNT larger than the list drains it and answers what there was"
+        );
+        assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(None));
+        assert_eq!(run(&mut state, vec!["LLEN", "l"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["LLEN", "missing"]), RespValue::Integer(0));
+
+        // Interleaved pushes after a drain keep working -- the sequence space is not consumed.
+        assert_eq!(run(&mut state, vec!["LPUSH", "l", "z"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["LPOP", "l"]), RespValue::Bulk(Some(b"z".to_vec())));
+    }
+
+    /// Sorted sets behave like the native ones: ZADD answers only NEW members, a re-score
+    /// moves ordering without growing the set, ranges walk (score, member) order with
+    /// negative indices and WITHSCORES, score windows honor -inf/+inf and the exclusive
+    /// paren, and TYPE says zset.
+    #[test]
+    fn sorted_set_commands_match_native() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "2", "b", "1", "a"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "3", "c", "5", "a"]), RespValue::Integer(1),
+            "re-scoring a is not an add");
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["ZSCORE", "z", "a"]), bulk("5"));
+        assert_eq!(run(&mut state, vec!["ZSCORE", "z", "missing"]), RespValue::Bulk(None));
+        assert_eq!(run(&mut state, vec!["TYPE", "z"]), RespValue::SimpleString("zset".to_string()));
+
+        assert_eq!(
+            run(&mut state, vec!["ZRANGE", "z", "0", "-1"]),
+            RespValue::Array(vec![bulk("b"), bulk("c"), bulk("a")]),
+            "order follows the moved score"
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANGE", "z", "0", "1", "WITHSCORES"]),
+            RespValue::Array(vec![bulk("b"), bulk("2"), bulk("c"), bulk("3")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZREVRANGE", "z", "0", "0"]),
+            RespValue::Array(vec![bulk("a")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANGEBYSCORE", "z", "-inf", "+inf"]),
+            RespValue::Array(vec![bulk("b"), bulk("c"), bulk("a")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANGEBYSCORE", "z", "(2", "5"]),
+            RespValue::Array(vec![bulk("c"), bulk("a")]),
+            "the paren excludes the bound"
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZREVRANGEBYSCORE", "z", "+inf", "3", "WITHSCORES"]),
+            RespValue::Array(vec![bulk("a"), bulk("5"), bulk("c"), bulk("3")]),
+            "rev-by-score takes (max, min) and answers descending"
+        );
+
+        assert_eq!(run(&mut state, vec!["ZREM", "z", "b", "missing"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(2));
+
+        // Negative scores order below positives (the sign-flip bias at work).
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "-1.5", "n"]), RespValue::Integer(1));
+        assert_eq!(
+            run(&mut state, vec!["ZRANGE", "z", "0", "0", "WITHSCORES"]),
+            RespValue::Array(vec![bulk("n"), bulk("-1.5")]),
+        );
+    }
+
+    /// The rest of the sorted-set surface: ZINCRBY creates-then-moves atomically, ZCOUNT
+    /// honors the window syntax, ZPOPMIN/ZPOPMAX drain in order with scores attached, and
+    /// ZRANK/ZREVRANK answer positions or nil.
+    #[test]
+    fn sorted_set_completion_commands_match_native() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let bulk = |text: &str| RespValue::Bulk(Some(text.as_bytes().to_vec()));
+
+        // ZINCRBY on a missing member starts from 0; on a present one it moves the score.
+        assert_eq!(run(&mut state, vec!["ZINCRBY", "z", "3", "a"]), bulk("3"));
+        assert_eq!(run(&mut state, vec!["ZINCRBY", "z", "-1.5", "a"]), bulk("1.5"));
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(1));
+
+        assert_eq!(run(&mut state, vec!["ZADD", "z", "5", "b", "7", "c"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["ZCOUNT", "z", "-inf", "+inf"]), RespValue::Integer(3));
+        assert_eq!(run(&mut state, vec!["ZCOUNT", "z", "(1.5", "5"]), RespValue::Integer(1),
+            "the paren excludes a's exact score");
+
+        assert_eq!(run(&mut state, vec!["ZRANK", "z", "a"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["ZREVRANK", "z", "a"]), RespValue::Integer(2));
+        assert_eq!(run(&mut state, vec!["ZRANK", "z", "missing"]), RespValue::Bulk(None));
+
+        assert_eq!(
+            run(&mut state, vec!["ZPOPMIN", "z"]),
+            RespValue::Array(vec![bulk("a"), bulk("1.5")]),
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZPOPMAX", "z", "5"]),
+            RespValue::Array(vec![bulk("c"), bulk("7"), bulk("b"), bulk("5")]),
+            "a COUNT larger than the set drains it high-to-low"
+        );
+        assert_eq!(run(&mut state, vec!["ZCARD", "z"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["ZPOPMIN", "z"]), RespValue::Array(Vec::new()));
+    }
+
+    /// The token-bucket verbs over RESP: TAKE admits until the bucket runs dry and then
+    /// answers denied with a retry-after, PEEK answers the same shape without consuming.
+    #[test]
+    fn bucket_verbs_admit_then_deny_with_retry_after() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+        let fields = |value: RespValue| -> Vec<String> {
+            match value {
+                RespValue::Array(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        RespValue::Bulk(Some(bytes)) => String::from_utf8(bytes).expect("utf8"),
+                        other => panic!("unexpected item: {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("unexpected response: {other:?}"),
+            }
+        };
+
+        // Capacity 2, no refill within the test: two takes admit, the third denies.
+        let first = fields(run(&mut state, vec!["BUCKETTAKE", "q", "1", "2", "0.001"]));
+        assert_eq!("1", first[0]);
+        let second = fields(run(&mut state, vec!["BUCKETTAKE", "q", "1", "2", "0.001"]));
+        assert_eq!("1", second[0]);
+        let third = fields(run(&mut state, vec!["BUCKETTAKE", "q", "1", "2", "0.001"]));
+        assert_eq!("0", third[0], "the drained bucket must deny");
+        assert!(third[2].parse::<u64>().expect("retry ms") > 0, "denied answers a retry-after");
+
+        // PEEK reports without consuming. The retry-after may drift by the milliseconds the
+        // wall clock moved between calls, so equality holds for the outcome and the level,
+        // and the retry-after only within a tolerance.
+        let peek_one = fields(run(&mut state, vec!["BUCKETPEEK", "q", "1", "2", "0.001"]));
+        let peek_two = fields(run(&mut state, vec!["BUCKETPEEK", "q", "1", "2", "0.001"]));
+        assert_eq!(peek_one[0], peek_two[0], "peek must not change the outcome");
+        assert_eq!(peek_one[1], peek_two[1], "peek must not consume");
+        let retry_one = peek_one[2].parse::<i64>().expect("retry ms");
+        let retry_two = peek_two[2].parse::<i64>().expect("retry ms");
+        assert!((retry_one - retry_two).abs() <= 50, "retry-after moved {retry_one} -> {retry_two}");
+    }
+
+    /// The windowed seen-set: first sight answers 0 and marks, a repeat inside the window
+    /// answers 1 without re-marking, the window expires entries, SEENCARD counts, and DEL
+    /// clears the whole set.
+    #[test]
+    fn seen_set_marks_dedupes_expires_and_clears() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "a", "60000"]), RespValue::Integer(0),
+            "first sight is not a duplicate");
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "a", "60000"]), RespValue::Integer(1),
+            "a repeat inside the window is");
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "b", "60000"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["SEENCARD", "idem"]), RespValue::Integer(2));
+
+        // A 1ms window expires across a 25ms sleep: the member reads as new again, and the
+        // bounded front-sweep has removed the stale entries from the count.
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "gone", "x", "1"]), RespValue::Integer(0));
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "gone", "x", "1"]), RespValue::Integer(0),
+            "an expired member is new again");
+        assert_eq!(run(&mut state, vec!["SEENCARD", "gone"]), RespValue::Integer(1),
+            "the sweep dropped the expired entry, keeping only the fresh mark");
+
+        assert_eq!(run(&mut state, vec!["DEL", "idem"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["SEENCARD", "idem"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "a", "60000"]), RespValue::Integer(0),
+            "a cleared set forgets");
     }
 
     #[test]
@@ -828,6 +1160,8 @@ mod tests {
             "BGSAVE" => vec!["BGSAVE"],
             "COMMAND" => vec!["COMMAND", "COUNT"],
             "CONFIG" => vec!["CONFIG", "GET", "maxmemory"],
+            "BUCKETPEEK" => vec!["BUCKETPEEK", "advertised:bucket", "1", "10", "1"],
+            "BUCKETTAKE" => vec!["BUCKETTAKE", "advertised:bucket", "1", "10", "1"],
             "COPY" => vec!["COPY", "advertised:missing", "advertised:copy"],
             "DBSIZE" => vec!["DBSIZE"],
             "DEL" => vec!["DEL", "advertised:missing"],
@@ -861,10 +1195,17 @@ mod tests {
             "INFO" => vec!["INFO"],
             "INCRBYFLOAT" => vec!["INCRBYFLOAT", "advertised:float", "1.5"],
             "KEYS" => vec!["KEYS", "*"],
+            "LLEN" => vec!["LLEN", "advertised:list"],
+            "LPOP" => vec!["LPOP", "advertised:list"],
+            "LPUSH" => vec!["LPUSH", "advertised:list", "v"],
+            "LRANGE" => vec!["LRANGE", "advertised:list", "0", "-1"],
+            "RPOP" => vec!["RPOP", "advertised:list"],
+            "RPUSH" => vec!["RPUSH", "advertised:list", "v"],
             "MGET" => vec!["MGET", "advertised:missing"],
             "MSET" => vec!["MSET", "advertised:mset", "v"],
             "MSETNX" => vec!["MSETNX", "advertised:msetnx", "v"],
             "PARTITION" => vec!["PARTITION", "INFO"],
+            "PERSIST" => vec!["PERSIST", "advertised:missing"],
             "PEXPIRE" => vec!["PEXPIRE", "advertised:missing", "10"],
             "PEXPIREAT" => vec!["PEXPIREAT", "advertised:missing", "4102444800000"],
             "PEXPIRETIME" => vec!["PEXPIRETIME", "advertised:missing"],
@@ -875,6 +1216,8 @@ mod tests {
             "RENAME" => vec!["RENAME", "advertised:missing", "advertised:renamed"],
             "RENAMENX" => vec!["RENAMENX", "advertised:missing", "advertised:renamed"],
             "SADD" => vec!["SADD", "advertised:set", "a"],
+            "SEENCARD" => vec!["SEENCARD", "advertised:seen"],
+            "SEENCHECK" => vec!["SEENCHECK", "advertised:seen", "m", "60000"],
             "SCARD" => vec!["SCARD", "advertised:set"],
             "SDIFF" => vec!["SDIFF", "advertised:set", "advertised:other"],
             "SCAN" => vec!["SCAN", "0"],
@@ -898,6 +1241,20 @@ mod tests {
             "TTL" => vec!["TTL", "advertised:missing"],
             "TOUCH" => vec!["TOUCH", "advertised:missing"],
             "TYPE" => vec!["TYPE", "advertised:missing"],
+            "ZADD" => vec!["ZADD", "advertised:zset", "1", "m"],
+            "ZCARD" => vec!["ZCARD", "advertised:zset"],
+            "ZCOUNT" => vec!["ZCOUNT", "advertised:zset", "-inf", "+inf"],
+            "ZINCRBY" => vec!["ZINCRBY", "advertised:zset", "1", "m"],
+            "ZPOPMAX" => vec!["ZPOPMAX", "advertised:zset"],
+            "ZPOPMIN" => vec!["ZPOPMIN", "advertised:zset"],
+            "ZRANK" => vec!["ZRANK", "advertised:zset", "m"],
+            "ZREVRANK" => vec!["ZREVRANK", "advertised:zset", "m"],
+            "ZRANGE" => vec!["ZRANGE", "advertised:zset", "0", "-1"],
+            "ZRANGEBYSCORE" => vec!["ZRANGEBYSCORE", "advertised:zset", "-inf", "+inf"],
+            "ZREM" => vec!["ZREM", "advertised:zset", "m"],
+            "ZREVRANGE" => vec!["ZREVRANGE", "advertised:zset", "0", "-1"],
+            "ZREVRANGEBYSCORE" => vec!["ZREVRANGEBYSCORE", "advertised:zset", "+inf", "-inf"],
+            "ZSCORE" => vec!["ZSCORE", "advertised:zset", "m"],
             "UNLINK" => vec!["UNLINK", "advertised:missing"],
             other => panic!("missing sample command for {other}"),
         }

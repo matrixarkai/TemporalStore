@@ -47,7 +47,7 @@ def main() -> int:
         dest="require_shared_oss_models",
         action="store_true",
         default=True,
-        help="Require MatrixArk and OpenViking/VikingMem to use the same OSS reader, encoder, cap, and context budget.",
+        help="Require MatrixArk and ExternalBaseline/ExternalBaseline to use the same OSS reader, encoder, cap, and context budget.",
     )
     parser.add_argument(
         "--allow-shared-oss-model-drift",
@@ -55,7 +55,7 @@ def main() -> int:
         help="Diagnostic-only escape hatch for intentionally unfair local model/budget experiments.",
     )
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
-    parser.add_argument("--reader-provider-name", default="vikingmem-gpt-4o-mini-reader")
+    parser.add_argument("--reader-provider-name", default="external_baseline-gpt-4o-mini-reader")
     parser.add_argument("--reader-model", default="gpt-4o-mini")
     parser.add_argument("--reader-base-url", default="")
     parser.add_argument("--reader-api-key-env", default="OPENAI_API_KEY")

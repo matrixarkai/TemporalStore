@@ -18,6 +18,16 @@ pub(super) fn is_write(command: &Command) -> bool {
 }
 
 pub(super) fn command_is_dropped(command: &Command, drop_percent: u8) -> bool {
+    // A full drain has to mean every command. The hash below can only judge commands that
+    // HAVE a routing key, and the `unwrap_or(false)` on the end answers "keep sending it"
+    // for the ones that do not -- the resource-blob upload path, sequence batch queries,
+    // node-embedding reads. A table drained to 100 went on sending those.
+    //
+    // Below 100 that stands on purpose: shedding is per key by construction, so a command
+    // with nothing to hash has no share to shed.
+    if drop_percent >= 100 {
+        return true;
+    }
     command_routing_key(command)
         .as_deref()
         .map(|key| key_is_dropped_by_percent(key, drop_percent))
@@ -26,9 +36,12 @@ pub(super) fn command_is_dropped(command: &Command, drop_percent: u8) -> bool {
 
 pub(super) fn command_key(command: &Command) -> Option<&str> {
     match command {
+        // Names no key: it exists to be committed, not to touch a record.
+        Command::LeaderEstablish => None,
         Command::CommonDelete { key }
         | Command::CommonExpire { key, .. }
         | Command::CommonTtl { key }
+        | Command::CommonPersist { key }
         | Command::CommonExists { key }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
@@ -46,6 +59,23 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::SetAdd { key, .. }
         | Command::SetMembers { key }
         | Command::SetRemove { key, .. }
+        | Command::ListPush { key, .. }
+        | Command::ListPop { key, .. }
+        | Command::ListRange { key, .. }
+        | Command::ListLen { key }
+        | Command::ZSetAdd { key, .. }
+        | Command::ZSetScore { key, .. }
+        | Command::ZSetRemove { key, .. }
+        | Command::ZSetCard { key }
+        | Command::ZSetRange { key, .. }
+        | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetPop { key, .. }
+        | Command::ZSetRank { key, .. }
+        | Command::BucketTake { key, .. }
+        | Command::BucketPeek { key, .. }
+        | Command::SeenCheck { key, .. }
+        | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }
@@ -90,21 +120,26 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryEntities { .. }
         | Command::ContextUpsertChildRef { .. }
         | Command::ContextQueryChildren { .. }
-        | Command::ContextUpsertEmbedding { .. }
         | Command::ContextSetNodeEmbedding { .. }
-        | Command::ContextQueryEmbeddings { .. }
         | Command::ContextQueryNodeEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextUpsertSummary { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextWriteCompressionEvent { .. }
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextCompressEvents { .. }
+        | Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. }
         | Command::ContextQueryNodeContext { .. } => None,
     }
 }
 
-pub(super) fn command_routing_key(command: &Command) -> Option<String> {
+pub(crate) fn command_routing_key(command: &Command) -> Option<String> {
     command_key(command)
         .map(str::to_string)
         .or_else(|| context_command_key(command))
@@ -125,6 +160,14 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
         } => node_hashes
             .first()
             .map(|node_hash| context_node_key(*tenant_hash, *node_hash)),
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            ..
+        } => node_hashes
+            .first()
+            .map(|node_hash| context_summary_key(*tenant_hash, *node_hash, *level)),
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
@@ -226,23 +269,12 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             parent_hash,
             ..
         } => Some(context_child_key(*tenant_hash, *parent_hash)),
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => Some(context_embedding_key(*tenant_hash, embedding.ref_hash)),
-        // Keyed by the NODE, not by an embedding key -- the vector now lives on the node record.
+        // Keyed by the NODE: the vector lives on the node record.
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,
             ..
         } => Some(context_node_key(*tenant_hash, *node_hash)),
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            ..
-        } => ref_hashes
-            .first()
-            .map(|ref_hash| context_embedding_key(*tenant_hash, *ref_hash)),
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,
@@ -342,6 +374,37 @@ pub(super) fn context_compression_key(tenant_hash: u64, node_hash: u64) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_drain_drops_commands_that_carry_no_routing_key() {
+        // The drop decision hashes a routing key and answered "not dropped" for every command
+        // that has none -- the resource-blob upload path, sequence batch queries,
+        // node-embedding reads. A table an operator had drained to 100 went on sending them.
+        let keyless = Command::ContextResourceBlobPut {
+            tenant_hash: 7,
+            payload_base64: String::new(),
+        };
+        assert_eq!(
+            command_routing_key(&keyless),
+            None,
+            "premise: this command carries no routing key to hash"
+        );
+        assert!(
+            command_is_dropped(&keyless, 100),
+            "a full drain has to drop a command with no key too, or the drain is not full"
+        );
+
+        // Below a full drain the leak stands on purpose: shedding is per key, and a command
+        // with nothing to hash has no share to shed.
+        assert!(!command_is_dropped(&keyless, 99));
+
+        // A keyed command is unaffected in both directions.
+        let keyed = Command::StringGet {
+            key: "k".to_string(),
+        };
+        assert!(command_is_dropped(&keyed, 100));
+        assert!(!command_is_dropped(&keyed, 0));
+    }
 
     #[test]
     fn is_write_agrees_with_the_engine_for_context_writes() {

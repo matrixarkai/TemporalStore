@@ -216,7 +216,7 @@ def main() -> int:
             "reader endpoint; auto calls the endpoint when configured and otherwise falls back."
         ),
     )
-    parser.add_argument("--reader-provider-name", default="vikingmem-gpt-4o-mini-reader")
+    parser.add_argument("--reader-provider-name", default="external_baseline-gpt-4o-mini-reader")
     parser.add_argument("--reader-model", default="gpt-4o-mini")
     parser.add_argument(
         "--embedding-model",
@@ -229,29 +229,29 @@ def main() -> int:
     parser.add_argument(
         "--baseline-provider-name",
         default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_PROVIDER_NAME", ""),
-        help="Provider/runtime identity used by the VikingMem/OpenViking or other baseline run.",
+        help="Provider/runtime identity used by the ExternalBaseline/ExternalBaseline or other baseline run.",
     )
     parser.add_argument(
         "--baseline-reader-model",
         default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_READER_MODEL", ""),
-        help="Reader model used by the VikingMem/OpenViking or other baseline run.",
+        help="Reader model used by the ExternalBaseline/ExternalBaseline or other baseline run.",
     )
     parser.add_argument(
         "--baseline-embedding-model",
         default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_EMBEDDING_MODEL", ""),
-        help="Embedding/encoding model used by the VikingMem/OpenViking or other baseline run.",
+        help="Embedding/encoding model used by the ExternalBaseline/ExternalBaseline or other baseline run.",
     )
     parser.add_argument(
         "--baseline-max-events",
         type=int,
         default=int(os.environ.get("MATRIXARK_BENCHMARK_BASELINE_MAX_EVENTS", "0") or "0"),
-        help="Retrieved block/event budget used by the VikingMem/OpenViking or other baseline run.",
+        help="Retrieved block/event budget used by the ExternalBaseline/ExternalBaseline or other baseline run.",
     )
     parser.add_argument(
         "--baseline-reader-max-context-chars",
         type=int,
         default=int(os.environ.get("MATRIXARK_BENCHMARK_BASELINE_READER_MAX_CONTEXT_CHARS", "0") or "0"),
-        help="Reader context budget used by the VikingMem/OpenViking or other baseline run.",
+        help="Reader context budget used by the ExternalBaseline/ExternalBaseline or other baseline run.",
     )
     parser.add_argument(
         "--judge-model",
@@ -266,12 +266,12 @@ def main() -> int:
     parser.add_argument(
         "--baseline-judge-model",
         default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_JUDGE_MODEL", ""),
-        help="Judge model used by the VikingMem/OpenViking or other baseline run, if a judge is used.",
+        help="Judge model used by the ExternalBaseline/ExternalBaseline or other baseline run, if a judge is used.",
     )
     parser.add_argument(
         "--baseline-judge-prompt",
         default=os.environ.get("MATRIXARK_BENCHMARK_BASELINE_JUDGE_PROMPT", ""),
-        help="Judge prompt/profile used by the VikingMem/OpenViking or other baseline run, if a judge is used.",
+        help="Judge prompt/profile used by the ExternalBaseline/ExternalBaseline or other baseline run, if a judge is used.",
     )
     parser.add_argument(
         "--require-shared-oss-models",
@@ -288,7 +288,7 @@ def main() -> int:
         action="store_true",
         default=bool(os.environ.get("MATRIXARK_ALLOW_SHARED_OSS_MODEL_DRIFT")),
         help=(
-            "Diagnostic-only escape hatch. When unset, any MatrixArk vs VikingMem/OpenViking "
+            "Diagnostic-only escape hatch. When unset, any MatrixArk vs ExternalBaseline/ExternalBaseline "
             "comparison that declares a baseline must use the same OSS reader, embedding, and budgets."
         ),
     )
@@ -1058,9 +1058,9 @@ def main() -> int:
     ]
 
     report = {
-        "schema": "matrixark_vikingmem_context_benchmark_report_v1",
+        "schema": "matrixark_external_baseline_context_benchmark_report_v1",
         "mode": "conversation_load_once_query_many",
-        "benchmark_family": "vikingmem_long_memory",
+        "benchmark_family": "external_baseline_long_memory",
         "dataset": args.dataset_name or dominant_dataset_name(dataset_counts),
         "dataset_record_counts": dict(sorted(dataset_counts.items())),
         "input": str(args.input),

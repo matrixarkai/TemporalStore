@@ -59,17 +59,6 @@ pub(crate) struct CSequenceFeatureRow {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub(crate) struct CIpsFeatureStat {
-    pub(crate) id: i64,
-    pub(crate) slot: i32,
-    pub(crate) has_slot: c_int,
-    pub(crate) kind: i32,
-    pub(crate) v1: i32,
-    pub(crate) v2: i32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
 pub(crate) struct CHashEntry {
     pub(crate) key: *const c_char,
     pub(crate) field: *const c_char,
@@ -99,10 +88,4 @@ pub(crate) struct CFeaturePointArray {
 pub(crate) struct CSequenceFeatureRowArray {
     pub(crate) count: usize,
     pub(crate) rows: *mut CSequenceFeatureRow,
-}
-
-#[repr(C)]
-pub(crate) struct CIpsFeatureArray {
-    pub(crate) count: usize,
-    pub(crate) features: *mut CIpsFeatureStat,
 }

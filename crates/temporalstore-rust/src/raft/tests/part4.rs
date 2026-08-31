@@ -7,6 +7,53 @@ use super::*;
 use super::helpers::*;
 
 #[test]
+fn a_proxy_group_needs_a_name_on_the_raft_path_too() {
+    use crate::meta::{PutProxyGroupRequest, SingleNodeMeta};
+
+    // put_proxy_group validates in the public method, and the propose path
+    // dispatches straight to apply_put_proxy_group, which does not. So a raft
+    // metaserver committed a group with no name and no namespace into
+    // replicated metadata, where the single-node one answered bad_request.
+    //
+    // Judged before proposing, never while applying: replay has to reapply what
+    // was already accepted.
+    let empty = || PutProxyGroupRequest {
+        drop_percent: 0,
+        group: String::new(),
+        namespace: String::new(),
+        location: "rack-1".to_string(),
+        instance_num: 1,
+    };
+
+    let single = SingleNodeMeta::default();
+    let single_ack = single.put_proxy_group(empty());
+    assert_eq!(single_ack.status.code, "bad_request");
+    assert!(single.list_proxy_groups().groups.is_empty());
+
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    let raft_ack = meta.put_proxy_group(empty());
+    assert_eq!(
+        raft_ack.status.code, "bad_request",
+        "the raft path accepted a proxy group with no name"
+    );
+    assert!(
+        meta.list_proxy_groups().groups.is_empty(),
+        "a nameless proxy group reached replicated metadata"
+    );
+
+    // A named group still goes through, so the guard is not simply refusing.
+    let good = meta.put_proxy_group(PutProxyGroupRequest {
+        drop_percent: 0,
+        group: "orders".to_string(),
+        namespace: "ns".to_string(),
+        location: "rack-1".to_string(),
+        instance_num: 1,
+    });
+    assert!(good.status.ok, "a valid group was refused: {good:?}");
+    assert_eq!(meta.list_proxy_groups().groups.len(), 1);
+}
+
+#[test]
 fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
@@ -626,6 +673,7 @@ fn metaserver_raft_freeze_stale_server_is_replicated_mutation() {
 #[test]
 fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -689,6 +737,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
 #[test]
 fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -765,6 +814,7 @@ fn production_meta_raft_runtime_matches_multinode_control_and_fault_contract() {
 #[test]
 fn metaserver_owns_data_raft_membership_workflow() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -958,6 +1008,7 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
 #[test]
 fn metaserver_membership_workflow_requires_meta_majority() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms: 0,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -1011,6 +1062,361 @@ fn metaserver_raft_mutation_api_rejects_without_majority() {
     assert!(!response.status.ok);
     assert_eq!(response.status.code, "raft_error");
     assert!(response.status.message.contains("majority"));
+}
+
+fn cluster_with_an_installed_snapshot() -> MetaRaftCluster {
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "before".to_string()
+        })
+        .status
+        .ok);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    meta
+}
+
+#[test]
+fn a_change_after_a_snapshot_install_actually_takes_effect() {
+    // Installing a meta snapshot truncates the log and marks everything up to
+    // the snapshot applied. The next index came from the log alone, so
+    // numbering restarted at 1 -- indices the node had already applied. Every
+    // proposal after an install was skipped as a duplicate and reported ok, so
+    // the cluster accepted metadata changes and silently discarded them.
+    let meta = cluster_with_an_installed_snapshot();
+
+    let added = meta.add_namespace(AddNamespaceRequest {
+        namespace: "after".to_string(),
+    });
+    assert!(added.status.ok, "{:?}", added.status);
+
+    let namespaces = meta
+        .read_meta()
+        .expect("a readable replica")
+        .list_namespaces()
+        .namespaces;
+    assert!(
+        namespaces.iter().any(|namespace| namespace.namespace == "after"),
+        "a change reported as accepted never took effect: {namespaces:?}"
+    );
+    // What the snapshot carried is still there too.
+    assert!(namespaces.iter().any(|namespace| namespace.namespace == "before"));
+}
+
+#[test]
+fn changes_keep_taking_effect_after_a_snapshot_install() {
+    // One change could succeed by luck if the numbering only collided once.
+    let meta = cluster_with_an_installed_snapshot();
+    for round in 0..5u64 {
+        let name = format!("ns-{round}");
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: name.clone()
+            })
+            .status
+            .ok);
+        let namespaces = meta
+            .read_meta()
+            .expect("a readable replica")
+            .list_namespaces()
+            .namespaces;
+        assert!(
+            namespaces.iter().any(|namespace| namespace.namespace == name),
+            "change {round} was accepted and discarded: {namespaces:?}"
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_install_does_not_rewind_the_commit_index() {
+    // The reused index was also written straight into commit_index, walking it
+    // backwards past entries the cluster had already committed.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    for round in 0..3u64 {
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: format!("ns-{round}")
+            })
+            .status
+            .ok);
+    }
+    let before = meta.status().commit_index;
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "after".to_string()
+        })
+        .status
+        .ok);
+    assert!(
+        meta.status().commit_index >= before,
+        "commit index went backwards: {} then {}",
+        before,
+        meta.status().commit_index
+    );
+}
+
+fn convicted_proxy_cluster(forbid: bool) -> MetaRaftCluster {
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    meta.set_conviction_lock(forbid);
+    assert!(meta
+        .register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        })
+        .status
+        .ok);
+    // Frozen for a reason that counts as conviction, which is what the lock is
+    // about: a resource the metaserver took out, not one an operator did.
+    assert!(meta
+        .freeze_proxy(StateChangeRequest {
+            endpoint: "proxy-a".to_string(),
+            reason: crate::meta::FreezeReason::Unresponsive,
+            freeze_cooldown_ms: 0,
+        })
+        .status
+        .ok);
+    meta
+}
+
+fn rejoin(meta: &MetaRaftCluster) -> Status {
+    meta.register_proxy(RegisterProxyRequest {
+        proxy_addr: "proxy-a".to_string(),
+        namespace: "ns".to_string(),
+        location: "rack-1".to_string(),
+        config_version: 1,
+        binary_version: "v1".to_string(),
+    })
+    .status
+}
+
+#[test]
+fn the_conviction_lock_holds_on_a_raft_backed_metaserver() {
+    // The setting is read after `from_env` has already returned the raft
+    // backend, so it reached the single-node metaserver and nothing else. The
+    // check that consults it runs on these nodes -- against a flag that was
+    // always false, which let a convicted resource register its way back in.
+    let meta = convicted_proxy_cluster(true);
+    let refused = rejoin(&meta);
+    assert!(!refused.ok, "a convicted proxy registered its way back in");
+    assert_eq!(refused.code, "conviction_requires_unfreeze");
+
+    // An explicit unfreeze is the way back, or the lock would be a dead end.
+    assert!(meta
+        .unfreeze_proxy(StateChangeRequest {
+            endpoint: "proxy-a".to_string(),
+            reason: crate::meta::FreezeReason::Unspecified,
+            freeze_cooldown_ms: 0,
+        })
+        .status
+        .ok);
+    assert!(rejoin(&meta).ok, "an unfrozen proxy could not rejoin");
+}
+
+#[test]
+fn the_runtime_carries_the_conviction_lock_to_its_nodes() {
+    // The setter alone proves nothing about production: what was broken is that
+    // the option never reached the nodes, because the flag is read on a path the
+    // raft backend returns before.
+    let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: true,
+        snapshot_check_interval_ms: 0,
+        engine: ProductionRaftEngineKind::TemporalRaft,
+        local_node_id: 1,
+        nodes: vec![ProductionRaftNode {
+            node_id: 1,
+            addr: "127.0.0.1:18147".to_string(),
+        }],
+        config: RaftConfig::default(),
+        heartbeat_interval_ms: 100,
+        election_tick_ms: 50,
+        failure_detector_interval_ms: 1_000,
+        stale_server_after_ms: 30_000,
+    })
+    .unwrap();
+    assert_eq!(
+        runtime
+            .cluster()
+            .read_meta()
+            .expect("a readable replica")
+            .conviction_lock_enabled(),
+        true,
+        "the runtime did not carry the setting to its nodes"
+    );
+}
+
+#[test]
+fn the_conviction_lock_stays_off_when_it_is_not_asked_for() {
+    // Off by default on purpose: the automatic recovery it removes is
+    // load-bearing wherever the freeze cooldown is left at zero.
+    let meta = convicted_proxy_cluster(false);
+    assert!(
+        rejoin(&meta).ok,
+        "a setting nobody asked for locked a proxy out"
+    );
+}
+
+#[test]
+fn installing_a_snapshot_does_not_clear_the_conviction_lock() {
+    // Each node's metadata used to be rebuilt from `Default` on install, which
+    // discarded everything configured on it -- the lock along with the event
+    // bus, the metrics recorder and the counters.
+    let meta = convicted_proxy_cluster(true);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+
+    let refused = rejoin(&meta);
+    assert!(
+        !refused.ok,
+        "a snapshot install turned the conviction lock off"
+    );
+    assert_eq!(refused.code, "conviction_requires_unfreeze");
+}
+
+#[test]
+fn an_ordinary_change_still_reports_success() {
+    // The guard on "committed but applied nothing" must not catch the normal
+    // path: every real change still has to come back ok, before and after a
+    // snapshot install.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "before".to_string()
+        })
+        .status
+        .ok);
+    let snapshot = meta.export_meta_snapshot().expect("a snapshot");
+    meta.install_meta_snapshot_on_live_nodes(snapshot)
+        .expect("the snapshot installs");
+    let after = meta.add_namespace(AddNamespaceRequest {
+        namespace: "after".to_string(),
+    });
+    assert!(after.status.ok, "{:?}", after.status);
+    assert_ne!(after.status.code, "mutation_not_applied");
+}
+
+#[test]
+fn muting_metadata_change_refuses_changes_on_the_raft_path_too() {
+    // The mute is the incident lever: while it is set the metaserver is meant
+    // to refuse every recorded metadata mutation. That check lived only in
+    // SingleNodeMeta's public methods, and the raft backend proposes straight
+    // past them -- so on a raft-backed metaserver, which is what a real
+    // deployment runs, setting the mute changed nothing.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta.set_meta_change_muted(true).status.ok);
+
+    let muted = meta.add_namespace(AddNamespaceRequest {
+        namespace: "during-an-incident".to_string(),
+    });
+    assert!(
+        !muted.status.ok,
+        "the cluster was muted and the change went through anyway"
+    );
+    assert_eq!(muted.status.code, "meta_change_muted");
+
+    // And the lever has to be releasable, or muting would be a one-way door.
+    assert!(meta.set_meta_change_muted(false).status.ok);
+    assert!(
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "after-the-incident".to_string(),
+        })
+        .status
+        .ok,
+        "unmuting did not restore metadata change"
+    );
+}
+
+fn table_in(meta: &MetaRaftCluster, namespace: &str, table_name: &str) -> Status {
+    meta.add_table(AddTableRequest {
+        namespace: namespace.to_string(),
+        table_name: table_name.to_string(),
+        first_shard_id: 500,
+        shard_count: 1,
+        replica_count: 1,
+        partition_version: 0,
+        serving_options: crate::meta::TableServingOptions::default(),
+    })
+    .status
+}
+
+#[test]
+fn a_reserved_name_cannot_be_taken_on_the_raft_path() {
+    // Reserved names exist to hold a name back from creation. The check lived
+    // in the public method, and the raft path proposes past it, so on a
+    // raft-backed metaserver the reservation held nothing back at all.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    let mut reserved = crate::meta::ReservedNames::default();
+    reserved.namespaces.insert("system".to_string());
+    reserved.tables.insert("internal".to_string());
+    assert!(meta.set_reserved_names(reserved).status.ok);
+
+    let taken = meta.add_namespace(AddNamespaceRequest {
+        namespace: "system".to_string(),
+    });
+    assert!(!taken.status.ok, "a reserved namespace was created anyway");
+    assert_eq!(taken.status.code, "name_reserved");
+
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok);
+    let table = table_in(&meta, "tenant", "internal");
+    assert!(!table.ok, "a reserved table name was created anyway");
+    assert_eq!(table.code, "name_reserved");
+
+    // And an unreserved name is still allowed, so the guard is not a blanket no.
+    assert!(table_in(&meta, "tenant", "orders").ok);
+}
+
+#[test]
+fn dropping_a_namespace_cannot_strand_a_live_table_on_the_raft_path() {
+    // The single-node path refuses this precisely so a drop cannot leave tables
+    // behind in a namespace that no longer exists. The raft path did not.
+    let meta = MetaRaftCluster::new([10, 11, 12]);
+    assert!(meta
+        .add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok);
+    assert!(table_in(&meta, "tenant", "orders").ok);
+
+    let stranding = meta.drop_namespace(AddNamespaceRequest {
+        namespace: "tenant".to_string(),
+    });
+    assert!(
+        !stranding.status.ok,
+        "a namespace was dropped out from under a live table"
+    );
+    assert_eq!(stranding.status.code, "namespace_not_empty");
+
+    // Once the table is gone the namespace can be dropped, or the guard would
+    // make a namespace undroppable rather than merely safe to drop.
+    assert!(meta
+        .delete_table(DeleteTableRequest {
+            namespace: "tenant".to_string(),
+            table_name: "orders".to_string(),
+        })
+        .status
+        .ok);
+    assert!(
+        meta.drop_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string()
+        })
+        .status
+        .ok,
+        "an empty namespace could not be dropped"
+    );
 }
 
 #[test]
@@ -1362,6 +1768,7 @@ fn meta_runtime_for_snapshot_wiring(
     base_port: u16,
 ) -> ProductionMetaRaftRuntime {
     ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+        forbid_self_clearing_conviction: false,
         snapshot_check_interval_ms,
         engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
@@ -2225,27 +2632,70 @@ fn wal_recovery_rejects_ahead_of_storage_apply_fence() {
 
 /// Sets an env gate for the duration of a test and removes it on drop (even on panic), so a
 /// gated-behavior test never leaks its flag into the rest of the single-threaded suite.
-struct EnvFlagGuard {
+pub(super) struct EnvFlagGuard {
     name: &'static str,
 }
 
+/// Environment variables are process-global, and the tests that pin one run in parallel. A bare
+/// set-on-create / remove-on-drop guard races destructively: two tests pin the same variable, the
+/// first to finish removes it, and the second silently runs the rest of its body on the DEFAULT
+/// path -- which is how the pipeline invariant test ended up watching fan-out appends. Pins are
+/// therefore refcounted per variable: agreeing pins share the variable, a conflicting pin WAITS
+/// until the holders drop, and only the last holder clears it. Tests that pin several variables
+/// must acquire them in one fixed (alphabetical) order so two waiters cannot deadlock.
+type EnvPinTable = std::sync::Mutex<std::collections::HashMap<&'static str, (usize, &'static str)>>;
+
+fn env_pins() -> &'static (EnvPinTable, std::sync::Condvar) {
+    static PINS: std::sync::OnceLock<(EnvPinTable, std::sync::Condvar)> = std::sync::OnceLock::new();
+    PINS.get_or_init(|| (std::sync::Mutex::new(std::collections::HashMap::new()), std::sync::Condvar::new()))
+}
+
 impl EnvFlagGuard {
-    fn set(name: &'static str) -> Self {
-        std::env::set_var(name, "1");
+    fn pin(name: &'static str, value: &'static str) -> Self {
+        let (table, released) = env_pins();
+        let mut pins = table.lock().unwrap();
+        loop {
+            match pins.get_mut(name) {
+                None => {
+                    pins.insert(name, (1, value));
+                    break;
+                }
+                Some((holders, held)) if *held == value => {
+                    *holders += 1;
+                    break;
+                }
+                // Someone holds the opposite value; wait for every holder to drop.
+                Some(_) => pins = released.wait(pins).unwrap(),
+            }
+        }
+        // Set while still holding the table lock, so a var never disagrees with its pin entry.
+        std::env::set_var(name, value);
         Self { name }
+    }
+
+    pub(super) fn set(name: &'static str) -> Self {
+        Self::pin(name, "1")
     }
 
     /// Explicitly DISABLES a gate for the test's lifetime. Needed because the shipped fixes are
     /// default-ON: leaving the variable unset now selects the fixed path, not the legacy one.
-    fn off(name: &'static str) -> Self {
-        std::env::set_var(name, "0");
-        Self { name }
+    pub(super) fn off(name: &'static str) -> Self {
+        Self::pin(name, "0")
     }
 }
 
 impl Drop for EnvFlagGuard {
     fn drop(&mut self) {
-        std::env::remove_var(self.name);
+        let (table, released) = env_pins();
+        let mut pins = table.lock().unwrap();
+        if let Some((holders, _)) = pins.get_mut(self.name) {
+            *holders -= 1;
+            if *holders == 0 {
+                pins.remove(self.name);
+                std::env::remove_var(self.name);
+                released.notify_all();
+            }
+        }
     }
 }
 
@@ -2465,6 +2915,7 @@ fn s2_state_image_snapshot_travels_through_chunk_stream() {
 /// so behavior is byte-identical to before.
 #[test]
 fn s2_snapshot_gate_off_still_carries_entries_and_no_image() {
+    let _gate = EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     for i in 0..4 {
         cluster
@@ -2946,6 +3397,7 @@ fn r8_snapshot_install_with_divergent_boundary_discards_whole_log() {
                 external_snapshot_ref: None,
                 entries: vec![r8_branch_entry(2, 5, "winning")],
                 state_image: None,
+                state_image_externalized: false,
             },
         )
         .unwrap();
@@ -3012,6 +3464,7 @@ fn r8_snapshot_install_with_matching_boundary_retains_tail() {
                 external_snapshot_ref: None,
                 entries: vec![r8_branch_entry(2, 1, "v2")],
                 state_image: None,
+                state_image_externalized: false,
             },
         )
         .unwrap();
@@ -3094,25 +3547,36 @@ fn a_failed_send_releases_its_reservation() {
             .unwrap();
     }
 
-    // Reserve right up to the limit, the way repeated un-answered sends do.
+    // Reserve right up to the limit, the way repeated un-answered sends do. A charged window
+    // no longer refuses -- it degrades to single-entry probes -- but the reservations still
+    // accumulate and still bind the batch size.
     let limit = RaftConfig::default().max_inflights_replicate.max(1);
-    let mut refused = false;
+    let mut probed = false;
     for _ in 0..(limit * 4) {
-        if cluster.build_append_entries_request(3).is_err() {
-            refused = true;
+        let request = cluster
+            .build_append_entries_request(3)
+            .expect("a charged window degrades to a probe, never a refusal");
+        if request.entries.len() == 1 {
+            probed = true;
             break;
         }
     }
     assert!(
-        refused,
-        "un-answered builds should accumulate into backpressure -- that guard is deliberate"
+        probed,
+        "un-answered builds should accumulate until the window degrades to probes -- the bound is deliberate"
     );
 
-    // Reporting the send failure releases it, and the very next build succeeds.
+    // Reporting the send failure releases the reservations, and the next build is a full
+    // batch again -- bigger than any probe.
     cluster.record_append_entries_send_failure(3).unwrap();
-    cluster
+    let released = cluster
         .build_append_entries_request(3)
         .expect("a released reservation should let the next request through");
+    assert!(
+        released.entries.len() > 1,
+        "the released window must reopen past probe size (got {})",
+        released.entries.len()
+    );
 }
 
 /// A rejected AppendEntries must make the next attempt ask about an EARLIER entry.
@@ -3423,4 +3887,162 @@ fn a_rejected_append_still_proves_the_leader_is_alive() {
         leader_alive,
         "being spoken to by the leader is proof it is alive, even when we refuse what it sent"
     );
+}
+
+/// RAFT, on the format that now ships: every node durable, restored, and serving.
+///
+/// Consensus replicates operations -- that is what agreement means, and it does not change. What
+/// changed is what each node's own log records once it has applied one, and the question a
+/// distributed test has to answer is whether a node that RESTARTS from that log comes back with
+/// the same shard the cluster agreed on.
+///
+/// Three nodes, a spread of kinds, one node taken out and caught up, then the whole cluster
+/// restored from its logs and every node read back. A single node passing proves the codec; every
+/// node passing after a restore proves the cluster.
+#[test]
+fn a_raft_cluster_restores_every_node_from_its_own_log_on_the_live_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig::default();
+    let writes: Vec<(String, Vec<u8>)> = (0..12)
+        .map(|index| {
+            (
+                format!("dr-{index:02}"),
+                format!("value-{index:02}").into_bytes(),
+            )
+        })
+        .collect();
+
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config.clone())
+                .unwrap();
+
+        // A node misses the middle of the run and has to catch up -- the case where a follower's
+        // log and the leader's diverge in length before they converge in content.
+        for (key, value) in writes.iter().take(4) {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+        cluster.set_alive(3, false).unwrap();
+        for (key, value) in writes.iter().skip(4).take(4) {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+        cluster.set_alive(3, true).unwrap();
+        cluster.catch_up(3).unwrap();
+        for (key, value) in writes.iter().skip(8) {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+
+        // Every node agrees BEFORE anything restarts, so a later failure is about recovery rather
+        // than about replication.
+        for node_id in [1, 2, 3] {
+            for (key, value) in &writes {
+                assert_eq!(
+                    cluster
+                        .read_local(
+                            node_id,
+                            Command::StringGet {
+                                key: key.to_string()
+                            }
+                        )
+                        .unwrap(),
+                    CommandResponse::Bytes {
+                        value: Some(value.clone())
+                    },
+                    "node {node_id} did not have {key} before the restore"
+                );
+            }
+        }
+    }
+
+    // Every node comes back from what its own log recorded.
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    for node_id in [1, 2, 3] {
+        for (key, value) in &writes {
+            assert_eq!(
+                restored
+                    .read_local(
+                        node_id,
+                        Command::StringGet {
+                            key: key.to_string()
+                        }
+                    )
+                    .unwrap(),
+                CommandResponse::Bytes {
+                    value: Some(value.clone())
+                },
+                "node {node_id} lost {key} across the restore"
+            );
+        }
+    }
+    println!(
+        "[raft] 3 nodes, {} writes, one outage and catch-up, all restored and serving",
+        writes.len()
+    );
+}
+
+/// The same cluster, with the log written in the LEGACY encoding.
+///
+/// The defaults moved; the old path has to keep working, and it is now the one that can rot
+/// unnoticed. This is the same scenario with all three flags off, so a difference between them is
+/// a difference in the encoding rather than in the test.
+#[test]
+fn a_raft_cluster_restores_on_the_legacy_encoding_too() {
+    std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "0");
+    std::env::set_var("TS_WAL_DATA_ONLY", "0");
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig::default();
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config.clone())
+                .unwrap();
+        for index in 0..8 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("lg-{index:02}"),
+                    value: format!("legacy-{index:02}").into_bytes(),
+                })
+                .unwrap();
+        }
+    }
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    for node_id in [1, 2, 3] {
+        for index in 0..8 {
+            assert_eq!(
+                restored
+                    .read_local(
+                        node_id,
+                        Command::StringGet {
+                            key: format!("lg-{index:02}")
+                        }
+                    )
+                    .unwrap(),
+                CommandResponse::Bytes {
+                    value: Some(format!("legacy-{index:02}").into_bytes())
+                },
+                "node {node_id} lost lg-{index:02} on the legacy encoding"
+            );
+        }
+    }
+    std::env::remove_var("TS_WAL_BINARY_RECORDS");
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+    std::env::remove_var("TS_WAL_DATA_ONLY");
+    println!("[raft] legacy encoding: 3 nodes restored and serving");
 }

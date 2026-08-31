@@ -2070,15 +2070,21 @@ class _CodexPipelinePart5:
             )
             self.assertIn("aaa111", profile_decision["state"])
             self.assertIn("bbb222", profile_decision["state"])
-            profile_decision_embedding = next(
+            # The embedding folded onto its owner: the entity record carries the vector, and
+            # the retired record's lineage rides along under embedding_meta.
+            profile_decision_owner = next(
                 record
                 for record in records
-                if record.get("record_type") == "context_embedding"
-                and record.get("ref_hash") == profile_decision["entity_hash"]
-                and record.get("memory_scope") == "user_profile"
-                and record.get("session_continuity") == "cross_session"
+                if record.get("record_type") == "context_entity"
+                and record.get("entity_hash") == profile_decision["entity_hash"]
+                and record.get("vector")
             )
-            self.assertNotIn("supersedes_session_entity_hashes", profile_decision_embedding)
+            embedding_meta = profile_decision_owner.get("embedding_meta") or {}
+            self.assertEqual("user_profile",
+                             embedding_meta.get("memory_scope") or profile_decision_owner.get("memory_scope"))
+            self.assertEqual("cross_session",
+                             embedding_meta.get("session_continuity") or profile_decision_owner.get("session_continuity"))
+            self.assertNotIn("supersedes_session_entity_hashes", embedding_meta)
             superseded_session_entity_hashes = list(profile_decision["supersedes_session_entity_hashes"])
 
             pack = adapter.retrieve(
@@ -2982,54 +2988,62 @@ class _CodexPipelinePart5:
             event_log = Path(tmp_dir) / "matrixark-resource-queue.jsonl"
             adapter = MatrixArkLocalAdapter(event_log)
             server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
-            result = server.call_tool(
-                "matrixark_ingest",
-                {
-                    "kind": "resource",
-                    "raw_uri": "inline://resource-queue.md",
-                    "resource_type": "md",
-                    "wait": False,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": "# GPU Runbook\n\nAlice owns the GPU approval checklist. Finance review is required before purchase.",
-                        }
-                    ],
-                    "scope": {
-                        "account_id": "acct_queue",
-                        "tenant_id": "tenant_queue",
-                        "user_id": "user_queue",
-                        "session_id": "session_queue",
+            try:
+                result = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "kind": "resource",
+                        "raw_uri": "inline://resource-queue.md",
+                        "resource_type": "md",
+                        "wait": False,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": "# GPU Runbook\n\nAlice owns the GPU approval checklist. Finance review is required before purchase.",
+                            }
+                        ],
+                        "scope": {
+                            "account_id": "acct_queue",
+                            "tenant_id": "tenant_queue",
+                            "user_id": "user_queue",
+                            "session_id": "session_queue",
+                        },
+                        "metadata": {"node_path": ["users", "user_queue", "resources", "runbooks"]},
                     },
-                    "metadata": {"node_path": ["users", "user_queue", "resources", "runbooks"]},
-                },
-            )
-            self.assertEqual("queued", result["status"])
-            task = result["resource_import_task"]
-            self.assertFalse(task["wait"])
-            self.assertTrue(task["worker_pool"]["bounded"])
-            self.assertEqual(1, task["worker_pool"]["worker_count"])
-            self.assertEqual(2, task["worker_pool"]["queue_max"])
+                )
+                self.assertEqual("queued", result["status"])
+                task = result["resource_import_task"]
+                self.assertFalse(task["wait"])
+                self.assertTrue(task["worker_pool"]["bounded"])
+                self.assertEqual(1, task["worker_pool"]["worker_count"])
+                self.assertEqual(2, task["worker_pool"]["queue_max"])
 
-            task_hash = task["task_hash"]
-            deadline = time.time() + 5.0
-            records: list[dict] = []
-            while time.time() < deadline:
-                records = adapter.read_all()
-                if any(
-                    record.get("record_type") == "resource_import_task"
-                    and record.get("task_hash") == task_hash
-                    and record.get("status") == "completed"
-                    for record in records
-                ):
-                    break
-                time.sleep(0.05)
-            else:
-                self.fail("background resource import did not complete")
+                task_hash = task["task_hash"]
+                deadline = time.time() + 5.0
+                records: list[dict] = []
+                while time.time() < deadline:
+                    records = adapter.read_all()
+                    if any(
+                        record.get("record_type") == "resource_import_task"
+                        and record.get("task_hash") == task_hash
+                        and record.get("status") == "completed"
+                        for record in records
+                    ):
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("background resource import did not complete")
 
-            self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
-            self.assertTrue(any(record.get("record_type") == "context_embedding" for record in records))
-            self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
+                self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
+                # Folded: the vectors live on the owners (chunks and summaries carry them).
+                self.assertTrue(any(record.get("vector") for record in records))
+                self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
+            finally:
+                # The import runs on a worker thread that keeps writing into this directory --
+                # the event log and the read-cache sidecars each append maintains -- until the
+                # task is drained. Without this the temp dir is torn down underneath the worker,
+                # which re-creates the log it just deleted and fails cleanup with ENOTEMPTY.
+                server.close(timeout_s=10.0)
 
     def test_tenant_shared_resource_and_skill_live_outside_session_and_retrieve_with_quota(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

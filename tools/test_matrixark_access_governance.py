@@ -22,6 +22,15 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
     def make_server(self) -> MatrixArkMcpServer:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
+        # Auditing is off by default; these tests verify what auditing records when it is on.
+        previous = os.environ.get("MATRIXARK_AUDIT_MODE")
+        os.environ["MATRIXARK_AUDIT_MODE"] = "async"
+        def restore() -> None:
+            if previous is None:
+                os.environ.pop("MATRIXARK_AUDIT_MODE", None)
+            else:
+                os.environ["MATRIXARK_AUDIT_MODE"] = previous
+        self.addCleanup(restore)
         return MatrixArkMcpServer(MatrixArkLocalAdapter(Path(tmp.name) / "events.jsonl"), line_json=True, access_mode="dev")
 
     def test_api_key_hash_only_and_role_limited_viewer(self) -> None:

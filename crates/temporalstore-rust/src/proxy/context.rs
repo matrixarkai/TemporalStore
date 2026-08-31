@@ -171,7 +171,7 @@ impl ProxyService {
         shard_id_for_key(
             &tenant_hash.to_string(),
             options.context_first_shard_id,
-            options.context_shard_count,
+            self.effective_context_shard_count(),
             options.context_first_shard_id,
         )
     }
@@ -255,10 +255,8 @@ impl ProxyService {
     /// is one datanode write regardless of message count.
     pub(super) fn context_ingest(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .context_ingest_requests += 1;
+            .context_ingest_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit_context(&request.scope, true) {
             Ok(guard) => guard,
             Err(response) => return response,
@@ -268,6 +266,14 @@ impl ProxyService {
         let session = scope_session(&request.scope);
         let key = rawlog_key(tenant_hash, &session);
         let now = now_ms();
+        // Kept inside 8 digits so the field stays fixed-width and lexicographic order
+        // remains arrival order. Wrapping needs a hundred million ingests AND a same-
+        // millisecond collision with the exact sequence a wrap apart.
+        let call = self
+            .inner
+            .context_ingest_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % 100_000_000;
 
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         for (idx, message) in request.messages.iter().enumerate() {
@@ -283,8 +289,11 @@ impl ProxyService {
                         message.role.clone()
                     }
                 });
-            // Field orders raw events by (timestamp, seq) so read-back is stable.
-            let field = format!("{timestamp_ms:020}:{idx:06}");
+            // Orders raw events by (timestamp, call, index within the call), all
+            // fixed-width so lexicographic order is arrival order. The call component is
+            // what stops two ingests in the same millisecond writing the same field and
+            // one silently overwriting the other; `{idx}` alone restarts at zero per call.
+            let field = format!("{timestamp_ms:020}:{call:08}:{idx:06}");
             let value = json!({
                 "record_type": "raw_event",
                 "role": message.role,
@@ -321,10 +330,8 @@ impl ProxyService {
     /// `raw_event` records for the scope and extract those.
     pub(super) fn context_extract(&self, request: ProxyContextIngestRequest) -> (u16, Vec<u8>) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .context_extract_requests += 1;
+            .context_extract_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit_context(&request.scope, true) {
             Ok(guard) => guard,
             Err(response) => return response,
@@ -403,10 +410,8 @@ impl ProxyService {
     /// Forward a `ContextRetrieveRequest` to the owning datanode.
     pub(super) fn context_retrieve(&self, request: ProxyContextRetrieveRequest) -> (u16, Vec<u8>) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .context_retrieve_requests += 1;
+            .context_retrieve_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit_context(&request.scope, false) {
             Ok(guard) => guard,
             Err(response) => return response,

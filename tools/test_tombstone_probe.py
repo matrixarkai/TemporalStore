@@ -71,10 +71,27 @@ class TombstoneProbeTests(unittest.TestCase):
     def test_it_asks_the_engine_for_tombstones_only(self):
         client = _Client({"records": []})
         _adapter(client).memory_tombstones_may_exist()
-        self.assertEqual(1, len(client.calls))
-        self.assertEqual([TOMBSTONE], client.calls[0]["record_types"])
-        self.assertEqual({}, client.calls[0]["scope"],
-                         "the guard is store-wide: a tombstone in any scope counts")
+        # A store with no tombstones asks twice: the capped probe, then the read that confirms the
+        # empty answer. A capped probe alone cannot tell "there are none" from "the newest one no
+        # longer resolves", and a false negative here is the dangerous direction. The confirming
+        # read is cheap precisely when it runs -- there is nothing to read.
+        self.assertEqual(2, len(client.calls))
+        for call in client.calls:
+            self.assertEqual([TOMBSTONE], call["record_types"])
+            self.assertEqual({}, call["scope"],
+                             "the guard is store-wide: a tombstone in any scope counts")
+        self.assertEqual({TOMBSTONE: 1}, client.calls[0].get("newest_by_type"),
+                         "the probe asks for ONE tombstone, not every one")
+        self.assertIsNone(client.calls[1].get("newest_by_type"),
+                          "the confirming read must not be capped")
+
+    def test_a_store_with_a_tombstone_is_answered_from_the_probe_alone(self):
+        """The point of the probe: one tombstone settles it, so the rest are never read."""
+        client = _Client({"records": [{"record_type": TOMBSTONE, "tombstone_kind": "delete"}]})
+        self.assertTrue(_adapter(client).memory_tombstones_may_exist())
+        self.assertEqual(1, len(client.calls),
+                         "a positive answer must not go on to read every tombstone")
+        self.assertEqual({TOMBSTONE: 1}, client.calls[0].get("newest_by_type"))
 
     def test_a_tombstone_row_is_reported(self):
         adapter = _adapter(_Client({"records": [{"record_type": TOMBSTONE, "tombstone_kind": "delete"}]}))

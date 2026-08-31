@@ -42,6 +42,14 @@ pub struct RaftDistributedReadiness {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftTransportSecurityReadiness {
+    /// Which transport this process is actually configured for.
+    ///
+    /// The `*_present` flags below say what the build implements, which is the
+    /// same answer on every deployment. This one says what is running here, so
+    /// a reader can tell "we can do mTLS" from "this node is doing mTLS".
+    /// Defaults to plaintext, so its absence from a report is not a claim.
+    #[serde(default)]
+    pub configured_transport_mode: String,
     pub auth_token_validation_present: bool,
     pub mtls_cert_key_ca_validation_present: bool,
     pub authenticated_http_transport_present: bool,
@@ -356,6 +364,25 @@ pub fn raft_external_chaos_readiness() -> RaftExternalChaosReadiness {
 }
 
 pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
+    // Read from the same place the transport itself reads, so the report cannot
+    // describe a configuration the process is not running.
+    raft_transport_security_readiness_for(
+        production_raft_security_from_env(String::new(), true)
+            .security
+            .mode,
+    )
+}
+
+/// The same report for a caller that already knows the configured mode, so it
+/// can be exercised without setting process-wide environment.
+pub fn raft_transport_security_readiness_for(
+    configured_mode: ProductionRaftSecurityMode,
+) -> RaftTransportSecurityReadiness {
+    let configured_transport_mode = match configured_mode {
+        ProductionRaftSecurityMode::Mtls => "mtls",
+        ProductionRaftSecurityMode::PlaintextForLocalChaos => "plaintext_for_local_chaos",
+    }
+    .to_string();
     let auth_token_validation_present = true;
     let mtls_cert_key_ca_validation_present = true;
     let authenticated_http_transport_present = true;
@@ -376,6 +403,7 @@ pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
     };
 
     RaftTransportSecurityReadiness {
+        configured_transport_mode,
         auth_token_validation_present,
         mtls_cert_key_ca_validation_present,
         authenticated_http_transport_present,

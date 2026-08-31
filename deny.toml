@@ -30,7 +30,6 @@ unknown-registry = "deny"
 unknown-git = "deny"
 # First-party MatrixArkAI crates consumed as git dependencies.
 allow-git = [
-    "https://github.com/bjmeetsfo/MatrixRaft.git",
-    "https://github.com/bjmeetsfo/MatrixCache.git",
-    "https://github.com/bjmeetsfo/MatrixObjectStore.git",
+    "https://github.com/matrixarkai/MatrixRaft.git",
+    "https://github.com/matrixarkai/MatrixCache.git",
 ]

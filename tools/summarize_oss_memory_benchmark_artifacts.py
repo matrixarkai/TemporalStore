@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Summarize OSS memory benchmark artifacts across MatrixArk/OpenViking-style runs.
+"""Summarize OSS memory benchmark artifacts across MatrixArk/ExternalBaseline-style runs.
 
 The goal is not to bless a run as paper-comparable. It produces a compact,
 auditable table for retrieval quality, reader quality, token savings, latency,
@@ -175,10 +175,11 @@ def requires_shared_oss_model_contract(
     schema = str(data.get("schema") or metrics_source.get("schema") or "").lower()
     claim = str(data.get("claim_status") or data.get("claim_level") or "").lower()
     return bool(
-        "vikingmem" in family
-        or "openviking" in family
-        or "vikingmem" in schema
-        or "openviking" in schema
+        # One token now, where there were two names. It has to stay distinctive enough to match
+        # as a substring without matching anything else -- which is why this is not just
+        # "baseline".
+        "external_baseline" in family
+        or "external_baseline" in schema
         or "paper_comparable" in claim
         or quality_gate.get("paper_comparable_claim_ready")
         or data.get("paper_comparable_claim_ready")
@@ -327,7 +328,7 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines.append("")
     lines.append(
         "All values are copied from source artifacts; this summary does not upgrade diagnostic runs "
-        "into paper-comparable evidence. VikingMem/OpenViking comparisons require the shared OSS "
+        "into paper-comparable evidence. ExternalBaseline/ExternalBaseline comparisons require the shared OSS "
         "model contract to pass: same reader, embedding/encoding model, retrieval budget, and reader budget."
     )
     return "\n".join(lines) + "\n"

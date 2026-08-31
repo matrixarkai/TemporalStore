@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+import os
 
 
 def main() -> int:
@@ -127,8 +128,8 @@ def infer_gap(
 
 
 def collect_task_evidence(workspace: Path) -> dict[str, Any]:
-    task_root = workspace / "viking" / "default" / "_system" / "tasks"
-    user_root = workspace / "viking" / "default" / "user"
+    task_root = workspace / os.environ.get("EXTERNAL_BASELINE_WORKSPACE_SUBDIR", "workspace") / "default" / "_system" / "tasks"
+    user_root = workspace / os.environ.get("EXTERNAL_BASELINE_WORKSPACE_SUBDIR", "workspace") / "default" / "user"
     task_files = sorted(task_root.glob("*/*.json")) if task_root.exists() else []
     memory_diff_files = (
         sorted(user_root.glob("*/sessions/*/history/archive_001/memory_diff.json"))

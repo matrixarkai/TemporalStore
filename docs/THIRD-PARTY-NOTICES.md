@@ -22,7 +22,6 @@ under a compatible permissive option.
 
 - clang-sys 1.8.1
 - matrixcache 0.1.0
-- matrixobjectstore-rs 0.1.0
 - matrixraft 0.1.0
 - prost 0.13.5
 - prost-build 0.13.5

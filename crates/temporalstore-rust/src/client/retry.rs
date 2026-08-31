@@ -89,6 +89,15 @@ pub(super) fn status_is_retryable(status: &Status) -> bool {
             | "shard_not_found"
             | "loadversionmismatch"
             | "load_version_mismatch"
+            // A foreground write refused while its shard is loading, reloading or unloading.
+            // Every one of those states ends on its own, and the data node refuses the write
+            // BEFORE executing it, so asking again cannot duplicate anything. Not topology
+            // retryable: the shard has not moved, so re-resolving the route names the same
+            // node. Without this a rebalance, a restart or a dump/load cycle reached the
+            // caller as failed writes, while the two conditions directly above -- which say
+            // the same thing about the same shard -- were retried.
+            | "lifecyclewriteblocked"
+            | "lifecycle_write_blocked"
     )
 }
 

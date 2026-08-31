@@ -186,6 +186,15 @@ pub struct IndexDeltaRecord {
     /// pages the deltas already pin at their original addresses).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_wal_sequence: Option<u64>,
+    /// When true, this record's items are the exact pages the write produced: replay replaces
+    /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
+    /// wipe -- mirroring the write path's upsert_bucket_index_page. When false (the default,
+    /// and every record written before this field existed), the record snapshots each covered
+    /// object's whole page set and replay wipes-then-restores. The snapshot shape is what made
+    /// every append O(store): a batch touching the grow-with-the-store index hashes logged
+    /// every page of each of them, every time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
     /// single page-index entry -- packed timestamped series (feature membership survives
@@ -264,6 +273,9 @@ struct IndexLogInner {
     /// on process restart, so the first post-restart cycle may dump once -- harmless (a dump only
     /// materializes durable state that is already recoverable).
     last_dumped_len_by_shard: HashMap<ShardId, u64>,
+    // Set only by Default: the store owns its minted scratch directory, and the last
+    // clone's drop removes it. Never set for a caller-supplied root.
+    scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
 }
 
 fn indexlog_enabled() -> bool {
@@ -300,21 +312,25 @@ fn indexlog_wal_only_sync() -> bool {
     )
 }
 
-/// MANIFEST-CONFORMANCE FOLD gate (default OFF, byte-identical when off). When on, the band/zone
+/// MANIFEST-CONFORMANCE FOLD gate (default ON, opt-out). When on, the band/zone
 /// catalog is folded into the index-log anchor at a threshold dump
 /// and the per-write band-manifest file stops being the
 /// catalog's source of truth (it is reconstructed on load from the durable pages + the folded
 /// anchor). Off, none of that fold code runs: no `zones` are ever captured (so anchor records
-/// serialize identically), and recovery/persistence take the existing paths unchanged. Ships
-/// dark; flips on after the crash-recovery suite is green.
+/// serialize identically), and recovery/persistence take the existing paths unchanged.
+///
+/// Shipped dark originally (the flip once broke proxy tests); the full lib + proxy suites are
+/// green with it on since the upsert-delta and single-barrier work landed, and the threshold
+/// dump is what lets the embedded (proxy) engine reclaim its index-log and WAL at all -- so it
+/// now defaults on. Set `TS_INDEX_CATALOG_FOLD=0` to restore the previous behaviour.
 pub fn index_catalog_fold_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("TS_INDEX_CATALOG_FOLD")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -392,11 +408,20 @@ impl LocalIndexLogStore {
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
                 last_dumped_len_by_shard: HashMap::new(),
+                scratch: None,
             })),
             flush_gates: Arc::new(crate::flush_gate::FlushRegistry::default()),
         }
     }
 
+    /// Append an index record, PARSING the bytes into a value first.
+    ///
+    /// Prefer [`append_index_bytes`](Self::append_index_bytes), which splices the already
+    /// serialized bytes into the record instead. This one parses the whole index into a
+    /// `serde_json::Value` and then re-encodes it, so a multi-megabyte index is walked twice
+    /// more per append -- measured at 2.31 MB for a 2,000-key shard. It remains for callers
+    /// that genuinely need the parsed record back; every engine caller writes an index it has
+    /// just serialized and discards the result, so they all take the splicing path.
     pub fn append_json(
         &self,
         shard_id: ShardId,
@@ -457,7 +482,16 @@ impl LocalIndexLogStore {
         if bulk_ingest_mode() || !indexlog_enabled() {
             return Ok(0);
         }
-        debug_assert!(serde_json::from_slice::<serde_json::Value>(index_bytes).is_ok());
+        // This once asserted the bytes parse as JSON, from when this appender spliced the whole
+        // index into the record. It no longer does -- it writes a digest and a length, and never
+        // looks inside -- so the JSON demand was a precondition that outlived its reason, and it
+        // fires the moment the index is written in its binary container. Assert what this code
+        // actually needs: that it was handed an index at all, in either format a reader accepts.
+        debug_assert!(
+            crate::engine::bytes_look_like_served_index(index_bytes),
+            "index-log anchor was handed {} bytes that are not a served index in any known format",
+            index_bytes.len()
+        );
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -469,16 +503,36 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
-        // Build the JSON payload (no trailing newline) by splicing the pre-serialized index
-        // bytes in directly (avoids re-parsing/re-encoding the whole index), then frame it
-        // with a length + SHA-256 digest (crate::log_framing) for per-record integrity.
-        let mut payload = Vec::with_capacity(index_bytes.len().saturating_add(96));
+        // Record WHICH index this checkpoint anchors, not a second copy of it.
+        //
+        // This used to splice the whole served index into the record -- 2.31 MB for a 2,000-key
+        // shard, written again here after it had just been written to the index file. Nothing
+        // ever read it back: every path that reconstructs a shard decodes the index FILE or a
+        // dump manifest, and the log's own readers take only `sequence` (the tail scan and the
+        // GC anchor probe) or raw bytes (the debug stream). Removing the payload and running
+        // the reload, recovery-sweep, storage-lifecycle, dump, index-format, load-index and
+        // anchor suites changed nothing -- 77 tests, all still green.
+        //
+        // The digest keeps what the copy was actually good for: an anchor can still be checked
+        // against the index file it claims to describe. `append_json` still embeds the whole
+        // index for any caller that wants the record to carry it.
+        let digest = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(index_bytes);
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let index_len = index_bytes.len();
+        let mut payload = Vec::with_capacity(160);
         write!(
             &mut payload,
-            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
+            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\
+             \"index_sha256\":\"{digest}\",\"index_len\":{index_len}}}"
         )?;
-        payload.extend_from_slice(index_bytes);
-        payload.push(b'}');
         let bytes = crate::log_framing::encode_line(&payload);
         let mut file = OpenOptions::new()
             .create(true)
@@ -518,6 +572,7 @@ impl LocalIndexLogStore {
         key_states: Vec<serde_json::Value>,
         applied_wal_sequence: Option<u64>,
         meta: Option<MetaItem>,
+        upsert: bool,
         durable: bool,
     ) -> Result<u64, IndexLogError> {
         if bulk_ingest_mode() || !indexlog_enabled() {
@@ -541,6 +596,7 @@ impl LocalIndexLogStore {
             meta,
             applied_wal_sequence,
             key_states,
+            upsert,
         };
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
@@ -655,6 +711,8 @@ impl LocalIndexLogStore {
         Ok(bytes)
     }
 
+    /// The records in the window. Says nothing about whether the window was exhausted, which
+    /// is why anything reporting completeness to a caller wants `scan_bounded` instead.
     pub fn scan(
         &self,
         shard_id: ShardId,
@@ -662,11 +720,27 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
+        self.scan_bounded(shard_id, start_offset, end_offset, max_bytes)
+            .map(|(records, _)| records)
+    }
+
+    /// The records in the window, and whether `max_bytes` cut the scan short.
+    ///
+    /// The walk below stops for two unrelated reasons: the window ended, or the byte budget ran
+    /// out. Returning only the records conflates them, and a caller that cannot tell them apart
+    /// reports a truncated read as a complete one.
+    pub fn scan_bounded(
+        &self,
+        shard_id: ShardId,
+        start_offset: u64,
+        end_offset: u64,
+        max_bytes: u64,
+    ) -> Result<(Vec<(u64, Vec<u8>)>, bool), IndexLogError> {
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         let path = index_log_path(&inner.root, shard_id);
         if !path.exists() {
             inner.stats.scans += 1;
-            return Ok(Vec::new());
+            return Ok((Vec::new(), false));
         }
         let _ = last_sequence_at(&inner.root, shard_id)?;
         let mut file = File::open(&path)?;
@@ -674,6 +748,7 @@ impl LocalIndexLogStore {
         let mut reader = BufReader::new(file);
         let mut offset = start_offset;
         let mut total = 0;
+        let mut truncated = false;
         let mut records = Vec::new();
         loop {
             let mut line = Vec::new();
@@ -682,7 +757,12 @@ impl LocalIndexLogStore {
                 break;
             }
             let next_offset = offset.saturating_add(read as u64);
-            if next_offset > end_offset || total + read as u64 > max_bytes {
+            if next_offset > end_offset {
+                break;
+            }
+            if total + read as u64 > max_bytes {
+                // Out of budget with the window not yet walked: there is more to read.
+                truncated = true;
                 break;
             }
             records.push((offset, line));
@@ -691,7 +771,7 @@ impl LocalIndexLogStore {
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
-        Ok(records)
+        Ok((records, truncated))
     }
 
     pub fn gc_before_sequence(
@@ -789,6 +869,97 @@ impl LocalIndexLogStore {
         })
     }
 
+    /// Remove every record a completed catalog dump has made redundant, deciding retention per
+    /// record on CONTENT rather than on log position alone.
+    ///
+    /// A dump durably materializes the base served index at WAL anchor `wal_anchor` and then
+    /// appends its folded catalog anchor, which lands at index-log sequence `meta_sequence`.
+    /// Everything the base reflects -- records whose own WAL anchor is at or below `wal_anchor`
+    /// -- is redundant on load (the fold skips them), so it goes. Two kinds of record sit below
+    /// `meta_sequence` yet must SURVIVE:
+    ///
+    /// - a delta a concurrent writer appended between the dump's serialization and its anchor
+    ///   append: its WAL anchor is above `wal_anchor`, so the base does not reflect it, and
+    ///   removing it would lose an eviction/removal that lives only in the delta stream;
+    /// - nothing else -- a legacy whole-index line carries no anchor and is read by no load
+    ///   path, so it is treated as reflected and removed.
+    ///
+    /// The folded catalog anchor itself is at `meta_sequence`, above the removal window, so the
+    /// load-time catalog seed always survives. Position (`sequence < meta_sequence`) still
+    /// bounds the sweep so a record appended AFTER the dump with a stale-looking anchor is never
+    /// touched.
+    pub fn gc_reflected_before_anchor(
+        &self,
+        shard_id: ShardId,
+        wal_anchor: u64,
+        meta_sequence: u64,
+    ) -> Result<IndexLogGcReport, IndexLogError> {
+        #[derive(serde::Deserialize)]
+        struct AnchorProbe {
+            sequence: u64,
+            #[serde(default)]
+            applied_wal_sequence: Option<u64>,
+        }
+        let inner = self.inner.lock().expect("index log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let path = index_log_path(&inner.root, shard_id);
+        if !path.exists() {
+            return Ok(IndexLogGcReport {
+                shard_id,
+                retain_from_sequence: meta_sequence,
+                ..IndexLogGcReport::default()
+            });
+        }
+
+        let bytes_before = path.metadata()?.len();
+        let _ = last_sequence_at(&inner.root, shard_id)?;
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+        let mut records_before = 0usize;
+        let mut retained = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            records_before += 1;
+            // Decode verifies the integrity envelope; the retained raw payload is re-framed on
+            // write-out below, so a retained delta record keeps its exact on-disk bytes.
+            let payload = crate::log_framing::decode_line(line.as_bytes())?;
+            let probe: AnchorProbe = serde_json::from_slice(payload)?;
+            let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
+            if probe.sequence >= meta_sequence || !reflected {
+                retained.push(payload.to_vec());
+            }
+        }
+
+        let temp_path = path.with_extension("jsonl.tmp");
+        {
+            let mut temp = File::create(&temp_path)?;
+            for payload in &retained {
+                temp.write_all(&crate::log_framing::encode_line(payload))?;
+            }
+            temp.flush()?;
+            crate::durability_metrics::record_barrier("engine_index_log_gc");
+            temp.sync_all()?;
+        }
+        fs::rename(&temp_path, &path)?;
+        sync_parent_dir(&path)?;
+        let bytes_after = path.metadata()?.len();
+        Ok(IndexLogGcReport {
+            shard_id,
+            retain_from_sequence: meta_sequence,
+            max_entries_per_round: 0,
+            records_before,
+            records_after: retained.len(),
+            records_removed: records_before.saturating_sub(retained.len()),
+            removable_records_before_budget: records_before.saturating_sub(retained.len()),
+            budget_exhausted: false,
+            bytes_before,
+            bytes_after,
+        })
+    }
+
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
         let inner = self.inner.lock().expect("index log lock poisoned");
         IndexLogStats {
@@ -800,7 +971,14 @@ impl LocalIndexLogStore {
 
 impl Default for LocalIndexLogStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("index-logs"))
+        let scratch = crate::scratch::owned_scratch_dir("index-logs");
+        let store = Self::new(scratch.path());
+        store
+            .inner
+            .lock()
+            .expect("index log lock poisoned")
+            .scratch = Some(scratch);
+        store
     }
 }
 
@@ -865,22 +1043,68 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn unique_temp_path(kind: &str) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
+    /// The splicing appender and the parsing one must produce the SAME record bytes.
+    ///
+    /// The engine's index-log appends were routed to the splicing path to stop re-parsing and
+    /// re-encoding a multi-megabyte index on every append. That is only safe while the two
+    /// produce identical bytes, which holds because `IndexLogRecord` declares its fields in
+    /// exactly the order the splice writes them. This test fails if either side drifts.
+    /// The two appenders now differ ON PURPOSE: `append_index_bytes` writes a constant-size
+    /// anchor, `append_json` embeds the whole index for callers that want the record to carry
+    /// it. This pins that difference, so neither silently becomes the other.
+    #[test]
+    fn the_anchor_appender_writes_far_less_than_the_embedding_one() {
+        let anchor_dir = tempfile::tempdir().unwrap();
+        let embed_dir = tempfile::tempdir().unwrap();
+        let anchoring = LocalIndexLogStore::new(anchor_dir.path());
+        let embedding = LocalIndexLogStore::new(embed_dir.path());
+        // An index big enough that copying it is obviously different from naming it.
+        let mut index = br#"{"index_format_version":3,"strings":{"#.to_vec();
+        for i in 0..500 {
+            if i > 0 {
+                index.push(b',');
+            }
+            index.extend_from_slice(format!("\"k{i:04}\":{{\"page_slab_id\":{i}}}").as_bytes());
+        }
+        index.extend_from_slice(b"}}");
+
+        anchoring.append_index_bytes(11, &index).unwrap();
+        embedding.append_json(11, &index).unwrap();
+
+        let anchor_bytes = std::fs::read(index_log_path(anchor_dir.path(), 11)).unwrap();
+        let embed_bytes = std::fs::read(index_log_path(embed_dir.path(), 11)).unwrap();
+        assert!(
+            anchor_bytes.len() < 250,
+            "the anchor record should be constant-size (got {})",
+            anchor_bytes.len()
+        );
+        assert!(
+            embed_bytes.len() > index.len(),
+            "the embedding appender still carries the whole index"
+        );
+        assert!(
+            embed_bytes.len() > anchor_bytes.len() * 20,
+            "anchoring must be dramatically smaller than embedding ({} vs {})",
+            anchor_bytes.len(),
+            embed_bytes.len()
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn default_store_scratch_dir_dies_with_the_last_clone() {
+        let store = LocalIndexLogStore::default();
+        let root = store.inner.lock().unwrap().root.clone();
+        assert!(root.exists(), "Default must create its scratch dir");
+        let clone = store.clone();
+        drop(store);
+        assert!(root.exists(), "a live clone must keep the scratch dir");
+        drop(clone);
+        assert!(!root.exists(), "the last clone's drop must remove the scratch dir");
+    }
 
     #[test]
     fn gc_before_sequence_rewrites_index_log_with_retained_tail() {
@@ -904,19 +1128,47 @@ mod tests {
         assert_eq!(store.stats(5).last_sequence, 4);
     }
 
+    /// A checkpoint record ANCHORS an index; it does not carry a second copy of it.
     #[test]
-    fn append_index_bytes_writes_parseable_index_log_record_without_reencoding_index() {
+    fn append_index_bytes_writes_an_anchor_that_identifies_the_index_without_embedding_it() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
-        let sequence = store.append_index_bytes(5, b"{\"value\":1}").unwrap();
+        let index = b"{\"value\":1}";
+        let sequence = store.append_index_bytes(5, index).unwrap();
         assert_eq!(sequence, 1);
         let rows = store.scan(5, 0, u64::MAX, u64::MAX).unwrap();
         assert_eq!(rows.len(), 1);
         let payload = crate::log_framing::decode_line(&rows[0].1).unwrap();
+
+        // It still parses as a log record, and the tail scan still reads its sequence.
         let record: IndexLogRecord = serde_json::from_slice(payload).unwrap();
         assert_eq!(record.shard_id, 5);
         assert_eq!(record.sequence, 1);
-        assert_eq!(record.index, serde_json::json!({"value": 1}));
+        assert_eq!(
+            record.index,
+            serde_json::Value::Null,
+            "the index itself must not be copied into the log"
+        );
+
+        // And it identifies exactly the index it anchors.
+        let anchor: serde_json::Value = serde_json::from_slice(payload).unwrap();
+        let expected = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(index);
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        assert_eq!(anchor["index_sha256"], serde_json::Value::String(expected));
+        assert_eq!(anchor["index_len"], serde_json::json!(index.len()));
+        assert!(
+            payload.len() < 200,
+            "an anchor is a constant-size record, not a copy of the index (got {} bytes)",
+            payload.len()
+        );
     }
 
     #[test]
@@ -964,11 +1216,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         let seq1 = store
-            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
+            .append_delta(7, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         assert_eq!(seq1, 1);
         let seq2 = store
-            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None, true)
+            .append_delta(7, vec![page_item(1, "b", false)], Vec::new(), None, None, false, true)
             .unwrap();
         assert_eq!(seq2, 2);
         // The two single-item deltas together are far smaller than a whole-index blob
@@ -1006,10 +1258,10 @@ mod tests {
         // A legacy whole-index record and a delta record share the log file.
         store.append_json(9, b"{\"value\":1}").unwrap();
         let anchor_seq = store
-            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
+            .append_delta(9, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         store
-            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None, true)
+            .append_delta(9, vec![page_item(1, "b", false)], Vec::new(), None, None, false, true)
             .unwrap();
         // Only delta records are returned; the whole-index line is ignored.
         let all = store.read_delta_records(9, 0).unwrap();
@@ -1025,7 +1277,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());
         store
-            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None, true)
+            .append_delta(3, vec![page_item(1, "a", false)], Vec::new(), None, None, false, true)
             .unwrap();
         let meta = MetaItem {
             version: 1,
@@ -1033,10 +1285,61 @@ mod tests {
             timestamp_ms: 100,
             ..MetaItem::default()
         };
-        store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta), true).unwrap();
+        store.append_delta(3, Vec::new(), Vec::new(), None, Some(meta), false, true).unwrap();
         let records = store.read_delta_records(3, 0).unwrap();
         assert_eq!(records.len(), 2);
         assert_eq!(records[1].meta.as_ref().unwrap().start_wal_sequence, 42);
+    }
+
+    #[test]
+    fn gc_reflected_before_anchor_keeps_unreflected_deltas_and_the_catalog_anchor() {
+        // Content-based post-dump sweep: records whose WAL anchor the durable base already
+        // reflects go; a delta a concurrent writer landed with a HIGHER anchor survives even
+        // though it sits below the catalog anchor in the log, and the anchor record itself
+        // (the load-time catalog seed) survives its own sweep.
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        // seq 1: legacy whole-index line (no anchor; read by no load path -> reflected).
+        store.append_json(7, b"{\"value\":1}").unwrap();
+        // seq 2: delta reflected by the dump (WAL anchor 2 <= dump anchor 2).
+        store
+            .append_delta(7, vec![page_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
+            .unwrap();
+        // seq 3: concurrent delta landed after the dump serialized (WAL anchor 5 > 2).
+        store
+            .append_delta(7, vec![page_item(1, "racing", false)], Vec::new(), Some(5), None, false, true)
+            .unwrap();
+        // seq 4: the dump's folded catalog anchor.
+        let meta = MetaItem {
+            version: 1,
+            start_wal_sequence: 2,
+            timestamp_ms: 100,
+            ..MetaItem::default()
+        };
+        let meta_sequence = store
+            .append_delta(7, Vec::new(), Vec::new(), Some(2), Some(meta), false, true)
+            .unwrap();
+
+        let report = store.gc_reflected_before_anchor(7, 2, meta_sequence).unwrap();
+        assert_eq!(report.records_before, 4);
+        assert_eq!(report.records_removed, 2, "the whole-index line and the covered delta go");
+        assert!(report.bytes_after < report.bytes_before);
+
+        let survivors = store.read_delta_records(7, 0).unwrap();
+        assert_eq!(survivors.len(), 2);
+        assert_eq!(
+            survivors[0].items[0].page_ref_key, "racing",
+            "the unreflected concurrent delta must survive the sweep"
+        );
+        assert!(
+            survivors[1].meta.is_some(),
+            "the folded catalog anchor must survive the sweep"
+        );
+        // Sequence continuity: the next append lands above the anchor record.
+        let next = store
+            .append_delta(7, vec![page_item(1, "later", false)], Vec::new(), Some(6), None, false, true)
+            .unwrap();
+        assert_eq!(next, meta_sequence + 1);
     }
 
     #[test]
@@ -1077,7 +1380,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         for key in ["a", "b", "c"] {
             store
-                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, true)
+                .append_delta(5, vec![page_item(1, key, false)], Vec::new(), Some(1), None, false, true)
                 .unwrap();
         }
         drop(store);
@@ -1119,6 +1422,7 @@ mod tests {
                     Vec::new(),
                     Some(index as u64 + 1),
                     None,
+                    false,
                     true,
                 )
                 .unwrap();
@@ -1208,7 +1512,7 @@ mod tests {
             ],
         };
         store
-            .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), true)
+            .append_delta(4, Vec::new(), Vec::new(), Some(5), Some(meta.clone()), false, true)
             .unwrap();
         // A reopen reads the folded catalog back exactly, and latest_zone_catalog finds it.
         let reopened = LocalIndexLogStore::new(dir.path());
@@ -1258,14 +1562,14 @@ mod tests {
             }],
         };
         store
-            .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), true)
+            .append_delta(6, Vec::new(), Vec::new(), Some(1), Some(older), false, true)
             .unwrap();
         // An anchor with no zones between them must not shadow the folded catalog.
         store
-            .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), true)
+            .append_delta(6, Vec::new(), Vec::new(), Some(5), Some(MetaItem::default()), false, true)
             .unwrap();
         store
-            .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), true)
+            .append_delta(6, Vec::new(), Vec::new(), Some(9), Some(newer.clone()), false, true)
             .unwrap();
         assert_eq!(store.latest_zone_catalog(6).unwrap().unwrap(), newer);
     }
@@ -1374,6 +1678,7 @@ mod tests {
                                 Vec::new(),
                                 None,
                                 None,
+                                false,
                                 true,
                             )
                             .unwrap();

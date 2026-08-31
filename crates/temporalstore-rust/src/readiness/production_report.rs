@@ -604,7 +604,7 @@ pub(crate) fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "metaserver_scheduler_report.durable_membership_coupling_ready"
         }
         "storage_cache" if capability.contains("golden") || capability.contains("corpus") => {
-            "storage_cplusplus_corpus_report.external_corpus_publication_ready"
+            "storage_legacy_corpus_report.external_corpus_publication_ready"
         }
         "storage_cache"
             if capability.contains("object-store") =>
@@ -649,7 +649,7 @@ pub(crate) fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "client" => "client_migration_contract.compatibility_result",
         "proxy" => "proxy_migration_contract.compatibility_result",
         "scale_testing" if capability.contains("workload") || capability.contains("corpus") => {
-            "scale_slo_report.cplusplus_workload_replay_ready"
+            "scale_slo_report.legacy_workload_replay_ready"
         }
         "scale_testing" if capability.contains("global production storage readiness") => {
             "scale_slo_report.storage_deployment_scale_slo_ready"

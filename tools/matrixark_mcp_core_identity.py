@@ -85,6 +85,15 @@ class MatrixArkError(ValueError):
     pass
 
 
+class MatrixArkInvalidRequestError(MatrixArkError):
+    """The request itself is malformed -- a value outside its allowed vocabulary, say.
+
+    A distinct type so the edge can answer 400. Not applied wholesale: `MatrixArkError` is raised
+    for both bad input and internal failures throughout the adapter, and reclassifying all of it
+    would turn real faults into 400s. Used where the classification is unambiguous.
+    """
+
+
 class MatrixArkNotFoundError(MatrixArkError):
     """The thing the request addressed does not exist.
 
@@ -113,6 +122,12 @@ def is_retryable_temporalstore_error(error: Any) -> bool:
         "connection reset",
         "temporarily unavailable",
         "server is busy",
+        # The engine's load-window statuses: a shard that has not loaded yet, or is mid
+        # WAL-replay ("shard_not_loaded: shard is recovering"), answers again once the load
+        # completes. Treating these as terminal made callers give up -- or worse, serve the
+        # store as empty -- during exactly the window a retry would have covered.
+        "not loaded",
+        "recovering",
     )
     return any(fragment in text for fragment in retryable_fragments)
 

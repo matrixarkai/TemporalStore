@@ -2694,6 +2694,28 @@ pub struct StorageIndexGcReport {
     pub skipped_reason: String,
 }
 
+/// What one threshold catalog dump reclaimed from the shard's logs (embedded path).
+///
+/// After [`dump_index_catalog`](crate::TemporalEngine::dump_index_catalog) durably
+/// materializes the base index at `wal_anchor` and folds the catalog anchor, everything the
+/// base reflects is redundant: index-log records whose own WAL anchor is at or below
+/// `wal_anchor`, and WAL records at or below it (clamped by the block-retention floor, which
+/// pins any record still holding the only copy of a served page).
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogDumpReclaimReport {
+    pub shard_id: ShardId,
+    pub wal_anchor: u64,
+    pub index_log_records_removed: usize,
+    pub index_log_bytes_before: u64,
+    pub index_log_bytes_after: u64,
+    pub wal_records_removed: usize,
+    pub wal_bytes_before: u64,
+    pub wal_bytes_after: u64,
+    /// The block-retention floor in force during the WAL sweep (`None` = unconstrained): the
+    /// lowest WAL sequence a live block-in-WAL registration still depends on.
+    pub wal_retention_floor: Option<u64>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageEvictionVictim {
     #[serde(rename = "routing_slot")]
@@ -2871,6 +2893,11 @@ pub struct StorageLifecycleRequest {
     pub warm_cache: bool,
 }
 
+/// Index-log truncation waits for dirty buckets by default; see the field this serves.
+fn commit_dirty_buckets_before_truncation_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleRequest {
     pub shard_id: ShardId,
@@ -2938,7 +2965,14 @@ pub struct StorageManagerCycleRequest {
     pub index_gc_usage_ratio_trigger_basis_points: u64,
     #[serde(default)]
     pub index_gc_max_entries_per_round: usize,
-    #[serde(default)]
+    /// Whether index-log truncation waits for the buckets it describes to be dumped.
+    ///
+    /// Defaulted explicitly rather than with a bare `#[serde(default)]`: on a bool that decodes an
+    /// ABSENT field to `false`, which is the unsafe order, regardless of what this type's own
+    /// `Default` says. The request is parsed from a request body, so an absent field is what every
+    /// caller who does not name it gets -- and discarding index-log records before the buckets
+    /// they describe are durable loses exactly the record needed to rebuild them.
+    #[serde(default = "commit_dirty_buckets_before_truncation_default")]
     #[serde(rename = "index_gc_commit_dirty_slots_before_truncation")]
     pub index_gc_commit_dirty_buckets_before_truncation: bool,
     /// Reclaim only bands whose garbage ratio is at least this many basis points
@@ -3132,6 +3166,10 @@ pub type StorageManagerPressureSnapshot = StorageManagerPressureSignals;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleReport {
     pub shard_id: ShardId,
+    /// How long the whole round took. The per-stage `duration_ms` values are each stage's own
+    /// time and tile this; they used to all be a copy of this number.
+    #[serde(default)]
+    pub duration_ms: u64,
     pub dry_run: bool,
     pub native_stage_order: Vec<String>,
     pub completed: bool,

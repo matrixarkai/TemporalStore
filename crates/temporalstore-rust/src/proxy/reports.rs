@@ -6,6 +6,7 @@ use super::*;
 
 impl ProxyService {
     pub fn info(&self) -> ProxyInfo {
+        self.sync_client_stats();
         let options = self.options();
         ProxyInfo {
             status: Status::ok(),
@@ -17,6 +18,7 @@ impl ProxyService {
     }
 
     pub fn heartbeat_report(&self) -> ProxyHeartbeatReport {
+        self.sync_client_stats();
         let options = self.options();
         ProxyHeartbeatReport {
             status: Status::ok(),
@@ -128,18 +130,25 @@ impl ProxyService {
     }
 
     pub fn policy_report(&self) -> ProxyPolicyReport {
+        self.sync_client_stats();
         let options = self.options();
         let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
         let (inflight_total, inflight_writes) = self.inflight_snapshot();
         ProxyPolicyReport {
             serving_mode: options.serving_mode,
             drop_percent: options.drop_percent.min(100),
-            serving_reads: !matches!(options.serving_mode, ProxyServingMode::NotServing),
+            // `drop_percent` at 100 refuses every request, so a report that reads only
+            // `serving_mode` says a proxy is serving while nothing gets through. The
+            // percentage is in this report either way, but these three are the fields an
+            // operator reads to answer "is this proxy taking traffic".
+            serving_reads: !matches!(options.serving_mode, ProxyServingMode::NotServing)
+                && options.drop_percent < 100,
             serving_writes: matches!(
                 options.serving_mode,
                 ProxyServingMode::Serving | ProxyServingMode::Degraded
-            ),
-            rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing),
+            ) && options.drop_percent < 100,
+            rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing)
+                || options.drop_percent >= 100,
             admission_rejections: stats.admission_rejections,
             account_rejections: stats.account_rejections,
             inflight_rejections: stats.inflight_rejections,
@@ -150,6 +159,8 @@ impl ProxyService {
             inflight_requests: inflight_total,
             inflight_write_requests: inflight_writes,
             pin_primary_reads: options.pin_primary_reads,
+            context_shard_count: self.effective_context_shard_count(),
+            context_shard_count_source: self.context_shard_count_source().to_string(),
         }
     }
 
@@ -158,6 +169,7 @@ impl ProxyService {
     }
 
     pub fn metrics_parity_report(&self) -> ProxyMetricsParityReport {
+        let rendered = self.prometheus_metrics();
         ProxyMetricsParityReport {
             status: Status::ok(),
             compared_files: vec![
@@ -167,8 +179,8 @@ impl ProxyService {
                 "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
             ],
-            rust_prometheus_families: proxy_metric_families_from(&self.prometheus_metrics()),
-            mappings: proxy_metrics_parity_mappings(),
+            rust_prometheus_families: proxy_metric_families_from(&rendered),
+            mappings: proxy_metric_mappings_against(&rendered),
             grafana_panels_ready: true,
             alerts_ready: true,
         }

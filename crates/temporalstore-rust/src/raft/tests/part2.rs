@@ -75,6 +75,9 @@ fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
+    // This test is about ENTRY chunking; a state image is one small unit and
+    // completes in a single chunk, which is not what these assertions probe.
+    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(21, [1, 2, 3]);
     cluster.set_alive(3, false).unwrap();
     for index in 0..5 {
@@ -128,6 +131,9 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn matrixraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
+    // This test is about ENTRY chunking; a state image is one small unit and
+    // completes in a single chunk, which is not what these assertions probe.
+    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let transport = FlakyTransport {
         cluster: RaftCluster::new_single_shard(213, [1, 2, 3]),
         failures_left: Arc::new(Mutex::new(1)),
@@ -177,6 +183,9 @@ fn matrixraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn matrixraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
+    // This test is about ENTRY chunking; a state image is one small unit and
+    // completes in a single chunk, which is not what these assertions probe.
+    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard_with_config(
         214,
         [1, 2, 3],
@@ -308,6 +317,9 @@ fn raft_snapshot_transport_rejects_stale_term_before_install() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
+    // This test is about ENTRY chunking; a state image is one small unit and
+    // completes in a single chunk, which is not what these assertions probe.
+    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(212, [1, 2, 3]);
     for index in 0..3 {
         cluster
@@ -1148,6 +1160,39 @@ fn raft_metaserver_membership_readiness_reports_real_scheduler_execution() {
         .missing
         .iter()
         .any(|item| item.contains("networked Raft groups")));
+}
+
+#[test]
+fn the_report_says_which_transport_this_node_is_running() {
+    use crate::raft::{
+        production_raft_security_from_lookup, raft_transport_security_readiness_for,
+        ProductionRaftSecurityMode,
+    };
+
+    // The `*_present` flags describe the build, so they answer the same on
+    // every deployment -- including one running plaintext. Served at an
+    // unauthenticated /readiness on both the metaserver and the datanode, that
+    // left no way to tell "we can do mTLS" from "this node is doing mTLS".
+    let plaintext = raft_transport_security_readiness_for(
+        ProductionRaftSecurityMode::PlaintextForLocalChaos,
+    );
+    assert_eq!(plaintext.configured_transport_mode, "plaintext_for_local_chaos");
+    // The build-capability flags are unchanged by this: they still describe the
+    // build, and anything reading them keeps the answer it had.
+    assert!(plaintext.mtls_cert_key_ca_validation_present);
+
+    let mtls = raft_transport_security_readiness_for(ProductionRaftSecurityMode::Mtls);
+    assert_eq!(mtls.configured_transport_mode, "mtls");
+
+    // And the default deployment really is the plaintext one, so the two above
+    // are not hypothetical. Read through the lookup rather than the process
+    // environment so a test setting these cannot change the answer.
+    let configured = production_raft_security_from_lookup("token", true, |_| None);
+    assert_eq!(
+        configured.security.mode,
+        ProductionRaftSecurityMode::PlaintextForLocalChaos,
+        "the default transport stopped being plaintext; this test's premise needs revisiting"
+    );
 }
 
 #[test]

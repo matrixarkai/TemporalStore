@@ -97,14 +97,13 @@ class IncrementalReadCacheCase(unittest.TestCase):
         self.assertNotIn(adapter._durable_read_cache_delta_path().name, globbed)
         self.assertNotIn(adapter._durable_read_cache_head_path().name, globbed)
 
-    @unittest.expectedFailure
     def test_a_second_writer_does_not_corrupt_the_view(self):
-        """KNOWN DEFECT, predates the tail path -- kept as a live repro.
-
-        Two adapters over one log each hold their own record list. Whichever writes last stamps
-        the CURRENT log signature onto a view missing the other adapter records, so a cold reader
-        accepts the cache and silently loses them (55 of 75 here). Reproduces identically with the
-        tail path reverted, so it is not a regression from it. Remove this marker with the fix.
+        """Two adapters over one log each hold their own record list, and the signature alone
+        cannot catch a stale one -- it describes the log at WRITE time, so whichever adapter
+        wrote last used to stamp the current signature onto a view missing the other's records,
+        and a cold reader silently lost them (55 of 75 here). The append path now compares the
+        bytes its cached view covers against the log as it stood before its own write, and
+        refuses to publish a view that was already behind.
         """
         first = self._primed()
         second = A.MatrixArkLocalAdapter(self.path)
@@ -112,6 +111,24 @@ class IncrementalReadCacheCase(unittest.TestCase):
         second.read_all()
         for record in _records(self.SEED + 20, 5):
             first.append(record)
+        total = self.SEED + 25
+        view = self._fresh_view()
+        self.assertEqual(total, len(view))
+        self.assertEqual(list(range(total)), sorted(r["event_id_hash"] for r in view))
+        self.assertEqual(self._log_view(), view)
+
+    def test_a_writer_in_another_process_does_not_corrupt_the_view(self):
+        """Same staleness, harder case: the interloper's records never pass through this
+        process, so the shared in-process cache cannot repair the view -- the only tell is
+        that the log grew by bytes this instance never accounted for. Simulated by writing
+        lines straight to the log file between two adapters' appends.
+        """
+        adapter = self._primed()
+        with self.path.open("a", encoding="utf-8") as handle:
+            for record in _records(self.SEED, 20):
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        for record in _records(self.SEED + 20, 5):
+            adapter.append(record)
         total = self.SEED + 25
         view = self._fresh_view()
         self.assertEqual(total, len(view))

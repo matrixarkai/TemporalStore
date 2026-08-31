@@ -1042,12 +1042,42 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
 
     // Simulate the lost commit marker: drop the last WAL line (batch_index == batch_size).
     let wal_path = index_dir.join("wals").join("shard-1.wal.jsonl");
-    let contents = std::fs::read_to_string(&wal_path).expect("wal file should exist");
-    let mut lines: Vec<&str> = contents.lines().collect();
-    assert!(lines.len() >= 4, "expected keep + 3 batch records, got {}", lines.len());
-    lines.pop(); // drop the batch commit-marker record
-    let mut truncated = lines.join("\n");
-    truncated.push('\n');
+    // Read as BYTES and walk the records by their FRAMES, not by newlines. A record is only a
+    // "line" while the frame ends with one; once it declares its own length the payload carries
+    // 0x0A freely, and splitting on that byte cuts records in half -- which makes this test
+    // build a log no writer would ever produce and then assert on how recovery handles it.
+    // Asking the frame where each record ends works whichever frame wrote it.
+    let contents = std::fs::read(&wal_path).expect("wal file should exist");
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0usize;
+    while at < contents.len() {
+        // The preallocated zeros reservation trails the records and is not one of them.
+        if contents[at] == 0 {
+            break;
+        }
+        match crate::log_framing::next_frame(&contents[at..]) {
+            Ok(Some((consumed, _))) if consumed > 0 => {
+                spans.push((at, at + consumed));
+                at += consumed;
+            }
+            _ => break,
+        }
+    }
+    // however many records the batch became. Written as N records sharing a batch id the last
+    // one is the commit marker and dropping it strands the rest; written as ONE record carrying
+    // every item, dropping it removes the batch outright. Both are the same test -- cut the tail
+    // and require that nothing of the batch survives -- and neither depends on the count, so this
+    // asserts the shape it needs rather than the shape one format happens to produce.
+    assert!(
+        spans.len() >= 2,
+        "expected the standalone write plus at least one batch record, got {}",
+        spans.len()
+    );
+    spans.pop(); // the commit marker, or the whole batch when it is one record
+    let mut truncated = Vec::new();
+    for (start, end) in spans {
+        truncated.extend_from_slice(&contents[start..end]);
+    }
     std::fs::write(&wal_path, truncated).expect("rewrite wal");
 
     let restarted =
@@ -1424,7 +1454,15 @@ fn async_storage_batch_write_records_wal_without_sync_or_index() {
     });
     assert!(batch.status.ok);
     assert_eq!(engine.block_store().stats().writes, 0);
-    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 2);
+    // logged at all, not logged once per command. Whether a batch of two becomes two records
+    // sharing a batch id or one record carrying both items is a property of the log format, and
+    // this test is about what an ASYNCHRONOUS batch does and does not touch: the log yes, the
+    // barrier no, the block store no, the index no. Pinning the count made it a test of the
+    // format instead, which is how it came to fail on a change that took nothing away from it.
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 1,
+        "the batch must reach the log"
+    );
     assert_eq!(engine.write_ahead_log_store().stats(1).syncs, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 }
@@ -1499,12 +1537,13 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
         wal.append_replayed_record(WriteAheadLogRecord {
             shard_id: 1,
             sequence: seq,
-            command: Command::StringSet {
+            command: Some(Command::StringSet {
                 key: format!("k{seq}"),
                 value: b"v".to_vec(),
-            },
+            }),
             metadata: None,
             staged_pages: Vec::new(),
+            outcomes: Vec::new(),
         })
         .unwrap();
     }
@@ -1575,6 +1614,42 @@ fn expiry_sweep_emits_wal_tombstone_like_native() {
     );
 }
 
+
+/// Pins the two clocks these recovery tests depend on: the timestamp stamped onto each WAL
+/// record (which replay reads back as the leader clock) and the clock the engine computes
+/// deadlines with. Both are restored on drop, including on panic, so a pinned clock can
+/// never leak into another test on this thread.
+static PINNED_LEADER_CLOCK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct PinnedLeaderClock(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+impl PinnedLeaderClock {
+    fn at(leader_now_ms: u64) -> Self {
+        // The record clock is process-wide, so two tests pinning it at once would stamp each
+        // other's records. Held for the few writes that need it, released on drop.
+        let guard = PINNED_LEADER_CLOCK_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::wal::set_test_record_clock_ms(Some(leader_now_ms));
+        crate::engine::set_replay_clock_ms(Some(leader_now_ms));
+        PinnedLeaderClock(guard)
+    }
+
+    fn real_now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_millis() as u64
+    }
+}
+
+impl Drop for PinnedLeaderClock {
+    fn drop(&mut self) {
+        crate::wal::set_test_record_clock_ms(None);
+        crate::engine::set_replay_clock_ms(None);
+    }
+}
+
 #[test]
 fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     // resolves a TTL to an ABSOLUTE deadline on the leader before logging it
@@ -1639,14 +1714,6 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
 
 #[test]
 fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() {
-    // A logged conditional write (SET XX) that fired on the leader because the key was
-    // live must fire identically on replay. The implicit lazy-expiry gate
-    // (remove_if_expired) runs first inside the handler; if it consults the real restart
-    // clock instead of the per-record leader timestamp, a key that was live at leader time
-    // (but whose ORIGINAL deadline has since passed) is dropped during replay, the SET XX
-    // takes the "not exists" branch, and a durably-committed write is silently lost --
-    // diverging the recovered node from the leader. Regression for that hole: replay must
-    // reproduce the leader's branch.
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -1670,45 +1737,91 @@ fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() 
             })
             .ok
     );
-    // Record 1: create k with a SHORT deadline (~120ms from now).
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSetEx {
-            key: "k".to_string(),
-            value: b"v1".to_vec(),
-            ttl_ms: 120,
-        },
-    });
-    // Record 2: immediately (k still live on the leader) a SET XX that refreshes k=v2 with
-    // a FAR-future deadline. On the leader this fires because k exists.
-    let cond = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSetConditional {
-            key: "k".to_string(),
-            value: b"v2".to_vec(),
-            ttl_ms: Some(10 * 60 * 1000),
-            condition: StringSetCondition::IfExists,
-            return_old: false,
-        },
-    });
-    assert_eq!(
-        cond.response,
-        CommandResponse::Integer { value: 1 },
-        "SET XX must fire on the leader while k is live"
-    );
 
-    // Downtime longer than record 1's original 120ms deadline (but far under the refreshed
-    // 10-minute deadline the SET XX installed).
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // An hour of downtime, STATED rather than slept for. Sleeping for it was the defect in
+    // this test: the two writes below have to land while k is still live, so a real deadline
+    // made that a race against whatever else the machine was doing, and any stall longer than
+    // the TTL failed the test on a property it is not about.
+    let leader_now_ms = PinnedLeaderClock::real_now_ms() - 60 * 60 * 1000;
+    {
+        let _clock = PinnedLeaderClock::at(leader_now_ms);
+        // Record 1: create k with a one-minute deadline, an hour before restart.
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: "k".to_string(),
+                value: b"v1".to_vec(),
+                ttl_ms: 60 * 1000,
+            },
+        });
+        // Record 2: a SET XX refreshing k=v2 with a deadline that OUTLASTS the downtime. On
+        // the leader this fires because k is live at leader time, and it now fires
+        // unconditionally, because the deadline and the check read the same pinned clock.
+        let cond = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetConditional {
+                key: "k".to_string(),
+                value: b"v2".to_vec(),
+                ttl_ms: Some(2 * 60 * 60 * 1000),
+                condition: StringSetCondition::IfExists,
+                return_old: false,
+            },
+        });
+        assert_eq!(
+            cond.response,
+            CommandResponse::Integer { value: 1 },
+            "SET XX must fire on the leader while k is live"
+        );
+    }
+    // These writes are asynchronous: the commit does not block, so a returned write does not
+    // mean the record has reached the file. The engine has no Drop that flushes, so dropping
+    // it is not a barrier either -- the successor below can open the log before the last
+    // record lands in it, and a replay test whose log is missing its last record fails
+    // looking exactly like a recovery defect. Flush, then check there is something to replay.
+    let flushed = engine
+        .write_ahead_log_store()
+        .flush(1)
+        .expect("flush the log before the engine goes away");
+    let _ = flushed;
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 2,
+        "premise: the log must hold the writes this test is about to replay, got {}",
+        engine.write_ahead_log_store().stats(1).writes
+    );
     drop(engine);
 
+    // Restart on the REAL clock. Record 1's deadline lapsed 59 minutes ago; the deadline the
+    // SET XX installed is still an hour out. Replay installs record 1's outcome (an absolute
+    // leader-time deadline) and re-executes record 2, whose lazy-expiry check picks the
+    // branch: against the leader clock k is live and the write survives; against the restart
+    // clock k reads expired and a durably-committed write is silently lost.
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache-b"),
         &page_dir,
         &index_dir,
     );
-    restarted.load_shard(1);
+    // Assert the LOAD, not just what is readable after it. `load_shard` throws its response
+    // away, so a shard that refused to recover looks identical to one that recovered empty --
+    // every assertion below then reports a missing value and blames replay for dropping it,
+    // which is the wrong end of the failure and is exactly how this was read for several
+    // rounds.
+    let loaded = restarted.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        loaded.status.ok,
+        "the shard refused the load: {:?}",
+        loaded.status
+    );
+
     let get = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -1756,34 +1869,61 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
             })
             .ok
     );
-    // Durable canary that survives iff replay runs to completion (not aborted mid-way).
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSet {
-            key: "canary".to_string(),
-            value: b"present".to_vec(),
-        },
-    });
-    // Create k with a short deadline, then re-arm it via EXPIRE (also short). Both logged.
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::StringSetEx {
-            key: "k".to_string(),
-            value: b"v".to_vec(),
-            ttl_ms: 100,
-        },
-    });
-    let rearmed = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::CommonExpire {
-            key: "k".to_string(),
-            ttl_ms: 100,
-        },
-    });
-    assert!(rearmed.status.ok, "EXPIRE on a live key should succeed on the leader");
 
-    // Downtime longer than k's deadline: at replay time k's original deadline has lapsed.
-    std::thread::sleep(std::time::Duration::from_millis(250));
+    // An hour of downtime, stated rather than slept for, as in the sibling test. What this
+    // test needs is that k's deadline has LAPSED by restart -- a premise that now holds by
+    // construction. It previously held only if the sleep outlasted the TTL, and widening the
+    // TTL to steady the race quietly inverted it: 250ms of downtime against a 1500ms
+    // deadline left the key live at restart, so the test passed without ever building the
+    // situation it exists to check.
+    let leader_now_ms = PinnedLeaderClock::real_now_ms() - 60 * 60 * 1000;
+    {
+        let _clock = PinnedLeaderClock::at(leader_now_ms);
+        // Durable canary that survives iff replay runs to completion (not aborted mid-way).
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "canary".to_string(),
+                value: b"present".to_vec(),
+            },
+        });
+        // Create k with a one-minute deadline, then re-arm it via EXPIRE. Both logged, both
+        // an hour before restart, so both deadlines are in the past by the time replay runs.
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetEx {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+                ttl_ms: 60 * 1000,
+            },
+        });
+        let rearmed = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: "k".to_string(),
+                ttl_ms: 60 * 1000,
+            },
+        });
+        assert!(
+            rearmed.status.ok,
+            "EXPIRE on a live key should succeed on the leader"
+        );
+    }
+    // These writes are asynchronous: the commit does not block, so a returned write does not
+    // mean the record has reached the file. The engine has no Drop that flushes, so dropping
+    // it is not a barrier either -- the successor below can open the log before the last
+    // record lands in it, and a replay test whose log is missing its last record fails
+    // looking exactly like a recovery defect. Flush, then check there is something to replay.
+    let flushed = engine
+        .write_ahead_log_store()
+        .flush(1)
+        .expect("flush the log before the engine goes away");
+    let _ = flushed;
+    assert!(
+        engine.write_ahead_log_store().stats(1).writes >= 3,
+        "premise: the log must hold the writes this test is about to replay, got {}",
+        engine.write_ahead_log_store().stats(1).writes
+    );
     drop(engine);
 
     let restarted = TemporalEngine::with_local_dirs(
@@ -1792,7 +1932,44 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
         &page_dir,
         &index_dir,
     );
-    restarted.load_shard(1);
+    // Assert the LOAD, not just what is readable after it. `load_shard` throws its response
+    // away, so a shard that refused to recover looks identical to one that recovered empty --
+    // every assertion below then reports a missing value and blames replay for dropping it,
+    // which is the wrong end of the failure and is exactly how this was read for several
+    // rounds.
+    let loaded = restarted.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    assert!(
+        loaded.status.ok,
+        "the shard refused the load: {:?}",
+        loaded.status
+    );
+
+    // THE PREMISE, ASSERTED. This test is only meaningful if k's deadline actually lapsed
+    // while the engine was down; if it did not, the situation it exists to check was never
+    // built and the canary below passes for free. That is not hypothetical -- widening this
+    // test's TTL to steady a race once left 250ms of downtime against a 1500ms deadline, and
+    // it kept passing while checking nothing. So: k must be GONE at restart.
+    let lapsed = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert_eq!(
+        lapsed.response,
+        CommandResponse::Bytes { value: None },
+        "premise: k's re-armed deadline must have lapsed during the downtime, or this test \
+         is not exercising a replayed EXPIRE whose deadline is in the past"
+    );
     let canary = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -2134,6 +2311,131 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
     assert!(
         !engine.maybe_dump_index_catalog_with_gap_for_test(1, u64::MAX),
         "the dumped watermark advanced; no immediate re-dump"
+    );
+}
+
+#[test]
+fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
+    // Embedded-path log reclaim: once a threshold dump durably captures the shard, the
+    // index-log records the base reflects and the WAL prefix below the anchor are redundant --
+    // reclaiming them must SHRINK both files on disk, keep the cadence alive (watermark
+    // measured from the post-reclaim length), and leave a reload byte-exact.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &page_dir, &index_dir);
+    engine.load_shard(1);
+    for i in 0..60 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    let report = engine
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1)
+        .expect("past the gap, the dump + reclaim must fire");
+    assert!(
+        report.index_log_bytes_after < report.index_log_bytes_before,
+        "the index log must shrink on disk after the dump ({} -> {})",
+        report.index_log_bytes_before,
+        report.index_log_bytes_after
+    );
+    assert!(
+        report.wal_bytes_after < report.wal_bytes_before,
+        "the WAL must shrink on disk after the dump ({} -> {})",
+        report.wal_bytes_before,
+        report.wal_bytes_after
+    );
+    assert!(report.index_log_records_removed > 0);
+    assert!(report.wal_records_removed > 0);
+    // The folded catalog anchor survives its own sweep -- it is the load-time catalog seed.
+    assert!(
+        engine
+            .index_log_store()
+            .latest_zone_catalog(1)
+            .unwrap()
+            .is_some(),
+        "the folded catalog anchor must survive the index-log sweep"
+    );
+    // The watermark was re-marked at the post-reclaim length: no immediate re-dump, and the
+    // cadence fires again once new writes regrow the gap (it must not wait for the file to
+    // regrow past its PRE-reclaim size).
+    assert!(engine.maybe_dump_and_reclaim_with_gap_for_test(1, u64::MAX).is_none());
+    for i in 60..70 {
+        write_string(&engine, &format!("key-{i}"), format!("val-{i}").as_bytes());
+    }
+    assert!(
+        engine.maybe_dump_and_reclaim_with_gap_for_test(1, 1).is_some(),
+        "the cadence must keep firing after a reclaim shrank the log"
+    );
+    drop(engine);
+    let restarted = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    for i in 0..70 {
+        assert_eq!(
+            read_string(&restarted, &format!("key-{i}")),
+            Some(format!("val-{i}").into_bytes()),
+            "every acked key must survive reload after the logs were reclaimed"
+        );
+    }
+}
+
+#[test]
+fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_pages() {
+    // An async write's page can live ONLY in its WAL record (served back through the
+    // block-in-WAL registration). A post-dump WAL sweep must pin its floor at the lowest
+    // registered sequence so that record survives, even when the dump anchor is far above it.
+    let _guard = FoldEnvGuard::set(&[("TS_INDEX_CATALOG_FOLD", "1")]);
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // One async write first: its WAL record carries its staged page.
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
+    write_string(&engine, "async-key", b"async-value");
+    // Then a run of synchronous writes, which advance the dump anchor past the async record.
+    engine.set_config(SetConfigRequest {
+        shard_id: 1,
+        config: Config {
+            version: 3,
+            async_storage: false,
+            ..Config::default()
+        },
+    });
+    for i in 0..40 {
+        write_string(&engine, &format!("sync-{i}"), format!("val-{i}").as_bytes());
+    }
+    let report = engine
+        .maybe_dump_and_reclaim_with_gap_for_test(1, 1)
+        .expect("dump + reclaim must fire");
+    let floor = report
+        .wal_retention_floor
+        .expect("the staged async page must register a WAL retention floor");
+    assert!(
+        floor <= report.wal_anchor,
+        "the floor ({floor}) pins a record below the dump anchor ({})",
+        report.wal_anchor
+    );
+    // The pinned record survived: the async value still reads back exactly.
+    assert_eq!(
+        read_string(&engine, "async-key"),
+        Some(b"async-value".to_vec()),
+        "the async write's page must survive the WAL sweep"
     );
 }
 

@@ -279,51 +279,22 @@ pub fn drain_embedding_dirty_once(
                 continue;
             }
         };
-        // Two commands per item: the separate record, and the same vector on the node itself.
-        // Both are written while readers are still on the separate record, so the inline copy
-        // is populated and can be verified before anything depends on it.
         let commands: Vec<Command> = chunk
             .iter()
             .zip(vectors.into_iter())
-            .flat_map(|(item, vector)| {
-                [
-                    Command::ContextUpsertEmbedding {
-                        tenant_hash: item.tenant_hash,
-                        embedding: ContextEmbedding {
-                            ref_hash: context_embedding_ref_hash(
-                                item.tenant_hash,
-                                item.node_hash,
-                                "node_l0",
-                            ),
-                            level: 1,
-                            model_hash,
-                            vector: vector.clone(),
-                            updated_at_ms,
-                        },
-                    },
-                    Command::ContextSetNodeEmbedding {
-                        tenant_hash: item.tenant_hash,
-                        node_hash: item.node_hash,
-                        model_hash,
-                        vector,
-                        updated_at_ms,
-                    },
-                ]
+            .map(|(item, vector)| Command::ContextSetNodeEmbedding {
+                tenant_hash: item.tenant_hash,
+                node_hash: item.node_hash,
+                model_hash,
+                vector,
+                updated_at_ms,
             })
             .collect();
         let response = engine.batch_execute(BatchExecuteRequest {
             shard_id: config.shard_id,
             commands,
         });
-        // Responses come back paired with the commands, so step in pairs -- zipping items
-        // against a flat response list would credit one item with another outcome. The pair is
-        // judged by its FIRST entry so this reports exactly what it reported before the inline
-        // write existed; the inline copy is not yet load-bearing.
-        for (item, pair) in chunk.iter().zip(response.responses.chunks(2)) {
-            let Some(entry) = pair.first() else {
-                report.failed += 1;
-                continue;
-            };
+        for (item, entry) in chunk.iter().zip(response.responses.iter()) {
             if entry.status.ok {
                 report.embedded += 1;
                 if clear_marker(
@@ -468,28 +439,7 @@ mod tests {
         }
     }
 
-    /// The vector as carried by the separate record.
-    fn embedding_vector(engine: &TemporalEngine, tenant_hash: u64, node_hash: u64) -> Vec<f32> {
-        let ref_hash = context_embedding_ref_hash(tenant_hash, node_hash, "node_l0");
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes: vec![ref_hash],
-                limit: Some(1),
-            },
-        });
-        match response.response {
-            CommandResponse::ContextEmbeddings { embeddings } => embeddings
-                .into_iter()
-                .next()
-                .map(|e| e.vector)
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// The vector as carried by the node itself, rather than by the separate record.
+    /// The vector as carried by the node itself.
     fn inline_vector(engine: &TemporalEngine, tenant_hash: u64, node_hash: u64) -> Vec<f32> {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -503,24 +453,6 @@ mod tests {
                 node.map(|node| node.vector).unwrap_or_default()
             }
             _ => Vec::new(),
-        }
-    }
-
-    fn has_embedding(engine: &TemporalEngine, tenant_hash: u64, node_hash: u64) -> bool {
-        let ref_hash = context_embedding_ref_hash(tenant_hash, node_hash, "node_l0");
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash,
-                ref_hashes: vec![ref_hash],
-                limit: Some(1),
-            },
-        });
-        match response.response {
-            CommandResponse::ContextEmbeddings { embeddings } => {
-                embeddings.iter().any(|e| !e.vector.is_empty())
-            }
-            _ => false,
         }
     }
 
@@ -640,23 +572,10 @@ mod tests {
         assert_eq!(report.cleared, 5);
         assert_eq!(report.failed, 0);
 
-        // Every node now has an embedding and no marker remains.
-        for (tenant, node, _) in nodes {
-            assert!(has_embedding(&engine, tenant, node), "node {node} not embedded");
-        }
-
-        // ...and the same vector is on the node itself. Written together on purpose: while the
-        // separate record is still what readers use, this is the only thing proving the inline
-        // copy is actually being populated and agrees with it -- checking it later, after
-        // readers have switched, would be checking it too late to matter.
+        // Every node now carries its vector -- the node record is the only place it lives.
         for (tenant, node, _) in nodes {
             let inline = inline_vector(&engine, tenant, node);
             assert!(!inline.is_empty(), "node {node} has no vector of its own");
-            let separate = embedding_vector(&engine, tenant, node);
-            assert_eq!(
-                separate, inline,
-                "node {node}: the record and the node disagree about its vector"
-            );
         }
         assert_eq!(count_pending(&engine), 0);
 

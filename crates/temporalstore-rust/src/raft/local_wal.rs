@@ -19,6 +19,9 @@ pub struct StagedWalAppend {
     node_id: RaftNodeId,
     min_keep_segments: usize,
     slow_fsync_threshold_ms: u64,
+    /// Whether this append wrote a base whose snapshot boundary ADVANCED -- the one kind of
+    /// record that supersedes on-disk history. Its barrier makes earlier segments prunable.
+    compacting_base: bool,
 }
 
 impl LocalRaftWal {
@@ -58,8 +61,10 @@ impl LocalRaftWal {
             delta: None,
         };
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
+        file.write_all(&wal_proto::encode_record_line(
+            &envelope,
+            wal_proto::binary_records_enabled(),
+        )?)?;
         crate::durability_metrics::record_barrier("raft_wal_append_unsegmented");
         file.sync_data()?;
         Ok(())
@@ -74,6 +79,125 @@ impl LocalRaftWal {
     ) -> io::Result<()> {
         self.append_node_record(shard_id, node_id, record)?;
         self.compact_node_records(shard_id, node_id, keep_last)
+    }
+
+    /// The file a snapshot's state image lives in, named by the snapshot's boundary index.
+    fn image_path(&self, shard_id: ShardId, node_id: RaftNodeId, index: u64) -> PathBuf {
+        self.node_segment_dir(shard_id, node_id)
+            .join(format!("image-{index:020}.bin"))
+    }
+
+    /// Move a record's in-memory image into its own durable file, returning a record that
+    /// references it. The file is fsynced BEFORE any record naming it can be written, so a
+    /// record that says "my image is in a file" is never durable ahead of the file itself.
+    /// Older image files are pruned: recovery folds records forward, so only the newest
+    /// snapshot's image is ever read back.
+    fn externalize_state_image(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+    ) -> io::Result<Option<RaftWalRecord>> {
+        let Some(snapshot) = &record.installed_snapshot else {
+            return Ok(None);
+        };
+        let Some(image) = &snapshot.state_image else {
+            return Ok(None);
+        };
+        let index = snapshot.last_included_index;
+        let path = self.image_path(shard_id, node_id, index);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let message = crate::sdk::v1::WalStateImage {
+                index: image.index_bytes.clone(),
+                next_page_id: image.next_page_id,
+                slabs: image
+                    .slabs
+                    .iter()
+                    .map(|slab| crate::sdk::v1::WalStateImageSlab {
+                        page_slab_id: slab.page_slab_id,
+                        slab: slab.bytes.clone(),
+                    })
+                    .collect(),
+            };
+            let bytes = compress_state_image(prost::Message::encode_to_vec(&message));
+            let tmp = path.with_extension("tmp");
+            {
+                let mut file = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&tmp)?;
+                file.write_all(&crate::log_framing::encode_line(&bytes))?;
+                file.sync_data()?;
+            }
+            fs::rename(&tmp, &path)?;
+            // Prune superseded images: recovery only ever reattaches the newest.
+            if let Ok(entries) = fs::read_dir(self.node_segment_dir(shard_id, node_id)) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if let Some(stem) = name.strip_prefix("image-").and_then(|rest| {
+                        rest.strip_suffix(".bin")
+                    }) {
+                        if stem.parse::<u64>().map(|old| old < index).unwrap_or(false) {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+        let mut externalized = record.clone();
+        if let Some(snapshot) = externalized.installed_snapshot.as_mut() {
+            snapshot.state_image = None;
+            snapshot.state_image_externalized = true;
+        }
+        Ok(Some(externalized))
+    }
+
+    /// Reattach an externalized image to a recovered record. A record that references a file
+    /// which does not exist is COMMITTED corruption -- the file is made durable before any
+    /// record naming it, so a torn tail cannot produce this.
+    fn reattach_state_image(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &mut RaftWalRecord,
+    ) -> io::Result<()> {
+        let Some(snapshot) = record.installed_snapshot.as_mut() else {
+            return Ok(());
+        };
+        if !snapshot.state_image_externalized || snapshot.state_image.is_some() {
+            return Ok(());
+        }
+        let path = self.image_path(shard_id, node_id, snapshot.last_included_index);
+        let raw = fs::read(&path).map_err(|err| {
+            io::Error::other(format!(
+                "snapshot image file missing for index {}: {err}",
+                snapshot.last_included_index
+            ))
+        })?;
+        let payload = crate::log_framing::decode_line(raw.strip_suffix(b"\n").unwrap_or(&raw))
+            .map_err(io::Error::other)?;
+        let payload = decompress_state_image(payload)?;
+        let message = <crate::sdk::v1::WalStateImage as prost::Message>::decode(payload.as_ref())
+            .map_err(io::Error::other)?;
+        snapshot.state_image = Some(RaftSnapshotStateImage {
+            index_bytes: message.index,
+            next_page_id: message.next_page_id,
+            slabs: message
+                .slabs
+                .into_iter()
+                .map(|slab| RaftSnapshotStateImageSlab {
+                    page_slab_id: slab.page_slab_id,
+                    bytes: slab.slab,
+                })
+                .collect(),
+        });
+        snapshot.state_image_externalized = false;
+        Ok(())
     }
 
     pub fn persist_node_segmented(
@@ -149,6 +273,15 @@ impl LocalRaftWal {
         min_keep_segments: usize,
         slow_fsync_threshold_ms: u64,
     ) -> io::Result<StagedWalAppend> {
+        // A state image is written once, to its own file, before any record that references it;
+        // the record then carries the reference. Embedding it re-serialized the whole image into
+        // every subsequent record.
+        let externalized = self.externalize_state_image(shard_id, node_id, record)?;
+        let record = externalized.as_ref().unwrap_or(record);
+        let marker_index = record
+            .installed_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.last_included_index);
         let max_segment_bytes = max_segment_bytes.max(1);
         let min_keep_segments = min_keep_segments.max(1);
         let segment_dir = self.node_segment_dir(shard_id, node_id);
@@ -220,7 +353,18 @@ impl LocalRaftWal {
                     replica_role: record.replica_role,
                     joint_membership: record.joint_membership.clone(),
                     latest_external_snapshot_ref: record.latest_external_snapshot_ref.clone(),
-                    installed_snapshot: record.installed_snapshot.clone(),
+                    // An unchanged marker folds forward from the base, exactly as entries do.
+                    installed_snapshot: if record
+                        .installed_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.last_included_index)
+                        == cursor.persisted_marker_index
+                        && cursor.persisted_marker_index.is_some()
+                    {
+                        None
+                    } else {
+                        record.installed_snapshot.clone()
+                    },
                     apply_snapshot_fence: record.apply_snapshot_fence.clone(),
                     storage_apply_fence: record.storage_apply_fence.clone(),
                     // Telemetry counters are not durability-relevant (the fingerprint zeroes
@@ -249,10 +393,7 @@ impl LocalRaftWal {
                     delta: None,
                 }
             };
-            let mut buf = Vec::new();
-            serde_json::to_writer(&mut buf, &envelope).map_err(io::Error::other)?;
-            buf.push(b'\n');
-            Ok(buf)
+            wal_proto::encode_record_line(&envelope, wal_proto::binary_records_enabled())
         };
 
         let mut wrote_base = !delta_safe;
@@ -277,7 +418,15 @@ impl LocalRaftWal {
         } else {
             max_segment_bytes
         };
-        let rotate = active_len > 0 && active_len + encoded.len() as u64 > rotate_threshold;
+        // Size-based rotation as before -- plus: a COMPACTING base opens a segment. When the
+        // snapshot boundary advanced, the base supersedes the history in the current segment,
+        // and only at a segment boundary can pruning reclaim it. Ordinary re-bases (an empty
+        // log, a conflict) stay in-segment: rotating on every one turned each read-index
+        // persist into file churn and erased the record trail the legacy contract promises.
+        let marker_advanced =
+            marker_index.is_some() && marker_index != cursor.persisted_marker_index;
+        let rotate = (active_len > 0 && active_len + encoded.len() as u64 > rotate_threshold)
+            || (wrote_base && marker_advanced && active_len > 0);
         if rotate {
             active_segment_id += 1;
             if !wrote_base {
@@ -342,6 +491,11 @@ impl LocalRaftWal {
         }
         cursor.persisted_last_index = log_last_index;
         cursor.persisted_last_term = log_last_term;
+        cursor.persisted_marker_index = record
+            .installed_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.last_included_index)
+            .or(cursor.persisted_marker_index);
 
         // Everything the cursor must record about this append is in place, so the lock can go
         // before the expensive part. Writers blocked behind it now proceed and register against
@@ -355,6 +509,7 @@ impl LocalRaftWal {
             node_id,
             min_keep_segments,
             slow_fsync_threshold_ms,
+            compacting_base: wrote_base && marker_advanced,
         })
     }
 
@@ -371,6 +526,7 @@ impl LocalRaftWal {
             node_id,
             min_keep_segments,
             slow_fsync_threshold_ms,
+            compacting_base,
         } = staged;
         let last_fsync_elapsed_ms = gate.await_durable(ticket, || {
             crate::durability_metrics::record_barrier("raft_wal_append");
@@ -392,8 +548,16 @@ impl LocalRaftWal {
         // where the sequence was `recover().valid_records + 1` over the surviving
         // segments only.
         let mut released_segment_count = 0u64;
-        if cursor.segments.len() > min_keep_segments {
-            let remove = cursor.segments.len() - min_keep_segments;
+        // A durable COMPACTING base supersedes every earlier segment; one predecessor is kept
+        // so a torn tail on the active segment still has somewhere to recover from. Ordinary
+        // appends keep the configured count.
+        let effective_keep = if compacting_base {
+            min_keep_segments.min(2)
+        } else {
+            min_keep_segments
+        };
+        if cursor.segments.len() > effective_keep {
+            let remove = cursor.segments.len() - effective_keep;
             let pruned: Vec<RaftWalSegmentInfo> = cursor.segments.drain(0..remove).collect();
             for segment in &pruned {
                 fs::remove_file(&segment.path)?;
@@ -426,9 +590,15 @@ impl LocalRaftWal {
         node_id: RaftNodeId,
     ) -> io::Result<NodeWalCursor> {
         let recovery = self.recover_node_segmented_scan(shard_id, node_id)?;
+        let recovered_marker = recovery
+            .record
+            .as_ref()
+            .and_then(|record| record.installed_snapshot.as_ref())
+            .map(|snapshot| snapshot.last_included_index);
         let segments = self.node_segments(shard_id, node_id)?;
         let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
         Ok(NodeWalCursor {
+            persisted_marker_index: recovered_marker,
             next_sequence: recovery.valid_records as u64 + 1,
             segments,
             released_segment_count: runtime_state.released_segment_count,
@@ -492,7 +662,11 @@ impl LocalRaftWal {
         if let Ok(mut cursors) = self.cursors.lock() {
             cursors.remove(&(shard_id, node_id));
         }
-        self.recover_node_segmented_scan(shard_id, node_id)
+        let mut recovery = self.recover_node_segmented_scan(shard_id, node_id)?;
+        if let Some(record) = recovery.record.as_mut() {
+            self.reattach_state_image(shard_id, node_id, record)?;
+        }
+        Ok(recovery)
     }
 
     fn recover_node_segmented_scan(
@@ -515,19 +689,13 @@ impl LocalRaftWal {
             let mut valid_until = 0usize;
             while offset < bytes.len() {
                 let remaining = &bytes[offset..];
-                let line_len = remaining
-                    .iter()
-                    .position(|byte| *byte == b'\n')
-                    .map(|pos| pos + 1)
-                    .unwrap_or(remaining.len());
-                let raw_line = &remaining[..line_len];
-                let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-                if line.is_empty() {
-                    valid_until = offset + line_len;
-                    offset += line_len;
+                // Blank padding is not a record, but it is not damage either.
+                if remaining.first() == Some(&b'\n') {
+                    valid_until = offset + 1;
+                    offset += 1;
                     continue;
                 }
-                let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+                let Some((line_len, envelope)) = wal_proto::next_envelope(remaining) else {
                     break;
                 };
                 if envelope.checksum != raft_wal_checksum(&envelope.record)? {
@@ -542,6 +710,14 @@ impl LocalRaftWal {
                         // `from_index` were superseded (conflict overwrite), and anything
                         // below `log_first_index` was compacted away.
                         let mut merged = envelope.record;
+                        // A marker the record omitted is unchanged: inherit the base's, the
+                        // same way unchanged entries fold forward.
+                        if merged.installed_snapshot.is_none() {
+                            if let Some(previous) = last_record.as_ref() {
+                                merged.installed_snapshot =
+                                    previous.installed_snapshot.clone();
+                            }
+                        }
                         let appended = std::mem::take(&mut merged.entries);
                         let base = last_record;
                         // An incremental record omits the volatile telemetry blocks; carry
@@ -638,18 +814,11 @@ impl LocalRaftWal {
         let mut offset = 0usize;
         while offset < bytes.len() {
             let remaining = &bytes[offset..];
-            let line_len = remaining
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|pos| pos + 1)
-                .unwrap_or(remaining.len());
-            let raw_line = &remaining[..line_len];
-            let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-            if line.is_empty() {
-                offset += line_len;
+            if remaining.first() == Some(&b'\n') {
+                offset += 1;
                 continue;
             }
-            let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+            let Some((line_len, envelope)) = wal_proto::next_envelope(remaining) else {
                 break;
             };
             if envelope.checksum != raft_wal_checksum(&envelope.record)? {
@@ -667,9 +836,11 @@ impl LocalRaftWal {
             .write(true)
             .truncate(true)
             .open(&path)?;
+        // Rewriting the retained records adopts whichever encoding is current; a reader
+        // handles either, but a file written whole in one encoding is easier to reason about.
+        let binary = wal_proto::binary_records_enabled();
         for envelope in retained {
-            serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
-            file.write_all(b"\n")?;
+            file.write_all(&wal_proto::encode_record_line(&envelope, binary)?)?;
         }
         crate::durability_metrics::record_barrier("raft_wal_compact");
         file.sync_data()?;
@@ -731,19 +902,12 @@ impl LocalRaftWal {
         let mut valid_records = 0usize;
         while offset < bytes.len() {
             let remaining = &bytes[offset..];
-            let line_len = remaining
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map(|pos| pos + 1)
-                .unwrap_or(remaining.len());
-            let raw_line = &remaining[..line_len];
-            let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
-            if line.is_empty() {
-                valid_until = offset + line_len;
-                offset += line_len;
+            if remaining.first() == Some(&b'\n') {
+                valid_until = offset + 1;
+                offset += 1;
                 continue;
             }
-            let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+            let Some((line_len, envelope)) = wal_proto::next_envelope(remaining) else {
                 break;
             };
             if envelope.checksum != raft_wal_checksum(&envelope.record)? {
@@ -866,20 +1030,26 @@ impl LocalRaftWal {
     }
 
     pub(super) fn inspect_segment_sequences(path: &Path) -> io::Result<(u64, u64, u64, u64, u64)> {
-        let file = OpenOptions::new().read(true).open(path)?;
+        let bytes = fs::read(path)?;
         let mut record_count = 0u64;
         let mut first_sequence = 0u64;
         let mut last_sequence = 0u64;
         let mut first_log_index = 0u64;
         let mut last_log_index = 0u64;
-        for line in BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let remaining = &bytes[offset..];
+            // Blank padding is not a record.
+            if remaining.first() == Some(&b'\n') {
+                offset += 1;
                 continue;
             }
-            let Ok(envelope) = serde_json::from_str::<RaftWalEnvelope>(&line) else {
-                continue;
+            // A record that will not decode leaves no way to find where the next one begins, so
+            // stop here -- the same place the recovery path stops on the same file.
+            let Some((consumed, envelope)) = wal_proto::next_envelope(remaining) else {
+                break;
             };
+            offset += consumed;
             record_count = record_count.saturating_add(1);
             if first_sequence == 0 {
                 first_sequence = envelope.sequence;
@@ -916,6 +1086,84 @@ impl LocalRaftWal {
     // Retained for the legacy on-disk prune path; the segmented append hot path now
     // prunes in-memory via the cursor to stay O(1).
     #[allow(dead_code)]
+    /// Bytes of LOG this node holds on disk -- the segments, and nothing else.
+    ///
+    /// This is what the compaction threshold bounds, and it is deliberately not the directory's
+    /// total size. An externalized state image lives beside the segments, and compaction cannot
+    /// reclaim it: compaction is what WRITES it. Counting it made the threshold permanently
+    /// satisfied on any shard whose state outgrew the bound, so every check with a single new
+    /// entry rebuilt the entire image to reclaim a few kilobytes of log -- measured at 223 KB
+    /// weighed against a 4 KB bound, one small write after a compaction.
+    ///
+    /// Judging it by the logical size of the commands instead is the opposite error, and
+    /// understates it by the log's whole encoding overhead: on a 30k-write corpus the commands
+    /// were 5 MB while the segments held 36 MB. The segments are the honest measure.
+    ///
+    /// Metadata only -- no segment is opened or scanned, so the periodic check can consult it
+    /// on every tick.
+    /// Bytes of log a compaction at `snapshot_index` could still be carrying -- the segments
+    /// holding entries ABOVE that marker.
+    ///
+    /// This is what the compaction threshold should weigh, and neither of the simpler measures
+    /// is right. Total directory size counts the externalized state image, which compaction
+    /// writes rather than reclaims, so a shard whose state outgrew the bound compacted on every
+    /// check forever. Total SEGMENT size is closer but still counts the predecessor segment that
+    /// rotation deliberately keeps so a torn tail has somewhere to recover from -- a segment
+    /// entirely below the marker, which the next compaction supersedes rather than shrinks.
+    /// Weighing either one makes the trigger fire for bytes it cannot do anything about.
+    ///
+    /// Served from the cursor, which already carries each segment's index bounds, so this stays
+    /// a lock and some arithmetic. Without a cursor it falls back to the whole-segment total,
+    /// which is the conservative direction: it can only compact sooner, never later.
+    pub fn node_log_bytes_after(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        snapshot_index: u64,
+    ) -> u64 {
+        {
+            let cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+            if let Some(cursor) = cursors.get(&(shard_id, node_id)) {
+                return cursor
+                    .segments
+                    .iter()
+                    .filter(|segment| {
+                        // `last_log_index == 0` means the segment carries no entry bounds
+                        // (an empty or read-index-only segment); count it, since nothing
+                        // proves it superseded.
+                        segment.last_log_index == 0 || segment.last_log_index > snapshot_index
+                    })
+                    .map(|segment| segment.bytes)
+                    .sum();
+            }
+        }
+        self.node_log_bytes(shard_id, node_id)
+    }
+
+    pub fn node_log_bytes(&self, shard_id: ShardId, node_id: RaftNodeId) -> u64 {
+        let dir = self.node_segment_dir(shard_id, node_id);
+        let mut total = 0u64;
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Segments only. An `image-*.bin` in this directory is state, not log.
+                let is_segment =
+                    path.extension().and_then(|ext| ext.to_str()) == Some("wal");
+                if !is_segment {
+                    continue;
+                }
+                if let Ok(metadata) = entry.metadata() {
+                    total = total.saturating_add(metadata.len());
+                }
+            }
+        }
+        // The pre-segment single-file layout, for a node that has not rolled yet.
+        if let Ok(metadata) = fs::metadata(self.node_path(shard_id, node_id)) {
+            total = total.saturating_add(metadata.len());
+        }
+        total
+    }
+
     pub(super) fn prune_node_segments(
         &self,
         shard_id: ShardId,
@@ -935,11 +1183,33 @@ impl LocalRaftWal {
         Ok(())
     }
 
+    /// Bytes and index bounds this node's segments hold.
+    ///
+    /// Served from the in-memory cursor when one is live. Deriving it from disk means READING
+    /// AND PARSING EVERY SEGMENT IN FULL -- `node_segments` calls `inspect_segment_sequences`,
+    /// which reads each file end to end to find its sequence bounds. That is fine as a cold
+    /// rebuild, and it is not fine on the admin status endpoint, which is a plain HTTP GET:
+    /// anything polling it made the node re-read its whole log every time, and one cheap
+    /// request forced megabytes of disk read and record parsing.
+    ///
+    /// The cursor already carries the per-segment info this report returns, kept current by
+    /// every append, so the live path costs a lock and a clone. The disk scan stays as the
+    /// fallback for a node whose cursor has not been seeded yet.
     pub fn segment_report(
         &self,
         shard_id: ShardId,
         node_id: RaftNodeId,
     ) -> io::Result<RaftWalSegmentReport> {
+        {
+            let cursors = self.cursors.lock().expect("raft wal cursor lock poisoned");
+            if let Some(cursor) = cursors.get(&(shard_id, node_id)) {
+                let mut report = Self::segment_report_from_segments(&cursor.segments);
+                report.released_segment_count = cursor.released_segment_count;
+                report.last_fsync_elapsed_ms = cursor.last_fsync_elapsed_ms;
+                report.slow_fsync_backpressure_observed = cursor.slow_fsync_backpressure_observed;
+                return Ok(report);
+            }
+        }
         let segments = self.node_segments(shard_id, node_id)?;
         let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
         let first_retained_log_index = segments
@@ -963,5 +1233,37 @@ impl LocalRaftWal {
             last_fsync_elapsed_ms: runtime_state.last_fsync_elapsed_ms,
             slow_fsync_backpressure_observed: runtime_state.slow_fsync_backpressure_observed,
         })
+    }
+}
+
+/// Marker for a compressed state image. An image written before compression existed carries a
+/// protobuf field tag here instead, so the reader can tell the two apart and keep reading old
+/// files -- this is a durable on-disk format and a node must not need a flag day to restart.
+const STATE_IMAGE_ZSTD_MAGIC: &[u8] = b"TSZ1";
+
+/// Compress an encoded state image. The image is dominated by the served index, which is JSON:
+/// on a scaled corpus 37% of the image's bytes were digits, commas and structural characters,
+/// and it opens with dozens of empty index families. That compresses away almost entirely, and
+/// the image is written once per compaction and read once per restore, so the cost lands
+/// nowhere near a write path. A payload that does not shrink is stored as-is.
+fn compress_state_image(bytes: Vec<u8>) -> Vec<u8> {
+    match zstd::stream::encode_all(std::io::Cursor::new(&bytes), 3) {
+        Ok(compressed) if compressed.len() + STATE_IMAGE_ZSTD_MAGIC.len() < bytes.len() => {
+            let mut out = Vec::with_capacity(STATE_IMAGE_ZSTD_MAGIC.len() + compressed.len());
+            out.extend_from_slice(STATE_IMAGE_ZSTD_MAGIC);
+            out.extend_from_slice(&compressed);
+            out
+        }
+        _ => bytes,
+    }
+}
+
+/// Undo [`compress_state_image`], passing an uncompressed (older) image through untouched.
+fn decompress_state_image(payload: &[u8]) -> io::Result<std::borrow::Cow<'_, [u8]>> {
+    match payload.strip_prefix(STATE_IMAGE_ZSTD_MAGIC) {
+        Some(compressed) => zstd::stream::decode_all(std::io::Cursor::new(compressed))
+            .map(std::borrow::Cow::Owned)
+            .map_err(|err| io::Error::other(format!("state image decompress failed: {err}"))),
+        None => Ok(std::borrow::Cow::Borrowed(payload)),
     }
 }

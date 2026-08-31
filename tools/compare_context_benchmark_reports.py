@@ -94,7 +94,7 @@ def main() -> int:
     per_query_compare = compare_per_query(rust, native, args.numeric_tolerance, failures)
 
     result = {
-        "schema": "matrixark_vikingmem_context_benchmark_report_compare_v2",
+        "schema": "matrixark_external_baseline_context_benchmark_report_compare_v2",
         "ready": not failures,
         "rust_report": str(args.rust_report),
         "native_report": str(args.native_report),

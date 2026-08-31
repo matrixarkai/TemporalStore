@@ -22,7 +22,7 @@ struct OpsScaleReadinessReport {
     real_process_roles: Vec<String>,
     distributed_raft_load_ready: bool,
     raft_load_checks: Vec<String>,
-    cplusplus_workload_replay_ready: bool,
+    legacy_workload_replay_ready: bool,
     workload_families: Vec<String>,
     scale_slo_report: DockerAwsScaleSloEvidence,
     harnesses: Vec<HarnessEvidence>,
@@ -142,7 +142,7 @@ fn main() {
             covered_families.push(family.to_string());
         }
     }
-    let cplusplus_workload_replay_ready = [
+    let legacy_workload_replay_ready = [
         "feature_packed_timestamped_pages",
         "control_state_counter_window",
         "redis_compatible_set_core",
@@ -155,10 +155,10 @@ fn main() {
     let scale_slo_report = DockerAwsScaleSloEvidence {
         docker_or_aws_slo_evidence_ready: docker_scale_run_ready
             && distributed_raft_load_ready
-            && cplusplus_workload_replay_ready,
+            && legacy_workload_replay_ready,
         storage_deployment_scale_slo_ready: docker_scale_run_ready
             && distributed_raft_load_ready
-            && cplusplus_workload_replay_ready,
+            && legacy_workload_replay_ready,
         metaserver_process_ready: docker_scale_run_ready,
         proxy_process_ready: docker_scale_run_ready,
         client_process_ready: docker_scale_run_ready,
@@ -167,7 +167,7 @@ fn main() {
         storage_pressure_ready: docker_scale_run_ready,
         cache_pressure_ready: docker_scale_run_ready,
         proxy_convergence_ready: docker_scale_run_ready,
-        workload_replay_ready: cplusplus_workload_replay_ready,
+        workload_replay_ready: legacy_workload_replay_ready,
         collectors: vec![
             "cpu".to_string(),
             "memory".to_string(),
@@ -220,7 +220,7 @@ fn main() {
             ],
         },
         HarnessEvidence {
-            name: "unified_cplusplus_rust_workload_replay".to_string(),
+            name: "unified_legacy_rust_workload_replay".to_string(),
             command: "python3 tools/run_temporalstore_unified_tests.py --rust-only".to_string(),
             covers: covered_families.clone(),
         },
@@ -273,7 +273,7 @@ fn main() {
     );
     push_missing(
         &mut missing,
-        cplusplus_workload_replay_ready,
+        legacy_workload_replay_ready,
         "workload replay/golden corpus evidence",
     );
     push_missing(
@@ -306,7 +306,7 @@ fn main() {
             "membership".to_string(),
             "secondary_reads_under_load".to_string(),
         ],
-        cplusplus_workload_replay_ready,
+        legacy_workload_replay_ready,
         workload_families: covered_families,
         scale_slo_report,
         harnesses,

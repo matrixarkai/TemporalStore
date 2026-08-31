@@ -7,7 +7,7 @@ use crate::engine::constants::*;
 use crate::block_store::LocalBlockStore;
 use crate::block_store::BlockAddress;
 use crate::types::{
-    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
+    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEntity,
     ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
     ContextPackAudit, ContextSummary, ContextTraversedNode, ContextWire,
     FeaturePoint, InternalContextIndex, ShardId, Status,
@@ -104,33 +104,6 @@ pub(super) fn context_child_key(tenant_hash: u64, parent_hash: u64) -> String {
     format!("ctx:child:{tenant_hash}:{parent_hash}")
 }
 
-pub(super) fn context_embedding_collection_key(tenant_hash: u64) -> String {
-    format!("ctx:embedding:{tenant_hash}")
-}
-
-/// Split a persisted per-embedding key into (collection key, ref hash).
-///
-/// Mirrors `split_context_entity_key`: the index groups embeddings, but the persisted entry keeps
-/// the per-embedding key `ctx:embedding:{tenant}:{ref_hash}`, which is what keeps the on-disk
-/// shape identical in both directions across this fold.
-pub(super) fn split_context_embedding_key(object_key: &str) -> Option<(String, u64)> {
-    let (collection_key, ref_hash) = object_key.rsplit_once(':')?;
-    if !collection_key.starts_with("ctx:embedding:") {
-        return None;
-    }
-    // ctx, embedding, tenant -- three segments once the ref hash is removed. A key that already
-    // IS a collection key has only two and must not be split, or the tenant hash would be
-    // reinterpreted as a ref.
-    if collection_key.split(':').count() != 3 {
-        return None;
-    }
-    Some((collection_key.to_string(), ref_hash.parse::<u64>().ok()?))
-}
-
-pub(super) fn context_embedding_key(tenant_hash: u64, ref_hash: u64) -> String {
-    format!("ctx:embedding:{tenant_hash}:{ref_hash}")
-}
-
 pub(super) fn context_summary_key(tenant_hash: u64, node_hash: u64, level: u32) -> String {
     format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")
 }
@@ -165,6 +138,32 @@ impl Default for ContextCompressionPolicy {
             max_event_age_ms: 30 * 24 * 60 * 60 * 1000, // 30 days
         }
     }
+}
+
+/// How many nodes each traversal depth keeps, when the request does not say.
+///
+/// Retrieval breadth is a deployment decision, not a build-time one: a corpus of short playbook
+/// steps wants a wider frontier than one of long prose, and the right value is found by measuring
+/// recall on the operator's own documents. The request-level `top_k_per_depth` still wins where a
+/// caller sets it; this only supplies the default it falls back to.
+///
+/// Widening costs latency roughly linearly -- traversal work is bounded by depth x top_k x
+/// children -- which is why it is capped at CONTEXT_MAX_LIMIT rather than left open.
+pub(super) fn default_traversal_top_k() -> usize {
+    std::env::var("MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_TOP_K)
+}
+
+/// Ceiling on nodes collected across the whole traversal, when the request does not say.
+pub(super) fn default_traversal_candidates() -> usize {
+    std::env::var("MATRIXARK_RETRIEVAL_MAX_CANDIDATES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES)
 }
 
 pub(super) fn context_compression_policy_from_env() -> ContextCompressionPolicy {
@@ -726,15 +725,6 @@ pub(super) fn validate_context_embedding_vector(
     }
 }
 
-pub(super) fn validate_context_embedding(embedding: &ContextEmbedding) -> Result<(), Status> {
-    validate_context_required(
-        embedding.ref_hash != 0 && embedding.level != 0 && embedding.updated_at_ms != 0,
-        "ref_hash, level, and updated_at_ms are required",
-    )?;
-    validate_context_timestamp(embedding.updated_at_ms)?;
-    validate_context_embedding_vector("embedding vector", &embedding.vector)
-}
-
 pub(super) fn validate_context_summary(summary: &ContextSummary) -> Result<(), Status> {
     validate_context_required(
         summary.node_hash != 0 && summary.level != 0 && summary.valid_from_ms != 0,
@@ -795,21 +785,26 @@ pub(super) fn load_context_children(
         .unwrap_or_default()
 }
 
-pub(super) fn load_context_embedding(
+pub(super) fn load_context_node(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
-    ref_hash: u64,
-) -> Option<ContextEmbedding> {
+    node_hash: u64,
+) -> Option<ContextNode> {
+    // Same two-step lookup as the ContextGetNode command: current nodes live in the hashes map
+    // under the CONTEXT_NODE_FIELD slot; context_nodes is the pre-hashes location still read for
+    // blocks written before that move.
+    let object_key = context_node_key(tenant_hash, node_hash);
     shard
-        .context_embeddings
-        .get(&context_embedding_collection_key(tenant_hash))
-        .and_then(|series| series.get(&ref_hash))
+        .hashes
+        .get(&object_key)
+        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+        .or_else(|| shard.context_nodes.get(&object_key))
         .and_then(|address| {
             read_page_bytes(cache, page_store, shard_id, address)
-                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
+                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
 
@@ -941,7 +936,7 @@ pub(super) fn traverse_context_tree(
 ) -> Vec<ContextTraversedNode> {
     let max_depth = max_depth.unwrap_or(6).min(CONTEXT_MAX_TRAVERSAL_DEPTH);
     let top_k = top_k_per_depth
-        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_TOP_K)
+        .unwrap_or_else(default_traversal_top_k)
         .max(1)
         .min(CONTEXT_MAX_LIMIT);
     let child_limit = max_children_scored_per_parent
@@ -949,7 +944,7 @@ pub(super) fn traverse_context_tree(
         .max(1)
         .min(CONTEXT_MAX_LIMIT);
     let candidate_limit = max_candidate_nodes
-        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES)
+        .unwrap_or_else(default_traversal_candidates)
         .max(1)
         .min(CONTEXT_MAX_LIMIT);
     let mut frontier = vec![ContextTraversedNode {
@@ -967,30 +962,24 @@ pub(super) fn traverse_context_tree(
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
             for child in children {
-                // Address the embedding the way WRITERS store it. This passed the child's raw
-                // node hash, but every writer stores under
-                // context_embedding_ref_hash(tenant, owner, level) -- a hash of those three --
-                // which can never equal a bare node hash. So the lookup missed for every child,
-                // `continue` fired every iteration, and the cosine scoring below was
-                // unreachable. The test did not catch it because it wrote its embedding under
-                // the raw node hash too, constructing the data the way this READER expected
-                // rather than the way writers actually write it.
-                let ref_hash = crate::context_workflow::context_embedding_ref_hash(
-                    tenant_hash,
-                    child.child_hash,
-                    "node_l0",
-                );
-                let Some(embedding) = load_context_embedding(
+                // Score from the vector the node itself carries. The node is addressable by
+                // the child hash already in hand; the retired separate records were not -- they
+                // were keyed by a one-way hash of (tenant, owner, level) that no reader could
+                // reconstruct without already holding the owner.
+                let vector = load_context_node(
                     cache,
                     page_store,
                     shard_id,
                     shard,
                     tenant_hash,
-                    ref_hash,
-                ) else {
+                    child.child_hash,
+                )
+                .filter(|node| !node.vector.is_empty())
+                .map(|node| node.vector);
+                let Some(vector) = vector else {
                     continue;
                 };
-                let score = cosine_similarity(query_vector, &embedding.vector);
+                let score = cosine_similarity(query_vector, &vector);
                 if score > 0.0 {
                     scored_layer.push(ContextTraversedNode {
                         node_hash: child.child_hash,

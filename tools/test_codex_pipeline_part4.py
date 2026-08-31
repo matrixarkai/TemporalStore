@@ -2521,7 +2521,15 @@ class _CodexPipelinePart4:
             records = adapter.read_all()
             record_types = {record.get("record_type") for record in records}
             self.assertIn("context_event", record_types)
-            self.assertIn("context_embedding", record_types)
+            # Folded: no separate embedding records; the events carry their vectors.
+            self.assertNotIn("context_embedding", record_types)
+            self.assertTrue(
+                any(
+                    record.get("record_type") == "context_event" and record.get("vector")
+                    for record in records
+                ),
+                "hot-path events must carry their vectors inline",
+            )
             self.assertIn("context_index", record_types)
             self.assertIn("session_buffer_event", record_types)
             self.assertIn("context_summary_dirty", record_types)
@@ -2722,15 +2730,20 @@ class _CodexPipelinePart4:
                     for record in profile_entities
                 )
             )
-            profile_embeddings = [
-                record
-                for record in records
-                if record.get("record_type") == "context_embedding"
-                and record.get("embedding_type") == "profile_entity_state"
-                and record.get("memory_scope") == "user_profile"
-                and record.get("session_continuity") == "cross_session"
+            # Folded: each profile entity carries its vector; the retired record's compact
+            # copy rides along under embedding_meta.
+            promoted_with_vectors = [
+                record for record in profile_entities if record.get("vector")
             ]
-            self.assertEqual(len(profile_entities), len(profile_embeddings))
+            self.assertEqual(len(profile_entities), len(promoted_with_vectors))
+            profile_embeddings = [
+                record.get("embedding_meta") or {} for record in promoted_with_vectors
+            ]
+            self.assertTrue(all(
+                meta.get("memory_scope", record.get("memory_scope")) == "user_profile"
+                and meta.get("session_continuity", record.get("session_continuity")) == "cross_session"
+                for meta, record in zip(profile_embeddings, promoted_with_vectors)
+            ))
             self.assertTrue(all(not record.get("extraction_phase") for record in profile_embeddings))
             self.assertTrue(all(not record.get("final_session_boundary") for record in profile_embeddings))
             for record in profile_embeddings:
@@ -2834,13 +2847,15 @@ class _CodexPipelinePart4:
             self.assertEqual("tool_evidence", by_role["tool"]["event_type"])
             self.assertTrue(all(record.get("batch_event_type") for record in events))
 
-            event_embeddings = [
-                record
-                for record in records
-                if record.get("record_type") == "context_embedding"
-                and record.get("embedding_type") == "event_text"
-            ]
-            embedding_types = {record.get("source_role"): record.get("event_type") for record in event_embeddings}
+            # Folded: the events carry their vectors; the retired records' compact copy
+            # rides along under embedding_meta with the same event-type attribution.
+            folded = [record for record in events if record.get("vector")]
+            self.assertEqual(3, len(folded), "every role's event must carry its vector")
+            event_embeddings = [record.get("embedding_meta") or {} for record in folded]
+            embedding_types = {
+                record.get("source_role"): (record.get("embedding_meta") or {}).get("event_type", record.get("event_type"))
+                for record in folded
+            }
             self.assertEqual(
                 {"user": "user_prompt", "assistant": "assistant_response", "tool": "tool_evidence"},
                 embedding_types,
@@ -3898,14 +3913,14 @@ class _CodexPipelinePart4:
             )
             self.assertEqual("memory_feature", pending_event["event_type"])
             self.assertEqual("pending_async_memory_feature_event", candidate_memory_layer_name(pending_event))
-            pending_embedding = next(
-                record
-                for record in records
-                if record.get("record_type") == "context_embedding"
-                and record.get("embedding_type") == "event_text"
-                and record.get("ref_hash") == pending_event["event_id_hash"]
+            # Folded: the event itself carries the vector, and the retired record's layer
+            # tag rides along under embedding_meta.
+            self.assertTrue(pending_event.get("vector"), "the pending event must carry its vector")
+            pending_meta = pending_event.get("embedding_meta") or {}
+            self.assertEqual(
+                "pending_async_memory_feature_event",
+                pending_meta.get("memory_layer") or pending_event.get("memory_layer"),
             )
-            self.assertEqual("pending_async_memory_feature_event", pending_embedding["memory_layer"])
 
             pack = adapter.retrieve(
                 {

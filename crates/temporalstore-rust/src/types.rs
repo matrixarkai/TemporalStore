@@ -301,7 +301,7 @@ pub struct ContextEvent {
     // Deprecated hot-schema field: use ContextCompressionEvent/debug sidecars instead.
     #[serde(default, skip_serializing)]
     pub compact_attrs: Vec<u8>,
-    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    // The record's embedding vector, carried inline -- its only home.
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
@@ -311,8 +311,7 @@ pub struct ContextEvent {
     // ~1536 for the vector, about 3% of a fetch already paid for.
     //
     // Default-empty and skipped when empty: a record written before the fold decodes with no
-    // vector and readers fall back to the ContextEmbedding record, so this can be populated
-    // before any reader migrates off ref_hash addressing.
+    // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
 }
@@ -442,7 +441,7 @@ pub struct ContextEntity {
     pub confidence: f32,
     #[serde(default)]
     pub source_event_hashes: Vec<u64>,
-    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    // The record's embedding vector, carried inline -- its only home.
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
@@ -452,8 +451,7 @@ pub struct ContextEntity {
     // ~1536 for the vector, about 3% of a fetch already paid for.
     //
     // Default-empty and skipped when empty: a record written before the fold decodes with no
-    // vector and readers fall back to the ContextEmbedding record, so this can be populated
-    // before any reader migrates off ref_hash addressing.
+    // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
 }
@@ -466,14 +464,9 @@ pub struct ContextChildRef {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ContextEmbedding {
-    pub ref_hash: u64,
-    pub level: u32,
-    #[serde(default)]
-    pub model_hash: u64,
-    #[serde(default)]
+pub struct ContextSummaryVector {
+    pub node_hash: u64,
     pub vector: Vec<f32>,
-    pub updated_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -483,7 +476,7 @@ pub struct ContextSummary {
     #[serde(default)]
     pub text: String,
     pub valid_from_ms: u64,
-    // Inline embedding vector, folded from the separate ContextEmbedding record.
+    // The record's embedding vector, carried inline -- its only home.
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
@@ -493,8 +486,7 @@ pub struct ContextSummary {
     // ~1536 for the vector, about 3% of a fetch already paid for.
     //
     // Default-empty and skipped when empty: a record written before the fold decodes with no
-    // vector and readers fall back to the ContextEmbedding record, so this can be populated
-    // before any reader migrates off ref_hash addressing.
+    // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
 }
@@ -523,7 +515,6 @@ pub type ContextSlab = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextChildModel = ContextChildRef;
-pub type ContextEmbeddingModel = ContextEmbedding;
 pub type ContextSummaryModel = ContextSummary;
 pub type ContextCompressionModel = ContextCompressionEvent;
 
@@ -599,13 +590,6 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             "ctx:child",
             "FeatureOrSet",
             &["ContextChild", "ContextChildRef"],
-        ),
-        context_model_descriptor_entry(
-            CONTEXT_EMBEDDING_MODEL_ID,
-            "ContextEmbeddingModel",
-            "ctx:embedding",
-            "HashOrSet<std::string,std::string>",
-            &["ContextEmbedding"],
         ),
         context_model_descriptor_entry(
             CONTEXT_SUMMARY_MODEL_ID,
@@ -728,6 +712,9 @@ impl ContextWire for ContextNode {
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
                     value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
                 }
@@ -799,6 +786,9 @@ impl ContextWire for ContextEvent {
                 (10, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value
@@ -1016,6 +1006,9 @@ impl ContextWire for ContextEntity {
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -1044,54 +1037,6 @@ impl ContextWire for ContextChildRef {
             match (tag >> 3, tag & 0x7) {
                 (1, 0) => value.parent_hash = decode_varint(bytes, &mut cursor)?,
                 (2, 0) => value.child_hash = decode_varint(bytes, &mut cursor)?,
-                (5, 0) => value.updated_at_ms = decode_varint(bytes, &mut cursor)?,
-                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
-            }
-        }
-        Some(value)
-    }
-}
-
-impl ContextWire for ContextEmbedding {
-    fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
-        encode_varint_field(&mut out, 1, self.ref_hash);
-        encode_varint_field(&mut out, 2, u64::from(self.level));
-        encode_varint_field(&mut out, 3, self.model_hash);
-        for value in &self.vector {
-            encode_fixed32_field(&mut out, 4, value.to_bits());
-        }
-        encode_varint_field(&mut out, 5, self.updated_at_ms);
-        out
-    }
-
-    fn decode_context_proto_value(bytes: &[u8]) -> Option<Self> {
-        let mut cursor = 0;
-        let mut value = Self {
-            ref_hash: 0,
-            level: 0,
-            model_hash: 99,
-            vector: Vec::new(),
-            updated_at_ms: 0,
-        };
-        while cursor < bytes.len() {
-            let tag = decode_varint(bytes, &mut cursor)?;
-            match (tag >> 3, tag & 0x7) {
-                (1, 0) => value.ref_hash = decode_varint(bytes, &mut cursor)?,
-                (2, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
-                (3, 0) => value.model_hash = decode_varint(bytes, &mut cursor)?,
-                (4, 5) => value
-                    .vector
-                    .push(f32::from_bits(decode_fixed32(bytes, &mut cursor)?)),
-                (4, 2) => {
-                    let packed = decode_bytes(bytes, &mut cursor)?;
-                    let mut packed_cursor = 0;
-                    while packed_cursor < packed.len() {
-                        value
-                            .vector
-                            .push(f32::from_bits(decode_fixed32(&packed, &mut packed_cursor)?));
-                    }
-                }
                 (5, 0) => value.updated_at_ms = decode_varint(bytes, &mut cursor)?,
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1129,6 +1074,9 @@ impl ContextWire for ContextSummary {
                 (5, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1178,6 +1126,13 @@ impl ContextWire for ContextCompressionEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
+    /// Appended by a leader when it takes office, and applied as nothing.
+    ///
+    /// A leader may not conclude that entries from an earlier term are committed just because a
+    /// majority holds them; it has to commit something of its own term first. Without that, a
+    /// node that restarts and takes office keeps whatever commit point it had, and entries above
+    /// it sit in the log unapplied until the next write happens to arrive.
+    LeaderEstablish,
     CommonDelete {
         key: String,
     },
@@ -1186,6 +1141,11 @@ pub enum Command {
         ttl_ms: u64,
     },
     CommonTtl {
+        key: String,
+    },
+    /// Remove a key's expiry without touching its value: Redis PERSIST. Answers 1 when a
+    /// timeout was actually removed, 0 when the key is missing or already had none.
+    CommonPersist {
         key: String,
     },
     CommonExists {
@@ -1255,6 +1215,118 @@ pub enum Command {
         key: String,
         #[serde(with = "crate::bytes_serde")]
         member: Vec<u8>,
+    },
+    /// Upsert one member with a score. Answers 1 for a new member, 0 for a re-score.
+    ZSetAdd {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        score: f64,
+    },
+    /// The member's score as its shortest string form, or nil when absent.
+    ZSetScore {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    ZSetRemove {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+    },
+    ZSetCard {
+        key: String,
+    },
+    /// Index range in (score, member) order, Redis semantics (negatives from the tail).
+    /// Answers interleaved member/score-string pairs.
+    ZSetRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        rev: bool,
+    },
+    /// Score-window range; exclusive flags implement the leading-paren syntax. Answers
+    /// interleaved member/score-string pairs.
+    ZSetRangeByScore {
+        key: String,
+        min: f64,
+        max: f64,
+        min_exclusive: bool,
+        max_exclusive: bool,
+        rev: bool,
+    },
+    /// Atomic seen-within-window check-and-mark: answers 1 when the member was already seen
+    /// inside the window (a duplicate), else marks it and answers 0. Expired entries are
+    /// swept from the front in bounded steps on every call.
+    SeenCheck {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        window_ms: u64,
+    },
+    /// How many members the set currently holds (expired-but-unswept included).
+    SeenCard {
+        key: String,
+    },
+    /// Atomic take-with-refill on a token bucket: refill by elapsed time (capped at
+    /// capacity), then take `tokens` if they fit. Answers three strings -- allowed ("1"/"0"),
+    /// tokens remaining, and retry-after ms (0 when allowed).
+    BucketTake {
+        key: String,
+        tokens: f64,
+        capacity: f64,
+        refill_per_sec: f64,
+    },
+    /// The same arithmetic without taking: what a take of `tokens` WOULD answer.
+    BucketPeek {
+        key: String,
+        tokens: f64,
+        capacity: f64,
+        refill_per_sec: f64,
+    },
+    /// Add to a member's score (0 when absent), atomically under the shard lock.
+    /// Answers the new score as its shortest string form.
+    ZSetIncrBy {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        increment: f64,
+    },
+    /// Pop up to `count` members off the low (min) or high end, in order.
+    /// Answers interleaved member/score-string pairs.
+    ZSetPop {
+        key: String,
+        min: bool,
+        count: u64,
+    },
+    /// The member's 0-based position in (score, member) order, tail-based when rev.
+    /// Answers the rank as a decimal string, or nil for a missing member.
+    ZSetRank {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        rev: bool,
+    },
+    /// Push one element onto a list end (left = head). Answers the new length.
+    ListPush {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        left: bool,
+    },
+    /// Pop one element off a list end. Answers the element, or nil for an empty/missing list.
+    ListPop {
+        key: String,
+        left: bool,
+    },
+    /// Inclusive range with Redis index semantics (negatives count from the tail).
+    ListRange {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
+    ListLen {
+        key: String,
     },
     SetMembers {
         key: String,
@@ -1453,13 +1525,51 @@ pub enum Command {
     /// the vector live on the record it belongs to.
     /// Vectors for these nodes, read from the nodes themselves.
     ///
-    /// The counterpart of ContextSetNodeEmbedding: asking by owner is only possible because the
-    /// vector lives on the owner now. ContextQueryEmbeddings cannot answer this -- it is keyed
-    /// by a hash of (tenant, owner, level), so the caller must already know each owner in order
-    /// to rebuild the key, and the reply cannot say which owner it came from.
+    /// The counterpart of ContextSetNodeEmbedding: asking by owner is possible because the
+    /// vector lives on the owner. The retired separate rows could never answer this -- they
+    /// were keyed by a hash of (tenant, owner, level), so the caller had to already know each
+    /// owner to rebuild the key, and the reply could not say which owner it came from.
     ContextQueryNodeEmbeddings {
         tenant_hash: u64,
         node_hashes: Vec<u64>,
+    },
+    /// Attachment blob store: start a multi-part upload into the engine-owned blob directory.
+    /// The full original payload of an oversized resource lives here so one TemporalStore holds
+    /// everything -- chunks stay searchable in records while the attachment itself is fetchable
+    /// again by its `temporalstore://resources/{tenant}/{content-hash}` URI.
+    ContextResourceBlobBegin {
+        tenant_hash: u64,
+    },
+    /// Append one part to a staged upload. Parts are sequential against one node.
+    ContextResourceBlobAppend {
+        tenant_hash: u64,
+        upload_token: String,
+        payload_base64: String,
+    },
+    /// Publish a staged upload: content-hash, fsync, rename into place. The resource record
+    /// that carries the returned URI is the commit point; a blob with no record is garbage the
+    /// sweep collects.
+    ContextResourceBlobCommit {
+        tenant_hash: u64,
+        upload_token: String,
+    },
+    /// Single-shot begin+append+commit for payloads that fit one request.
+    ContextResourceBlobPut {
+        tenant_hash: u64,
+        payload_base64: String,
+    },
+    /// Range-read a published blob. `length == 0` means to the end.
+    ContextResourceBlobFetch {
+        uri: String,
+        offset: u64,
+        length: u64,
+    },
+    /// Delete unreferenced blobs older than  for one tenant, plus stale staging
+    /// files. The caller supplies the referenced set from the resource records it holds.
+    ContextResourceBlobSweep {
+        tenant_hash: u64,
+        referenced_content_hashes: Vec<u64>,
+        min_age_ms: u64,
     },
     ContextSetNodeEmbedding {
         tenant_hash: u64,
@@ -1632,16 +1742,6 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
-    ContextUpsertEmbedding {
-        tenant_hash: u64,
-        embedding: ContextEmbedding,
-    },
-    ContextQueryEmbeddings {
-        tenant_hash: u64,
-        ref_hashes: Vec<u64>,
-        #[serde(default)]
-        limit: Option<usize>,
-    },
     ContextTraverseTree {
         tenant_hash: u64,
         start_node_hash: u64,
@@ -1668,6 +1768,17 @@ pub enum Command {
         as_of_ms: u64,
         #[serde(default)]
         limit: Option<usize>,
+    },
+    /// The newest summary VECTOR at `level` for each node, in one command.
+    ///
+    /// Retrieval scores every candidate node's summaries; per-node ContextQuerySummaries would
+    /// turn that into a command per candidate, and the whole summary payload when only the
+    /// vector is wanted. This returns exactly the scoring input, batched like ContextGetNodes.
+    ContextQuerySummaryVectors {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+        level: u32,
+        as_of_ms: u64,
     },
     ContextWriteCompressionEvent {
         tenant_hash: u64,
@@ -1727,12 +1838,76 @@ fn is_zero_u64(value: &u64) -> bool {
 const CONTEXT_EMBEDDING_MODEL_FIELD: u64 = 21;
 const CONTEXT_EMBEDDING_UPDATED_FIELD: u64 = 22;
 
+/// Quantized vector, self-contained: `[f32 LE scale][one i8 per dimension]`.
+///
+/// The scale rides inside the same length-delimited field rather than beside it, so each decoder
+/// needs one arm and no cross-field state -- protobuf does not order fields, and a "wait for the
+/// other half" dance in four separate loops is four chances to leave a vector empty.
+///
+/// A record carries EITHER this or `CONTEXT_VECTOR_FIELD`, never both.
+const CONTEXT_VECTOR_INT8_FIELD: u64 = 23;
+
 /// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
 /// architecture decodes on another.
 fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(vector.len() * 4);
     for value in vector {
         out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+/// Whether new writes store the quantized form. Default OFF; reading understands both regardless,
+/// so this can be turned on and off without stranding anything already written.
+fn vector_int8_enabled() -> bool {
+    matches!(
+        std::env::var("TS_VECTOR_INT8")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Symmetric per-vector int8, scale first: `scale = max|v| / 127`, then `round(v / scale)`.
+///
+/// Measured on real BGE-M3 vectors at 1024 dims: reconstruction cosine min 0.999868 and recall@1
+/// drop 0.0000 against the same f32 vectors, at 3.98x smaller.
+fn pack_i8_vector(vector: &[f32]) -> Vec<u8> {
+    let peak = vector.iter().fold(0.0_f32, |acc, value| acc.max(value.abs()));
+    let scale = if peak == 0.0 { 0.0 } else { peak / 127.0 };
+    let mut out = Vec::with_capacity(4 + vector.len());
+    out.extend_from_slice(&scale.to_le_bytes());
+    if scale == 0.0 {
+        out.extend(std::iter::repeat(0_u8).take(vector.len()));
+        return out;
+    }
+    for value in vector {
+        let q = (value / scale).round().clamp(-127.0, 127.0) as i8;
+        out.push(q as u8);
+    }
+    out
+}
+
+/// Dequantize and RENORMALIZE.
+///
+/// A dequantized unit vector is no longer unit, and the retrieve path compares raw cosines, so
+/// returning it unnormalized would bias every affected score downward.
+fn unpack_i8_vector(bytes: &[u8]) -> Vec<f32> {
+    if bytes.len() < 4 {
+        return Vec::new();
+    }
+    let scale = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let mut out: Vec<f32> = bytes[4..]
+        .iter()
+        .map(|byte| (*byte as i8) as f32 * scale)
+        .collect();
+    let norm = out.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in out.iter_mut() {
+            *value /= norm;
+        }
     }
     out
 }
@@ -1746,6 +1921,10 @@ fn unpack_f32_vector(bytes: &[u8]) -> Vec<f32> {
 
 fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
     if vector.is_empty() {
+        return;
+    }
+    if vector_int8_enabled() {
+        encode_bytes_field(out, CONTEXT_VECTOR_INT8_FIELD, &pack_i8_vector(vector));
         return;
     }
     encode_bytes_field(out, CONTEXT_VECTOR_FIELD, &pack_f32_vector(vector));
@@ -1928,15 +2107,15 @@ pub enum CommandResponse {
     ContextNodeEmbeddings {
         embeddings: Vec<(u64, Vec<f32>)>,
     },
-    ContextEmbeddings {
-        embeddings: Vec<ContextEmbedding>,
-    },
     ContextTraversedNodes {
         nodes: Vec<ContextTraversedNode>,
     },
     ContextSummaries {
         object_key: String,
         summaries: Vec<ContextSummary>,
+    },
+    ContextSummaryVectors {
+        vectors: Vec<ContextSummaryVector>,
     },
     ContextCompressionEvents {
         object_key: String,
@@ -1945,6 +2124,24 @@ pub enum CommandResponse {
         source_event_count: Option<u32>,
         #[serde(default)]
         truncated_source_events: Option<bool>,
+    },
+    ContextResourceBlobUpload {
+        upload_token: String,
+        bytes_total: u64,
+    },
+    ContextResourceBlobCommitted {
+        uri: String,
+        size_bytes: u64,
+        content_hash: u64,
+    },
+    ContextResourceBlobChunk {
+        payload_base64: String,
+        total_size: u64,
+        eof: bool,
+    },
+    ContextResourceBlobSwept {
+        scanned: u64,
+        deleted: u64,
     },
     ContextNodeContext {
         node_exists: bool,
@@ -2100,6 +2297,145 @@ pub struct BatchExecuteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// Sets TS_VECTOR_INT8 and restores it ON DROP, so a failing assertion cannot leave it set for
+    /// every test that runs after it in the same process.
+    struct Int8Flag(Option<String>);
+
+    impl Int8Flag {
+        fn on() -> Self {
+            let previous = std::env::var("TS_VECTOR_INT8").ok();
+            std::env::set_var("TS_VECTOR_INT8", "1");
+            Int8Flag(previous)
+        }
+    }
+
+    impl Drop for Int8Flag {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TS_VECTOR_INT8", value),
+                None => std::env::remove_var("TS_VECTOR_INT8"),
+            }
+        }
+    }
+
+    fn int8_node(node_hash: u64, vector: Vec<f32>) -> ContextNode {
+        ContextNode {
+            node_hash,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: "session/int8".to_string(),
+            l0: "int8 wire test".to_string(),
+            last_event_time_ms: 1_780_000_000_000,
+            vector,
+            embedding_model_hash: 0xABCD,
+            embedding_updated_at_ms: 1_780_000_000_001,
+            status: 0,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        }
+    }
+
+    fn int8_unit_vector(dim: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed | 1;
+        let mut raw: Vec<f32> = (0..dim)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 33) as f32 / (u32::MAX as f32 / 2.0)) - 1.0
+            })
+            .collect();
+        let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt();
+        for v in raw.iter_mut() {
+            *v /= norm;
+        }
+        raw
+    }
+
+    fn int8_cosine(a: &[f32], b: &[f32]) -> f32 {
+        let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+        let na = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let nb = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
+    }
+
+    #[test]
+    fn int8_off_round_trips_exactly() {
+        std::env::remove_var("TS_VECTOR_INT8");
+        let node = int8_node(7, int8_unit_vector(128, 11));
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert_eq!(decoded.vector, node.vector, "flag off must be exact");
+    }
+
+    #[test]
+    fn int8_round_trip_keeps_the_vector() {
+        let _flag = Int8Flag::on();
+        let node = int8_node(8, int8_unit_vector(1024, 23));
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert_eq!(decoded.vector.len(), 1024, "dimension survives");
+        let cos = int8_cosine(&decoded.vector, &node.vector);
+        assert!(cos >= 0.999, "reconstruction cosine {cos} below the 0.999 bar");
+    }
+
+    #[test]
+    fn int8_is_smaller_on_the_wire() {
+        let node = int8_node(9, int8_unit_vector(1024, 31));
+        std::env::remove_var("TS_VECTOR_INT8");
+        let wide = node.encode_context_proto_value().len();
+        let narrow = {
+            let _flag = Int8Flag::on();
+            node.encode_context_proto_value().len()
+        };
+        assert!(
+            narrow * 3 < wide,
+            "expected roughly 4x smaller, got {narrow} vs {wide}"
+        );
+    }
+
+    #[test]
+    fn an_f32_record_still_decodes_while_the_flag_is_on() {
+        // Governs every record already on disk: a store written before this existed must keep
+        // reading after the flag is turned on.
+        std::env::remove_var("TS_VECTOR_INT8");
+        let node = int8_node(10, int8_unit_vector(256, 41));
+        let legacy = node.encode_context_proto_value();
+        let _flag = Int8Flag::on();
+        let decoded = ContextNode::decode_context_proto_value(&legacy).expect("decodes");
+        assert_eq!(decoded.vector, node.vector, "an f32 record is unaffected by the flag");
+    }
+
+    #[test]
+    fn the_quantized_pair_round_trips_at_several_widths() {
+        // All four decoders call `unpack_i8_vector`, so the pair covers every vector-carrying type.
+        for dim in [64_usize, 384, 1024] {
+            let v = int8_unit_vector(dim, dim as u64 * 7 + 1);
+            let back = unpack_i8_vector(&pack_i8_vector(&v));
+            assert_eq!(back.len(), dim, "width {dim} survives");
+            let cos = int8_cosine(&back, &v);
+            assert!(cos >= 0.999, "width {dim}: cosine {cos} below the bar");
+        }
+    }
+
+    #[test]
+    fn an_all_zero_vector_does_not_divide_by_zero() {
+        let _flag = Int8Flag::on();
+        let node = int8_node(12, vec![0.0_f32; 64]);
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert_eq!(decoded.vector.len(), 64, "length survives");
+        assert!(
+            decoded.vector.iter().all(|v| v.is_finite()),
+            "a zero scale must not produce NaN or inf"
+        );
+    }
 
     #[test]
     fn node_carries_its_embedding_through_the_wire_codec() {
@@ -2330,7 +2666,6 @@ mod tests {
                 ("ContextIndexModel", 11, "ctxidx"),
                 ("ContextAuditModel", 12, "ctx:audit"),
                 ("ContextChildModel", 14, "ctx:child"),
-                ("ContextEmbeddingModel", 15, "ctx:embedding"),
                 ("ContextSummaryModel", 16, "ctx:summary"),
                 ("ContextCompressionModel", 17, "ctx:compress"),
                 ("ContextEntityModel", 18, "ctx:entity"),
@@ -2415,17 +2750,6 @@ mod tests {
         assert_eq!(
             ContextChildRef::decode_context_proto_value(&child.encode_context_proto_value()),
             Some(child)
-        );
-        let embedding = ContextEmbedding {
-            ref_hash: 20,
-            level: 1,
-            model_hash: 0,
-            vector: vec![1.0, 0.0],
-            updated_at_ms: 1_000,
-        };
-        assert_eq!(
-            ContextEmbedding::decode_context_proto_value(&embedding.encode_context_proto_value()),
-            Some(embedding)
         );
         let summary = ContextSummary {
             node_hash: 20,
