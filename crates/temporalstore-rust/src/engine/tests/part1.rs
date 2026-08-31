@@ -3302,3 +3302,179 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
         plain.len()
     );
 }
+
+
+/// Where does the cost of reading ONE summary go: fetching the bytes, or decoding them?
+///
+/// The command-level measurement says 253 allocations and 289 KB per candidate for a 4 KB summary
+/// -- a 70x amplification -- and two guesses about why have already been wrong, including one that
+/// made it worse. So split the read in half and count each half, and print how many points the
+/// extent holds, which settles whether siblings are being decoded at all.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_reading_one_summary_actually_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_reading_one_summary_actually_costs() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  text   points/extent   extent bytes   read allocs   read bytes   decode allocs   decode bytes
+"
+    );
+    for text_len in [16usize, 512, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let text = "s".repeat(text_len);
+        for node_hash in 1..=120u64 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertSummary {
+                    tenant_hash: 7201,
+                    summary: crate::types::ContextSummary {
+                        node_hash,
+                        level: 2,
+                        text: text.clone(),
+                        valid_from_ms: 1_000,
+                        vector: vec![0.25_f32; 16],
+                    },
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+
+        let address = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let key = super::context::context_summary_key(7201, 60, 2);
+            let series = shard
+                .context_summaries
+                .get(&key)
+                .expect("the summary series must exist, or this measures nothing");
+            series
+                .iter()
+                .next()
+                .map(|(_, address)| address.clone())
+                .expect("one entry")
+        };
+
+        // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
+        let _ = super::read_page_bytes(&engine.cache, &engine.page_store, 1, &address);
+
+        let read_probe = crate::alloc_probe::Probe::start();
+        let mut bytes = Vec::new();
+        for _ in 0..5 {
+            bytes = super::read_page_bytes(&engine.cache, &engine.page_store, 1, &address)
+                .expect("the page must read, or the split below is measuring a None");
+        }
+        let read = read_probe.stop();
+
+        let decode_probe = crate::alloc_probe::Probe::start();
+        let mut points = 0usize;
+        for _ in 0..5 {
+            points = match super::packed_pages::decode_feature_page_strict(&bytes) {
+                super::state::PackedFeaturePageDecode::Packed(p) => p.len(),
+                super::state::PackedFeaturePageDecode::Legacy => 1,
+                super::state::PackedFeaturePageDecode::Corrupt(_) => 0,
+            };
+        }
+        let decode = decode_probe.stop();
+
+        println!(
+            "  {text_len:>4}   {points:>13}   {:>12}   {:>11}   {:>10}   {:>13}   {:>12}",
+            bytes.len(),
+            read.allocs / 5,
+            read.alloc_bytes / 5,
+            decode.allocs / 5,
+            decode.alloc_bytes / 5,
+        );
+
+        // Cold walk over every address, which is what a batch read actually does: 120 distinct
+        // extents rather than one warm one. Warming a single address measures the best case and
+        // would report it as the cost.
+        let addresses: Vec<crate::block_store::BlockAddress> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            (1..=120u64)
+                .filter_map(|node_hash| {
+                    let key = super::context::context_summary_key(7201, node_hash, 2);
+                    shard
+                        .context_summaries
+                        .get(&key)
+                        .and_then(|series| series.iter().next())
+                        .map(|(_, address)| address.clone())
+                })
+                .collect()
+        };
+        assert_eq!(addresses.len(), 120, "every summary must be addressable");
+        let wal_resident = addresses
+            .iter()
+            .filter(|a| crate::wal_record::is_wal_resident(a.page_slab_id))
+            .count();
+        let with_page_id = addresses.iter().filter(|a| a.page_id.is_some()).count();
+        let distinct_slabs: std::collections::BTreeSet<u64> =
+            addresses.iter().map(|a| a.page_slab_id).collect();
+        println!(
+            "         {wal_resident}/120 wal_resident addresses, {with_page_id} carry a page_id, {} distinct slabs, block_in_wal enabled={}",
+            distinct_slabs.len(),
+            std::env::var("TS_BLOCK_IN_WAL").unwrap_or_else(|_| "unset(on)".to_string()),
+        );
+        let extent_total: u64 = addresses.iter().map(|a| a.length).sum();
+
+        let walk_probe = crate::alloc_probe::Probe::start();
+        let mut decoded = 0usize;
+        for address in &addresses {
+            if let Some(page) = super::read_page_bytes(&engine.cache, &engine.page_store, 1, address)
+            {
+                if let super::state::PackedFeaturePageDecode::Packed(points) =
+                    super::packed_pages::decode_feature_page_strict(&page)
+                {
+                    decoded += points.len();
+                }
+            }
+        }
+        let walk = walk_probe.stop();
+
+        // The block-store read alone, over the same addresses, on a store whose cache is already
+        // warm from the walk above -- so this is purely file seek + read_exact + decode.
+        let read_only_probe = crate::alloc_probe::Probe::start();
+        let mut read_bytes_total = 0usize;
+        for address in &addresses {
+            if let Ok(b) = engine.page_store.read(address) {
+                read_bytes_total += b.len();
+            }
+        }
+        let read_only = read_only_probe.stop();
+        println!(
+            "         block-store read alone: {} allocs/addr, {} bytes/addr ({} payload bytes returned in total)",
+            read_only.allocs / 120,
+            read_only.alloc_bytes / 120,
+            read_bytes_total,
+        );
+        println!(
+            "         cold walk over every address: {} allocs/addr, {} bytes/addr, {} extents totalling {} bytes, {decoded} points decoded",
+            walk.allocs / 120,
+            walk.alloc_bytes / 120,
+            addresses.len(),
+            extent_total,
+        );
+    }
+    println!(
+        "
+  points/extent > 1 means siblings ARE decoded for every read, and a page-granular cache pays.
+  points/extent == 1 means each record has its own extent and the cost is inside one record.
+"
+    );
+}
