@@ -200,7 +200,11 @@ impl TemporalEngine {
             start_routing_bucket,
             end_routing_bucket,
         );
-        storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+        // The rebuild above just recomputed every bucket's object index by scanning that bucket's
+        // page index. The full sweep's own rebuild would scan the same pages again, from the same
+        // source, with nothing in between that could change the answer -- so the flags refresh,
+        // and the duplicate scan does not.
+        storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
     }
 
     /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
