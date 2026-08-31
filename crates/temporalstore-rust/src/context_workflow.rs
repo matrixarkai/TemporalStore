@@ -1108,6 +1108,14 @@ pub struct ContextFanoutPlanReport {
     // counted; the rows are gone, so any nonzero here means the backfill has work to do.)
     #[serde(default)]
     pub l0_row_fallback_nodes: usize,
+    // Candidate vectors declined because their width did not match the query's, i.e. they were
+    // written in a different embedding space. Counted separately from the un-embedded ones above
+    // because the two ask for different repairs: an un-embedded node needs the backfill to run,
+    // whereas a width conflict means the store holds vectors from two encoders and re-embedding
+    // is the only fix. Nonzero here is the signal that would otherwise not exist -- comparing
+    // across embedding spaces raises no error on its own.
+    #[serde(default)]
+    pub embedding_width_conflict_nodes: usize,
     #[serde(default)]
     pub event_query_budget: usize,
     #[serde(default)]
@@ -1910,6 +1918,7 @@ pub fn retrieve_context(
     // because a single oversized command is rejected outright, not truncated, and an unscored
     // node silently collapses to the lexical/recency fallback.
     let mut l0_row_fallback: Vec<u64> = Vec::new();
+    let mut width_conflict_nodes = 0usize;
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
@@ -1926,6 +1935,14 @@ pub fn retrieve_context(
             for node in nodes {
                 returned.insert(node.node_hash);
                 if node.vector.is_empty() {
+                    l0_row_fallback.push(node.node_hash);
+                } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
+                    // Written in a different embedding space. Hand it to the hybrid lexical pass
+                    // exactly as an un-embedded node is handed over -- which means NOT recording
+                    // a score here, because that pass selects on the score COUNT being zero, not
+                    // on the score value. Recording a zero would mark the node as scored and
+                    // strand it at the bottom of the ranking with no second chance.
+                    width_conflict_nodes = width_conflict_nodes.saturating_add(1);
                     l0_row_fallback.push(node.node_hash);
                 } else {
                     let score =
@@ -1963,6 +1980,12 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
             for entry in vectors {
+                if context_embedding_width_conflicts(&query_embedding, &entry.vector) {
+                    // Same reasoning as the node pass: skip entirely rather than record a zero,
+                    // so the count stays at zero and the lexical pass still owns this node.
+                    width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    continue;
+                }
                 let score =
                     context_embedding_similarity_micros(&query_embedding, &entry.vector);
                 let scores = summary_scores_by_node.entry(entry.node_hash).or_default();
@@ -1971,6 +1994,9 @@ pub fn retrieve_context(
             }
         }
     }
+    // Set after BOTH vector passes -- the node pass and the summary pass each contribute, and the
+    // node pass alone would under-report.
+    fanout_plan.embedding_width_conflict_nodes = width_conflict_nodes;
     trace_stage("summary_embedding_lookup");
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
