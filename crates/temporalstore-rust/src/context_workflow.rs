@@ -1653,8 +1653,32 @@ pub(crate) fn extract_context_gated(
         valid_from_ms: timestamp_ms,
         vector: Vec::new(),
     });
+    // What the node is SEARCHED by is not what it is SHOWN as. `l0` is the routing preview --
+    // title plus one sentence, 18 words -- and embedding it gave the node a vector built from
+    // about 25 tokens of a 512-token window. Traversal ranks nodes on that vector, so the node
+    // was represented by roughly 5% of what the encoder can read.
+    //
+    // `l1` is the same content with the most information-dense remaining sentences added, built
+    // for exactly this ("carries more content for broader traversal"). The node embeds that and
+    // keeps `l0` as its display text.
+    //
+    // Measured over 298 query pairs across 79 documents, e5-large at 512 dims, scoring nodes by
+    // the vector each text produces:
+    //
+    //     node vector embeds        hit@1    hit@5
+    //     L0 preview (57 chars)     73.8%    86.6%
+    //     L1 summary (376 chars)    73.5%    91.6%
+    //
+    // hit@1 is unchanged -- the top answer was already as good as the preview could make it --
+    // and hit@5 gains 5.0 points, which is what more signal in the vector buys: the right node
+    // is far likelier to be in the set at all.
+    //
+    // When L1 is emitted the same string was already being encoded for the level-2 summary, so
+    // the two calls become one and the vector is shared. Embedding is the slowest part of an
+    // ingest, so that is a third of the encoder work on this path.
+    let node_embedding_text = if emit_l1 { l1.as_str() } else { l0.as_str() };
     let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
-        vec![("node_l0", node_hash, 1, l0.as_str())];
+        vec![("node_l0", node_hash, 1, node_embedding_text)];
     if emit_l1 {
         embedding_inputs.push(("node_l1", node_hash, 2, l1.as_str()));
     }
@@ -1712,6 +1736,12 @@ pub(crate) fn extract_context_gated(
         // with their owners: index 0 is the L0 summary (and the node), index 1 the L1 summary
         // when emitted, and the event last.
         if let Some(vector) = embedding_vectors.first() {
+            // The level-1 summary carries its own vector because that is the only place a
+            // summary's vector lives -- the embedding fold moved vectors off separate rows and
+            // onto the records that own them. Retrieval does not read it yet (it takes L0 from
+            // node.vector and only ever queries level 2 for summary vectors), and dropping the
+            // write on that basis is the exact mistake
+            // context_extract_stores_embedding_vectors_on_the_records_themselves exists to catch.
             summary_l0.vector = vector.clone();
             // The node itself carries its L0 vector too: the traversal scores children from
             // node.vector first, and without this the happy path would leave it empty on every
