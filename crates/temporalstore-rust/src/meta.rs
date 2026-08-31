@@ -2286,6 +2286,106 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_heartbeat_summarises_every_list_it_carries() {
+        // These five are folded before the metaserver's write lock is taken, so
+        // the reader waiting on that lock is not also waiting on a walk of one
+        // datanode's whole shard list. Only two of them had any coverage, and
+        // the fold is only safe if all five still say what the lists say.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+
+        let state_for = |shard_id: u64, serving_state: &str, records: u64, bytes: u64| {
+            ServerShardServingState {
+                shard_id,
+                serving_state: serving_state.to_string(),
+                total_records: records as usize,
+                storage_bytes: bytes,
+                ..ServerShardServingState::default()
+            }
+        };
+
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "node-a".to_string(),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![
+                    ShardLoad {
+                        shard_id: 1,
+                        key_count: 10,
+                        memory_bytes: 100,
+                    },
+                    ShardLoad {
+                        shard_id: 2,
+                        key_count: 7,
+                        memory_bytes: 250,
+                    },
+                ],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                // "serving" scores 0 and "failed" scores 3, so the worst is 3 --
+                // a max, not a sum, which is the one of the five that would not
+                // survive being folded the wrong way.
+                shard_states: vec![
+                    state_for(1, "serving", 40, 4_000),
+                    state_for(2, "failed", 2, 500),
+                ],
+            })
+            .status
+            .ok);
+
+        let server = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered");
+        assert_eq!(server.load_key_count, 17);
+        assert_eq!(server.load_memory_bytes, 350);
+        assert_eq!(server.reported_record_count, 42);
+        assert_eq!(server.reported_storage_bytes, 4_500);
+        assert_eq!(server.worst_shard_state_penalty, 3);
+
+        // And a later heartbeat replaces them rather than accumulating.
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "node-a".to_string(),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count: 1,
+                    memory_bytes: 2,
+                }],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: vec![state_for(1, "serving", 3, 4)],
+            })
+            .status
+            .ok);
+        let server = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered");
+        assert_eq!(server.load_key_count, 1);
+        assert_eq!(server.load_memory_bytes, 2);
+        assert_eq!(server.reported_record_count, 3);
+        assert_eq!(server.reported_storage_bytes, 4);
+        assert_eq!(server.worst_shard_state_penalty, 0);
+    }
+
+    #[test]
     fn metaserver_tracks_servers_heartbeats_and_shard_routes() {
         let meta = SingleNodeMeta::default();
         assert!(
