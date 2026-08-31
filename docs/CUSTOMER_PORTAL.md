@@ -365,6 +365,43 @@ could resend them. A bulk import from a server directory is the retryable-after-
 
 ---
 
+## Encoding progress
+
+Ingest can defer encoding: chunking is synchronous and the vector is filled in behind it. Between
+the write and the drainer catching up, a chunk **exists and cannot be matched on meaning** — so a
+retrieve over that window returns less than it should and says nothing about why. That reads as
+"retrieval is bad" rather than "retrieval is not finished yet", and the difference is a number
+nobody was counting.
+
+`GET /v1/admin/embeddings` (admin scope) answers it: how many vectors are encoded, how many are
+waiting, the models and vector widths in use, and any deferred pipeline work still to run. Setup
+shows it as a bar that moves — fast while there is a backlog, because watching it shrink is the
+point, and slowly once there is not. The overview surfaces a backlog too, next to a running import:
+both are "the deployment is still working on what you gave it", and both were invisible from
+anywhere else.
+
+Three things it reports that a bare count would miss:
+
+* **The configured encoder travels with the counts.** With no encoder configured, nothing is
+  waiting *because nothing will ever be encoded* — every vector is a hash fallback. A bare "0
+  pending" would read as "all done".
+* **Mixed vector widths.** Vectors of different dimensions cannot be compared, so a store holding
+  two widths is a store where some memories can never match a query. That happens the moment the
+  embedding model changes without a backfill, and looks exactly like ordinary poor recall.
+* **A backend that cannot answer is an error, not an empty backlog.** "Nothing is pending" and "I
+  could not find out" must not look the same: the first says retrieval is ready.
+
+The count uses its own pending predicate rather than the retrieval one. `is_pending_async_candidate`
+answers "is this candidate a placeholder I should rank differently" and returns `False` unless
+`ref_type == "event"`, because an event is the only shape retrieval ranks — so a backlog counted
+with it omits every pending embedding for a resource chunk or a skill section, which is most of what
+a bulk import produces. A backlog must never read smaller than it is.
+
+**Deliberately not on `/v1/metrics`.** Answering this walks the record log; a scrape doing that
+every fifteen seconds is a self-inflicted load on the store it is meant to be watching.
+
+---
+
 ## Metrics
 
 ### The scrape

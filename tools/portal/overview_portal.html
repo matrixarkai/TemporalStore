@@ -354,6 +354,11 @@
     <div id="checks"><div class="empty">Enter an admin key to check this deployment.</div></div>
   </section>
 
+  <section id="encodingSection" hidden>
+    <h2>Encoding <span class="aux" id="encodingAux"></span></h2>
+    <div id="encodingBody"></div>
+  </section>
+
   <section>
     <h2>Diagnostics <span class="aux"><button class="link" id="copyDiag" type="button">copy</button>
       <button class="link" id="downloadDiag" type="button">download</button></span></h2>
@@ -405,6 +410,38 @@
 
   /* An import running elsewhere is a state a customer would otherwise only find by opening the
      Ingestion page, which is not where anyone starts. */
+  /* The encoding backlog belongs next to the import strip: both are "the deployment is still
+     working on what you gave it", and both are invisible from anywhere else. */
+  function renderEncoding(d) {
+    var pending = (d && d.pending) || 0;
+    var total = (d && d.total) || 0;
+    var encoder = (d && d.encoder) || {};
+    var section = $("encodingSection");
+    if (!section) { return; }
+    if (!total || (!pending && encoder.semantic)) { section.hidden = true; return; }
+    section.hidden = false;
+    var pct = total ? Math.round((((d.encoded || 0) / total) * 100)) : 0;
+    $("encodingAux").textContent = pending
+      ? pending.toLocaleString() + " waiting"
+      : "all encoded";
+    $("encodingBody").innerHTML =
+      '<div class="importrow"><div class="importhead"><span class="mono">embedding</span>' +
+      '<span class="importmeta">' + pct + "% of " + total.toLocaleString() + "</span></div>" +
+      '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
+      (encoder.semantic
+        ? '<div class="hint" style="margin-top:7px">Until a chunk is encoded it cannot be matched ' +
+          'on meaning. <a href="/v1/admin/setup">Setup</a> shows the detail.</div>'
+        : '<div class="note" style="margin-top:7px">' + esc(encoder.note || "") + "</div>") +
+      "</div>";
+  }
+
+  function loadEncoding() {
+    fetch("/v1/admin/embeddings", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(renderEncoding)
+      .catch(function () { /* the checklist already reports an unreachable backend */ });
+  }
+
   function renderImports(imports) {
     var active = (imports && imports.active) || [];
     $("importsSection").hidden = active.length === 0;
@@ -529,7 +566,12 @@
   function load() {
     fetch("/v1/admin/overview", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) { conn("live", "connected"); lastReport = d; render(d); })
+      .then(function (d) {
+        conn("live", "connected");
+        lastReport = d;
+        render(d);
+        loadEncoding();
+      })
       .catch(function (e) {
         if (e === 401 || e === 403) {
           conn("live", "connected");

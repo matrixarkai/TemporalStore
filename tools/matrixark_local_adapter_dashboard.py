@@ -637,6 +637,120 @@ class _LocalAdapterDashboardMixin:
             rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
         return rows
 
+    @staticmethod
+    def _embedding_is_pending(record: Json) -> bool:
+        """Is this embedding record still a placeholder?
+
+        Deliberately not `is_pending_async_candidate`: that is the RETRIEVAL predicate and returns
+        False unless `ref_type == "event"`, because an event is the only shape it ranks. A backlog
+        counted with it omits every pending embedding for a resource chunk or a skill section --
+        most of what a bulk import produces -- and reads as smaller than it is, which is the one
+        direction a backlog must never be wrong in.
+        """
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+
+        def field(name: str) -> str:
+            return str(record.get(name) or metadata.get(name) or "").strip()
+
+        return (
+            field("status").lower() == "pending"
+            or field("event_type").lower() == "pending_async"
+            or field("classification").upper() == "PENDING_ASYNC_EXTRACTION"
+            or field("extraction_phase").lower() == "pending_async"
+            or field("extraction_status").lower() in {"pending", "async_pending"}
+            or field("extraction_mode").lower() == "async_pending"
+        )
+
+    def embedding_status(self, args: Json) -> Json:
+        """How much of this scope is encoded, and how much is still waiting.
+
+        Counts, not rows. The dashboard can page the embeddings table, but a page is a sample and
+        a sample presented as a total is worse than no number: "12 pending" out of a 200-row window
+        onto 50,000 vectors is not a backlog, it is an artefact of the page size.
+
+        `dimensions` is the one that catches a silent break. Vectors of different widths cannot be
+        compared, so a store holding two dimensions is a store where some memories can never match
+        a query -- which happens the moment somebody changes the embedding model without a
+        backfill, and looks exactly like ordinary poor recall.
+        """
+        scope = optional_object(args, "scope")
+        records = self.read_all()
+
+        total = 0
+        pending = 0
+        encoded = 0
+        without_vector = 0
+        models: dict[str, int] = {}
+        dimensions: dict[int, int] = {}
+        oldest_pending_ms = 0
+        newest_pending_ms = 0
+        deferred_tasks = 0
+        deferred_stages = 0
+
+        for record in records:
+            record_type = str(record.get("record_type") or "")
+            if record_type == "matrixark_async_pipeline_task":
+                if not scope_matches(candidate_access_scope(record), scope):
+                    continue
+                remaining = record.get("remaining_stages")
+                remaining = remaining if isinstance(remaining, list) else []
+                if remaining:
+                    deferred_tasks += 1
+                    deferred_stages += len(remaining)
+                continue
+            if record_type != "context_embedding":
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+
+            total += 1
+            vector = record.get("vector")
+            has_vector = isinstance(vector, list) and bool(vector)
+            if not has_vector:
+                without_vector += 1
+
+            if self._embedding_is_pending(record) or not has_vector:
+                pending += 1
+                try:
+                    updated = int(record.get("updated_at_ms") or 0)
+                except (TypeError, ValueError):
+                    updated = 0
+                if updated:
+                    oldest_pending_ms = min(oldest_pending_ms or updated, updated)
+                    newest_pending_ms = max(newest_pending_ms, updated)
+            else:
+                encoded += 1
+
+            model = str(record.get("model") or record.get("model_ref") or "")
+            if model:
+                models[model] = models.get(model, 0) + 1
+            try:
+                dim = int(record.get("dim") or (len(vector) if has_vector else 0))
+            except (TypeError, ValueError):
+                dim = 0
+            if dim:
+                dimensions[dim] = dimensions.get(dim, 0) + 1
+
+        return {
+            "status": "ok",
+            "scope": scope,
+            "total": total,
+            "encoded": encoded,
+            "pending": pending,
+            "without_vector": without_vector,
+            "percent_encoded": round((encoded / total) * 100.0, 1) if total else 100.0,
+            "models": [{"model": name, "count": count}
+                       for name, count in sorted(models.items(), key=lambda kv: -kv[1])],
+            "dimensions": [{"dim": dim, "count": count}
+                           for dim, count in sorted(dimensions.items(), key=lambda kv: -kv[1])],
+            "mixed_dimensions": len(dimensions) > 1,
+            "oldest_pending_ms": oldest_pending_ms,
+            "newest_pending_ms": newest_pending_ms,
+            "deferred_tasks": deferred_tasks,
+            "deferred_stages": deferred_stages,
+            "record_count": len(records),
+        }
+
     def ingestion_dashboard(self, args: Json) -> Json:
         scope = optional_object(args, "scope")
         table = optional_string(args, "table", "messages")

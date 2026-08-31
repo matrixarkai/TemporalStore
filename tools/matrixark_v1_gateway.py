@@ -1427,6 +1427,10 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Administration", "method": "POST", "path": "/v1/admin/config/test", "scope": "admin",
      "summary": "Call the configured extraction and embedding endpoints and report what came back.",
      "body": {}},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/embeddings", "scope": "admin",
+     "summary": "How much of the store is encoded and how much is still waiting, plus the models "
+                "and vector widths in use. Query: user_id, agent_id, session_id.",
+     "query": "user_id=alice"},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/scopes", "scope": "admin",
      "summary": "What each scope permits, plus four ready-made key shapes."},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/api_key_usage",
@@ -1469,6 +1473,26 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Portal pages", "method": "GET", "path": "/v1/admin/routes", "scope": None,
      "summary": "This list as JSON."},
 ]
+
+
+def _encoder_summary() -> Json:
+    """Which encoder the deployment is configured to use, next to the counts.
+
+    A backlog means something different depending on whether an encoder is configured at all: with
+    a deterministic provider nothing is waiting because nothing will ever be encoded, and a count of
+    zero pending would otherwise read as "all done".
+    """
+    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip()
+    deterministic = provider.lower() in ("", "deterministic")
+    return {
+        "provider": provider,
+        "model": os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip(),
+        "semantic": not deterministic,
+        "drainer_enabled": os.environ.get("MATRIXARK_EMBED_DRAINER", "").strip().lower()
+        in ("1", "true", "yes", "on"),
+        "note": ("No encoder is configured, so nothing is waiting to be encoded and nothing ever "
+                 "will be: every vector is a hash fallback.") if deterministic else "",
+    }
 
 
 def _import_progress() -> Json:
@@ -2666,6 +2690,42 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "imports": imports,
                 "config": config_snapshot,
             })
+
+        # ---- encoding state (auth + admin scope) ---------------------------------------------
+        # Ingest can defer encoding: chunking is synchronous and the vector is filled in behind it.
+        # Between the write and the drainer catching up a chunk exists and cannot be matched on
+        # meaning, so a retrieve over that window returns less than it should and says nothing --
+        # which reads as "retrieval is bad" rather than "retrieval is not finished yet".
+        if method == "GET" and path == "/v1/admin/embeddings":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            embed_scope: Json = {}
+            for field in ("user_id", "agent_id", "session_id"):
+                values = params.get(field)
+                if values and values[0]:
+                    embed_scope[field] = values[0]
+            args: Json = {"scope": embed_scope}
+            _apply_identity(args, key, tenant, account)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_embedding_status", args),
+                    cfg.backend_timeout)
+            except asyncio.TimeoutError:
+                return await _json(send, 504, {"error": "backend_timeout",
+                                   "detail": f"backend did not respond within {cfg.backend_timeout}s"})
+            except Exception as exc:
+                # A backend that cannot answer this must not read as "nothing is pending" -- the
+                # honest answer is that the state is unknown.
+                return await _json(send, _classify_backend_error(exc),
+                                   {"error": "backend_error", "detail": str(exc)})
+            body = _ok_body(result)
+            body["encoder"] = _encoder_summary()
+            return await _json(send, 200, body)
 
         # ---- scope catalogue (auth + admin scope) --------------------------------------------
         # What each scope permits, and four ready-made key shapes. Served rather than hard-coded in

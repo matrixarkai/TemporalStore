@@ -235,7 +235,8 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         "matrixark_auth_sso_login",
         "matrixark_auth_login",
     }
-    SCOPED_READ_TOOLS = {"matrixark_retrieve", "matrixark_replay", "matrixark_management_portal", "matrixark_ingestion_dashboard", "matrixark_list_resources", "matrixark_list_skills"}
+    SCOPED_READ_TOOLS = {"matrixark_retrieve", "matrixark_replay", "matrixark_management_portal", "matrixark_ingestion_dashboard", "matrixark_list_resources", "matrixark_list_skills",
+                          "matrixark_embedding_status"}
     SERVER_NAME = "matrixark-context"
     SERVER_VERSION = "0.2.0"
     DEFAULT_PROTOCOL_VERSION = "2025-06-18"

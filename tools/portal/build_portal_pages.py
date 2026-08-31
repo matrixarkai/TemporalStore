@@ -308,6 +308,15 @@ SETUP_BODY = """
   </section>
 
   <section>
+    <h2>Encoding <span class="aux" id="encodeAux"></span></h2>
+    <p class="hint" style="margin-top:0">Ingest can defer encoding: chunking is synchronous and the
+      vector is filled in behind it. Until a chunk is encoded it exists and cannot be matched on
+      meaning, so a retrieve over that window returns less than it should and says nothing — which
+      reads as bad retrieval rather than unfinished retrieval.</p>
+    <div id="encoding"><div class="empty">Enter an admin key to read the encoding state.</div></div>
+  </section>
+
+  <section>
     <h2>Endpoint test</h2>
     <p class="hint" style="margin-top:0">Reading configuration back proves only that it was stored.
       This calls the endpoints as configured. Both extraction and embedding fall back to a local
@@ -517,6 +526,82 @@ SETUP_JS = r"""
       }).join("") + "</tbody></table>";
   }
 
+  /* ---------- encoding ---------- */
+  /* Polled on its own cadence: fast while there is a backlog, because watching it shrink is the
+     point, and slowly once there is not. Deliberately NOT on /v1/metrics -- answering it walks the
+     record log, and a scrape every fifteen seconds doing that is a self-inflicted load. */
+  var encodeTimer = null, encodeMs = 0;
+
+  function encodePace(draining) {
+    var want = draining ? 5000 : 60000;
+    if (want === encodeMs && encodeTimer) { return; }
+    if (encodeTimer) { clearInterval(encodeTimer); }
+    encodeMs = want;
+    encodeTimer = setInterval(function () {
+      if (document.hidden || !$("key").value.trim()) { return; }
+      loadEncoding();
+    }, want);
+  }
+
+  function renderEncoding(d) {
+    var total = d.total || 0, encoded = d.encoded || 0, pending = d.pending || 0;
+    var pct = total ? Math.round((encoded / total) * 1000) / 10 : 100;
+    var encoder = d.encoder || {};
+    var rows = "";
+
+    if (!encoder.semantic) {
+      /* Zero pending means something else entirely here: nothing is waiting because nothing will
+         ever be encoded. Reporting "all done" would be true and useless. */
+      rows += '<div class="note">' + esc(encoder.note ||
+        "No encoder is configured, so nothing is waiting and nothing ever will be.") + "</div>";
+    }
+    if (d.mixed_dimensions) {
+      rows += '<div class="note">This store holds vectors of more than one width. Vectors of ' +
+        "different dimensions cannot be compared, so some memories can never match a query — " +
+        "which is what happens when the embedding model changes without a backfill, and looks " +
+        "exactly like ordinary poor recall.</div>";
+    }
+
+    var barCls = pending ? "" : "done";
+    rows += '<div class="bar"><i class="' + barCls + '" style="width:' + pct + '%"></i></div>' +
+      '<div class="job-stats">' +
+      "<span><b>" + encoded.toLocaleString() + "</b> encoded</span>" +
+      "<span><b>" + pending.toLocaleString() + "</b> waiting</span>" +
+      "<span><b>" + pct + "%</b> of " + total.toLocaleString() + "</span>" +
+      (d.deferred_tasks ? "<span><b>" + d.deferred_tasks + "</b> deferred tasks</span>" : "") +
+      "</div>";
+
+    var detail = [];
+    (d.models || []).forEach(function (m) {
+      detail.push(esc(m.model) + " · " + m.count.toLocaleString());
+    });
+    (d.dimensions || []).forEach(function (dim) {
+      detail.push(dim.dim + "-dim · " + dim.count.toLocaleString());
+    });
+    if (detail.length) {
+      rows += '<div class="hint">' + detail.join(" &nbsp;·&nbsp; ") + "</div>";
+    }
+    $("encoding").innerHTML = rows;
+    $("encodeAux").textContent = pending
+      ? pending.toLocaleString() + " waiting"
+      : (total ? "all encoded" : "nothing stored yet");
+    encodePace(pending > 0);
+  }
+
+  function loadEncoding() {
+    fetch("/v1/admin/embeddings", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(renderEncoding)
+      .catch(function (e) {
+        /* A backend that cannot answer must not read as "nothing is pending". */
+        $("encoding").innerHTML = '<div class="msg err">' +
+          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") +
+          " The encoding state is unknown, not empty.</div>";
+        $("encodeAux").textContent = "unknown";
+        encodePace(false);
+      });
+  }
+
   /* ---------- deployment inventory (read-only) ---------- */
   function renderInventory(settings) {
     var blocks = (settings || {}).inventory || [];
@@ -617,6 +702,7 @@ SETUP_JS = r"""
         renderPresets((d.settings || {}).presets);
         renderHistory(d.settings);
         renderInventory(d.settings);
+        loadEncoding();
       })
       .catch(function (e) {
         if (e === 401 || e === 403) {
@@ -1276,6 +1362,11 @@ OVERVIEW_BODY = """
     <div id="checks"><div class="empty">Enter an admin key to check this deployment.</div></div>
   </section>
 
+  <section id="encodingSection" hidden>
+    <h2>Encoding <span class="aux" id="encodingAux"></span></h2>
+    <div id="encodingBody"></div>
+  </section>
+
   <section>
     <h2>Diagnostics <span class="aux"><button class="link" id="copyDiag" type="button">copy</button>
       <button class="link" id="downloadDiag" type="button">download</button></span></h2>
@@ -1328,6 +1419,38 @@ OVERVIEW_JS = r"""
 
   /* An import running elsewhere is a state a customer would otherwise only find by opening the
      Ingestion page, which is not where anyone starts. */
+  /* The encoding backlog belongs next to the import strip: both are "the deployment is still
+     working on what you gave it", and both are invisible from anywhere else. */
+  function renderEncoding(d) {
+    var pending = (d && d.pending) || 0;
+    var total = (d && d.total) || 0;
+    var encoder = (d && d.encoder) || {};
+    var section = $("encodingSection");
+    if (!section) { return; }
+    if (!total || (!pending && encoder.semantic)) { section.hidden = true; return; }
+    section.hidden = false;
+    var pct = total ? Math.round((((d.encoded || 0) / total) * 100)) : 0;
+    $("encodingAux").textContent = pending
+      ? pending.toLocaleString() + " waiting"
+      : "all encoded";
+    $("encodingBody").innerHTML =
+      '<div class="importrow"><div class="importhead"><span class="mono">embedding</span>' +
+      '<span class="importmeta">' + pct + "% of " + total.toLocaleString() + "</span></div>" +
+      '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
+      (encoder.semantic
+        ? '<div class="hint" style="margin-top:7px">Until a chunk is encoded it cannot be matched ' +
+          'on meaning. <a href="/v1/admin/setup">Setup</a> shows the detail.</div>'
+        : '<div class="note" style="margin-top:7px">' + esc(encoder.note || "") + "</div>") +
+      "</div>";
+  }
+
+  function loadEncoding() {
+    fetch("/v1/admin/embeddings", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(renderEncoding)
+      .catch(function () { /* the checklist already reports an unreachable backend */ });
+  }
+
   function renderImports(imports) {
     var active = (imports && imports.active) || [];
     $("importsSection").hidden = active.length === 0;
@@ -1452,7 +1575,12 @@ OVERVIEW_JS = r"""
   function load() {
     fetch("/v1/admin/overview", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) { conn("live", "connected"); lastReport = d; render(d); })
+      .then(function (d) {
+        conn("live", "connected");
+        lastReport = d;
+        render(d);
+        loadEncoding();
+      })
       .catch(function (e) {
         if (e === 401 || e === 403) {
           conn("live", "connected");

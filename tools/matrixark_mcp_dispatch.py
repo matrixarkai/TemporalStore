@@ -209,6 +209,9 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         result = server.adapter.list_resources(args)
         server.access.append_audit("resource.list", identity, status="ok", details={"count": result.get("count")})
         return {**result, "access": args.get("_matrixark_auth", {})}
+    if name == "matrixark_embedding_status":
+        result = server.adapter.embedding_status(args)
+        return {**result, "access": args.get("_matrixark_auth", {})}
     if name == "matrixark_list_skills":
         result = server.adapter.list_skills(args)
         server.access.append_audit("skill.list", identity, status="ok", details={"count": result.get("count")})

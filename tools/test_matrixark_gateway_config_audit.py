@@ -65,6 +65,17 @@ _OTHER_PROCESSES = {"context_minilm_embed_server.py"}
 _DOC_STRUCTURES = {"ROUTE_DOCS", "SCOPE_CATALOG", "SCOPE_PRESETS", "INVENTORY", "PRESETS",
                    "SETTINGS", "GROUPS"}
 
+# Functions that read a variable only to SHOW it. They are not readers in the sense this audit
+# cares about -- nothing behaves differently because of what they saw -- and counting them as such
+# turns every value the portal displays into a "live" setting. `_encoder_summary` reads the drainer
+# flag to tell a customer whether it is on; the thing that acts on it is the ENGINE, once, at its
+# own startup.
+_DISPLAY_ONLY = {
+    ("matrixark_v1_gateway.py", "_model_config_snapshot"),
+    ("matrixark_v1_gateway.py", "_encoder_summary"),
+    ("matrixark_v1_gateway.py", "_readiness_checks"),
+}
+
 _STARTUP_ONLY = {
     ("matrixark_v1_gateway.py", "GatewayConfig.from_env"),
     ("matrixark_v1_gateway.py", "_coerce_config"),
@@ -137,6 +148,8 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
         visitor = _Sites(wanted)
         visitor.visit(tree)
         for name, qual, line in visitor.hits:
+            if qual is not None and (entry, qual.split(".")[-1]) in _DISPLAY_ONLY:
+                continue
             if qual is None:
                 scope = "import-time"
             elif (entry, qual) in _STARTUP_ONLY or any(
