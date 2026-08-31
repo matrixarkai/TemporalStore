@@ -217,56 +217,91 @@ impl SingleNodeMeta {
     pub fn plan_meta_retention_now(&self, options: MetaRetentionOptions) -> MetaRetentionPlan {
         let now = now_ms();
         let state = self.inner.read().expect("meta lock poisoned");
-        let dropped_at = |kind: &str, id: &str| -> u64 {
+        // Start from the drop stamps rather than from every resource.
+        //
+        // The stamps are keyed `<kind>:<id>` and kept for exactly the resources
+        // that are dropped and not yet forgotten, so they are already the small
+        // set this round is looking for. Walking every table to find the few
+        // dropped ones cost the whole table map on every interval, and a
+        // resource with no stamp is never collected anyway -- `expired` insists
+        // on a non-zero one -- so the scan was producing candidates for the
+        // planner to throw away.
+        let dropped_of_kind = |kind: &str| -> Vec<(String, u64)> {
+            let prefix = format!("{kind}:");
             state
                 .dropped_since_ms
-                .get(&dropped_key(kind, id))
-                .copied()
-                .unwrap_or_default()
+                .range(prefix.clone()..)
+                .take_while(|(key, _)| key.starts_with(&prefix))
+                .map(|(key, at)| (key[prefix.len()..].to_string(), *at))
+                .collect()
         };
-        let servers = state
-            .servers
-            .values()
-            .filter(|server| server.state == MetaEntityState::Dropped)
-            .map(|server| RetentionCandidate {
-                id: server.server_addr.clone(),
-                dropped_since_ms: dropped_at("server", &server.server_addr),
+        let servers = dropped_of_kind("server")
+            .into_iter()
+            .filter(|(id, _)| {
+                state
+                    .servers
+                    .get(id)
+                    .is_some_and(|server| server.state == MetaEntityState::Dropped)
+            })
+            .map(|(id, at)| RetentionCandidate {
+                id,
+                dropped_since_ms: at,
             })
             .collect::<Vec<_>>();
-        let proxies = state
-            .proxies
-            .values()
-            .filter(|proxy| proxy.state == MetaEntityState::Dropped)
-            .map(|proxy| RetentionCandidate {
-                id: proxy.proxy_addr.clone(),
-                dropped_since_ms: dropped_at("proxy", &proxy.proxy_addr),
+        let proxies = dropped_of_kind("proxy")
+            .into_iter()
+            .filter(|(id, _)| {
+                state
+                    .proxies
+                    .get(id)
+                    .is_some_and(|proxy| proxy.state == MetaEntityState::Dropped)
+            })
+            .map(|(id, at)| RetentionCandidate {
+                id,
+                dropped_since_ms: at,
             })
             .collect::<Vec<_>>();
-        let tables = state
-            .tables
-            .iter()
-            .filter(|(_, table)| table.info.state == MetaEntityState::Dropped)
-            .map(|(key, _)| RetentionCandidate {
-                id: key.clone(),
-                dropped_since_ms: dropped_at("table", key),
+        let tables = dropped_of_kind("table")
+            .into_iter()
+            .filter(|(id, _)| {
+                state
+                    .tables
+                    .get(id)
+                    .is_some_and(|table| table.info.state == MetaEntityState::Dropped)
+            })
+            .map(|(id, at)| RetentionCandidate {
+                id,
+                dropped_since_ms: at,
             })
             .collect::<Vec<_>>();
-        let shard_owners = state
-            .shards
-            .values()
-            .map(|location| (location.shard_id, location.server_addr.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let shard_tables = state
-            .shards
-            .keys()
-            .filter_map(|shard_id| {
-                let table = table_for_shard(&state, *shard_id)?;
-                Some((
-                    *shard_id,
-                    table_key(&table.info.namespace, &table.info.table_name),
-                ))
-            })
-            .collect::<BTreeMap<_, _>>();
+        // Only a dropped server can be held back by still owning shards, and
+        // the owner map is read nowhere else -- so with nothing dropped there is
+        // nothing for it to say.
+        let shard_owners = if servers.is_empty() {
+            BTreeMap::new()
+        } else {
+            state
+                .shards
+                .values()
+                .map(|location| (location.shard_id, location.server_addr.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        // A shard is only collected because the table that owns it is being
+        // collected, so with no dropped tables this map cannot contribute a
+        // single shard -- and deriving it walks every registered shard.
+        let shard_tables = if tables.is_empty() {
+            BTreeMap::new()
+        } else {
+            shard_owning_tables(&state)
+                .into_iter()
+                .map(|(shard_id, table)| {
+                    (
+                        shard_id,
+                        table_key(&table.info.namespace, &table.info.table_name),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
         plan_meta_retention(
             &servers,
             &proxies,
@@ -496,18 +531,24 @@ impl SingleNodeMeta {
             })
             .collect::<Vec<_>>();
         // Tables carry no frozen-at field of their own, so the metaserver keeps
-        // it beside them the same way it keeps drop times.
+        // it beside them the same way it keeps drop times -- and that record is
+        // the frozen set, so this walks it rather than every table. A freeze
+        // with no timestamp is never aged, so the two reach the same tables.
+        let frozen_prefix = "table:";
         let tables = state
-            .tables
-            .iter()
-            .filter(|(_, table)| table.info.state == MetaEntityState::Frozen)
-            .map(|(key, _)| RetentionCandidate {
-                id: key.clone(),
-                dropped_since_ms: state
-                    .frozen_since_ms
-                    .get(&dropped_key("table", key))
-                    .copied()
-                    .unwrap_or_default(),
+            .frozen_since_ms
+            .range(frozen_prefix.to_string()..)
+            .take_while(|(key, _)| key.starts_with(frozen_prefix))
+            .filter_map(|(key, at)| {
+                let id = key[frozen_prefix.len()..].to_string();
+                state
+                    .tables
+                    .get(&id)
+                    .filter(|table| table.info.state == MetaEntityState::Frozen)
+                    .map(|_| RetentionCandidate {
+                        id,
+                        dropped_since_ms: *at,
+                    })
             })
             .collect::<Vec<_>>();
         plan_freeze_aging(&servers, &proxies, &tables, now, options)
