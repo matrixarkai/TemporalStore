@@ -98,6 +98,13 @@ pub(super) fn build_shards(
         .map(|candidate| Location::parse(candidate.location))
         .collect::<Vec<_>>();
     let caller = Location::parse(client_location);
+    // The locations above, reachable by address, so ranking a shard's replicas
+    // does not parse them again for every shard.
+    let location_of = normal_servers
+        .iter()
+        .map(|candidate| candidate.server_addr)
+        .zip(candidate_locations.iter())
+        .collect::<BTreeMap<&str, &Location>>();
     // Derived from the candidate locations alone, so it is the same for every
     // shard of this table. It was being rebuilt per shard.
     let ladder = separation_ladder(&candidate_locations);
@@ -253,11 +260,20 @@ pub(super) fn build_shards(
                 .iter()
                 .enumerate()
                 .map(|(position, server_addr)| {
-                    let distance = state
-                        .servers
-                        .get(server_addr)
-                        .map(|server| caller.shared_prefix_len(&Location::parse(&server.location)))
-                        .unwrap_or(0);
+                    // A replica is normally one of the candidates above, whose
+                    // location is already parsed. A shard whose recorded owner
+                    // is not among them -- a route naming a server the
+                    // metaserver has not heard about -- still has to be parsed.
+                    let distance = match location_of.get(server_addr.as_str()) {
+                        Some(location) => caller.shared_prefix_len(location),
+                        None => state
+                            .servers
+                            .get(server_addr)
+                            .map(|server| {
+                                caller.shared_prefix_len(&Location::parse(&server.location))
+                            })
+                            .unwrap_or(0),
+                    };
                     (distance, position, server_addr.clone())
                 })
                 .collect::<Vec<_>>();
