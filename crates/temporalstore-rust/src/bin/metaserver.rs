@@ -1726,9 +1726,9 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     let stats = backend_call!(meta, stats);
     let servers = backend_call!(meta, list_servers).servers;
     let proxies = backend_call!(meta, list_proxies).proxies;
-    let namespaces = backend_call!(meta, list_namespaces).namespaces;
-    let tables = backend_call!(meta, list_tables).tables;
-    let proxy_groups = backend_call!(meta, list_proxy_groups).groups;
+    // Counts only: these three are reported by number and by state, never
+    // itemised, so they are counted in place rather than cloned out first.
+    let tallies = backend_call!(meta, resource_tallies);
     let reserved = backend_call!(meta, reserved_names).reserved;
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
@@ -1762,12 +1762,12 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     out.push_str("# HELP temporalstore_meta_inventory Current metaserver inventory counts.\n");
     out.push_str("# TYPE temporalstore_meta_inventory gauge\n");
     for (kind, value) in [
-        ("namespace", namespaces.len() as u64),
-        ("table", tables.len() as u64),
+        ("namespace", tallies.namespaces.total()),
+        ("table", tallies.tables.total()),
         ("server", servers.len() as u64),
         ("proxy", proxies.len() as u64),
         ("shard", stats.shard_count as u64),
-        ("proxy_group", proxy_groups.len() as u64),
+        ("proxy_group", tallies.proxy_groups.total()),
         ("reserved_namespace", reserved.namespaces.len() as u64),
         ("reserved_table", reserved.tables.len() as u64),
     ] {
@@ -1806,10 +1806,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "table"), ("state", state)],
-            tables
-                .iter()
-                .filter(|table| table.state.as_str() == state)
-                .count() as u64,
+            tallies.tables.in_state(state),
         );
         // A namespace has had a state since it became something an operator can
         // freeze and drop; nothing reported it.
@@ -1817,19 +1814,13 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "namespace"), ("state", state)],
-            namespaces
-                .iter()
-                .filter(|namespace| namespace.state.as_str() == state)
-                .count() as u64,
+            tallies.namespaces.in_state(state),
         );
         push_meta_metric(
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "proxy_group"), ("state", state)],
-            proxy_groups
-                .iter()
-                .filter(|group| group.state.as_str() == state)
-                .count() as u64,
+            tallies.proxy_groups.in_state(state),
         );
     }
     // The size of what each node is holding, which every heartbeat has carried

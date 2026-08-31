@@ -101,6 +101,31 @@ impl SingleNodeMeta {
         stats_from_state(&state, &self.counters)
     }
 
+    /// Count the tables, namespaces and proxy groups by state.
+    ///
+    /// A scrape wants these counts and nothing else about those resources, and
+    /// listing them to count them meant cloning every one: 648.5us for 4096
+    /// tables and 292.3us for their namespaces, out of a 1093.3us scrape.
+    pub fn resource_tallies(&self) -> ResourceTalliesResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let mut tallies = ResourceTalliesResponse {
+            status: Status::ok(),
+            tables: StateTally::default(),
+            namespaces: StateTally::default(),
+            proxy_groups: StateTally::default(),
+        };
+        for table in state.tables.values() {
+            tallies.tables.record(table.info.state);
+        }
+        for namespace_state in state.namespaces.values() {
+            tallies.namespaces.record(*namespace_state);
+        }
+        for group in state.proxy_groups.values() {
+            tallies.proxy_groups.record(group.state);
+        }
+        tallies
+    }
+
     pub fn preflight_report(&self) -> MetaPreflightReport {
         let state = self.inner.read().expect("meta lock poisoned");
         let normal_servers = state

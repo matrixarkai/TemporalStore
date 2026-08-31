@@ -774,6 +774,56 @@ pub struct TableServingOptionsPatch {
     pub connect_timeout_ms: Option<u64>,
 }
 
+/// How many resources there are, and how many are in each state.
+///
+/// A scrape reports exactly this about tables, namespaces and proxy groups and
+/// nothing else, but it was cloning every one of them -- names and serving
+/// options included -- to call `.len()` and filter on the state field.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateTally {
+    pub normal: u64,
+    pub frozen: u64,
+    pub dropped: u64,
+}
+
+impl StateTally {
+    fn record(&mut self, state: MetaEntityState) {
+        match state {
+            MetaEntityState::Normal => self.normal += 1,
+            MetaEntityState::Frozen => self.frozen += 1,
+            MetaEntityState::Dropped => self.dropped += 1,
+        }
+    }
+
+    /// Every resource counted, whatever state it is in.
+    ///
+    /// The three states are the whole of `MetaEntityState`, so this is the
+    /// count the listing's `.len()` used to give.
+    pub fn total(&self) -> u64 {
+        self.normal + self.frozen + self.dropped
+    }
+
+    /// How many are in the state of this name, named as
+    /// [`MetaEntityState::as_str`] names it.
+    pub fn in_state(&self, state: &str) -> u64 {
+        match state {
+            "normal" => self.normal,
+            "frozen" => self.frozen,
+            "dropped" => self.dropped,
+            _ => 0,
+        }
+    }
+}
+
+/// The counts a scrape needs, taken in one pass under the read lock.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceTalliesResponse {
+    pub status: Status,
+    pub tables: StateTally,
+    pub namespaces: StateTally,
+    pub proxy_groups: StateTally,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GetTableTopologyRequest {
     pub namespace: String,
@@ -5174,7 +5224,142 @@ mod tests {
     }
 
     #[test]
-    fn namespace_state_survives_snapshot_and_replay() {
+fn counting_resources_agrees_with_listing_them_and_counting_those() {
+        let meta = SingleNodeMeta::default();
+
+        // Tables in all three states.
+        for table_name in ["kept", "frozen", "dropped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: table_name.to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "frozen".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped".to_string(),
+            })
+            .status
+            .ok);
+
+        // Namespaces in all three states.
+        for namespace in ["kept-ns", "frozen-ns", "dropped-ns"] {
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: namespace.to_string(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_namespace(AddNamespaceRequest {
+                namespace: "frozen-ns".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .drop_namespace(AddNamespaceRequest {
+                namespace: "dropped-ns".to_string(),
+            })
+            .status
+            .ok);
+
+        // Proxy groups, one kept and one dropped.
+        for group in ["kept-group", "dropped-group"] {
+            assert!(meta
+                .put_proxy_group(PutProxyGroupRequest {
+                    group: group.to_string(),
+                    namespace: "ns".to_string(),
+                    location: String::new(),
+                    instance_num: 1,
+                    drop_percent: 0,
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .drop_proxy_group(DropProxyGroupRequest {
+                group: "dropped-group".to_string(),
+            })
+            .status
+            .ok);
+
+        let tallies = meta.resource_tallies();
+        assert!(tallies.status.ok);
+
+        // Counted against listing them and counting those, which is what the
+        // scrape did before -- for every state, and for the total.
+        let tables = meta.list_tables().tables;
+        let namespaces = meta.list_namespaces().namespaces;
+        let proxy_groups = meta.list_proxy_groups().groups;
+        assert_eq!(tallies.tables.total(), tables.len() as u64, "table total");
+        assert_eq!(
+            tallies.namespaces.total(),
+            namespaces.len() as u64,
+            "namespace total"
+        );
+        assert_eq!(
+            tallies.proxy_groups.total(),
+            proxy_groups.len() as u64,
+            "proxy group total"
+        );
+        for state in ["normal", "frozen", "dropped"] {
+            assert_eq!(
+                tallies.tables.in_state(state),
+                tables
+                    .iter()
+                    .filter(|table| table.state.as_str() == state)
+                    .count() as u64,
+                "tables in state {state}"
+            );
+            assert_eq!(
+                tallies.namespaces.in_state(state),
+                namespaces
+                    .iter()
+                    .filter(|namespace| namespace.state.as_str() == state)
+                    .count() as u64,
+                "namespaces in state {state}"
+            );
+            assert_eq!(
+                tallies.proxy_groups.in_state(state),
+                proxy_groups
+                    .iter()
+                    .filter(|group| group.state.as_str() == state)
+                    .count() as u64,
+                "proxy groups in state {state}"
+            );
+        }
+
+        // And the states are actually spread, so the agreement above is not
+        // every count being equal to zero.
+        assert_eq!(tallies.tables.normal, 1);
+        assert_eq!(tallies.tables.frozen, 1);
+        assert_eq!(tallies.tables.dropped, 1);
+        assert_eq!(tallies.namespaces.frozen, 1);
+        assert_eq!(tallies.namespaces.dropped, 1);
+
+        // A name nothing uses counts as nothing, rather than falling into one
+        // of the three.
+        assert_eq!(tallies.tables.in_state("loading"), 0);
+    }
+
+    #[test]
+        fn namespace_state_survives_snapshot_and_replay() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("namespace-mutations.jsonl");
         {

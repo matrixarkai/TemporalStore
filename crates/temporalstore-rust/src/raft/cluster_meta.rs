@@ -502,6 +502,18 @@ impl MetaRaftCluster {
         )
     }
 
+    pub fn resource_tallies(&self) -> ResourceTalliesResponse {
+        self.read_meta().map_or_else(
+            |status| ResourceTalliesResponse {
+                status,
+                tables: StateTally::default(),
+                namespaces: StateTally::default(),
+                proxy_groups: StateTally::default(),
+            },
+            |meta| meta.resource_tallies(),
+        )
+    }
+
     pub fn list_namespaces(&self) -> ListNamespacesResponse {
         self.read_meta().map_or_else(
             |status| ListNamespacesResponse {
