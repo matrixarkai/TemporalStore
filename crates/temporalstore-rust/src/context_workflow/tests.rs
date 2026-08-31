@@ -2977,7 +2977,10 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
             command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
                 node_hash,
-                model_hash: 1,
+                // What a real writer stamps: the drainer derives it from the same provider
+                // field the retrieve path compares against. A placeholder reads as a foreign
+                // encoder, so the vector is declined and selection falls to the lexical pass.
+                model_hash: context_embedding_model_hash(&provider.embedding_model),
                 vector,
                 updated_at_ms: at,
             },
@@ -3093,7 +3096,10 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
             command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
                 node_hash,
-                model_hash: 1,
+                // What a real writer stamps: the drainer derives it from the same provider
+                // field the retrieve path compares against. A placeholder reads as a foreign
+                // encoder, so the vector is declined and selection falls to the lexical pass.
+                model_hash: context_embedding_model_hash(&provider.embedding_model),
                 vector,
                 updated_at_ms: at,
             },
