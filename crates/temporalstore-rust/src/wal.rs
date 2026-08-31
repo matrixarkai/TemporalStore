@@ -427,9 +427,15 @@ pub(crate) fn record_command(
 /// An outcome states the result instead: this object's page now lives at this address, or this
 /// object is gone. Replay can install that without running anything.
 ///
-/// Default OFF while both are carried, because carrying both makes every record bigger and the
-/// payoff only arrives when replay switches to the outcomes and the command comes out. The flip
-/// belongs with that change, not before it.
+/// DEFAULT ON. The comment here used to say "default OFF while both are carried", and described a
+/// state that no longer exists: records no longer carry both. A mixed workload was walked across
+/// every write shape -- synchronous and asynchronous, separate and batched -- and ZERO records
+/// carry an operation, so the payoff this flag was waiting for has arrived and the command has
+/// come out.
+///
+/// The flip was correct; the comment simply outlived it. A flag comment that states the opposite
+/// default from the code is worse than no comment, because the two are indistinguishable from
+/// outside: a stale note and a default nobody meant to change read exactly alike.
 pub fn wal_outcome_items_enabled() -> bool {
     // Default ON. Recording stopped costing the group-commit coalescing once results travelled
     // through the reserve-only append, and recovery prefers installing them over re-running an

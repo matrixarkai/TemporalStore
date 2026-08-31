@@ -9436,3 +9436,117 @@ fn a_clamped_reclaim_still_serves_what_it_kept_after_a_restart() {
         );
     }
 }
+
+/// What the dirty-object set costs to drain, as the store grows.
+///
+/// `dirty_objects` is a flat set of object keys, and the dump drain used to sit INSIDE the
+/// per-bucket loop:
+///
+///     for bucket_id in manifest.bucket_ids { ...
+///         shard.dirty_objects.retain(|key| page_routing_bucket(key, ..) != bucket_id)
+///
+/// so every qualifying bucket walked every dirty object, re-hashing each key to recompute a
+/// routing bucket the caller already knew. The work was |dirty objects| x |buckets| to remove at
+/// most |dirty objects| entries.
+///
+/// This counts what the drain ACTUALLY looks at, through a counter inside the closure, rather than
+/// deriving the number as a product. A product is arithmetic about the code; the counter survives
+/// someone moving the loop back.
+#[test]
+fn the_dump_drain_looks_at_each_dirty_object_once() {
+    fn measure(records: usize) -> (usize, usize, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        assert!(
+            engine
+                .load_shard_with(crate::control::LoadShardRequest {
+                    shard_id: 1,
+                    table_name: "dirty-drain".to_string(),
+                    shard_uri: "local://dirty-drain/1".to_string(),
+                    start_routing_bucket: 0,
+                    end_routing_bucket: 1023,
+                    readonly: false,
+                    load_version: 1,
+                    local_node_id: Some(1),
+                })
+                .status
+                .ok
+        );
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("dirty-{index}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let (dirty_before, buckets) = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            (shard.dirty_objects.len(), shard.bucket_index.bucket_map.len())
+        };
+
+        // The drain runs from `apply_storage_lifecycle`, NOT from creating or installing a
+        // manifest directly. The first version of this probe called those, measured a drain that
+        // never ran, and passed -- which is why the assertion below insists it ran at all.
+        let selected: Vec<u32> = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            shards
+                .get(&1)
+                .expect("shard 1 loaded")
+                .bucket_index
+                .bucket_map
+                .keys()
+                .copied()
+                .collect()
+        };
+        crate::engine::storage_lifecycle_methods::DIRTY_DRAIN_VISITS
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        engine.apply_storage_lifecycle(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_buckets: selected,
+            ..Default::default()
+        });
+        let visits = crate::engine::storage_lifecycle_methods::DIRTY_DRAIN_VISITS
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (dirty_before, buckets, visits)
+    }
+
+    println!(
+        "
+  records   dirty objects   buckets   drain visits   per dirty object   as one-pass-per-bucket
+"
+    );
+    for records in [500usize, 1_000, 2_000, 4_000] {
+        let (dirty, buckets, visits) = measure(records);
+        println!(
+            "  {records:>7}   {dirty:>13}   {buckets:>7}   {visits:>12}   {:>16.2}   {:>21}",
+            visits as f64 / dirty.max(1) as f64,
+            dirty.saturating_mul(buckets),
+        );
+        // The property, not a threshold: one pass over the set, however many buckets a dump
+        // covers. Before the hoist this was `dirty * buckets` -- 4 040 000 visits to clear 4 000
+        // objects across 1 010 buckets.
+        // ANTI-VACUITY FIRST. `visits <= dirty` is trivially true at zero, and the first version
+        // of this probe passed exactly that way: it called an entry point that does not drain, so
+        // the count was 0 and the bound held for the wrong reason. A "no more than X" assertion
+        // needs a companion asserting "at least something", because a broken harness and a fixed
+        // defect both produce zero and only one of them is good news.
+        assert!(
+            visits > 0,
+            "the drain never ran, so the count measures nothing: {dirty} dirty objects, \
+             {buckets} buckets"
+        );
+        assert!(
+            visits <= dirty as u64,
+            "the drain visited {visits} keys for {dirty} dirty objects across {buckets} buckets, \
+             which means it is walking the set once per bucket again"
+        );
+    }
+}
