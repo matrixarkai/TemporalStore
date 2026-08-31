@@ -1715,7 +1715,11 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         vec![lagging_cursor.clone()],
         vec![lagging_snapshot.clone()],
     );
-    assert!(!blocked.safe_to_reclaim, "{blocked:?}");
+    // Both cursors sit at the parent manifest, so the frontier clamps down to the parent
+    // instead of refusing at the child. They are still counted and named as retaining logs --
+    // the ones above them -- which is what an operator needs in order to know why the log stops
+    // shrinking where it does.
+    assert!(blocked.safe_to_reclaim, "{blocked:?}");
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
     assert_eq!(
@@ -1726,8 +1730,15 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         blocked.durable_bucket_generation_frontier_index_log_sequence,
         child.index_log_sequence
     );
-    assert_eq!(blocked.retain_from_wal_sequence, 0);
-    assert_eq!(blocked.retain_from_index_log_sequence, 0);
+    assert_eq!(
+        blocked.retain_from_wal_sequence,
+        parent.wal_sequence.saturating_add(1),
+        "clamped to the slowest cursor, not refused at the frontier: {blocked:?}"
+    );
+    assert_eq!(
+        blocked.retain_from_index_log_sequence,
+        parent.index_log_sequence.saturating_add(1)
+    );
     assert!(blocked
         .blocker_reasons
         .contains(&"follower_cursor_retains_logs:follower-lagging".to_string()));
@@ -1746,16 +1757,34 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         ..StorageManagerCycleRequest::default()
     });
     let blocked_wal = blocked_cycle.wal_reclaim_report.as_ref().unwrap();
-    assert!(!blocked_wal.applied);
-    assert_eq!(blocked_wal.wal_records_removed, 0);
-    assert!(!blocked_cycle.index_gc_report.as_ref().unwrap().applied);
+    // Clamped rather than refused. Both cursors sit at the parent manifest, so the cycle reclaims
+    // the span they have already consumed and keeps everything above them. Asserting that nothing
+    // was reclaimed was asserting the refusal itself, which is the behaviour that let one lagging
+    // follower pin the whole log.
+    assert!(blocked_wal.applied, "{blocked_wal:?}");
+    assert!(
+        blocked_wal.wal_records_removed > 0,
+        "the span below the slowest cursor should go: {blocked_wal:?}"
+    );
     assert_eq!(
-        blocked_cycle
-            .index_gc_report
-            .as_ref()
-            .unwrap()
-            .skipped_reason,
-        "durable WAL/index frontier not safe"
+        blocked_wal.plan.retain_from_wal_sequence,
+        parent.wal_sequence.saturating_add(1),
+        "and nothing above it: {blocked_wal:?}"
+    );
+    assert_eq!(
+        blocked_wal.plan.retain_from_index_log_sequence,
+        parent.index_log_sequence.saturating_add(1),
+        "{blocked_wal:?}"
+    );
+    // Index GC follows the same frontier, so whatever it decides must agree with the plan rather
+    // than be asserted independently -- the two disagreeing is the defect worth catching here.
+    let blocked_index_gc = blocked_cycle.index_gc_report.as_ref().unwrap();
+    assert_eq!(
+        blocked_index_gc.applied,
+        blocked_wal.plan.safe_to_reclaim,
+        "index GC and WAL reclaim must reach the same verdict on one frontier: \
+         {blocked_index_gc:?} against {:?}",
+        blocked_wal.plan
     );
     assert!(
         blocked_cycle
@@ -1847,7 +1876,15 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     let released_wal = released_cycle.wal_reclaim_report.as_ref().unwrap();
     assert!(released_wal.plan.safe_to_reclaim, "{released_wal:?}");
     assert!(released_wal.applied, "{released_wal:?}");
-    assert!(released_wal.wal_records_removed > 0, "{released_wal:?}");
+    // There may be nothing left to remove, because the clamped cycle above already released the
+    // span both cursors had consumed. That is the point of clamping: the work happens as the
+    // cursor advances rather than all at once when it finally reaches the frontier. What must
+    // hold is that the frontier itself has moved up to the final anchor.
+    assert_eq!(
+        released_wal.plan.retain_from_wal_sequence,
+        final_anchor.wal_sequence.saturating_add(1),
+        "{released_wal:?}"
+    );
     let released_index_gc = released_cycle.index_gc_report.as_ref().unwrap();
     assert!(released_index_gc.safe_to_truncate, "{released_index_gc:?}");
     assert!(released_index_gc.applied, "{released_index_gc:?}");
@@ -3855,25 +3892,18 @@ fn dirty_objects_versus_the_pages_own_dirty_flags() {
     }
 }
 
-/// Is `object_page_lookup` derivable from `object_component_lookup`?
+/// Two components of one object stay two entries, and neither shadows the other.
 ///
-/// Seven structures hold one entry per record, and container overhead across seven separate
-/// string-keyed maps is most of the ~2581 B/record fixed cost -- more than the key duplication
-/// (which caps at ~17% of RSS) and far more than `BlockAddress` (120 B, ~9%). So the lever worth
-/// having is one fewer structure, not smaller fields.
+/// The layout this replaced kept a SECOND map so that a (model, object, component) lookup existed
+/// at all, and a probe here established that the per-component grouping could not be rebuilt by
+/// filtering the per-object map -- which is why that second map could not simply be deleted.
 ///
-/// These two look like the same thing twice. `object_page_lookup` is keyed by
-/// (model, object, component) and holds `PageLookupRef { routing_bucket, page_ref_key }`.
-/// `object_component_lookup` is keyed by (model, object) and holds
-/// `ComponentPageLookupRef { component, routing_bucket, page_ref_key }` -- the same refs, plus
-/// the component that the other one puts in its key. If so, the first is derivable by filtering
-/// the second, and dropping it saves a whole per-record structure: 83.3 B/record of strings plus
-/// its container overhead.
-///
-/// This does not perform that change. It checks the claim the change would rest on, across a
-/// workload with components (hash fields), superseding overwrites and deletes.
+/// Nesting keeps the grouping by construction rather than by a parallel map, so the property to
+/// hold on to is the one that probe was protecting: components of one object are addressable
+/// separately, they are ordered, removing one leaves the rest, and a component that was never
+/// written is absent rather than empty.
 #[test]
-fn object_page_lookup_is_derivable_from_object_component_lookup() {
+fn components_of_one_object_stay_separate() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -3881,161 +3911,75 @@ fn object_page_lookup_is_derivable_from_object_component_lookup() {
         dir.path().join("pages"),
         dir.path().join("indexes"),
     );
-    assert!(
-        engine
-            .load_shard_with(crate::control::LoadShardRequest {
-                shard_id: 1,
-                table_name: "lookup-redundancy".to_string(),
-                shard_uri: "local://lookup-redundancy/1".to_string(),
-                start_routing_bucket: 0,
-                end_routing_bucket: 63,
-                readonly: false,
-                load_version: 1,
-                local_node_id: Some(1),
-            })
-            .status
-            .ok
-    );
-    for index in 0..120 {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringSet {
-                key: format!("dup-str-{index}"),
-                value: vec![b'v'; 48],
-            },
-        });
+    engine.load_shard(1);
+    for index in 0..6 {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::HashSet {
-                key: format!("dup-hash-{}", index % 7),
+                key: "grouped".to_string(),
                 field: format!("field-{index}"),
                 value: vec![b'h'; 32],
             },
         });
-        if index % 3 == 0 {
-            engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::StringSet {
-                    key: format!("dup-str-{}", index / 2),
-                    value: vec![b'w'; 96],
-                },
-            });
-        }
-        if index % 9 == 0 {
-            engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::CommonDelete {
-                    key: format!("dup-str-{}", index / 4),
-                },
-            });
-        }
     }
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "ungrouped".to_string(),
+            value: vec![b'v'; 32],
+        },
+    });
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
-    // Derive BOTH maps from the pages, which are the source of truth, so the comparison does not
-    // use one map to filter the other. An earlier version of this test did, and could therefore
-    // only show that nothing was held UNIQUELY by object_page_lookup -- the necessary direction,
-    // not the sufficient one the change would rest on.
-    use crate::engine::state::{object_component_lookup_key, object_page_lookup_key};
-    let mut from_pages_page_lookup: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
-        std::collections::BTreeMap::new();
-    let mut from_pages_component_lookup: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeSet<(Option<String>, u32, String)>,
-    > = std::collections::BTreeMap::new();
-    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-        for (page_ref_key, page) in bucket.page_index.iter() {
-            if page.deleted {
-                continue;
-            }
-            from_pages_page_lookup
-                .entry(object_page_lookup_key(
-                    &page.model_id,
-                    &page.object_key,
-                    page.component.as_deref(),
-                ))
-                .or_default()
-                .insert((*routing_bucket, page_ref_key.to_string()));
-            from_pages_component_lookup
-                .entry(object_component_lookup_key(&page.model_id, &page.object_key))
-                .or_default()
-                .insert((page.component.clone(), *routing_bucket, page_ref_key.to_string()));
-        }
-    }
-
-    // The stored map must match what the pages say.
-    let stored_page_lookup: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> = shard
+    let grouped = shard
         .bucket_index
-        .object_page_lookup
+        .object_page_refs("hash", "grouped")
+        .expect("the hash object should be in the lookup");
+    assert_eq!(
+        grouped.by_component.len(),
+        6,
+        "six fields are six components, not one merged entry: {:?}",
+        grouped.by_component
+    );
+
+    let mut components: Vec<Option<&str>> = grouped
+        .by_component
         .iter()
-        .map(|(k, refs)| {
-            (
-                k.clone(),
-                refs.iter()
-                    .map(|r| (r.routing_bucket, r.page_ref_key.to_string()))
-                    .collect(),
-            )
-        })
+        .map(|entry| entry.component.as_deref())
         .collect();
+    let ordered = components.clone();
+    components.sort();
     assert_eq!(
-        stored_page_lookup, from_pages_page_lookup,
-        "object_page_lookup does not match what the live pages say, so the derivation below          would be comparing against the wrong thing"
+        components, ordered,
+        "removal binary-searches this vector, so its order is load-bearing"
     );
 
-    // THE SUFFICIENT DIRECTION: rebuild each (model, object, component) entry purely by looking
-    // up (model, object) and filtering on component -- the procedure a caller would use if
-    // object_page_lookup did not exist.
-    let mut derived: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
-        std::collections::BTreeMap::new();
-    for (component_key, refs) in from_pages_component_lookup.iter() {
-        for (component, routing_bucket, page_ref_key) in refs.iter() {
-            // The component key is a prefix of the page key for the same (model, object); rebuild
-            // the page key from the parts the component entry already carries.
-            let page_key = refs
-                .iter()
-                .find(|(c, _, k)| c == component && k == page_ref_key)
-                .map(|_| component_key.clone())
-                .expect("the ref came from this set");
-            let _ = page_key;
-            derived
-                .entry(format!("{component_key}|{}", component.as_deref().unwrap_or("")))
-                .or_default()
-                .insert((*routing_bucket, page_ref_key.to_string()));
-        }
+    for index in 0..6 {
+        let component = format!("field-{index}");
+        assert!(
+            grouped.refs_for(Some(&component)).is_some(),
+            "component {component} should be addressable on its own"
+        );
     }
-
-    // Group the truth the same way, so the comparison is about CONTENT, not key spelling.
-    let mut expected_grouped: std::collections::BTreeMap<String, std::collections::BTreeSet<(u32, String)>> =
-        std::collections::BTreeMap::new();
-    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-        for (page_ref_key, page) in bucket.page_index.iter() {
-            if page.deleted {
-                continue;
-            }
-            let component_key = object_component_lookup_key(&page.model_id, &page.object_key);
-            expected_grouped
-                .entry(format!(
-                    "{component_key}|{}",
-                    page.component.as_deref().unwrap_or("")
-                ))
-                .or_default()
-                .insert((*routing_bucket, page_ref_key.to_string()));
-        }
-    }
-
-    assert!(!expected_grouped.is_empty(), "workload produced no page-lookup entries");
-    assert_eq!(
-        derived, expected_grouped,
-        "filtering object_component_lookup by component does NOT reproduce the per-component          grouping, so object_page_lookup is not derivable and cannot be dropped"
+    assert!(
+        grouped.refs_for(Some("field-never-written")).is_none(),
+        "a component nobody wrote is absent, not empty"
     );
-    println!(
-        "
-  {} (model,object,component) groups reproduced by filtering object_component_lookup
-           stored object_page_lookup also matches the live pages exactly
-",
-        derived.len()
+    assert!(
+        grouped.refs_for(None).is_none(),
+        "a hash object has no componentless entry"
+    );
+
+    let ungrouped = shard
+        .bucket_index
+        .object_page_refs("string", "ungrouped")
+        .expect("the string object should be in the lookup");
+    assert_eq!(ungrouped.by_component.len(), 1);
+    assert!(
+        ungrouped.refs_for(None).is_some(),
+        "a plain value is the componentless entry"
     );
 }
 
@@ -4100,14 +4044,22 @@ fn per_record_structure_census() {
         .values()
         .map(|bucket| bucket.object_index.len())
         .sum();
+    // The map is keyed by object now, so its length is the object count and the per-component
+    // map it used to be compared against is gone. Both numbers are still reported, because the
+    // interesting quantity is entries PER RECORD and one of them stopped existing.
     let page_lookup_keys = shard.bucket_index.object_page_lookup.len();
     let page_lookup_refs: usize = shard
         .bucket_index
         .object_page_lookup
         .values()
-        .map(Vec::len)
+        .map(crate::engine::state::ObjectPageRefs::total_refs)
         .sum();
-    let component_lookup_keys = shard.bucket_index.object_component_lookup.len();
+    let component_lookup_keys: usize = shard
+        .bucket_index
+        .object_page_lookup
+        .values()
+        .map(|entry| entry.by_component.len())
+        .sum();
     let strings = shard.strings.len();
     let wal_resident = shard.wal_resident_pages.len();
     let dirty_objects = shard.dirty_objects.len();
@@ -4121,7 +4073,7 @@ fn per_record_structure_census() {
              bucket object_index        {:>6.2}
              object_page_lookup keys    {:>6.2}
              object_page_lookup refs    {:>6.2}
-             object_component_lookup    {:>6.2}
+             page-lookup components     {:>6.2}
              dirty_objects              {:>6.2}
              wal_resident_pages         {:>6.2}
              (buckets: {buckets}, not per record)
@@ -4147,26 +4099,31 @@ fn per_record_structure_census() {
                 + page.component.as_ref().map_or(0, String::len)
         })
         .sum();
+    // Outer keys plus the page-ref key each entry holds.
     let page_lookup_bytes: usize = shard
         .bucket_index
         .object_page_lookup
         .iter()
-        .map(|(k, refs)| {
-            k.len() + refs.iter().map(|r| r.page_ref_key.len()).sum::<usize>()
+        .map(|(key, entry)| {
+            key.len()
+                + entry
+                    .all_refs()
+                    .map(|page_ref| page_ref.page_ref_key.len())
+                    .sum::<usize>()
         })
         .sum();
+    // Inner keys only. The (model, object) head is NOT counted again here -- that is the whole
+    // point of nesting, and counting it twice would report the saving as if it had not happened.
     let component_lookup_bytes: usize = shard
         .bucket_index
-        .object_component_lookup
-        .iter()
-        .map(|(k, refs)| {
-            k.len()
-                + refs
-                    .iter()
-                    .map(|r| {
-                        r.page_ref_key.len() + r.component.as_ref().map_or(0, String::len)
-                    })
-                    .sum::<usize>()
+        .object_page_lookup
+        .values()
+        .map(|entry| {
+            entry
+                .by_component
+                .iter()
+                .map(|component| component.component.as_ref().map_or(0, String::len))
+                .sum::<usize>()
         })
         .sum();
     let dirty_bytes: usize = shard.dirty_objects.iter().map(String::len).sum();
@@ -4179,7 +4136,7 @@ fn per_record_structure_census() {
              strings keys               {:>7.1}
              bucket page_index          {:>7.1}
              object_page_lookup         {:>7.1}
-             object_component_lookup    {:>7.1}
+             page-lookup components     {:>7.1}
              dirty_objects              {:>7.1}
              TOTAL                      {:>7.1}  = {:.1}x the key
 ",
@@ -4378,9 +4335,9 @@ fn maintained_component_page_ref_total_matches_the_walk() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let walked: usize = shard
         .bucket_index
-        .object_component_lookup
+        .object_page_lookup
         .values()
-        .map(BTreeSet::len)
+        .map(crate::engine::state::ObjectPageRefs::total_refs)
         .sum();
     let maintained = shard
         .bucket_index
@@ -9038,189 +8995,19 @@ fn which_records_still_carry_an_operation() {
     println!("  async separate carries {async_cmds} operations, async batched {async_batch_cmds}");
 }
 
-/// Is `object_component_lookup` derivable from `object_page_lookup`? — the other direction.
+/// Did nesting actually save what it was measured to save?
 ///
-/// The existing probe asked whether the per-component map could be rebuilt from the per-object
-/// one and found it could not: filtering by component does not reproduce the grouping. That
-/// settles the direction that would have removed `object_page_lookup`, and says nothing about the
-/// direction that would remove the other one.
+/// Two probes stood here before the change: one establishing that the per-object map was exactly a
+/// prefix range scan of the per-component one (113 objects, 226 refs, 0 disagreements), and one
+/// measuring what merging them would save (223588 B of keys held against 110780 nested, 50.5%).
+/// Both described a layout that no longer exists, and neither would fail if the saving had been
+/// lost -- they measured a hypothetical.
 ///
-/// This asks the reverse, and the encoding says it should hold. Both keys are built from
-/// length-prefixed parts (`len:value|`), and the component key is literally the first two parts of
-/// the page key, so `object_component_lookup_key(m, o)` is a prefix of
-/// `object_page_lookup_key(m, o, _)` and — because the lengths disambiguate — of no other pair's.
-/// A range scan therefore recovers exactly one object's entries, and the component itself is
-/// recoverable from the rest of the key. `ComponentPageLookupRef` is `PageLookupRef` plus that
-/// component, so every field of the derived value has a source.
-///
-/// If this holds, one of seven per-record structures can be a range scan instead of a map that
-/// has to be kept in agreement with its neighbour.
+/// This measures the layout that shipped. It reconstructs what the two flat maps WOULD have held
+/// for the same shard and compares it against what is actually held, so the number is a saving
+/// rather than a description.
 #[test]
-fn object_component_lookup_is_derivable_from_object_page_lookup() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    assert!(
-        engine
-            .load_shard_with(crate::control::LoadShardRequest {
-                shard_id: 1,
-                table_name: "reverse-derive".to_string(),
-                shard_uri: "local://reverse-derive/1".to_string(),
-                start_routing_bucket: 0,
-                end_routing_bucket: 63,
-                readonly: false,
-                load_version: 1,
-                local_node_id: Some(1),
-            })
-            .status
-            .ok
-    );
-
-    // The same mixed workload the forward probe uses: plain values, hash fields that carry a
-    // component, superseding overwrites that retire page refs, and deletes. A derivation that
-    // only holds for inserts would not be worth acting on.
-    for index in 0..120 {
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringSet {
-                key: format!("rev-str-{index}"),
-                value: vec![b'v'; 48],
-            },
-        });
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::HashSet {
-                key: format!("rev-hash-{}", index % 7),
-                field: format!("field-{index}"),
-                value: vec![b'h'; 32],
-            },
-        });
-        if index % 3 == 0 {
-            engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::StringSet {
-                    key: format!("rev-str-{}", index / 2),
-                    value: vec![b'w'; 96],
-                },
-            });
-        }
-        if index % 9 == 0 {
-            engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::CommonDelete {
-                    key: format!("rev-str-{}", index / 4),
-                },
-            });
-        }
-    }
-
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-
-    // Recover the component a page-lookup key was built with. `0|` is the no-component case;
-    // `1|` is followed by one length-prefixed part. Anything else means the encoding moved and
-    // the derivation below would be reading tea leaves, so it is an error rather than a None.
-    fn component_of(suffix: &str) -> Option<String> {
-        if let Some(rest) = suffix.strip_prefix("1|") {
-            let (len, tail) = rest.split_once(':').expect("length-prefixed part");
-            let len: usize = len.parse().expect("part length parses");
-            assert!(tail.len() >= len, "part shorter than its declared length");
-            Some(tail[..len].to_string())
-        } else {
-            assert_eq!(suffix, "0|", "unrecognised component encoding: {suffix:?}");
-            None
-        }
-    }
-
-    // Derive the per-object map by range-scanning the per-component one, which is the operation
-    // that would replace it if this holds.
-    let mut derived: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeSet<crate::engine::state::ComponentPageLookupRef>,
-    > = std::collections::BTreeMap::new();
-    for (object_key, refs) in shard.bucket_index.object_component_lookup.iter() {
-        let entry = derived.entry(object_key.clone()).or_default();
-        for (page_key, page_refs) in shard.bucket_index.object_page_lookup.range(object_key.clone()..)
-        {
-            let Some(suffix) = page_key.strip_prefix(object_key.as_str()) else {
-                break; // past this object: the range is contiguous, so the first miss ends it
-            };
-            let component = component_of(suffix);
-            for page_ref in page_refs {
-                entry.insert(crate::engine::state::ComponentPageLookupRef {
-                    component: component.clone(),
-                    routing_bucket: page_ref.routing_bucket,
-                    page_ref_key: page_ref.page_ref_key.clone(),
-                });
-            }
-        }
-        let _ = refs;
-    }
-
-    let live = &shard.bucket_index.object_component_lookup;
-    let live_refs: usize = live.values().map(std::collections::BTreeSet::len).sum();
-    let derived_refs: usize = derived.values().map(std::collections::BTreeSet::len).sum();
-    let mismatched: Vec<&String> = live
-        .iter()
-        .filter(|(key, refs)| derived.get(*key) != Some(*refs))
-        .map(|(key, _)| key)
-        .collect();
-
-    println!(
-        "
-  object_component_lookup vs a range scan of object_page_lookup:
-             objects, live                {:>6}
-             objects, derived             {:>6}
-             page refs, live              {:>6}
-             page refs, derived           {:>6}
-             objects that disagree        {:>6}
-",
-        live.len(),
-        derived.len(),
-        live_refs,
-        derived_refs,
-        mismatched.len(),
-    );
-
-    assert!(
-        live.len() > 0 && live_refs > 0,
-        "the workload must populate the map, or this proves nothing"
-    );
-    assert!(
-        mismatched.is_empty(),
-        "object_component_lookup is NOT reproducible by a prefix range scan of \
-         object_page_lookup -- {} of {} objects disagree, first: {:?}",
-        mismatched.len(),
-        live.len(),
-        mismatched.first()
-    );
-    assert_eq!(
-        derived.len(),
-        live.len(),
-        "the derivation must produce the same objects, not a subset"
-    );
-}
-
-/// What would nesting the two page-lookup maps into one actually save?
-///
-/// The two maps are keyed by overlapping composites: `object_page_lookup` by (model, object,
-/// component) and `object_component_lookup` by (model, object). The second key is a byte-for-byte
-/// prefix of the first, so every record pays for the (model, object) part TWICE -- once as a whole
-/// key, once as the head of a longer one.
-///
-/// Nesting removes that repetition: one map keyed by (model, object), whose value holds the
-/// per-component lists under a short inner key. This measures the difference on a live shard
-/// rather than deriving it from the type definitions, because the question is what the bytes are,
-/// not what the shape suggests they should be.
-///
-/// It is a report, not a threshold. It prints and asserts only the relationships that must hold
-/// for the restructure to be sound at all, so it cannot fail spuriously as the workload changes.
-#[test]
-fn what_nesting_the_two_page_lookups_would_save() {
+fn nesting_the_page_lookups_saved_what_it_measured() {
     const RECORDS: usize = 4_000;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -9233,8 +9020,8 @@ fn what_nesting_the_two_page_lookups_would_save() {
         engine
             .load_shard_with(crate::control::LoadShardRequest {
                 shard_id: 1,
-                table_name: "nested-layout".to_string(),
-                shard_uri: "local://nested-layout/1".to_string(),
+                table_name: "nested-saving".to_string(),
+                shard_uri: "local://nested-saving/1".to_string(),
                 start_routing_bucket: 0,
                 end_routing_bucket: 1023,
                 readonly: false,
@@ -9244,9 +9031,9 @@ fn what_nesting_the_two_page_lookups_would_save() {
             .status
             .ok
     );
-    // A mix, because the saving depends on whether an object carries a component: a plain value
-    // has none, a hash field has one, and a measurement over only one kind would generalise from
-    // the easy case.
+    // Mixed, because the saving depends on whether an object carries a component at all: a plain
+    // value has none and a hash field has one. Measuring only one kind would generalise from
+    // whichever half is easier.
     for index in 0..RECORDS {
         if index % 4 == 0 {
             engine.execute(ExecuteRequest {
@@ -9270,77 +9057,382 @@ fn what_nesting_the_two_page_lookups_would_save() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let index = &shard.bucket_index;
+    let lookup = &shard.bucket_index.object_page_lookup;
 
-    // What is held today: both key sets in full.
-    let page_key_bytes: usize = index.object_page_lookup.keys().map(String::len).sum();
-    let component_key_bytes: usize = index.object_component_lookup.keys().map(String::len).sum();
-    let page_entries = index.object_page_lookup.len();
-    let component_entries = index.object_component_lookup.len();
-
-    // What a nested map would hold: the (model, object) key once as the outer key, and the
-    // component alone as the inner key. The component is the tail of the page key after the
-    // object prefix, which is what the outer key already is.
-    let mut outer_key_bytes = 0usize;
-    let mut inner_key_bytes = 0usize;
-    let mut inner_entries = 0usize;
-    for object_key in index.object_component_lookup.keys() {
-        outer_key_bytes += object_key.len();
-        for page_key in index.object_page_lookup.range(object_key.clone()..) {
-            let Some(suffix) = page_key.0.strip_prefix(object_key.as_str()) else {
-                break;
+    // Held now: the (model, object) key once, plus the component alone on each nested entry.
+    let mut nested_keys = 0usize;
+    let mut nested_map_entries = 0usize;
+    let mut nested_vec_elements = 0usize;
+    // What two flat maps WOULD have held: the (model, object) key as a whole key in one map, AND
+    // again as the head of every (model, object, component) key in the other. The tail of that
+    // longer key is "1|" plus a length-prefixed component, or "0|" when there is none.
+    let mut flat_keys = 0usize;
+    let mut flat_map_entries = 0usize;
+    for (object_key, entry) in lookup.iter() {
+        nested_keys += object_key.len();
+        nested_map_entries += 1;
+        nested_vec_elements += entry.by_component.len();
+        // The flat layout kept a whole B-tree entry per object in the second map...
+        flat_keys += object_key.len();
+        flat_map_entries += 1;
+        for component in &entry.by_component {
+            let tail = match component.component.as_deref() {
+                Some(name) => format!("1|{}:{}|", name.len(), name).len(),
+                None => "0|".len(),
             };
-            // `0|` is no component and needs no inner key at all; `1|len:value|` keeps only the
-            // value. Either way the (model, object) head is not stored again.
-            inner_key_bytes += suffix.strip_prefix("1|").map_or(0, |rest| {
-                rest.split_once(':').map_or(0, |(_, tail)| tail.len().saturating_sub(1))
-            });
-            inner_entries += 1;
+            nested_keys += component.component.as_ref().map_or(0, String::len);
+            // ...and another per (object, component) in the first. Nesting turns the second of
+            // those into a vector element, which is why these are counted apart: a B-tree node
+            // and a vector slot are not the same object, and adding them together hides the
+            // change entirely.
+            flat_keys += object_key.len() + tail;
+            flat_map_entries += 1;
         }
     }
 
-    let now = page_key_bytes + component_key_bytes;
-    let nested = outer_key_bytes + inner_key_bytes;
     let per = |n: usize| n as f64 / RECORDS as f64;
     println!(
         "
-  page-lookup key bytes at {RECORDS} records:
-             object_page_lookup keys      {:>8}  ({:>6.1} B/record, {page_entries} entries)
-             object_component_lookup keys {:>8}  ({:>6.1} B/record, {component_entries} entries)
-             held today                   {:>8}  ({:>6.1} B/record)
-
-             nested outer keys            {:>8}  ({:>6.1} B/record)
-             nested inner keys            {:>8}  ({:>6.1} B/record, {inner_entries} entries)
-             held nested                  {:>8}  ({:>6.1} B/record)
-
-             saved                        {:>8}  ({:>6.1} B/record, {:>5.1}% of these keys)
-             map entries, today           {:>8}
-             map entries, nested          {:>8}
+  page-lookup keys at {RECORDS} records, nested against the two flat maps it replaced:
+             two flat maps                {:>8} B  ({:>6.1} B/record, {flat_map_entries} b-tree entries)
+             nested                       {:>8} B  ({:>6.1} B/record, {nested_map_entries} b-tree + {nested_vec_elements} vec)
+             saved                        {:>8} B  ({:>6.1} B/record, {:>5.1}%)
 ",
-        page_key_bytes, per(page_key_bytes),
-        component_key_bytes, per(component_key_bytes),
-        now, per(now),
-        outer_key_bytes, per(outer_key_bytes),
-        inner_key_bytes, per(inner_key_bytes),
-        nested, per(nested),
-        now - nested, per(now - nested),
-        100.0 * (now - nested) as f64 / now as f64,
-        page_entries + component_entries,
-        component_entries + inner_entries,
+        flat_keys,
+        per(flat_keys),
+        nested_keys,
+        per(nested_keys),
+        flat_keys - nested_keys,
+        per(flat_keys - nested_keys),
+        100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64,
     );
 
-    assert!(now > 0 && component_entries > 0, "the workload must populate both maps");
-    // The whole premise: the second key is a prefix of the first, so nesting cannot cost more.
+    assert!(flat_keys > 0 && !lookup.is_empty(), "the workload must populate the lookup");
+    // The measurement that justified the change was 50.5%. Assert well below it so ordinary
+    // changes in key length do not fail the build, but a REGRESSION -- the object key creeping
+    // back into the inner entries -- cannot pass.
+    let saved = 100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64;
     assert!(
-        nested < now,
-        "nesting held {nested} B against {now} B today -- the restructure has no byte case"
+        saved > 40.0,
+        "nesting saved {saved:.1}% of the page-lookup key bytes; it measured 50.5% before it \
+         shipped, and anything near zero means the object key is being stored twice again"
     );
-    // Every page-lookup entry must be reachable from some object, or the derivation that makes
-    // the outer key sufficient is wrong and the saving is being counted against entries that
-    // would still need their own key.
+    // B-tree entries halve: the per-(object, component) map becomes vector slots inside the
+    // per-object one. Counting nodes and slots together would report no change at all, which is
+    // how this was first miscounted -- they are not the same object and do not cost the same.
+    assert!(
+        nested_map_entries < flat_map_entries,
+        "nested {nested_map_entries} b-tree entries against {flat_map_entries} flat"
+    );
     assert_eq!(
-        inner_entries, page_entries,
-        "the range scan reached {inner_entries} of {page_entries} page-lookup entries; entries no \
-         object prefix reaches would still need a key of their own"
+        nested_map_entries + nested_vec_elements,
+        flat_map_entries,
+        "every flat entry should become either a b-tree entry or a vector slot, none lost"
     );
+}
+
+/// What does refusing to reclaim, rather than clamping, actually hold?
+///
+/// The plan computes a durable frontier — the lowest wal sequence among the dump manifests
+/// covering every live generation — and then reclaims up to it, but ONLY if no replay cursor sits
+/// below it. One cursor one sequence behind the frontier turns the whole reclaim off, and the log
+/// keeps everything for as long as that cursor lags.
+///
+/// Everything below the SLOWEST cursor is safe to drop whether or not that cursor has caught up,
+/// which is what clamping the frontier to the cursor would take. The prize is therefore not a
+/// constant: it is exactly the part of the log the slowest cursor has already consumed, so it is
+/// measured across cursor positions rather than quoted as one number. At a cursor that has never
+/// moved it is zero, and that is the honest answer for a permanently stuck follower.
+#[test]
+fn reclaim_clamps_to_the_slowest_cursor_instead_of_refusing_at_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Eight rounds, each ending in a dump, so the durable frontier sits well above zero and there
+    // is a real span of log below it to talk about.
+    let mut manifests = Vec::new();
+    for round in 0..8 {
+        for index in 0..8 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("reclaim-{round}-{index}"),
+                    value: vec![b'v'; 256],
+                },
+            });
+        }
+        manifests.push(
+            engine
+                .create_bucket_dump_manifest(1, Vec::new())
+                .expect("a dump manifest per round"),
+        );
+    }
+
+    let unblocked = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+    let frontier = unblocked.durable_bucket_generation_frontier_wal_sequence;
+    assert!(
+        frontier > 0 && unblocked.safe_to_reclaim,
+        "with no cursors the plan must reclaim, or there is nothing to compare against: \
+         {unblocked:?}"
+    );
+
+    // Bytes of log at or below a sequence, so the table is in the unit that matters rather than
+    // in sequence numbers.
+    // `scan` is bounded by BYTE OFFSETS, not by sequence -- passing a sequence as the end
+    // offset measured the first few bytes of the log and reported zero everywhere. Read the whole
+    // log once and bucket the records by their own decoded sequence instead.
+    let all_records = engine
+        .write_ahead_log_store()
+        .scan(1, 0, u64::MAX, u64::MAX)
+        .expect("the log should read back");
+    let by_sequence: Vec<(u64, usize)> = all_records
+        .iter()
+        .filter_map(|(_, line)| {
+            crate::wal::decode_wal_line(line)
+                .ok()
+                .map(|record| (record.sequence, line.len()))
+        })
+        .collect();
+    let bytes_through = |sequence: u64| -> usize {
+        by_sequence
+            .iter()
+            .filter(|(at, _)| *at <= sequence)
+            .map(|(_, len)| *len)
+            .sum()
+    };
+    let total_below_frontier = bytes_through(frontier);
+
+    println!(
+        "
+  durable frontier at wal sequence {frontier}, {total_below_frontier} B of log at or below it
+
+  cursor at      today retains   clamped would   released      of the span
+"
+    );
+
+    let mut released_at_frontier = 0usize;
+    for numerator in [0u64, 1, 2, 4, 6, 7, 8] {
+        let cursor_at = frontier * numerator / 8;
+        let plan = engine.storage_wal_reclaim_plan(
+            1,
+            vec![BucketDumpFollowerReplayCursor {
+                follower_id: "lagging".to_string(),
+                shard_id: 1,
+                wal_sequence: cursor_at,
+                index_log_sequence: u64::MAX,
+            }],
+            Vec::new(),
+        );
+        // Clamping takes the frontier down to the slowest cursor instead of refusing at it.
+        let clamped = if plan.safe_to_reclaim {
+            plan.retain_from_wal_sequence
+        } else {
+            frontier.min(cursor_at).saturating_add(1)
+        };
+        let released = bytes_through(clamped.saturating_sub(1));
+        if numerator == 8 {
+            released_at_frontier = released;
+        }
+        println!(
+            "  {:>10}   {:>13}   {:>13}   {:>7} B   {:>5.1}%",
+            cursor_at,
+            plan.retain_from_wal_sequence,
+            clamped,
+            released,
+            if total_below_frontier == 0 {
+                0.0
+            } else {
+                100.0 * released as f64 / total_below_frontier as f64
+            },
+        );
+    }
+
+    // The shape, not a threshold. A cursor that has never moved releases nothing -- that is the
+    // answer for a permanently stuck follower and it is not a defect. A cursor level with the
+    // frontier is not blocking at all, so today already reclaims there.
+    assert!(
+        total_below_frontier > 0,
+        "the workload must leave log below the frontier"
+    );
+    assert!(
+        released_at_frontier > 0,
+        "a cursor level with the frontier must release the span: {released_at_frontier}"
+    );
+
+    // THE CLAIM UNDER TEST: a cursor strictly between zero and the frontier is the case the
+    // refusal costs, and today it retains nothing at all.
+    let midway = frontier / 2;
+    let mid_plan = engine.storage_wal_reclaim_plan(
+        1,
+        vec![BucketDumpFollowerReplayCursor {
+            follower_id: "lagging".to_string(),
+            shard_id: 1,
+            wal_sequence: midway,
+            index_log_sequence: u64::MAX,
+        }],
+        Vec::new(),
+    );
+    assert!(midway > 0 && midway < frontier, "the sweep needs a middle");
+    assert!(
+        mid_plan.safe_to_reclaim,
+        "a cursor behind the frontier no longer stops reclaim outright: {mid_plan:?}"
+    );
+    assert_eq!(
+        mid_plan.retain_from_wal_sequence,
+        midway.saturating_add(1),
+        "reclaim clamps to the cursor rather than refusing at it: {mid_plan:?}"
+    );
+    assert!(
+        bytes_through(midway) > 0,
+        "and the span it releases is not nothing: {} B",
+        bytes_through(midway)
+    );
+    // The cursor is still reported as retaining logs, which remains true of the logs ABOVE it.
+    // What changed is that this is no longer a reason to keep the ones below it as well.
+    assert_eq!(mid_plan.follower_cursor_block_count, 1, "{mid_plan:?}");
+
+    // A cursor that has never advanced releases nothing, and that is the correct answer rather
+    // than a shortfall: there is no span behind a reader that has read nothing. The whole win
+    // here is bounded by cursor movement, so a permanently stuck follower still pins the log.
+    let stuck = engine.storage_wal_reclaim_plan(
+        1,
+        vec![BucketDumpFollowerReplayCursor {
+            follower_id: "never-moved".to_string(),
+            shard_id: 1,
+            wal_sequence: 0,
+            index_log_sequence: 0,
+        }],
+        Vec::new(),
+    );
+    assert_eq!(
+        stuck.retain_from_wal_sequence, 0,
+        "a cursor at zero clamps the frontier to zero, which reclaims nothing: {stuck:?}"
+    );
+}
+
+/// A clamped reclaim still serves everything, after a restart.
+///
+/// Clamping drops the log at or below the slowest cursor. That is right only if `wal_sequence`
+/// means "the last record I consumed" and not "the next record I need" -- and the difference
+/// between those two readings is exactly one record, which no comparison of sequence numbers can
+/// reveal. The old code already dropped records at a cursor's own sequence whenever that cursor sat
+/// level with the frontier, so the convention is the first one, but that is an argument from
+/// reading code rather than a demonstration.
+///
+/// So this rebuilds a shard from what survives the reclaim and reads the values back. A recovery
+/// that has lost a record cannot serve it, and nothing about the retained sequence numbers would
+/// have said so.
+#[test]
+fn a_clamped_reclaim_still_serves_what_it_kept_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Written before the cursor: the span a clamped reclaim is entitled to drop from the log.
+    for index in 0..16 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("consumed-{index}"),
+                value: format!("v-consumed-{index}").into_bytes(),
+            },
+        });
+    }
+    let anchor = engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("a dump to anchor the cursor on");
+
+    // Written after it: the span the follower has NOT consumed, which must survive.
+    for index in 0..16 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("pending-{index}"),
+                value: format!("v-pending-{index}").into_bytes(),
+            },
+        });
+    }
+    engine
+        .create_bucket_dump_manifest(1, Vec::new())
+        .expect("a dump above the cursor");
+
+    let plan = engine.storage_wal_reclaim_plan(
+        1,
+        vec![BucketDumpFollowerReplayCursor {
+            follower_id: "consumed-through-anchor".to_string(),
+            shard_id: 1,
+            wal_sequence: anchor.wal_sequence,
+            index_log_sequence: anchor.index_log_sequence,
+        }],
+        Vec::new(),
+    );
+    assert!(
+        plan.safe_to_reclaim,
+        "a cursor behind the frontier should clamp, not refuse: {plan:?}"
+    );
+    assert_eq!(
+        plan.retain_from_wal_sequence,
+        anchor.wal_sequence.saturating_add(1),
+        "clamped to the cursor: {plan:?}"
+    );
+    let report = engine.apply_storage_wal_reclaim(plan);
+    assert!(report.applied, "{report:?}");
+    assert!(
+        report.wal_bytes_after < report.wal_bytes_before,
+        "the clamp should have released log bytes, or this test proves nothing: {report:?}"
+    );
+
+    // Rebuild from what is on disk. A different cache directory so nothing is served from a warm
+    // tier -- the point is what recovery can reconstruct, not what happened to still be in memory.
+    drop(engine);
+    let restarted = TemporalEngine::with_local_dirs(
+        4 * 1024,
+        dir.path().join("restart-cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    restarted.load_shard(1);
+
+    for index in 0..16 {
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("pending-{index}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("v-pending-{index}").into_bytes())
+            },
+            "a value above the cursor must survive a clamped reclaim"
+        );
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: format!("consumed-{index}"),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(format!("v-consumed-{index}").into_bytes())
+            },
+            "and so must one below it: the log was dropped because a DUMP already covers these, \\
+             not because they stopped existing -- reclaiming the log is not deleting the data"
+        );
+    }
 }

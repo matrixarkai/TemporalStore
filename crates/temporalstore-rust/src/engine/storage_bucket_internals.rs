@@ -1231,13 +1231,8 @@ pub(super) fn upsert_bucket_index_page(
     let direct_page_refs = if lookup_enabled {
         shard
             .bucket_index
-            .object_page_lookup
-            .get(&object_page_lookup_key(
-                &entry.kind,
-                &entry.object_key,
-                entry.component.as_deref(),
-            ))
-            .cloned()
+            .page_refs_for(&entry.kind, &entry.object_key, entry.component.as_deref())
+            .map(<[crate::engine::state::PageLookupRef]>::to_vec)
     } else {
         None
     };
@@ -1336,7 +1331,7 @@ pub(super) fn sync_bucket_index_object_pages(
 ) {
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
-    let target_buckets = if shard.bucket_index.object_component_lookup.is_empty() {
+    let target_buckets = if shard.bucket_index.object_page_lookup.is_empty() {
         shard
             .bucket_index
             .bucket_map
@@ -1346,11 +1341,10 @@ pub(super) fn sync_bucket_index_object_pages(
     } else {
         shard
             .bucket_index
-            .object_component_lookup
-            .get(&object_component_lookup_key(kind, object_key))
+            .object_page_refs(kind, object_key)
             .map(|page_refs| {
                 page_refs
-                    .iter()
+                    .all_refs()
                     .map(|page_ref| page_ref.routing_bucket)
                     .collect::<BTreeSet<_>>()
             })
