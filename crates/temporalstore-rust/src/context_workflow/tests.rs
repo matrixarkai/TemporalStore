@@ -2902,7 +2902,10 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
             command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
                 node_hash,
-                model_hash: 1,
+                // What a real writer stamps: the drainer derives it from the same provider
+                // field the retrieve path compares against. A placeholder reads as a foreign
+                // encoder and the vector is declined before width is ever considered.
+                model_hash: context_embedding_model_hash(&provider.embedding_model),
                 vector,
                 updated_at_ms: at,
             },
@@ -3018,7 +3021,10 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
             command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
                 node_hash,
-                model_hash: 1,
+                // What a real writer stamps: the drainer derives it from the same provider
+                // field the retrieve path compares against. A placeholder reads as a foreign
+                // encoder and the vector is declined before width is ever considered.
+                model_hash: context_embedding_model_hash(&provider.embedding_model),
                 vector,
                 updated_at_ms: at,
             },
@@ -3197,4 +3203,184 @@ fn what_one_add_costs_end_to_end() {
             (layout + clear_dirty + refresh) as f64 / adds as f64,
         );
     }
+}
+
+// --- an encoder swap at the SAME width ------------------------------------------------------
+//
+// Width conflicts are covered above. These cover the case width cannot see: two encoders that
+// produce vectors of identical length, which is routine once any model is truncated to a common
+// width. Nothing but the recorded hash separates them, and no error is raised either way.
+
+#[test]
+fn a_different_encoder_at_the_same_width_conflicts() {
+    let e5 = context_embedding_model_hash("intfloat/multilingual-e5-large");
+    let bge = context_embedding_model_hash("BAAI/bge-m3");
+    assert_ne!(e5, bge, "distinct encoders must hash differently");
+    assert!(context_embedding_model_conflicts(bge, e5));
+    assert!(!context_embedding_model_conflicts(e5, e5));
+}
+
+#[test]
+fn an_unknown_hash_never_conflicts_on_either_side() {
+    let e5 = context_embedding_model_hash("intfloat/multilingual-e5-large");
+    // A stored zero predates the hash being recorded. Refusing those would take every existing
+    // store dark on the first deploy of this guard.
+    assert!(!context_embedding_model_conflicts(0, e5));
+    // An active zero means the caller named no encoder. normalize_provider would have substituted
+    // a mock sentinel, whose hash conflicts with everything a real ingest wrote -- which is why
+    // the active hash is read from the raw request.
+    assert!(!context_embedding_model_conflicts(e5, 0));
+    assert!(!context_embedding_model_conflicts(0, 0));
+}
+
+#[test]
+fn the_mock_sentinel_would_have_conflicted_with_everything() {
+    // The bug this arrangement avoids: hashing the normalized provider.
+    let sentinel = context_embedding_model_hash("mock-context-embedding");
+    let real = context_embedding_model_hash("intfloat/multilingual-e5-large");
+    assert_ne!(0, sentinel, "the sentinel is a real name and hashes to a real value");
+    assert!(
+        context_embedding_model_conflicts(real, sentinel),
+        "hashing the normalized provider would skip every genuinely embedded vector"
+    );
+}
+
+#[test]
+fn ingest_and_the_drainer_identify_the_same_model() {
+    // Ingest used to hash provider.model -- the CHAT model -- while the drainer hashed
+    // provider.embedding_model, so the value stamped on a node did not identify its encoder.
+    let config = ContextModelProviderConfig {
+        model: "deepseek-chat".to_string(),
+        embedding_model: "intfloat/multilingual-e5-large".to_string(),
+        ..ContextModelProviderConfig::default()
+    };
+    assert_ne!(
+        context_embedding_model_hash(&config.model),
+        context_embedding_model_hash(&config.embedding_model),
+        "chat and embedding models must not hash alike, or this proves nothing"
+    );
+    assert_eq!(
+        context_embedding_model_hash(&config.embedding_model),
+        context_embedding_model_hash("intfloat/multilingual-e5-large")
+    );
+}
+
+#[test]
+fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
+    // The case width cannot see. Both vectors here are the SAME length as the query, so the
+    // width check passes them both; only the recorded model hash separates them. The impostor
+    // carries the query's own vector verbatim -- a perfect cosine -- and its text is chosen so it
+    // cannot win the lexical pass. If it takes the slot, it was scored across two vector spaces.
+    let engine = test_engine();
+    const TENANT: u64 = 6021;
+    const EVENT_TIME: u64 = 1_781_700_000_000;
+    let provider = ContextModelProviderConfig::default();
+    let query = "how do we deploy the ingest service";
+    let query_vector = query::context_query_embedding(&provider, query).unwrap();
+    let ours = context_embedding_model_hash(&provider.embedding_model);
+    let theirs = context_embedding_model_hash("some-other-encoder");
+    assert_ne!(ours, theirs);
+
+    let mut near = query_vector.clone();
+    near[0] += 0.35;
+    near[1] -= 0.15;
+
+    for (node_hash, name, summary, at, vector, model_hash) in [
+        (31u64, "matching", "release runbook notes".to_string(),
+         EVENT_TIME, near.clone(), ours),
+        (32u64, "impostor", "totally unrelated wording".to_string(),
+         EVENT_TIME + 500, query_vector.clone(), theirs),
+    ] {
+        assert_eq!(
+            query_vector.len(), vector.len(),
+            "both vectors must be the same width, or this tests the width check instead"
+        );
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: name.to_string(),
+                    l0: summary.clone(),
+                    status: 0,
+                    last_event_time_ms: at,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
+            },
+        });
+        assert!(response.status.ok);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertSummary {
+                tenant_hash: TENANT,
+                summary: ContextSummary {
+                    node_hash,
+                    level: 1,
+                    text: summary.clone(),
+                    valid_from_ms: at,
+                    vector: Vec::new(),
+                },
+            },
+        });
+        assert!(response.status.ok);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: TENANT,
+                node_hash,
+                model_hash,
+                vector,
+                updated_at_ms: at,
+            },
+        });
+        assert!(response.status.ok);
+    }
+
+    let retrieve = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: TENANT,
+            node_hashes: vec![31, 32],
+            query: query.to_string(),
+            start_time_ms: 0,
+            end_time_ms: EVENT_TIME + 1_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 4,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:test".to_string(),
+            provider,
+        },
+    );
+    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    let summary_nodes: Vec<u64> = retrieve
+        .blocks
+        .iter()
+        .filter(|block| block.tier == ContextTier::L0)
+        .map(|block| block.node_hash)
+        .collect();
+    assert_eq!(
+        vec![31u64],
+        summary_nodes,
+        "a vector from another encoder must not take the slot on a perfect but meaningless cosine"
+    );
+    assert_eq!(
+        1, retrieve.fanout_plan.embedding_model_conflict_nodes,
+        "the declined vector has to be COUNTED, and counted as a MODEL conflict"
+    );
+    assert_eq!(
+        0, retrieve.fanout_plan.embedding_width_conflict_nodes,
+        "these vectors are the same width -- charging this to the width counter would tell an          operator to look for a provider outage that did not happen"
+    );
 }

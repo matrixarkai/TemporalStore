@@ -3150,6 +3150,28 @@ def _env_int(name: str, default: int) -> int:
 
 EMBEDDING_VECTOR_DECIMALS = _env_int("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", 6)
 EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 0)
+# Default OFF, and two independent reasons keep it there.
+#
+# The ranking reason is the decisive one and predates this note: measured over 500 candidate
+# chunks with six CN/EN queries against the float ranking, int8 got top-1 right 1/6, exact
+# top-10 order 0/6, mean overlap 4.8/10. A reconstruction cosine of 0.9999 is NOT evidence of
+# safety here -- the margins between competing near-neighbours in a real corpus are smaller
+# than that error, so a near-perfect cosine coexists with a reordered top-10.
+#
+# A 2026-08-31 re-measurement with multilingual-e5-large @512 over 2,753 chunks / 298 queries
+# put reconstruction cosine at min 0.999816 and recall@1 at 0.7617 -> 0.7584. That does NOT
+# overturn the above: needle-match recall tolerates reordering among similarly relevant chunks,
+# whereas agreement with the float ranking does not. Two metrics, two questions.
+#
+# The second reason is the consumer. matrixark_mcp_scoring.cosine is a bare dot product over
+# assumed-unit inputs, and normalized_dense_score clamps (v + 1) / 2 into [0, 1]; at int8
+# magnitudes every positive match saturates to 1.0 and every negative to 0.0, so the dense term
+# degenerates to a binary signal and 0.72 * dense + 0.28 * sparse is decided by the lexical term
+# alone. This also means EMBEDDING_VECTOR_SCALE cannot simply be turned on either: a uniform
+# rescale preserves dot ORDER but still saturates that clamp, which is why it is 0.
+#
+# int8 remains legitimate where ranking does not matter -- bulk archival, or a coarse prefilter
+# re-scored at full precision. It must not be the retrieval path.
 EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
 
 
