@@ -712,6 +712,9 @@ impl ContextWire for ContextNode {
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
                     value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
                 }
@@ -783,6 +786,9 @@ impl ContextWire for ContextEvent {
                 (10, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value
@@ -1000,6 +1006,9 @@ impl ContextWire for ContextEntity {
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -1065,6 +1074,9 @@ impl ContextWire for ContextSummary {
                 (5, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
                     value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1242,6 +1254,19 @@ pub enum Command {
         min_exclusive: bool,
         max_exclusive: bool,
         rev: bool,
+    },
+    /// Atomic seen-within-window check-and-mark: answers 1 when the member was already seen
+    /// inside the window (a duplicate), else marks it and answers 0. Expired entries are
+    /// swept from the front in bounded steps on every call.
+    SeenCheck {
+        key: String,
+        #[serde(with = "crate::bytes_serde")]
+        member: Vec<u8>,
+        window_ms: u64,
+    },
+    /// How many members the set currently holds (expired-but-unswept included).
+    SeenCard {
+        key: String,
     },
     /// Atomic take-with-refill on a token bucket: refill by elapsed time (capped at
     /// capacity), then take `tokens` if they fit. Answers three strings -- allowed ("1"/"0"),
@@ -1813,12 +1838,76 @@ fn is_zero_u64(value: &u64) -> bool {
 const CONTEXT_EMBEDDING_MODEL_FIELD: u64 = 21;
 const CONTEXT_EMBEDDING_UPDATED_FIELD: u64 = 22;
 
+/// Quantized vector, self-contained: `[f32 LE scale][one i8 per dimension]`.
+///
+/// The scale rides inside the same length-delimited field rather than beside it, so each decoder
+/// needs one arm and no cross-field state -- protobuf does not order fields, and a "wait for the
+/// other half" dance in four separate loops is four chances to leave a vector empty.
+///
+/// A record carries EITHER this or `CONTEXT_VECTOR_FIELD`, never both.
+const CONTEXT_VECTOR_INT8_FIELD: u64 = 23;
+
 /// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
 /// architecture decodes on another.
 fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(vector.len() * 4);
     for value in vector {
         out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+/// Whether new writes store the quantized form. Default OFF; reading understands both regardless,
+/// so this can be turned on and off without stranding anything already written.
+fn vector_int8_enabled() -> bool {
+    matches!(
+        std::env::var("TS_VECTOR_INT8")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Symmetric per-vector int8, scale first: `scale = max|v| / 127`, then `round(v / scale)`.
+///
+/// Measured on real BGE-M3 vectors at 1024 dims: reconstruction cosine min 0.999868 and recall@1
+/// drop 0.0000 against the same f32 vectors, at 3.98x smaller.
+fn pack_i8_vector(vector: &[f32]) -> Vec<u8> {
+    let peak = vector.iter().fold(0.0_f32, |acc, value| acc.max(value.abs()));
+    let scale = if peak == 0.0 { 0.0 } else { peak / 127.0 };
+    let mut out = Vec::with_capacity(4 + vector.len());
+    out.extend_from_slice(&scale.to_le_bytes());
+    if scale == 0.0 {
+        out.extend(std::iter::repeat(0_u8).take(vector.len()));
+        return out;
+    }
+    for value in vector {
+        let q = (value / scale).round().clamp(-127.0, 127.0) as i8;
+        out.push(q as u8);
+    }
+    out
+}
+
+/// Dequantize and RENORMALIZE.
+///
+/// A dequantized unit vector is no longer unit, and the retrieve path compares raw cosines, so
+/// returning it unnormalized would bias every affected score downward.
+fn unpack_i8_vector(bytes: &[u8]) -> Vec<f32> {
+    if bytes.len() < 4 {
+        return Vec::new();
+    }
+    let scale = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    let mut out: Vec<f32> = bytes[4..]
+        .iter()
+        .map(|byte| (*byte as i8) as f32 * scale)
+        .collect();
+    let norm = out.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in out.iter_mut() {
+            *value /= norm;
+        }
     }
     out
 }
@@ -1832,6 +1921,10 @@ fn unpack_f32_vector(bytes: &[u8]) -> Vec<f32> {
 
 fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
     if vector.is_empty() {
+        return;
+    }
+    if vector_int8_enabled() {
+        encode_bytes_field(out, CONTEXT_VECTOR_INT8_FIELD, &pack_i8_vector(vector));
         return;
     }
     encode_bytes_field(out, CONTEXT_VECTOR_FIELD, &pack_f32_vector(vector));
@@ -2204,6 +2297,145 @@ pub struct BatchExecuteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// Sets TS_VECTOR_INT8 and restores it ON DROP, so a failing assertion cannot leave it set for
+    /// every test that runs after it in the same process.
+    struct Int8Flag(Option<String>);
+
+    impl Int8Flag {
+        fn on() -> Self {
+            let previous = std::env::var("TS_VECTOR_INT8").ok();
+            std::env::set_var("TS_VECTOR_INT8", "1");
+            Int8Flag(previous)
+        }
+    }
+
+    impl Drop for Int8Flag {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("TS_VECTOR_INT8", value),
+                None => std::env::remove_var("TS_VECTOR_INT8"),
+            }
+        }
+    }
+
+    fn int8_node(node_hash: u64, vector: Vec<f32>) -> ContextNode {
+        ContextNode {
+            node_hash,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: "session/int8".to_string(),
+            l0: "int8 wire test".to_string(),
+            last_event_time_ms: 1_780_000_000_000,
+            vector,
+            embedding_model_hash: 0xABCD,
+            embedding_updated_at_ms: 1_780_000_000_001,
+            status: 0,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        }
+    }
+
+    fn int8_unit_vector(dim: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed | 1;
+        let mut raw: Vec<f32> = (0..dim)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 33) as f32 / (u32::MAX as f32 / 2.0)) - 1.0
+            })
+            .collect();
+        let norm = raw.iter().map(|v| v * v).sum::<f32>().sqrt();
+        for v in raw.iter_mut() {
+            *v /= norm;
+        }
+        raw
+    }
+
+    fn int8_cosine(a: &[f32], b: &[f32]) -> f32 {
+        let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+        let na = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let nb = b.iter().map(|v| v * v).sum::<f32>().sqrt();
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
+    }
+
+    #[test]
+    fn int8_off_round_trips_exactly() {
+        std::env::remove_var("TS_VECTOR_INT8");
+        let node = int8_node(7, int8_unit_vector(128, 11));
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert_eq!(decoded.vector, node.vector, "flag off must be exact");
+    }
+
+    #[test]
+    fn int8_round_trip_keeps_the_vector() {
+        let _flag = Int8Flag::on();
+        let node = int8_node(8, int8_unit_vector(1024, 23));
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert_eq!(decoded.vector.len(), 1024, "dimension survives");
+        let cos = int8_cosine(&decoded.vector, &node.vector);
+        assert!(cos >= 0.999, "reconstruction cosine {cos} below the 0.999 bar");
+    }
+
+    #[test]
+    fn int8_is_smaller_on_the_wire() {
+        let node = int8_node(9, int8_unit_vector(1024, 31));
+        std::env::remove_var("TS_VECTOR_INT8");
+        let wide = node.encode_context_proto_value().len();
+        let narrow = {
+            let _flag = Int8Flag::on();
+            node.encode_context_proto_value().len()
+        };
+        assert!(
+            narrow * 3 < wide,
+            "expected roughly 4x smaller, got {narrow} vs {wide}"
+        );
+    }
+
+    #[test]
+    fn an_f32_record_still_decodes_while_the_flag_is_on() {
+        // Governs every record already on disk: a store written before this existed must keep
+        // reading after the flag is turned on.
+        std::env::remove_var("TS_VECTOR_INT8");
+        let node = int8_node(10, int8_unit_vector(256, 41));
+        let legacy = node.encode_context_proto_value();
+        let _flag = Int8Flag::on();
+        let decoded = ContextNode::decode_context_proto_value(&legacy).expect("decodes");
+        assert_eq!(decoded.vector, node.vector, "an f32 record is unaffected by the flag");
+    }
+
+    #[test]
+    fn the_quantized_pair_round_trips_at_several_widths() {
+        // All four decoders call `unpack_i8_vector`, so the pair covers every vector-carrying type.
+        for dim in [64_usize, 384, 1024] {
+            let v = int8_unit_vector(dim, dim as u64 * 7 + 1);
+            let back = unpack_i8_vector(&pack_i8_vector(&v));
+            assert_eq!(back.len(), dim, "width {dim} survives");
+            let cos = int8_cosine(&back, &v);
+            assert!(cos >= 0.999, "width {dim}: cosine {cos} below the bar");
+        }
+    }
+
+    #[test]
+    fn an_all_zero_vector_does_not_divide_by_zero() {
+        let _flag = Int8Flag::on();
+        let node = int8_node(12, vec![0.0_f32; 64]);
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert_eq!(decoded.vector.len(), 64, "length survives");
+        assert!(
+            decoded.vector.iter().all(|v| v.is_finite()),
+            "a zero scale must not produce NaN or inf"
+        );
+    }
 
     #[test]
     fn node_carries_its_embedding_through_the_wire_codec() {

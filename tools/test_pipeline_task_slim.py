@@ -206,8 +206,20 @@ class EndToEndTest(unittest.TestCase):
         # store must leave every consumer rule's answer bit-identical.
         os.environ["MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS"] = "1"
         try:
-            raw_tasks = [r for r in off["records"] if r.get("record_type") == "matrixark_async_pipeline_task"]
-            collapsed = slim.collapse_pipeline_task_rows(off["records"])
+            source = list(off["records"])
+            # An ingest no longer mints duplicate stampings on its own: a task's row is now keyed
+            # by task_hash in the latest-state view, so repeated stampings of one task collapse at
+            # WRITE time and never reach the log. The collapse still has to work -- stores written
+            # before that change are full of them -- so the duplicate it removes is supplied here
+            # rather than depended on. Without this the assertion below passes or fails on whether
+            # the async pipeline happened to stamp twice during the run, which is timing, not
+            # behaviour.
+            existing = [r for r in source
+                        if r.get("record_type") == "matrixark_async_pipeline_task"]
+            if existing:
+                source.append(dict(existing[-1]))
+            raw_tasks = [r for r in source if r.get("record_type") == "matrixark_async_pipeline_task"]
+            collapsed = slim.collapse_pipeline_task_rows(source)
             collapsed_tasks = [r for r in collapsed if r.get("record_type") == "matrixark_async_pipeline_task"]
         finally:
             os.environ.pop("MATRIXARK_COLLAPSE_PIPELINE_TASK_ROWS", None)

@@ -1414,6 +1414,26 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
+        "SEENCHECK" if args.len() == 4 => match parse_i64_arg(&args[3], "window_ms") {
+            Ok(window_ms) if window_ms >= 0 => match execute(Command::SeenCheck {
+                key: string_arg(&args[1]),
+                member: args[2].clone(),
+                window_ms: window_ms as u64,
+            }) {
+                Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+                Ok(_) => RespValue::Error("ERR invalid seencheck response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            },
+            Ok(_) => RespValue::Error("ERR window_ms must not be negative".to_string()),
+            Err(err) => RespValue::Error(err),
+        },
+        "SEENCARD" if args.len() == 2 => match execute(Command::SeenCard {
+            key: string_arg(&args[1]),
+        }) {
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(_) => RespValue::Error("ERR invalid seencard response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
         "BUCKETTAKE" | "BUCKETPEEK" if args.len() == 5 => {
             let parse = |raw: &[u8], name: &str| -> Result<f64, String> {
                 String::from_utf8_lossy(raw)

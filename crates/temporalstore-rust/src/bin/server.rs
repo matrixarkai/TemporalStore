@@ -1200,6 +1200,21 @@ fn restore_shared_index_before_load(
                 0
             }
         };
+    // Inherit the dump lineage along with the data. Without it this node treats every live
+    // generation as never dumped, which blocks WAL reclaim until it has re-dumped the whole
+    // shard itself. Advisory: the data is already restored and serving, so a lineage that
+    // cannot be read costs re-dumping, not correctness.
+    match runtime.block_on(replicator.restore_bucket_dump_manifests(shard_id, engine)) {
+        Ok(0) => {}
+        Ok(restored) => info!(
+            shard_id,
+            restored, "inherited bucket-dump manifests from shared storage"
+        ),
+        Err(err) => warn!(
+            shard_id, %err,
+            "could not restore bucket-dump manifests; this node will re-dump before it can reclaim"
+        ),
+    }
     Some(after_wal_index)
 }
 
@@ -1231,6 +1246,31 @@ fn replay_shared_wal_tail(
         Err(err) => warn!(shard_id, %err, "no shared-storage data replayed for shard"),
     }
 }
+/// Read the blocks a set of results points at, so they can travel with them.
+///
+/// A successor installs an address; it can only serve that address if the bytes are reachable.
+/// Locally they are in the block store. Across nodes they are not, unless something carries them.
+fn gather_result_pages(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
+) -> Vec<temporalstore_rust::wal::StagedPage> {
+    let mut pages = Vec::new();
+    for item in outcomes {
+        let Some(address) = item.resolved_address() else {
+            continue;
+        };
+        if let Ok(bytes) = engine.block_store().read(&address) {
+            pages.push(temporalstore_rust::wal::StagedPage {
+                object_id: item.object_id,
+                bytes,
+            });
+        }
+    }
+    let _ = shard_id;
+    pages
+}
+
 
 /// Publish this node's data for `shard_id` to the shared object store so a future
 /// owner can replay it. Reads the shard's write-ahead log (read-only — never
@@ -1286,6 +1326,21 @@ fn publish_shard_checkpoint(
             shard_id,
             wal_index: record.sequence,
             command: record.command,
+            // What the write did travels with it. A successor installs these rather than
+            // re-running the command against its own clock and its own config.
+            outcomes: record.outcomes.clone(),
+            // The pages the results point at, so a successor can actually READ what it
+            // installs. A result names an address in THIS node's block store; a successor has
+            // its own, and the checkpoint only covers what was written before it. Without this
+            // the successor's index is right and every read of the tail returns nothing.
+            //
+            // Empty on the local record for a synchronous write -- that page went to the block
+            // store rather than into the record -- so they are gathered here.
+            staged_pages: if record.staged_pages.is_empty() {
+                gather_result_pages(engine, shard_id, &record.outcomes)
+            } else {
+                record.staged_pages
+            },
         };
         if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
             return PublishShardCheckpointResponse {
@@ -1297,6 +1352,27 @@ fn publish_shard_checkpoint(
         }
         published += 1;
         last_wal_index = record.sequence;
+    }
+    // Send the dump lineage before the checkpoint manifest, so the checkpoint manifest is
+    // still the last object written and therefore still the commit point for a restore.
+    // Advisory on failure: the checkpoint alone is what a restore needs today, and failing
+    // the whole publish over the lineage would make this strictly worse than not having it.
+    match runtime.block_on(
+        replicator.publish_bucket_dump_manifests(
+            shard_id,
+            &engine.list_bucket_dump_manifests(shard_id),
+        ),
+    ) {
+        Ok(0) => {}
+        Ok(count) => info!(
+            shard_id,
+            manifests = count,
+            "published bucket-dump manifests to shared storage"
+        ),
+        Err(err) => warn!(
+            shard_id, %err,
+            "could not publish bucket-dump manifests; checkpoint still published without lineage"
+        ),
     }
     // Publish a real metadata+slab checkpoint at the current last-applied WAL index so
     // a future owner can lazily restore (index + slab addresses) and replay only the

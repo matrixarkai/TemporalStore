@@ -37,6 +37,7 @@ pub mod telemetry;
 pub mod types;
 pub mod fault;
 pub mod wal;
+mod wal_proto;
 pub mod record_framing;
 pub mod index_log_record;
 pub mod wal_record;

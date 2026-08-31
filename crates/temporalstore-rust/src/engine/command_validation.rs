@@ -65,6 +65,8 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ZSetRank { key, .. }
         | Command::BucketTake { key, .. }
         | Command::BucketPeek { key, .. }
+        | Command::SeenCheck { key, .. }
+        | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
@@ -313,6 +315,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ZSetIncrBy { .. }
             | Command::ZSetPop { .. }
             | Command::BucketTake { .. }
+            | Command::SeenCheck { .. }
             | Command::FeatureAppend { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
@@ -450,11 +453,17 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        // Expiry checks here use the SAME replay-aware clock as the executor's
+        // `remove_if_expired`. Validation runs only on the leader today, where the two
+        // clocks coincide, so this changes no production behaviour. It removes a split
+        // that would matter the moment anything validates during replay: deciding
+        // "is this key expired" against the restart clock is what makes a replayed
+        // command fail its precondition and abort a shard load.
         Command::CommonExpire { key, .. } => {
             if shard
                 .expires_at_ms
                 .get(key)
-                .map(|expires_at| *expires_at <= now_ms())
+                .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false)
                 || !record_exists(shard, key)
             {
@@ -867,7 +876,7 @@ pub(super) fn validate_command_preconditions(
         if shard
             .expires_at_ms
             .get(key)
-            .map(|expires_at| *expires_at <= now_ms())
+            .map(|expires_at| *expires_at <= resolve_now_ms())
             .unwrap_or(false)
         {
             return Ok(());

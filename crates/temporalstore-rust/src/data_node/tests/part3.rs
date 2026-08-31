@@ -1964,6 +1964,86 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
 
 // shared-corpus: storage_matrixraft_dump_load_atomicity storage_matrixraft_cache_refill_pressure
 #[test]
+/// A stage that reports itself as executed has to have executed something.
+///
+/// The reap used to push "reap_metrics" onto the executed list and stop there, so a cycle said
+/// the stage ran while nothing was gathered and nothing published. The WAL counters are the
+/// clearest case: incremented on every append and barrier, and read by nothing outside the
+/// module that owns them.
+#[test]
+fn a_metrics_reap_collects_the_counters_it_says_it_did() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    for key in ["reap-a", "reap-b", "reap-c"] {
+        assert!(
+            runtime
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    let report = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_metrics_reap: true,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert!(
+        report
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "reap_metrics"),
+        "the stage should report itself executed: {:?}",
+        report.executed_stages
+    );
+    let reaped = report
+        .metrics_reap
+        .expect("the stage ran, so the report carries what it read");
+    assert!(
+        reaped.wal.last_sequence >= 3,
+        "the WAL counters have to be THIS shard's, and three writes went in: {reaped:?}"
+    );
+    assert_eq!(
+        reaped.durability_barriers_total,
+        reaped.durability_barriers.values().copied().sum::<u64>(),
+        "the total has to be the sum of what was attributed"
+    );
+
+    // Disabled: nothing collected, and the cycle says which it was.
+    let off = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_metrics_reap: false,
+            ..StorageManagerOptions::default()
+        },
+    );
+    assert!(off.metrics_reap.is_none());
+    assert!(
+        off.skipped_stages
+            .iter()
+            .any(|stage| stage == "reap_metrics_disabled"),
+        "{:?}",
+        off.skipped_stages
+    );
+}
+
+#[test]
 fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
     let dir = tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -2115,6 +2195,103 @@ fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
 
 // shared-corpus: storage_manager_continuous_background_runtime
 #[test]
+fn storage_manager_runtime_collects_the_report_of_a_cycle_that_outlived_its_wait() {
+    // A completed cycle's report must reach the runtime report even when the cycle takes longer
+    // than the short in-loop wait.
+    //
+    // It did not. The loop tracked the outstanding cycle in a single slot: the top-of-tick poll
+    // saw the cycle still running, the cycle finished later in that same tick, `has_pending` then
+    // went false so a new cycle was submitted, and submitting OVERWROTE the slot before anything
+    // polled the finished job again. Every cycle was abandoned exactly one tick before it
+    // completed. Measured on the unfixed code: 432 collection attempts across 45 cycles, 47 of
+    // which finished with a valid report, and not one was ever collected.
+    //
+    // The visible cost is that `last_completed_cycle` stays None forever, and with it every
+    // derived figure -- bytes reclaimed, pressure after, the WAL and index-log floors -- reads
+    // zero while the storage manager is doing real work. That is the operator's evidence that
+    // reclaim ran, and reclaim is the only thing that recovers the disk growth from repeated
+    // dumps.
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert!(
+        runtime
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 9,
+                table_name: "storage-manager-collect".to_string(),
+                shard_uri: "local://storage-manager-collect/9".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: 16_383,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    for index in 0..32 {
+        runtime.execute(ExecuteRequest {
+            shard_id: 9,
+            command: Command::StringSet {
+                key: format!("collect-{index}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let manager = runtime.start_storage_manager_runtime(StorageManagerRuntimeOptions {
+        // A 5ms interval against cycles that take far longer is the case that broke: the wait
+        // budget is tied to the interval, so essentially every cycle outlives it.
+        interval_ms: 5,
+        jitter_percent: 50,
+        initial_backoff_ms: 3,
+        max_backoff_ms: 40,
+        request: StorageManagerCycleRequest {
+            shard_id: 9,
+            max_dump_buckets_per_round: 3,
+            enable_prepare: true,
+            enable_wal_reclaim: true,
+            enable_evict: true,
+            enable_page_reclaim: true,
+            enable_index_gc: true,
+            ..StorageManagerCycleRequest::default()
+        },
+        controller: RequestController { timeout_ms: 30_000 },
+    });
+
+    wait_until(Duration::from_secs(15), || {
+        manager.report().last_completed_cycle.is_some()
+    });
+    let report = manager.report();
+    manager.stop();
+
+    assert!(
+        report.rounds_submitted >= 1,
+        "expected at least one submitted cycle, got {report:?}"
+    );
+    assert!(
+        report.last_completed_cycle.is_some(),
+        "a finished cycle's report was never collected: {report:?}"
+    );
+    assert_eq!(
+        report.submit_failures, 0,
+        "cycles should submit cleanly: {report:?}"
+    );
+}
+
+#[test]
 fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags() {
     let dir = tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -2220,10 +2397,36 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         controller: RequestController { timeout_ms: 30_000 },
     });
 
-    wait_until(Duration::from_secs(5), || {
-        manager.report().rounds_submitted >= 1
-            && runtime.stats().storage_manager_runs >= 1
-            && manager.report().last_completed_cycle.is_some()
+    // Wait for a cycle that saw the state these assertions describe, instead of whichever
+    // snapshot happened to be first.
+    //
+    // Two of the conditions pull against each other. The pressure plan is computed at the TOP of
+    // a cycle, so the first cycle sees no dump manifest and a replay cursor has nothing to anchor
+    // on -- zero retention blockers is the correct answer there, not a defect. But by the time a
+    // manifest exists, the writes made before the runtime started have been dumped and nothing is
+    // dirty. A shard with a lagging follower AND outstanding work is a shard still being written
+    // to, so keep writing while waiting.
+    //
+    // The predicate SELECTS a cycle; it does not stand in for the assertions. It looks at two
+    // fields, and the block below verifies the whole snapshot.
+    let mut churn = 0u64;
+    wait_until(Duration::from_secs(15), || {
+        churn += 1;
+        runtime.execute(ExecuteRequest {
+            shard_id: 8,
+            command: Command::StringSet {
+                key: format!("runtime-churn-{churn}"),
+                value: b"c".to_vec(),
+            },
+        });
+        let report = manager.report();
+        report.rounds_submitted >= 2
+            && runtime.stats().storage_manager_runs >= 2
+            && report.last_completed_cycle.is_some()
+            && report.last_pressure_snapshot.as_ref().is_some_and(|pressure| {
+                pressure.dirty_bucket_count >= 1
+                    && pressure.follower_cursor_retention_blockers >= 1
+            })
     });
     let running = manager.report();
     assert!(running.running);
@@ -2258,14 +2461,42 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(pressure.index_log_bytes >= 1, "{pressure:?}");
     assert!(pressure.cache_memory_bytes >= 1, "{pressure:?}");
     assert!(pressure.memory_cache_pressure_score >= pressure.cache_memory_bytes);
-    assert!(pressure.follower_cursor_retention_blockers >= 1);
-    assert!(pressure.raft_snapshot_retention_blockers >= 1);
+    assert!(pressure.follower_cursor_retention_blockers >= 1, "{pressure:?}");
+    assert!(pressure.raft_snapshot_retention_blockers >= 1, "{pressure:?}");
     assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
     assert!(!running.last_selected_buckets.is_empty());
     assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
-    assert!(running.last_wal_floor_sequence >= 1);
-    assert!(running.last_index_log_floor_sequence >= 1);
+    // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1,
+    // whose entire purpose is to hold the logs. Reclaim therefore refuses and the floor stays 0.
+    // Asserting that the floor ADVANCED asked the shard to discard exactly what the cursors were
+    // added to protect -- the assertion contradicted its own setup, which is why it could never
+    // have passed. What is worth checking is that the refusal NAMES them, since being named is the
+    // property a retention cursor exists to have.
+    let reclaim_wal = running
+        .last_phase_reports
+        .iter()
+        .find(|stage| stage.stage == "reclaim_wal")
+        .expect("the cycle ran a reclaim_wal stage");
+    assert!(reclaim_wal.skipped, "{reclaim_wal:?}");
+    assert!(
+        reclaim_wal
+            .reason
+            .contains("follower_cursor_retains_logs:follower-lagging-runtime"),
+        "the refusal must name the follower holding the logs: {reclaim_wal:?}"
+    );
+    assert!(
+        reclaim_wal
+            .reason
+            .contains("raft_snapshot_retains_logs:raft-snapshot-runtime"),
+        "the refusal must name the snapshot holding the logs: {reclaim_wal:?}"
+    );
+    assert_eq!(
+        running.last_wal_floor_sequence, 0,
+        "logs held by a cursor have no floor to report: {:?}",
+        running.last_skipped_reasons
+    );
+    assert_eq!(running.last_index_log_floor_sequence, 0);
     assert!(running.last_retention_blockers >= 1);
     assert!(running
         .last_phase_blockers
@@ -2277,14 +2508,11 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         .any(|stage| stage.stage == "prepare"
             && stage.pressure_signal.contains("dirty_slots")
             && stage.pressure_before >= stage.pressure_after));
-    assert!(running.last_phase_reports.iter().any(|stage| {
-        stage.stage == "reclaim_wal"
-            && !stage.selected_buckets.is_empty()
-            && stage.wal_floor_sequence >= 1
-            && stage.index_log_floor_sequence >= 1
-            && stage.retention_blockers >= 1
-            && stage.pressure_before >= stage.pressure_after
-    }));
+    // Same contradiction as above: a stage that refused to reclaim selects no buckets and reports
+    // no floor. It does report what stopped it, and that is the assertable part.
+    assert!(reclaim_wal.retention_blockers >= 1, "{reclaim_wal:?}");
+    assert_eq!(reclaim_wal.wal_floor_sequence, 0);
+    assert_eq!(reclaim_wal.index_log_floor_sequence, 0);
     assert!(running.last_phase_reports.iter().any(|stage| {
         stage.stage == "reclaim_page"
             && (stage
@@ -2308,7 +2536,13 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
 
     manager.pause();
     let paused_before = manager.report().rounds_submitted;
-    thread::sleep(Duration::from_millis(25));
+    // Wait for a skipped round instead of sleeping 25ms and hoping one fits inside it. A round is
+    // a delay PLUS a cycle, and a cycle on a busy machine outlasts that sleep -- so the assertion
+    // measured how loaded the box was rather than whether pausing skips rounds. The properties
+    // being checked are unchanged: while paused, rounds are skipped and none are submitted.
+    wait_until(Duration::from_secs(5), || {
+        manager.report().rounds_skipped_paused >= 1
+    });
     let paused = manager.report();
     assert!(paused.paused);
     assert_eq!(paused.rounds_submitted, paused_before);

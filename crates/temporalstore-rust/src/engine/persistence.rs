@@ -536,12 +536,22 @@ impl TemporalEngine {
         // would read `current - pre_reclaim_length`, saturating to zero until the file regrew
         // past its old size -- silently suspending the cadence right after its first success.
         self.index_log_store.mark_catalog_dumped(shard_id);
+        // Pages at or below the anchor are in the durable base now, so a log id is no longer
+        // the only way to find their bytes. Dropping those entries is what keeps this from
+        // growing with the log -- they cost index bytes, and a dumped page will never need one.
+        if let Ok(mut shards) = self.shards.write() {
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                shard
+                    .wal_resident_pages
+                    .retain(|_, placement| placement.sequence > wal_anchor);
+            }
+        }
         // Pin the WAL floor to the lowest sequence a live block-in-WAL registration still
         // depends on: such a record holds the ONLY copy of a page the served index points at
         // (the write was acked off a synthetic address), so truncating it turns an acked write
         // into a MISSING read while the process is still serving.
         let wal_retention_floor =
-            super::block_in_wal::min_registered_sequence(shard_id, &self.wal_store);
+            super::block_in_wal::min_registered_sequence(&self.page_store, shard_id, &self.wal_store);
         match wal_retention_floor {
             Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
             None => self.wal_store.clear_block_retention_floor(shard_id),
@@ -549,9 +559,14 @@ impl TemporalEngine {
         // WAL prefix below the anchor: the durable base reflects those records, replay-on-load
         // starts above the anchor, and gc itself additionally retains the highest-sequence
         // record (sequence continuity) and everything at or above the floor just set.
+        // The dump above wrote the base served index durably and fsynced the folded catalog
+        // anchor on top of it, so the durable index reflects everything at or below
+        // `wal_anchor`. That completed work IS the proof this reclaim needs.
+        let durable_index =
+            crate::wal::DurableIndexAnchor::proven_durable_through(shard_id, wal_anchor);
         let wal_gc = self
             .wal_store
-            .gc_before_sequence(shard_id, wal_anchor.saturating_add(1))
+            .gc_before_sequence(shard_id, wal_anchor.saturating_add(1), &durable_index)
             .ok();
         Some(super::reports::CatalogDumpReclaimReport {
             shard_id,

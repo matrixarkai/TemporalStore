@@ -77,6 +77,7 @@ thread_local! {
 /// attach to an unrelated record.
 pub(super) fn begin_write() {
     STAGED.with(|staged| staged.borrow_mut().clear());
+    OUTCOMES.with(|outcomes| outcomes.borrow_mut().clear());
 }
 
 /// Put a page aside for the record this write is about to append.
@@ -87,6 +88,30 @@ pub(super) fn stage(object_id: u64, bytes: &[u8]) {
             bytes: bytes.to_vec(),
         })
     });
+}
+
+thread_local! {
+    /// Index outcomes produced by the write currently executing on this thread.
+    static OUTCOMES: RefCell<Vec<crate::wal::WalOutcomeItem>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Put aside what this write DID: which object, and where its page now lives.
+///
+/// Staged for the same reason pages are -- the record does not exist yet, so there is nowhere
+/// to put it until the append.
+pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
+    OUTCOMES.with(|outcomes| outcomes.borrow_mut().push(item));
+}
+
+/// Take what this write recorded doing, leaving nothing behind.
+/// How many outcomes this write has staged so far, without consuming them.
+pub(super) fn staged_outcome_count() -> usize {
+    OUTCOMES.with(|outcomes| outcomes.borrow().len())
+}
+
+pub(super) fn take_outcomes() -> Vec<crate::wal::WalOutcomeItem> {
+    OUTCOMES.with(|outcomes| std::mem::take(&mut *outcomes.borrow_mut()))
 }
 
 /// Take what this write staged, leaving nothing behind.
@@ -106,8 +131,15 @@ pub(super) fn take_staged() -> Vec<StagedPage> {
 /// sequence (see [`min_registered_sequence`]).
 type Registration = (LocalWriteAheadLogStore, u64, u64);
 
-fn registry() -> &'static Mutex<HashMap<(ShardId, u64), Registration>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<(ShardId, u64), Registration>>> = OnceLock::new();
+/// Keyed by the STORE as well as the shard and object.
+///
+/// An object id is derived from kind + key, not from who wrote it, and every embedded engine in
+/// a process serves shard 1. Keyed on (shard, object) alone, the last engine to write a key owned
+/// that key for the whole process and handed its own log to whoever asked next -- so one engine
+/// served another engine's bytes for any key they happened to share.
+fn registry() -> &'static Mutex<HashMap<(usize, ShardId, u64), Registration>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, u64), Registration>>> =
+        OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -117,6 +149,7 @@ fn registry() -> &'static Mutex<HashMap<(ShardId, u64), Registration>> {
 /// A later write of the same object replaces its entry, so a registration always names the
 /// record holding the current page rather than a superseded one.
 pub(super) fn register_record(
+    block_store: &crate::block_store::LocalBlockStore,
     shard_id: ShardId,
     staged_pages: &[StagedPage],
     log_id: u64,
@@ -128,8 +161,32 @@ pub(super) fn register_record(
     }
     if let Ok(mut map) = registry().lock() {
         for page in staged_pages {
-            map.insert((shard_id, page.object_id), (store.clone(), log_id, sequence));
+            map.insert(
+                (block_store.store_id(), shard_id, page.object_id),
+                (store.clone(), log_id, sequence),
+            );
         }
+    }
+}
+
+/// Register a page whose location came from the index rather than from an append.
+///
+/// The append path learns the log id by writing the record; a reload learns it by reading the
+/// index. Same fact, different source, so it lands in the same table -- which is what lets the
+/// read path stay exactly as it was.
+pub(super) fn register_at(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+    log_id: u64,
+    sequence: u64,
+    store: &LocalWriteAheadLogStore,
+) {
+    if let Ok(mut map) = registry().lock() {
+        map.insert(
+            (block_store.store_id(), shard_id, object_id),
+            (store.clone(), log_id, sequence),
+        );
     }
 }
 
@@ -142,21 +199,83 @@ pub(super) fn register_record(
 /// embedded engine serves shard 1, so without the filter one engine's registrations would pin
 /// every other engine's reclaim floor forever.
 pub(super) fn min_registered_sequence(
+    block_store: &crate::block_store::LocalBlockStore,
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
     let map = registry().lock().ok()?;
     map.iter()
-        .filter(|((shard, _), (reg_store, _, _))| *shard == shard_id && reg_store.same_log(store))
+        .filter(|((owner, shard, _), (reg_store, _, _))| {
+            *owner == block_store.store_id() && *shard == shard_id && reg_store.same_log(store)
+        })
         .map(|(_, (_, _, sequence))| *sequence)
         .min()
 }
 
+/// How many registrations this shard is holding.
+///
+/// The registry resolves a synthetic address to the record carrying its bytes, and it is process
+/// static: one entry per distinct object, held until the shard unloads. A test needs to see the
+/// count to say anything about whether it grows with the log.
+/// The objects this shard has registered, oldest WAL sequence first.
+///
+/// Oldest first because that is the order in which they stop being worth holding: the lowest
+/// registered sequence is the one pinning the log's retention floor, so retiring it is what lets
+/// reclaim move at all. Newest are kept because a page written a moment ago is the one a read is
+/// most likely to want, and it is already in the record the writer just wrote.
+pub(super) fn oldest_registered_objects(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+) -> Vec<(u64, u64)> {
+    let Ok(map) = registry().lock() else {
+        return Vec::new();
+    };
+    let owner = block_store.store_id();
+    let mut entries: Vec<(u64, u64)> = map
+        .iter()
+        .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
+        .map(|((_, _, object_id), (_, _, sequence))| (*sequence, *object_id))
+        .collect();
+    entries.sort_unstable();
+    entries
+}
+
+pub(super) fn registration_count(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+) -> usize {
+    let Ok(map) = registry().lock() else {
+        return 0;
+    };
+    let owner = block_store.store_id();
+    map.keys()
+        .filter(|(store_id, shard, _)| *store_id == owner && *shard == shard_id)
+        .count()
+}
+
+/// Retire one object's registration.
+///
+/// Called when its page stops being log-resident -- materialised into the block store, so the
+/// index now names a real slab. Keeping it would pin the WAL retention floor to a record nothing
+/// needs, which is not a leak of bytes but of RECLAIM: the floor is the lowest live registration,
+/// so one stale entry holds the whole log.
+pub(super) fn deregister(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+) {
+    if let Ok(mut map) = registry().lock() {
+        map.remove(&(block_store.store_id(), shard_id, object_id));
+    }
+}
+
+
 /// Forget a shard's registrations. Called when the shard unloads; a reload replays the WAL and
 /// re-derives whatever it needs.
-pub(super) fn clear_shard(shard_id: ShardId) {
+pub(super) fn clear_shard(block_store: &crate::block_store::LocalBlockStore, shard_id: ShardId) {
     if let Ok(mut map) = registry().lock() {
-        map.retain(|(shard, _), _| *shard != shard_id);
+        let owner = block_store.store_id();
+        map.retain(|(store_id, shard, _), _| !(*store_id == owner && *shard == shard_id));
     }
 }
 
@@ -165,8 +284,16 @@ pub(super) fn clear_shard(shard_id: ShardId) {
 /// `None` means the object was never registered, its record has been reclaimed, or the record
 /// does not carry that page -- in every case the caller falls through to the behaviour it had
 /// before, so this can only turn a miss into a hit.
-pub(super) fn read_page(shard_id: ShardId, object_id: u64) -> Option<Vec<u8>> {
-    let (store, log_id, _) = registry().lock().ok()?.get(&(shard_id, object_id))?.clone();
+pub(super) fn read_page(
+    block_store: &crate::block_store::LocalBlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+) -> Option<Vec<u8>> {
+    let (store, log_id, _) = registry()
+        .lock()
+        .ok()?
+        .get(&(block_store.store_id(), shard_id, object_id))?
+        .clone();
     // One batch record carries many pages, and an ingest reads several of the fields its own
     // batch just wrote -- so the same record used to be pread and re-parsed once per page. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
@@ -184,18 +311,26 @@ pub(super) fn read_page(shard_id: ShardId, object_id: u64) -> Option<Vec<u8>> {
         }
     }
     // Adaptive pread: most records terminate well inside 128KB, so try that first and escalate
-    // only when the line does not end in the chunk -- a fixed 1MB upper bound makes every
+    // only when the record does not end in the chunk -- a fixed 1MB upper bound makes every
     // point read cost a megabyte of I/O.
+    //
+    // Where the record ends is asked of the FRAME, not guessed from a newline. Looking for one
+    // is right only while a record cannot contain the byte it ends with: a length-framed record
+    // carries 0x0A freely, so `contains` answers yes on the first payload that holds one and the
+    // split then cuts the record in half. The frame reader says "not all here yet" for exactly
+    // the case the newline probe was approximating, so escalation reads better than it did.
     let mut record = None;
     for size in [128u64 << 10, 1 << 20, u64::MAX] {
         let bytes = store.read_at_log_id(shard_id, log_id, size).ok()??;
-        let complete = bytes.contains(&10u8) || (bytes.len() as u64) < size;
-        if !complete {
-            continue;
+        match crate::log_framing::next_frame(&bytes) {
+            Ok(Some((consumed, _))) => {
+                record = decode_wal_line(&bytes[..consumed]).ok();
+                break;
+            }
+            // The record declares more bytes than this window holds: read a bigger one.
+            Ok(None) => continue,
+            Err(_) => return None,
         }
-        let line = bytes.split(|byte| *byte == 10u8).next()?;
-        record = decode_wal_line(line).ok();
-        break;
     }
     let record = record?;
     let pages = record.staged_pages;

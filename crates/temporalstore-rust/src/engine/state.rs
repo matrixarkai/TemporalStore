@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::sync::Arc;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,14 @@ pub(super) struct ContextDirtyEntry {
     pub(super) mark_count: u64,
 }
 
+/// Where a WAL-resident page's bytes are: the log id of the record carrying it, and that
+/// record's sequence (which is what log reclaim reasons about).
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct WalResidentPage {
+    pub(super) log_id: u64,
+    pub(super) sequence: u64,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct ShardState {
     /// On-disk shape of this index. 0 means "written before the stamp existed".
@@ -49,6 +58,35 @@ pub(super) struct ShardState {
     /// both maps correctly through insert_context_event_views.
     #[serde(default)]
     pub(super) index_format_version: u32,
+    /// Pages whose only durable copy is a WAL record, and which record holds each one.
+    ///
+    /// The resolver's table is process-local, so after a restart it is empty: the served index
+    /// still points at a synthetic address and nothing can turn it back into bytes until a full
+    /// replay re-derives the page. Recording the log id HERE means the mapping travels with the
+    /// index that depends on it, and a reload hands it straight back.
+    ///
+    /// A stale entry costs a miss, never wrong bytes. The resolver reads the record at that log
+    /// id and looks for the object inside it, so a reclaimed record or a superseded page simply
+    /// is not found, and the read falls through exactly as it did before this existed.
+    #[serde(default)]
+    pub(super) wal_resident_pages: BTreeMap<u64, WalResidentPage>,
+    /// Routing buckets whose derived runtime flags may be stale, so a write can refresh the
+    /// buckets it touched instead of sweeping the shard.
+    ///
+    /// `refresh_bucket_runtime_flags` recomputes `in_memory` / `deleted` / `dirty` / `ttl_ms` /
+    /// `layout` for EVERY bucket, and the single-write path called it on every write. Each bucket
+    /// costs `O(its pages)`, so the sweep is `O(total pages)` per write and ingestion is quadratic
+    /// in the corpus. Note that the routing-slot range does not soften this: fewer slots means
+    /// fewer, larger buckets and the same total page count.
+    ///
+    /// Recorded where the routing bucket is already known -- the bucket-index upsert, the removal
+    /// paths, and the async dirty mark -- rather than inferred from the key, because a stored
+    /// address may carry an explicit routing bucket that disagrees with `page_routing_bucket`.
+    ///
+    /// Not persisted: on load this is empty, and every load and recovery path already runs the
+    /// full sweep, so a fresh process starts from fully recomputed flags.
+    #[serde(skip)]
+    pub(super) buckets_pending_flag_refresh: BTreeSet<u32>,
     /// Deadlines, kept in key order so a sweep can resume from its cursor and look at the
     /// window rather than at everything.
     pub(super) expires_at_ms: BTreeMap<String, u64>,
@@ -56,6 +94,13 @@ pub(super) struct ShardState {
     pub(super) hashes: HashMap<String, HashMap<String, BlockAddress>>,
     #[serde(default, with = "super::set_index_serde")]
     pub(super) sets: HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
+    /// Windowed seen-sets backing idempotency keys: member -> when it was last seen, plus
+    /// the same entries time-ordered so expiry pops from the front in bounded steps. Like the
+    /// buckets, no pages back this state -- it persists with the shard index snapshot, and a
+    /// crash forgetting a window's worth of members re-admits a duplicate rather than
+    /// dropping a legitimate first ingest.
+    #[serde(default, with = "super::seen_index_serde")]
+    pub(super) seen: HashMap<String, SeenSet>,
     /// Token buckets: key -> (tokens remaining, last refill ms). Config rides each command,
     /// never the store -- the caller owns policy, which is exactly what a quota layer wants.
     /// No pages back this state: it persists only with the shard index snapshot, so a crash
@@ -239,30 +284,106 @@ pub(super) struct CoreIndex {
     pub(super) bucket_map: BucketMap,
     #[serde(default)]
     pub(super) object_page_lookup: ObjectPageLookup,
-    #[serde(default)]
-    pub(super) object_component_lookup: ObjectComponentLookup,
+    /// Running total of page refs across `object_component_lookup`, or `None` when not known.
+    ///
+    /// The stats path reports this number, and computing it as
+    /// `object_component_lookup.values().map(BTreeSet::len).sum()` walks every object in the
+    /// shard. That runs on a TIMER -- the server heartbeat, every 3s by default -- while holding
+    /// the shard read lock that writers need, so its cost grows with the store and lands on the
+    /// write path as lock contention. Measured on a 200k-record ingest in five equal phases: with
+    /// the heartbeat at 1s the last phase cost 3.0x the first and the datanode's own CPU grew
+    /// 3.3-3.7x; with the heartbeat off, 0.84-0.94x -- flat.
+    ///
+    /// Maintained by the two methods below, which are the only places the lookup is mutated, and
+    /// recomputed by `rebuild_object_page_lookup`. `None` means "not established yet" (a
+    /// freshly deserialized index, before any rebuild) and the reader falls back to the walk,
+    /// so a missing value costs time rather than correctness.
+    #[serde(skip)]
+    pub(super) object_component_page_refs: Option<usize>,
 }
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
-pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
-pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
-pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
+/// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
+/// page, instead of each of the three keeping its own copy of the same ~117-byte string.
+pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
+/// One entry per OBJECT, with its components nested inside.
+///
+/// This replaced two maps keyed by overlapping composites -- (model, object) and
+/// (model, object, component) -- where the shorter key was a byte-for-byte prefix of the longer
+/// one, so every record stored the (model, object) head twice: once as a whole key and once as the
+/// head of a longer one. Measured across both maps at 4000 records: 223588 B of keys held, 110780
+/// nested, a saving of 50.5%. The entry count halves too, because the second map is gone rather
+/// than nested.
+///
+/// It also makes `len()` the count of distinct OBJECTS, which is the number the stats path
+/// reports. That question is precisely why the per-component map could not simply be dropped in
+/// favour of a range scan over the other: a scan of a map keyed by (object, component) cannot
+/// count distinct objects without walking every entry.
+pub(super) type ObjectPageLookup = BTreeMap<String, ObjectPageRefs>;
+
+/// The page refs of one object, grouped by component and ordered by it.
+///
+/// A sorted vector rather than a map because the measured average is 1.0 components per object: a
+/// B-tree holding a single entry is a node and an allocation spent to express a list of one.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct ObjectPageRefs {
+    #[serde(default)]
+    pub(super) by_component: Vec<ComponentPages>,
+}
+
+/// One component of one object, and the pages holding it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct ComponentPages {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) component: Option<String>,
+    /// A sorted, deduplicated vector rather than a set: measured, 100% of these hold exactly one
+    /// ref, and a B-tree node costs its full size whether it holds one element or eleven.
+    /// Insertion goes through `insert_page_lookup_ref`, which keeps both invariants.
+    ///
+    /// Serializes identically -- a `Vec` and a `BTreeSet` both encode as a sequence -- which
+    /// matters because this is part of the serialized index.
+    #[serde(default)]
+    pub(super) refs: Vec<PageLookupRef>,
+}
+
+impl ObjectPageRefs {
+    /// Where this component sits, or where it would be inserted. `None` sorts first, matching
+    /// `Option`'s own ordering, so the vector's order is the order a caller would expect.
+    pub(super) fn position(&self, component: Option<&str>) -> Result<usize, usize> {
+        self.by_component
+            .binary_search_by(|entry| entry.component.as_deref().cmp(&component))
+    }
+
+    pub(super) fn refs_for(&self, component: Option<&str>) -> Option<&[PageLookupRef]> {
+        self.position(component)
+            .ok()
+            .map(|at| self.by_component[at].refs.as_slice())
+    }
+
+    /// Every page ref of this object, across every component, in component order.
+    pub(super) fn all_refs(&self) -> impl Iterator<Item = &PageLookupRef> {
+        self.by_component.iter().flat_map(|entry| entry.refs.iter())
+    }
+
+    pub(super) fn total_refs(&self) -> usize {
+        self.by_component.iter().map(|entry| entry.refs.len()).sum()
+    }
+}
+
+/// Insert keeping the vector sorted and free of duplicates, which is what the set it replaced did.
+pub(super) fn insert_page_lookup_ref(refs: &mut Vec<PageLookupRef>, value: PageLookupRef) {
+    match refs.binary_search(&value) {
+        Ok(_) => {}
+        Err(at) => refs.insert(at, value),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct PageLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(super) struct ComponentPageLookupRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<String>,
-    #[serde(rename = "routing_slot")]
-    pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: String,
+    pub(super) page_ref_key: Arc<str>,
 }
 
 /// Rust-native core index mirroring the shape:
@@ -315,8 +436,10 @@ pub(super) struct PageIndex {
 
 impl CoreIndex {
     pub(super) fn rebuild_object_page_lookup(&mut self) {
+        // The rebuild is already O(pages); establishing the total here costs nothing extra and
+        // is what lets the stats path stop walking the shard.
+        self.object_component_page_refs = Some(0);
         self.object_page_lookup.clear();
-        self.object_component_lookup.clear();
         let refs = self
             .bucket_map
             .iter()
@@ -331,37 +454,73 @@ impl CoreIndex {
         }
     }
 
+    /// Takes the key by shared pointer: both lookups clone the `Arc`, not the string, so the
+    /// three structures that point at a page hold one allocation between them.
     pub(super) fn insert_object_page_lookup(
         &mut self,
         routing_bucket: u32,
-        page_ref_key: String,
+        page_ref_key: Arc<str>,
         page: &PageIndex,
     ) {
         if page.deleted {
             return;
         }
+        let added = {
+            let entry = self
+                .object_page_lookup
+                .entry(object_component_lookup_key(&page.model_id, &page.object_key))
+                .or_default();
+            let at = match entry.position(page.component.as_deref()) {
+                Ok(at) => at,
+                Err(at) => {
+                    entry.by_component.insert(
+                        at,
+                        ComponentPages {
+                            component: page.component.clone(),
+                            refs: Vec::new(),
+                        },
+                    );
+                    at
+                }
+            };
+            let refs = &mut entry.by_component[at].refs;
+            let before = refs.len();
+            insert_page_lookup_ref(
+                refs,
+                PageLookupRef {
+                    routing_bucket,
+                    page_ref_key,
+                },
+            );
+            refs.len() != before
+        };
+        if added {
+            if let Some(total) = self.object_component_page_refs.as_mut() {
+                *total = total.saturating_add(1);
+            }
+        }
+    }
+
+    /// Every page ref this object holds, for one component.
+    pub(super) fn page_refs_for(
+        &self,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+    ) -> Option<&[PageLookupRef]> {
         self.object_page_lookup
-            .entry(object_page_lookup_key(
-                &page.model_id,
-                &page.object_key,
-                page.component.as_deref(),
-            ))
-            .or_default()
-            .insert(PageLookupRef {
-                routing_bucket,
-                page_ref_key: page_ref_key.clone(),
-            });
-        self.object_component_lookup
-            .entry(object_component_lookup_key(
-                &page.model_id,
-                &page.object_key,
-            ))
-            .or_default()
-            .insert(ComponentPageLookupRef {
-                component: page.component.clone(),
-                routing_bucket,
-                page_ref_key,
-            });
+            .get(&object_component_lookup_key(model_id, object_key))
+            .and_then(|entry| entry.refs_for(component))
+    }
+
+    /// Every component of this object, and the pages holding each.
+    pub(super) fn object_page_refs(
+        &self,
+        model_id: &str,
+        object_key: &str,
+    ) -> Option<&ObjectPageRefs> {
+        self.object_page_lookup
+            .get(&object_component_lookup_key(model_id, object_key))
     }
 
     pub(super) fn remove_object_page_lookup_entry(
@@ -370,13 +529,25 @@ impl CoreIndex {
         object_key: &str,
         component: Option<&str>,
     ) {
-        self.object_page_lookup
-            .remove(&object_page_lookup_key(model_id, object_key, component));
-        let component_lookup_key = object_component_lookup_key(model_id, object_key);
-        if let Some(component_refs) = self.object_component_lookup.get_mut(&component_lookup_key) {
-            component_refs.retain(|page_ref| page_ref.component.as_deref() != component);
-            if component_refs.is_empty() {
-                self.object_component_lookup.remove(&component_lookup_key);
+        let lookup_key = object_component_lookup_key(model_id, object_key);
+        // One vector element IS this component's entire set of refs. What this replaces had to
+        // seek a range with an empty-string sentinel and take_while on the component, because the
+        // per-component map flattened every component of an object into one ordered set -- so a
+        // component's refs could only be found by range, not by index. Nesting deletes that.
+        let mut removed = 0usize;
+        let mut now_empty = false;
+        if let Some(entry) = self.object_page_lookup.get_mut(&lookup_key) {
+            if let Ok(at) = entry.position(component) {
+                removed = entry.by_component.remove(at).refs.len();
+            }
+            now_empty = entry.by_component.is_empty();
+        }
+        if now_empty {
+            self.object_page_lookup.remove(&lookup_key);
+        }
+        if removed > 0 {
+            if let Some(total) = self.object_component_page_refs.as_mut() {
+                *total = total.saturating_sub(removed);
             }
         }
     }
@@ -388,8 +559,7 @@ impl CoreIndex {
         component: Option<&str>,
         address: &BlockAddress,
     ) -> bool {
-        let lookup_key = object_page_lookup_key(model_id, object_key, component);
-        if let Some(page_refs) = self.object_page_lookup.get(&lookup_key) {
+        if let Some(page_refs) = self.page_refs_for(model_id, object_key, component) {
             return page_refs.iter().any(|page_ref| {
                 self.bucket_map
                     .get(&page_ref.routing_bucket)
@@ -507,4 +677,145 @@ pub(super) enum PackedFeaturePageDecode {
     Legacy,
     Packed(Vec<FeaturePoint>),
     Corrupt(String),
+}
+
+/// One windowed seen-set: both views hold exactly the same entries.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SeenSet {
+    pub(super) by_member: BTreeMap<Vec<u8>, u64>,
+    pub(super) by_time: BTreeMap<(u64, Vec<u8>), ()>,
+}
+
+
+#[cfg(test)]
+mod component_lookup_tests {
+    use super::*;
+
+    /// A page carrying nothing but the identity the lookup keys on.
+    fn page(object: &str, component: Option<&str>) -> PageIndex {
+        PageIndex {
+            object_key: object.to_string(),
+            model_id: "hash".to_string(),
+            component: component.map(str::to_string),
+            object_id: 0,
+            address: BlockAddress {
+                page_slab_id: 0,
+                offset: 0,
+                length: 0,
+                page_id: None,
+                object_id: None,
+                routing_bucket: None,
+                generation: None,
+                band_id: None,
+                sha256: None,
+            },
+            dirty: false,
+            deleted: false,
+            log_backed: false,
+        }
+    }
+
+    /// Built through the real insert rather than assembled by hand. These tests turn on the
+    /// component ordering that removal binary-searches, and that ordering is the insert's to
+    /// maintain -- a fixture that imitates it can agree with an insert that has stopped holding it.
+    fn core_with(object: &str, components: &[Option<&str>]) -> CoreIndex {
+        let mut index = CoreIndex::default();
+        for (i, component) in components.iter().enumerate() {
+            index.insert_object_page_lookup(
+                i as u32,
+                Arc::from(format!("p{i}").as_str()),
+                &page(object, *component),
+            );
+        }
+        index
+    }
+
+    fn components_left(index: &CoreIndex, object: &str) -> Vec<Option<String>> {
+        index
+            .object_page_refs("hash", object)
+            .map(|entry| {
+                entry
+                    .by_component
+                    .iter()
+                    .map(|component| component.component.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn removing_one_component_leaves_the_others() {
+        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("b"));
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("a".to_string()), Some("c".to_string())]
+        );
+    }
+
+    #[test]
+    fn removing_the_first_and_last_components_works() {
+        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("a"));
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("b".to_string()), Some("c".to_string())]
+        );
+        index.remove_object_page_lookup_entry("hash", "k", Some("c"));
+        assert_eq!(components_left(&index, "k"), vec![Some("b".to_string())]);
+    }
+
+    #[test]
+    fn a_none_component_is_removable_and_does_not_take_the_others() {
+        // `None` sorts before every `Some`, so it is the range's first element -- the case most
+        // likely to run off the front of the set.
+        let mut index = core_with("k", &[None, Some("a"), Some("b")]);
+        index.remove_object_page_lookup_entry("hash", "k", None);
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+    }
+
+    #[test]
+    fn every_ref_sharing_a_component_goes() {
+        let mut index = CoreIndex::default();
+        for i in 0..3u32 {
+            index.insert_object_page_lookup(
+                i,
+                Arc::from(format!("p{i}").as_str()),
+                &page("k", Some("dup")),
+            );
+        }
+        index.insert_object_page_lookup(9, Arc::from("p9"), &page("k", Some("keep")));
+        index.remove_object_page_lookup_entry("hash", "k", Some("dup"));
+        assert_eq!(components_left(&index, "k"), vec![Some("keep".to_string())]);
+    }
+
+    #[test]
+    fn removing_an_absent_component_changes_nothing() {
+        let mut index = core_with("k", &[Some("a"), Some("b")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("zzz"));
+        assert_eq!(
+            components_left(&index, "k"),
+            vec![Some("a".to_string()), Some("b".to_string())]
+        );
+    }
+
+    #[test]
+    fn emptying_the_set_drops_the_key_entirely() {
+        let mut index = core_with("k", &[Some("only")]);
+        index.remove_object_page_lookup_entry("hash", "k", Some("only"));
+        assert!(index.object_page_refs("hash", "k").is_none());
+    }
+
+    #[test]
+    fn the_running_ref_total_is_decremented_by_what_was_removed() {
+        // main keeps a running total beside the map; `retain` derived the decrement by
+        // differencing the length, and this form knows it directly. Same number either way.
+        let mut index = core_with("k", &[Some("a"), Some("b"), Some("c")]);
+        index.object_component_page_refs = Some(3);
+        index.remove_object_page_lookup_entry("hash", "k", Some("b"));
+        assert_eq!(index.object_component_page_refs, Some(2));
+    }
 }
