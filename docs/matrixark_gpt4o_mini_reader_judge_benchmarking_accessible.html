@@ -30,7 +30,7 @@ Official references:
 
 ## Why Use GPT-4o Mini
 
-For MatrixArk vs VikingMem-style benchmarking, we need to separate:
+For MatrixArk vs external-baseline benchmarking, we need to separate:
 
 ```text
 retrieval quality  = did TemporalStore find the right context?
@@ -152,7 +152,7 @@ judge.jsonl
 progress.json
 ```
 
-The benchmark report should keep MatrixArk metrics separate from VikingMem
+The benchmark report should keep MatrixArk metrics separate from the external baseline
 paper numbers until the same dataset, reader model, judge model, prompt, and
 scoring protocol are matched.
 
@@ -238,7 +238,7 @@ quality per 1K tokens
 MatrixArk already has TemporalStore-backed extraction, ingestion, retrieval,
 ContextPack audit, token-efficiency reporting, and checkpoint artifacts.
 
-The main remaining gap vs VikingMem-style reported scores is reader/judge
+The main remaining gap vs external-baseline reported scores is reader/judge
 parity:
 
 ```text
@@ -247,6 +247,6 @@ gpt-4o-mini reader    -&gt; benchmark-quality answer generation
 gpt-4o-mini judge     -&gt; paper-style scoring path
 ```
 
-Do not claim direct VikingMem score parity until the full official datasets and
+Do not claim direct the external baseline score parity until the full official datasets and
 matched reader/judge protocol have run successfully.
 </pre></main></body></html>

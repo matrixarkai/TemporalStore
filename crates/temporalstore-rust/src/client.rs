@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::http::{
-    get_json, get_json_with_options, post_json, post_json_with_options, HttpError,
+    get_json, get_json_with_options, post_json, post_json_with_options,
+    post_json_with_options_and_headers, HttpError,
     HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
@@ -22,13 +23,16 @@ use crate::meta::{
 mod client_routing;
 mod client_meta_sync;
 mod commands;
+// The proxy's drop decision hashes the same routing key this builds; it is re-exported
+// rather than copied because the copy that used to live there had drifted.
+pub(crate) use commands::command_routing_key;
 mod table_feature;
 mod table_context;
 mod table_control_state;
 mod retry;
 mod routing;
 
-use commands::{command_is_dropped, command_key, command_routing_key, is_write};
+use commands::{command_is_dropped, command_key, is_write};
 use retry::{
     classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
     sleep_before_retry,
@@ -252,7 +256,7 @@ pub struct ClientMigrationCompatibilityReport {
     pub compatibility_mode: ClientCompatibilityMode,
     pub rust_native_http_ready: bool,
     pub rust_native_tonic_ready: bool,
-    pub legacy_cplusplus_wire_in_scope: bool,
+    pub legacy_wire_in_scope: bool,
     pub native_wire_compatible_ready: bool,
     pub migration_layer_ready: bool,
     #[serde(default)]
@@ -276,7 +280,7 @@ impl Default for ClientMigrationCompatibilityReport {
             compatibility_mode: ClientCompatibilityMode::WireMigrationOutOfScope,
             rust_native_http_ready: true,
             rust_native_tonic_ready: true,
-            legacy_cplusplus_wire_in_scope: false,
+            legacy_wire_in_scope: false,
             native_wire_compatible_ready: false,
             migration_layer_ready: false,
             typed_table_client_ready: true,
@@ -298,7 +302,7 @@ impl Default for ClientMigrationCompatibilityReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientProductionReplacementContract {
     pub compatibility_decision: String,
-    pub legacy_cplusplus_wire_protocols_in_scope: Vec<String>,
+    pub legacy_wire_protocols_in_scope: Vec<String>,
     pub production_protocols: Vec<String>,
     pub supported_command_families: Vec<String>,
     pub typed_table_client_preserved: bool,
@@ -329,7 +333,7 @@ impl Default for ClientProductionReplacementContract {
             compatibility_decision:
                 "legacy wire migration shims are out of scope; use Rust-native migration contract"
                     .to_string(),
-            legacy_cplusplus_wire_protocols_in_scope: Vec::new(),
+            legacy_wire_protocols_in_scope: Vec::new(),
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
                 "RESP".to_string(),
@@ -525,6 +529,13 @@ pub struct ClientMetaSyncTableReport {
     pub last_topology_version: u64,
     pub consecutive_errors: u64,
     pub last_error: String,
+    /// Shards the last sync could not route because the topology named no primary for them.
+    ///
+    /// Their previous routes are kept rather than discarded -- a snapshot taken while a
+    /// primary is being elected should not destroy a working route -- but the sync is not a
+    /// clean one, and reporting it as clean is how this stayed invisible.
+    #[serde(default)]
+    pub shards_without_primary: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -626,9 +637,21 @@ pub struct TemporalStoreClient {
 #[derive(Debug)]
 struct ClientInner {
     options: ClientOptions,
-    routes: Mutex<HashMap<ShardId, CachedRoute>>,
+    /// Cached routes by shard.
+    ///
+    /// A reader-writer lock: resolving a route is a read now that the round-robin cursor
+    /// is atomic. It writes only when a route is fetched, replaced by a topology sync, or
+    /// cleared.
+    routes: RwLock<HashMap<ShardId, CachedRoute>>,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
-    tables: Mutex<HashMap<String, TableOptions>>,
+    /// Table options by "namespace/table".
+    ///
+    /// A reader-writer lock, not a mutex: every table-scoped request reads this at least
+    /// twice -- once to resolve the table and once for its options -- and writes happen
+    /// only when a table is opened, refreshed by the metaserver sync, or dropped. Under a
+    /// mutex those reads serialized against each other for no reason, which made resolving
+    /// a cached table the most expensive thing the proxy did per request.
+    tables: RwLock<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
     /// Topology version this client last heard from the metaserver.
@@ -652,9 +675,13 @@ struct ClientMetaSyncTableState {
     last_topology_version: u64,
     consecutive_errors: u64,
     last_error: String,
+    shards_without_primary: u64,
+    /// When a request failure last forced a topology sync for this table, out of band from
+    /// the scheduled one. Used to space those out; see `refresh_table_topology_after_status`.
+    last_forced_sync_unix_ms: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CachedRoute {
     table_key: String,
     partition_id: ShardId,
@@ -664,10 +691,38 @@ struct CachedRoute {
     primary_addr: String,
     replica_addrs: Vec<String>,
     replica_endpoints: Vec<ServerEndpoint>,
-    next_replica_index: usize,
+    /// Round-robin cursor for replica reads.
+    ///
+    /// An atomic, because it is the ONLY thing a route lookup writes -- and only under the
+    /// round-robin policy. While it was a plain field the lookup needed `get_mut`, so the
+    /// whole route cache was taken exclusively on every request to advance one number, and
+    /// under the default pin-primary policy it advanced nothing at all.
+    next_replica_index: std::sync::atomic::AtomicUsize,
     fetched_at: Instant,
     topology_version: u64,
     refresh_reason: String,
+}
+
+impl Clone for CachedRoute {
+    fn clone(&self) -> Self {
+        Self {
+            table_key: self.table_key.clone(),
+            partition_id: self.partition_id,
+            start_bucket: self.start_bucket,
+            end_bucket: self.end_bucket,
+            partition_version: self.partition_version,
+            primary_addr: self.primary_addr.clone(),
+            replica_addrs: self.replica_addrs.clone(),
+            replica_endpoints: self.replica_endpoints.clone(),
+            next_replica_index: std::sync::atomic::AtomicUsize::new(
+                self.next_replica_index
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            fetched_at: self.fetched_at,
+            topology_version: self.topology_version,
+            refresh_reason: self.refresh_reason.clone(),
+        }
+    }
 }
 
 impl CachedRoute {
@@ -681,7 +736,7 @@ impl CachedRoute {
             primary_addr: primary_addr.into(),
             replica_addrs: Vec::new(),
             replica_endpoints: Vec::new(),
-            next_replica_index: 0,
+            next_replica_index: std::sync::atomic::AtomicUsize::new(0),
             fetched_at: Instant::now(),
             topology_version: 0,
             refresh_reason: refresh_reason.to_string(),
@@ -738,9 +793,9 @@ impl TemporalStoreClient {
         Self {
             inner: Arc::new(ClientInner {
                 options,
-                routes: Mutex::default(),
+                routes: RwLock::default(),
                 backend_failures: Mutex::default(),
-                tables: Mutex::default(),
+                tables: RwLock::default(),
                 meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),
                 known_topology_version: AtomicU64::new(0),
@@ -759,7 +814,7 @@ impl TemporalStoreClient {
         let combine_name = table_combine_name(&namespace, &table_name);
         self.inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
             .insert(combine_name, options.clone());
         self.ensure_meta_sync_table_state(&namespace, &table_name);
@@ -798,7 +853,7 @@ impl TemporalStoreClient {
         let options = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .get(&table_combine_name(&namespace, &table_name))
             .cloned()?;
@@ -883,7 +938,7 @@ impl TemporalStoreClient {
             && replacement.http_json_contract_tested
             && replacement.resp_contract_tested
             && replacement.tonic_contract_tested
-            && !migration.legacy_cplusplus_wire_in_scope;
+            && !migration.legacy_wire_in_scope;
         let typed_table_client_ready =
             migration.typed_table_client_ready && replacement.typed_table_client_tested;
 
@@ -949,6 +1004,12 @@ pub struct TemporalStoreTable {
     namespace: String,
     table_name: String,
     shard_id: ShardId,
+    /// What this table looked like when the handle was opened.
+    ///
+    /// Only a fallback for `table_options()`, for the case where the client holds no
+    /// entry for this table. Everything else must go through `table_options()`, which
+    /// reads the copy the metaserver sync keeps current -- this one never changes, so
+    /// anything reading it directly is frozen at open time.
     options: TableOptions,
 }
 
@@ -983,7 +1044,7 @@ impl TemporalStoreTable {
         self.client
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .get(&table_combine_name(&self.namespace, &self.table_name))
             .cloned()
@@ -1264,7 +1325,7 @@ impl TemporalStoreTable {
                     command: command.clone(),
                 },
                 force_primary,
-                self.http_options(),
+                self.http_options(&table_options),
                 Some(table_options.continuous_failed_time_ms),
                 table_options.replica_read_policy,
                 if table_options.preferred_location.is_empty() {
@@ -1326,7 +1387,12 @@ impl TemporalStoreTable {
                 responses: Vec::new(),
             });
         }
-        if self.options.shard_count > 1 {
+        // The LIVE shard count, not the one this handle was opened with. Read from the
+        // snapshot, a table that gained shards after the handle was created kept sending
+        // every command to the single shard the handle started on -- while
+        // `shard_id_for_command`, on this same handle, already knew which shard each key
+        // belonged to. The handle worked out the right answer and then declined to use it.
+        if table_options.shard_count > 1 {
             return self.batch_execute_grouped_by_shard(commands);
         }
         let request = BatchExecuteRequest {
@@ -1348,7 +1414,7 @@ impl TemporalStoreTable {
         let response = loop {
             let current = self.client.batch_execute_with_http(
                 request.clone(),
-                self.http_options(),
+                self.http_options(&table_options),
                 Some(table_options.continuous_failed_time_ms),
             )?;
             let decision = classify_retry_decision(
@@ -1448,6 +1514,11 @@ impl TemporalStoreTable {
         command_routing_key(command)
             .as_deref()
             .map(|key| self.shard_id_for_key(key))
+            // A command with no routing key pins to the handle's shard, and that is load
+            // bearing rather than a lazy default: a multi-part blob upload is Begin, then
+            // Appends, then Commit, and the staged parts live on the node that served the
+            // Begin. Hashing something per command would scatter the parts of one upload
+            // across shards and none of them would commit.
             .unwrap_or(self.shard_id)
     }
 
@@ -1461,21 +1532,38 @@ impl TemporalStoreTable {
         }
     }
 
-    fn http_options(&self) -> HttpRequestOptions {
+    /// Takes the table's options rather than reading them, so it cannot be called with
+    /// stale ones. It used to read `self.options` -- the copy this handle was opened
+    /// with -- and so kept sending the timeouts the table had when the handle was
+    /// created, for the whole life of the handle. `options()` meanwhile reported the
+    /// current ones, so the handle told you one timeout and used another.
+    fn http_options(&self, table_options: &TableOptions) -> HttpRequestOptions {
         HttpRequestOptions {
-            connect_timeout_ms: self.options.connect_timeout_ms,
-            io_timeout_ms: self.options.io_timeout_ms,
+            connect_timeout_ms: table_options.connect_timeout_ms,
+            io_timeout_ms: table_options.io_timeout_ms,
             max_retries: self.client.inner.options.max_retries,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn http_options_for_test(&self) -> HttpRequestOptions {
-        self.http_options()
+        self.http_options(&self.table_options())
     }
 
+    /// Re-sync this table's topology because a request failed in a way that suggests the
+    /// cached one is wrong.
+    ///
+    /// Spaced by `topo_error_retry_interval_ms`. The per-request guard above stops one command
+    /// doing this twice, but says nothing about the other requests in flight: a shard moving
+    /// makes MANY requests fail at once, and each one arriving here unthrottled is a separate
+    /// metaserver round-trip -- a sync storm aimed at the metaserver at the moment it is
+    /// working through a topology change. One request's failure is enough to learn what all of
+    /// them need.
     fn refresh_table_topology_after_status(&self) {
         if self.client.inner.options.meta_addr.is_none() {
+            return;
+        }
+        if !self.client.forced_sync_is_due(&self.namespace, &self.table_name) {
             return;
         }
         let _ = self
@@ -1485,7 +1573,7 @@ impl TemporalStoreTable {
 }
 
 fn choose_cached_route(
-    route: &mut CachedRoute,
+    route: &CachedRoute,
     replica_read_policy: ReplicaReadPolicy,
     preferred_location: Option<&str>,
 ) -> String {
@@ -1503,10 +1591,12 @@ fn choose_cached_route(
             if route.replica_addrs.is_empty() {
                 return route.primary_addr.clone();
             }
-            let replica =
-                route.replica_addrs[route.next_replica_index % route.replica_addrs.len()].clone();
-            route.next_replica_index = (route.next_replica_index + 1) % route.replica_addrs.len();
-            replica
+            // Advance and read in one step. The counter runs unbounded and is taken
+            // modulo the replica count, which keeps the rotation correct across a wrap.
+            let next = route
+                .next_replica_index
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            route.replica_addrs[next % route.replica_addrs.len()].clone()
         }
     }
 }

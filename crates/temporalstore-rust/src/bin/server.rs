@@ -19,8 +19,9 @@ use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyV
 use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    get_bytes_with_headers, json_response, parse_json, post_json, serve_with_stream_handler,
-    HttpRequest, HttpRequestOptions, StreamAction, StreamTransfer,
+    get_bytes_with_headers, json_response, parse_json, post_json,
+    post_json_with_options_and_headers, serve_with_stream_handler, HttpRequest,
+    HttpRequestOptions, StreamAction, StreamTransfer,
 };
 use std::io::Read as _;
 use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
@@ -279,6 +280,21 @@ fn main() {
 
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
+    // Milliseconds since the epoch when this process started, reported on every
+    // heartbeat so the metaserver can see an in-place restart.
+    //
+    // This used to send a literal 0. The metaserver anchors on the first value a server
+    // reports and then treats a DIFFERENT, non-zero one as a restart -- so a constant 0
+    // anchored at 0 and matched forever, and no datanode restart was ever detected. It
+    // failed quietly: a restarted datanode has dropped every shard the metaserver still
+    // believes it serves, so routing keeps going there and returns misses that read like
+    // lost data rather than a restart. Everything downstream of the verdict -- reboot
+    // conviction in the failure detector, the reboot grace in the shard check -- never ran
+    // either, while their tests passed because they set the flag on a fixture by hand.
+    let boot_time_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since_epoch| since_epoch.as_millis() as u64)
+        .unwrap_or_default();
     let heartbeat_interval_ms = std::env::var("TS_SERVER_HEARTBEAT_INTERVAL_MS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -328,7 +344,13 @@ fn main() {
             location,
             binary_version: binary_version.clone(),
         };
-        match post_json::<_, AckResponse>(&meta_addr, "/servers/register", &server_registration) {
+        match post_json_with_options_and_headers::<_, AckResponse>(
+            &meta_addr,
+            "/servers/register",
+            &server_registration,
+            &temporalstore_rust::meta::admin_auth_header(),
+            HttpRequestOptions::default(),
+        ) {
             Ok(response) if response.status.ok => {
                 info!(server = %advertised_addr, meta = %meta_addr, "registered server with metaserver");
             }
@@ -349,8 +371,13 @@ fn main() {
                 shard_id,
                 server_addr: advertised_addr.clone(),
             };
-            match post_json::<_, RegisterShardResponse>(&meta_addr, "/register_shard", &registration)
-            {
+            match post_json_with_options_and_headers::<_, RegisterShardResponse>(
+                &meta_addr,
+                "/register_shard",
+                &registration,
+                &temporalstore_rust::meta::admin_auth_header(),
+                HttpRequestOptions::default(),
+            ) {
                 Ok(response) if response.status.ok => {
                     info!(shard_id, meta = %meta_addr, "registered shard with metaserver");
                 }
@@ -374,6 +401,7 @@ fn main() {
             advertised_addr.clone(),
             binary_version.clone(),
             heartbeat_interval_ms,
+            boot_time_ms,
         );
     }
     // Streamed large-file / attachment tier: POST /blob/<key> writes the request
@@ -658,6 +686,7 @@ fn main() {
                     &meta_addr,
                     &advertised_addr,
                     &binary_version,
+                    boot_time_ms,
                 ),
             ),
             ("GET", path) if path.starts_with("/jobs/") => {
@@ -1171,6 +1200,21 @@ fn restore_shared_index_before_load(
                 0
             }
         };
+    // Inherit the dump lineage along with the data. Without it this node treats every live
+    // generation as never dumped, which blocks WAL reclaim until it has re-dumped the whole
+    // shard itself. Advisory: the data is already restored and serving, so a lineage that
+    // cannot be read costs re-dumping, not correctness.
+    match runtime.block_on(replicator.restore_bucket_dump_manifests(shard_id, engine)) {
+        Ok(0) => {}
+        Ok(restored) => info!(
+            shard_id,
+            restored, "inherited bucket-dump manifests from shared storage"
+        ),
+        Err(err) => warn!(
+            shard_id, %err,
+            "could not restore bucket-dump manifests; this node will re-dump before it can reclaim"
+        ),
+    }
     Some(after_wal_index)
 }
 
@@ -1202,6 +1246,31 @@ fn replay_shared_wal_tail(
         Err(err) => warn!(shard_id, %err, "no shared-storage data replayed for shard"),
     }
 }
+/// Read the blocks a set of results points at, so they can travel with them.
+///
+/// A successor installs an address; it can only serve that address if the bytes are reachable.
+/// Locally they are in the block store. Across nodes they are not, unless something carries them.
+fn gather_result_pages(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
+) -> Vec<temporalstore_rust::wal::StagedPage> {
+    let mut pages = Vec::new();
+    for item in outcomes {
+        let Some(address) = item.resolved_address() else {
+            continue;
+        };
+        if let Ok(bytes) = engine.block_store().read(&address) {
+            pages.push(temporalstore_rust::wal::StagedPage {
+                object_id: item.object_id,
+                bytes,
+            });
+        }
+    }
+    let _ = shard_id;
+    pages
+}
+
 
 /// Publish this node's data for `shard_id` to the shared object store so a future
 /// owner can replay it. Reads the shard's write-ahead log (read-only — never
@@ -1257,6 +1326,21 @@ fn publish_shard_checkpoint(
             shard_id,
             wal_index: record.sequence,
             command: record.command,
+            // What the write did travels with it. A successor installs these rather than
+            // re-running the command against its own clock and its own config.
+            outcomes: record.outcomes.clone(),
+            // The pages the results point at, so a successor can actually READ what it
+            // installs. A result names an address in THIS node's block store; a successor has
+            // its own, and the checkpoint only covers what was written before it. Without this
+            // the successor's index is right and every read of the tail returns nothing.
+            //
+            // Empty on the local record for a synchronous write -- that page went to the block
+            // store rather than into the record -- so they are gathered here.
+            staged_pages: if record.staged_pages.is_empty() {
+                gather_result_pages(engine, shard_id, &record.outcomes)
+            } else {
+                record.staged_pages
+            },
         };
         if let Err(err) = runtime.block_on(replicator.publish_wal_entry(entry)) {
             return PublishShardCheckpointResponse {
@@ -1268,6 +1352,27 @@ fn publish_shard_checkpoint(
         }
         published += 1;
         last_wal_index = record.sequence;
+    }
+    // Send the dump lineage before the checkpoint manifest, so the checkpoint manifest is
+    // still the last object written and therefore still the commit point for a restore.
+    // Advisory on failure: the checkpoint alone is what a restore needs today, and failing
+    // the whole publish over the lineage would make this strictly worse than not having it.
+    match runtime.block_on(
+        replicator.publish_bucket_dump_manifests(
+            shard_id,
+            &engine.list_bucket_dump_manifests(shard_id),
+        ),
+    ) {
+        Ok(0) => {}
+        Ok(count) => info!(
+            shard_id,
+            manifests = count,
+            "published bucket-dump manifests to shared storage"
+        ),
+        Err(err) => warn!(
+            shard_id, %err,
+            "could not publish bucket-dump manifests; checkpoint still published without lineage"
+        ),
     }
     // Publish a real metadata+slab checkpoint at the current last-applied WAL index so
     // a future owner can lazily restore (index + slab addresses) and replay only the
@@ -1758,25 +1863,34 @@ fn wire_matrixobject_durability(
     };
 
     if !local_state_present && latest > 0 {
-        // TODO(S1 / checkpoint-recovery): this NODE-LOCAL matrixobject durability path still
-        // recovers via full WAL replay from seq 0 (O(all history)) and never publishes a
-        // checkpoint. The lazy checkpoint substrate now exists generically:
-        //   * `SharedStoreReplicator<O>::publish_checkpoint` / `restore_index_and_page_addresses`
-        //     are generic over `O: ObjectStore` (see shared_store.rs), and
-        //   * the NETWORKED path `wire_matrixobject_networked_durability` already does exactly the
-        //     target flow: restore index + lazy slab address map, replay only the WAL tail, and
-        //     publish a checkpoint on start.
-        // To close S1 for this backend: (a) publish a checkpoint on start when `local_state_present`
-        // (mirror wire_matrixobject_networked_durability's publish block), and (b) here, replace
-        // `replay_wal(shard_id, 0, ..)` with
-        //     `replicator.restore_index_and_page_addresses(shard_id, engine, &engine.block_store())`
-        // then `replay_wal(shard_id, manifest.checkpoint_wal_index, ..)`, falling back to a
-        // full replay only on `CheckpointNotFound`. `MatrixObjectObjectStore` implements
-        // `ObjectStore`, so a `SharedSlabSource` over it (analogous to `MatrixObjectSlabSource`)
-        // is all that the generic `restore_index_and_page_addresses_with` needs. Requires the
-        // `matrixobject` feature build (private crate) to land + test end-to-end, so it is
-        // deferred to a dedicated pass; recovery stays correct here today, just O(history).
-        match rt.block_on(replicator.replay_wal(shard_id, 0, engine)) {
+        // S1 checkpoint recovery: restore the served index plus a lazy slab address map from
+        // the latest checkpoint, then replay ONLY the WAL tail after it -- old pages are read
+        // out of the store on demand. A store with no checkpoint yet (or a failed restore)
+        // falls back to the full replay from 0: the old behavior, correct but O(history).
+        let after_wal_index = match rt.block_on(replicator.restore_index_and_page_addresses(
+            shard_id,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => {
+                println!(
+                    "restored shard {shard_id} index and lazy page addresses from matrixobject checkpoint {} (WAL tail from {})",
+                    manifest.checkpoint_id, manifest.checkpoint_wal_index
+                );
+                // Read the restored on-disk index into memory before the tail replay, which
+                // applies through the engine and needs a loaded shard.
+                engine.load_shard(shard_id);
+                manifest.checkpoint_wal_index
+            }
+            Err(temporalstore_rust::SharedStoreReplicationError::CheckpointNotFound(_)) => 0,
+            Err(err) => {
+                eprintln!(
+                    "matrixobject checkpoint restore failed for shard {shard_id} ({err}); replaying full WAL"
+                );
+                0
+            }
+        };
+        match rt.block_on(replicator.replay_wal(shard_id, after_wal_index, engine)) {
             Ok(report) => println!(
                 "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",
                 report.applied, report.last_wal_index
@@ -1795,6 +1909,25 @@ fn wire_matrixobject_durability(
         println!(
             "matrixobject durability active for shard {shard_id} at {store_dir}; no shared WAL yet (fresh cluster)"
         );
+    }
+
+    // Publish this node's authoritative state as a checkpoint (index + slabs) at start, so a
+    // future fresh recovery replays only the tail instead of all history. Opt-out via env.
+    if local_state_present && env_bool("TS_MATRIXOBJECT_CHECKPOINT_ON_START", true) {
+        match rt.block_on(replicator.publish_checkpoint(
+            shard_id,
+            latest,
+            engine,
+            &engine.block_store(),
+        )) {
+            Ok(manifest) => println!(
+                "published matrixobject start checkpoint {} for shard {shard_id} at WAL index {}",
+                manifest.checkpoint_id, manifest.checkpoint_wal_index
+            ),
+            Err(err) => eprintln!(
+                "matrixobject start checkpoint publish failed for shard {shard_id}: {err}"
+            ),
+        }
     }
 
     let mode = SharedStoreStorageMode::from_sync_flag(sync_flush);
@@ -2121,6 +2254,10 @@ fn env_bool(name: &str, default: bool) -> bool {
 fn raft_config_from_env() -> RaftConfig {
     let defaults = RaftConfig::default();
     RaftConfig {
+        // 8 MB of applied log per shard before the periodic check compacts it into a
+        // state-image snapshot. Left unbounded, every segment rotation rewrites an
+        // ever-growing base record, and restart replays all of it.
+        max_applied_log_bytes: env_u64("TS_RAFT_MAX_APPLIED_LOG_BYTES", 8 * 1024 * 1024),
         replication_deadline_ms: env_u64(
             "TS_RAFT_REPLICATION_DEADLINE_MS",
             defaults.replication_deadline_ms,
@@ -2381,7 +2518,7 @@ fn validate_node_topology_from_meta(
     let mut fetched_tables = Vec::new();
     let mut fetch_errors = Vec::new();
     for table_name in &table_names {
-        let topology = post_json::<_, TableTopologyResponse>(
+        let topology = post_json_with_options_and_headers::<_, TableTopologyResponse>(
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
@@ -2390,6 +2527,8 @@ fn validate_node_topology_from_meta(
                 table_name: table_name.clone(),
                 old_topology_version: 0,
             },
+            &temporalstore_rust::meta::admin_auth_header(),
+            HttpRequestOptions::default(),
         );
         match topology {
             Ok(topology) if topology.status.ok => {
@@ -2423,6 +2562,7 @@ fn send_heartbeat(
     meta_addr: &str,
     server_addr: &str,
     binary_version: &str,
+    boot_time_ms: u64,
 ) -> ServerHeartbeatResponse {
     let stats = engine.loaded_shard_stats();
     let shard_loads = stats
@@ -2447,7 +2587,7 @@ fn send_heartbeat(
         .collect();
     let request = ServerHeartbeatRequest {
         server_addr: server_addr.to_string(),
-        boot_time_ms: 0,
+        boot_time_ms,
         binary_version: binary_version.to_string(),
         shard_loads,
         shard_stat_loads,
@@ -2455,7 +2595,13 @@ fn send_heartbeat(
         shard_states: runtime.shard_serving_states(),
     };
     let response =
-        post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
+        post_json_with_options_and_headers::<_, ServerHeartbeatResponse>(
+            meta_addr,
+            "/servers/heartbeat",
+            &request,
+            &temporalstore_rust::meta::admin_auth_header(),
+            HttpRequestOptions::default(),
+        )
             .unwrap_or_else(|err| ServerHeartbeatResponse {
                 status: Status::error("heartbeat_failed", err.to_string()),
                 forbid_auto_register: false,
@@ -2653,6 +2799,81 @@ mod tests {
         for key in keys {
             std::env::remove_var(key);
         }
+    }
+
+    #[test]
+    fn the_datanode_heartbeat_reports_when_this_process_started() {
+        // The metaserver spots an in-place restart by watching this value change: it
+        // anchors on the first one a server reports, then treats a different, non-zero one
+        // as a restart. A constant can therefore never be a restart -- and this heartbeat
+        // sent a literal 0, so the anchor was 0, it matched every time, and no datanode
+        // restart was ever detected. Nothing failed; the detector simply never fired, and
+        // everything downstream of its verdict (reboot conviction in the failure detector,
+        // the reboot grace in the shard check) never ran either, while their own tests
+        // passed because they set the flag on a fixture by hand instead of driving a
+        // heartbeat. No test called this function at all.
+        let engine = TemporalEngine::default();
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+
+        let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+        let meta_addr = free_local_addr();
+        let bind_addr = meta_addr.clone();
+        let seen_for_server = Arc::clone(&seen);
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    // wait_for_http below probes /health, so the stub must answer it or
+                    // the test times out on its own scaffolding rather than on anything
+                    // it set out to check.
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    ("POST", "/servers/heartbeat") => {
+                        let beat = parse_json::<ServerHeartbeatRequest>(&request.body).unwrap();
+                        seen_for_server.lock().unwrap().push(beat.boot_time_ms);
+                        json_response(
+                            200,
+                            &ServerHeartbeatResponse {
+                                status: Status::ok(),
+                                forbid_auto_register: false,
+                                topology_version: 0,
+                                server_state: String::new(),
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&meta_addr);
+
+        let boot_time_ms = 1_723_456_789_000u64;
+        let _ = send_heartbeat(
+            &engine,
+            &runtime,
+            &meta_addr,
+            "127.0.0.1:19",
+            "test",
+            boot_time_ms,
+        );
+
+        let reported = seen.lock().unwrap().clone();
+        assert_eq!(
+            reported,
+            vec![boot_time_ms],
+            "the heartbeat must carry the process start time it was given"
+        );
+        assert_ne!(
+            reported[0], 0,
+            "a zero start time reads as 'this build does not report it', which is what \
+             disabled restart detection for every datanode"
+        );
     }
 
     #[test]

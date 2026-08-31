@@ -36,6 +36,16 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: ADMIN,
         },
         RedisCommandDescriptor {
+            name: "BUCKETPEEK",
+            arity: 5,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "BUCKETTAKE",
+            arity: 5,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "COPY",
             arity: -3,
             flags: WRITE,
@@ -196,6 +206,26 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "LLEN",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "LPOP",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LPUSH",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LRANGE",
+            arity: 4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "MGET",
             arity: -2,
             flags: READ,
@@ -231,6 +261,11 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "PERSIST",
+            arity: 2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "PEXPIRETIME",
             arity: 2,
             flags: READ,
@@ -263,6 +298,26 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "RENAMENX",
             arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPOP",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPUSH",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "SEENCARD",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "SEENCHECK",
+            arity: 4,
             flags: WRITE,
         },
         RedisCommandDescriptor {
@@ -390,5 +445,75 @@ pub(crate) fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             arity: -2,
             flags: WRITE,
         },
-    ]
+
+        RedisCommandDescriptor {
+            name: "ZADD",
+            arity: -4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZCOUNT",
+            arity: 4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZINCRBY",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZPOPMAX",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZPOPMIN",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZRANK",
+            arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREVRANK",
+            arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZCARD",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZRANGE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZRANGEBYSCORE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREM",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZREVRANGE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZREVRANGEBYSCORE",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZSCORE",
+            arity: 3,
+            flags: READ,
+        },    ]
 }

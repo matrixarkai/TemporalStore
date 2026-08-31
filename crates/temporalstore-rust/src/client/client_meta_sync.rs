@@ -3,6 +3,7 @@
 
 //! TemporalStoreClient meta topology sync + route refresh/invalidation + reports, split from client.rs.
 use super::*;
+use crate::meta::TableServingField;
 
 impl TemporalStoreClient {
     pub fn sync_table_topology(
@@ -24,15 +25,16 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TableTopologyResponse = match post_json_with_options(
+        let topology: TableTopologyResponse = match post_json_with_options_and_headers(
             meta_addr,
             "/tables/topology",
             &GetTableTopologyRequest {
                 client_location: String::new(),
                 namespace: namespace.clone(),
                 table_name: table_name.clone(),
-                old_topology_version: 0,
+                old_topology_version: self.last_synced_topology_version(&namespace, &table_name),
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         ) {
             Ok(topology) => topology,
@@ -59,33 +61,46 @@ impl TemporalStoreClient {
             self.record_meta_sync_error(&namespace, &table_name, "table topology missing");
             ClientError::Status("table topology missing".to_string())
         })?;
-        let route_topology_version = self
-            .current_meta_topology_version()
-            .unwrap_or(table.topology_version)
-            .max(table.topology_version);
+        // Asked for only when it is going to be used. Stamping routes needs the cluster's
+        // topology version, and getting it is its own metaserver round-trip -- but an
+        // unchanged reply installs no routes, so on that path the version is wanted for the
+        // sync record alone, and the table's own version is already the right answer: the
+        // metaserver has just confirmed it is current, which is why it answered unchanged.
+        //
+        // Asking anyway made every sync cost two round-trips instead of one, and since the
+        // unchanged reply is the common case once a topology settles, that was the usual cost
+        // rather than an occasional one.
+        let route_topology_version = if topology.unchanged {
+            table.topology_version
+        } else {
+            self.current_meta_topology_version()
+                .unwrap_or(table.topology_version)
+                .max(table.topology_version)
+        };
         let serving_options = table.serving_options.clone();
-        let default_serving_options = crate::meta::TableServingOptions::default();
+        // Whether the table speaks for a field, or leaves it to this client's own
+        // option. Asking the table settles it; the alternative -- inferring it from
+        // "the value differs from the default" -- silently overrode any table that
+        // chose a default value on purpose, which is exactly what `drop_percent: 0`
+        // ("never shed this table") and `max_write_retries: 0` ("never retry a write
+        // here") are.
+        let table_decides = |field: TableServingField| serving_options.table_decides(field);
         let options = TableOptions {
             table_id: table.table_id,
-            io_timeout_ms: if serving_options.io_timeout_ms == default_serving_options.io_timeout_ms
-            {
-                self.inner.options.io_timeout_ms
-            } else {
+            io_timeout_ms: if table_decides(TableServingField::IoTimeoutMs) {
                 serving_options.io_timeout_ms
-            },
-            connect_timeout_ms: if serving_options.connect_timeout_ms
-                == default_serving_options.connect_timeout_ms
-            {
-                self.inner.options.connect_timeout_ms
             } else {
+                self.inner.options.io_timeout_ms
+            },
+            connect_timeout_ms: if table_decides(TableServingField::ConnectTimeoutMs) {
                 serving_options.connect_timeout_ms
-            },
-            continuous_failed_time_ms: if serving_options.continuous_failed_time_ms
-                == default_serving_options.continuous_failed_time_ms
-            {
-                TableOptions::default().continuous_failed_time_ms
             } else {
+                self.inner.options.connect_timeout_ms
+            },
+            continuous_failed_time_ms: if table_decides(TableServingField::ContinuousFailedTimeMs) {
                 serving_options.continuous_failed_time_ms
+            } else {
+                TableOptions::default().continuous_failed_time_ms
             },
             first_shard_id: table.first_shard_id,
             shard_count: table.shard_count,
@@ -94,40 +109,46 @@ impl TemporalStoreClient {
             replica_read_policy: replica_read_policy_from_meta(
                 &serving_options.replica_read_policy,
             ),
-            preferred_location: if serving_options.preferred_location.is_empty() {
-                self.inner.options.local_location.clone()
-            } else {
+            preferred_location: if table_decides(TableServingField::PreferredLocation)
+                && !serving_options.preferred_location.is_empty()
+            {
                 serving_options.preferred_location.clone()
-            },
-            drop_percent: if serving_options.drop_percent == default_serving_options.drop_percent {
-                self.inner.options.drop_percent.min(100)
             } else {
+                self.inner.options.local_location.clone()
+            },
+            drop_percent: if table_decides(TableServingField::DropPercent) {
                 serving_options.drop_percent.min(100)
-            },
-            max_read_retries: if serving_options.max_read_retries
-                == default_serving_options.max_read_retries
-            {
-                self.inner.options.max_read_retries
             } else {
+                self.inner.options.drop_percent.min(100)
+            },
+            max_read_retries: if table_decides(TableServingField::MaxReadRetries) {
                 serving_options.max_read_retries as usize
-            },
-            max_write_retries: if serving_options.max_write_retries
-                == default_serving_options.max_write_retries
-            {
-                self.inner.options.max_write_retries
             } else {
+                self.inner.options.max_read_retries
+            },
+            max_write_retries: if table_decides(TableServingField::MaxWriteRetries) {
                 serving_options.max_write_retries as usize
-            },
-            retry_backoff_ms: if serving_options.retry_backoff_ms
-                == default_serving_options.retry_backoff_ms
-            {
-                self.inner.options.retry_backoff_ms
             } else {
+                self.inner.options.max_write_retries
+            },
+            retry_backoff_ms: if table_decides(TableServingField::RetryBackoffMs) {
                 serving_options.retry_backoff_ms
+            } else {
+                self.inner.options.retry_backoff_ms
             },
             ..TableOptions::default()
         };
         let table_key = table_combine_name(&namespace, &table_name);
+        // Shards the topology names but cannot route, because it gives them no primary. This
+        // happens while a primary is being elected. Their previous routes are deliberately
+        // NOT discarded below: a snapshot taken mid-election should not destroy a route that
+        // still works, and the old one either still serves or fails and gets refreshed.
+        let unroutable: Vec<ShardId> = topology
+            .shards
+            .iter()
+            .filter(|partition| partition.primary.is_none())
+            .map(|partition| partition.shard_id)
+            .collect();
         let routes = topology
             .shards
             .iter()
@@ -154,7 +175,7 @@ impl TemporalStoreClient {
                                 .filter(|endpoint| endpoint.server_addr != *primary)
                                 .cloned()
                                 .collect(),
-                            next_replica_index: 0,
+                            next_replica_index: std::sync::atomic::AtomicUsize::new(0),
                             fetched_at: Instant::now(),
                             topology_version: route_topology_version,
                             refresh_reason: "table_topology_sync".to_string(),
@@ -165,18 +186,41 @@ impl TemporalStoreClient {
             .collect::<Vec<_>>();
         self.inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
             .insert(table_key.clone(), options.clone());
+
+        // "unchanged" means the metaserver did not rebuild the shard list because we already
+        // have this version -- so the response carries NO shards, and running the route
+        // surgery below against an empty list would delete every route this table has. The
+        // serving options still came back and are applied above; the routes are already right.
+        //
+        // This has to be handled before the version is sent, not after: while the request was
+        // hardcoded to version 0 the metaserver could never answer unchanged, which is the
+        // only reason the wipe never happened.
+        if topology.unchanged {
+            self.record_meta_sync_success(
+                &namespace,
+                &table_name,
+                route_topology_version,
+                0,
+            );
+            return Ok(options);
+        }
+
         let mut route_cache = self
             .inner
             .routes
-            .lock()
+            .write()
             .expect("client route cache lock poisoned");
         let last_shard_id = table
             .first_shard_id
             .saturating_add(table.shard_count.saturating_sub(1));
         route_cache.retain(|shard_id, route| {
+            // Keep what the new topology cannot replace.
+            if unroutable.contains(shard_id) {
+                return true;
+            }
             if route.table_key == table_key {
                 return false;
             }
@@ -185,18 +229,24 @@ impl TemporalStoreClient {
         for (shard_id, route) in routes {
             route_cache.insert(shard_id, route);
         }
-        self.record_meta_sync_success(&namespace, &table_name, route_topology_version);
+        self.record_meta_sync_success(
+            &namespace,
+            &table_name,
+            route_topology_version,
+            unroutable.len() as u64,
+        );
         Ok(options)
     }
 
     pub(super) fn current_meta_topology_version(&self) -> Option<u64> {
         let meta_addr = self.inner.options.meta_addr.as_ref()?;
-        let topology = post_json_with_options::<_, TopologyVersionReport>(
+        let topology = post_json_with_options_and_headers::<_, TopologyVersionReport>(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version: 0,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )
         .ok()?;
@@ -216,12 +266,13 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_json_with_options(
+        let topology: TopologyVersionReport = post_json_with_options_and_headers(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
@@ -318,12 +369,13 @@ impl TemporalStoreClient {
             .meta_addr
             .as_ref()
             .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
-        let topology: TopologyVersionReport = post_json_with_options(
+        let topology: TopologyVersionReport = post_json_with_options_and_headers(
             meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
@@ -345,7 +397,7 @@ impl TemporalStoreClient {
             let mut routes = self
                 .inner
                 .routes
-                .lock()
+                .write()
                 .expect("client route cache lock poisoned");
             let before_len = routes.len();
             routes.retain(|_, route| {
@@ -389,7 +441,7 @@ impl TemporalStoreClient {
         let mut tables = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .keys()
             .cloned()
@@ -460,6 +512,7 @@ impl TemporalStoreClient {
                 next_sync_after_unix_ms: state.next_sync_after_unix_ms,
                 last_topology_version: state.last_topology_version,
                 consecutive_errors: state.consecutive_errors,
+                shards_without_primary: state.shards_without_primary,
                 last_error: state.last_error.clone(),
             })
             .collect::<Vec<_>>();
@@ -487,7 +540,7 @@ impl TemporalStoreClient {
         let removed = self
             .inner
             .tables
-            .lock()
+            .write()
             .expect("client table cache lock poisoned")
             .remove(&table_combine_name(table.namespace(), table.table_name()))
             .is_some();
@@ -499,7 +552,7 @@ impl TemporalStoreClient {
         if removed {
             self.inner
                 .routes
-                .lock()
+                .write()
                 .expect("client route cache lock poisoned")
                 .clear();
             self.inner
@@ -526,7 +579,7 @@ impl TemporalStoreClient {
         let table_cache_size = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .len();
         let backend_failure_count = self
@@ -574,13 +627,13 @@ impl TemporalStoreClient {
         let tables = self
             .inner
             .tables
-            .lock()
+            .read()
             .expect("client table cache lock poisoned")
             .clone();
         let routes = self
             .inner
             .routes
-            .lock()
+            .read()
             .expect("client route cache lock poisoned")
             .clone();
         let mut reports = tables
@@ -659,7 +712,7 @@ impl TemporalStoreClient {
         let routes = self
             .inner
             .routes
-            .lock()
+            .read()
             .expect("client route cache lock poisoned")
             .iter()
             .map(|(shard_id, route)| {
@@ -729,7 +782,7 @@ impl TemporalStoreClient {
     pub fn route_cache_size(&self) -> usize {
         self.inner
             .routes
-            .lock()
+            .read()
             .expect("client route cache lock poisoned")
             .len()
     }
@@ -763,7 +816,7 @@ impl TemporalStoreClient {
     pub fn insert_cached_route_for_test(&self, shard_id: ShardId, primary_addr: impl Into<String>) {
         self.inner
             .routes
-            .lock()
+            .write()
             .expect("client route cache lock poisoned")
             .insert(
                 shard_id,
@@ -812,10 +865,75 @@ impl TemporalStoreClient {
                 last_topology_version: 0,
                 consecutive_errors: 0,
                 last_error: String::new(),
+                shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
     }
 
-    pub(super) fn record_meta_sync_success(&self, namespace: &str, table_name: &str, topology_version: u64) {
+    /// The topology version this client last synced for a table, or 0 if it has none.
+    ///
+    /// Sent with the next fetch so the metaserver can answer "unchanged" instead of rebuilding
+    /// and shipping the whole shard list. Both halves of that negotiation already existed --
+    /// the request field and the metaserver's reply -- with nothing connecting them.
+    fn last_synced_topology_version(&self, namespace: &str, table_name: &str) -> u64 {
+        let key = table_combine_name(namespace, table_name);
+        self.inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned")
+            .get(&key)
+            .map(|state| state.last_topology_version)
+            .unwrap_or(0)
+    }
+
+    /// Whether a failure-driven topology sync for this table is due, claiming the slot if so.
+    ///
+    /// Claimed as it answers, so concurrent failures cannot all decide they are due and fire
+    /// the same sync. Losing that race means skipping a sync another thread is already making,
+    /// which is the outcome wanted.
+    pub(super) fn forced_sync_is_due(&self, namespace: &str, table_name: &str) -> bool {
+        let interval = self.inner.options.topo_error_retry_interval_ms;
+        if interval == 0 {
+            return true;
+        }
+        let now = now_unix_ms();
+        let key = table_combine_name(namespace, table_name);
+        let mut states = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned");
+        let state = states
+            .entry(key)
+            .or_insert_with(|| ClientMetaSyncTableState {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                sync_generation: 0,
+                last_success_unix_ms: 0,
+                last_error_unix_ms: 0,
+                next_sync_after_unix_ms: 0,
+                last_topology_version: 0,
+                consecutive_errors: 0,
+                last_error: String::new(),
+                shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
+            });
+        let last = state.last_forced_sync_unix_ms;
+        // A clock that went backwards should not lock the refresh out until it catches up.
+        if last != 0 && now >= last && now.saturating_sub(last) < interval {
+            return false;
+        }
+        state.last_forced_sync_unix_ms = now;
+        true
+    }
+
+    pub(super) fn record_meta_sync_success(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        topology_version: u64,
+        shards_without_primary: u64,
+    ) {
         let key = table_combine_name(namespace, table_name);
         let now = now_unix_ms();
         let mut states = self
@@ -835,6 +953,8 @@ impl TemporalStoreClient {
                 last_topology_version: 0,
                 consecutive_errors: 0,
                 last_error: String::new(),
+                shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_success_unix_ms = now;
@@ -846,6 +966,7 @@ impl TemporalStoreClient {
         ));
         state.last_topology_version = topology_version;
         state.consecutive_errors = 0;
+        state.shards_without_primary = shards_without_primary;
         state.last_error.clear();
     }
 
@@ -869,6 +990,8 @@ impl TemporalStoreClient {
                 last_topology_version: 0,
                 consecutive_errors: 0,
                 last_error: String::new(),
+                shards_without_primary: 0,
+                last_forced_sync_unix_ms: 0,
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_error_unix_ms = now;

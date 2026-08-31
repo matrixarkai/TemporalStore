@@ -171,8 +171,11 @@ fn main() {
     for round in 1..=options.reclaims {
         let retain_from = (round * per_round) as u64;
         let started = Instant::now();
+        // Measurement harness: no durable index to anchor against, and clamping the pass
+        // would measure the clamp rather than the reclaim.
+        let durable_index = temporalstore_rust::wal::DurableIndexAnchor::unproven(shard);
         let report = store
-            .gc_before_sequence(shard, retain_from)
+            .gc_before_sequence(shard, retain_from, &durable_index)
             .expect("reclaim");
         let elapsed = started.elapsed();
         total_reclaim += elapsed;

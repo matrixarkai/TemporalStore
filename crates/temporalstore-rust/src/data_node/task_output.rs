@@ -69,6 +69,9 @@ pub(super) fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput 
             page_slabs_retained_physical_bytes: 0,
             page_slabs_retained_live: 0,
             page_slabs_retained_live_physical_bytes: 0,
+            gc_durable_index_backed: false,
+            wal_gc_clamped_by_durable_index: false,
+            index_log_gc_clamped_by_durable_index: false,
             lifecycle_plan: None,
         }),
         DataNodeTaskKind::StorageManager => {
@@ -134,6 +137,9 @@ pub(super) fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNode
             page_slabs_retained_physical_bytes: 0,
             page_slabs_retained_live: 0,
             page_slabs_retained_live_physical_bytes: 0,
+            gc_durable_index_backed: false,
+            wal_gc_clamped_by_durable_index: false,
+            index_log_gc_clamped_by_durable_index: false,
             lifecycle_plan: None,
         }),
         DataNodeTaskKind::StorageManager => {

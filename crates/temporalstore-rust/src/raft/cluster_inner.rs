@@ -647,6 +647,61 @@ impl RaftClusterInner {
         Ok(())
     }
 
+    /// Advance the commit index to the highest entry a quorum has matched, applying what that
+    /// commits on the leader. The classic counting rule applies: only an entry of the current
+    /// term commits by counting replicas; older entries commit with it.
+    pub(super) fn maybe_advance_quorum_commit(&mut self) -> bool {
+        let leader_id = self.leader_id;
+        let required = self.required_majority();
+        let Some(leader) = self.nodes.get(&leader_id) else {
+            return false;
+        };
+        if leader.role != RaftRole::Leader || !leader.alive {
+            return false;
+        }
+        let current_term = leader.current_term;
+        let leader_last = node_next_log_index(leader).saturating_sub(1);
+        let mut matched: Vec<u64> = Vec::new();
+        for (id, node) in &self.nodes {
+            if !node.replica_role.participates_in_quorum() {
+                continue;
+            }
+            matched.push(if *id == leader_id {
+                leader_last
+            } else {
+                node.pipeline_state.match_index
+            });
+        }
+        if matched.len() < required {
+            return false;
+        }
+        matched.sort_unstable_by(|left, right| right.cmp(left));
+        let candidate = matched[required - 1];
+        let Some(leader) = self.nodes.get(&leader_id) else {
+            return false;
+        };
+        if candidate <= leader.commit_index {
+            return false;
+        }
+        match node_term_at_log_or_snapshot_index(leader, candidate) {
+            Some(term) if term == current_term => {}
+            _ => return false,
+        }
+        let waiters = std::mem::take(&mut self.response_waiters);
+        let pending = &mut self.pending_responses;
+        let leader = self
+            .nodes
+            .get_mut(&leader_id)
+            .expect("leader present: fetched above");
+        leader.commit_index = candidate;
+        if leader.replica_role.can_serve_data() {
+            apply_committed_recording(leader, &waiters, pending);
+        }
+        self.response_waiters = waiters;
+        self.renew_leader_lease();
+        true
+    }
+
     pub(super) fn persist_configured_wal(&mut self) -> Result<(), RaftError> {
         let staged = self.stage_configured_wal()?;
         self.finish_staged_wal(staged)
@@ -671,7 +726,7 @@ impl RaftClusterInner {
     }
 
     /// Write what this node must persist, WITHOUT taking the barrier for it.
-    fn stage_configured_wal(&mut self) -> Result<Vec<local_wal::StagedWalAppend>, RaftError> {
+    pub(super) fn stage_configured_wal(&mut self) -> Result<Vec<local_wal::StagedWalAppend>, RaftError> {
         // P4: this thread owes a barrier rather than skipping one -- `flush_deferred_persist`
         // takes it before the propose acks. Only the thread that opened the deferral defers, so
         // a vote grant or heartbeat racing this propose still fsyncs before it answers.
@@ -752,6 +807,18 @@ impl RaftClusterInner {
     pub(super) fn flush_deferred_persist(&mut self) -> Result<(), RaftError> {
         let staged = self.stage_deferred_persist()?;
         self.finish_staged_wal(staged)
+    }
+
+    /// End the deferral WITHOUT writing what it owes.
+    ///
+    /// Used for the commit index once the entry itself is already durable. Raft treats the commit
+    /// index as recoverable -- a restarting node learns it from its leader, and a leader
+    /// re-establishes it by committing an entry of its own term -- so it does not have to be made
+    /// durable before a write is acknowledged. The next record written carries the current value
+    /// anyway.
+    pub(super) fn discard_deferred_persist(&mut self) {
+        self.persist_deferred_owner = None;
+        self.persist_dirty = false;
     }
 
     /// End the deferral by WRITING what is owed, leaving the barrier to the caller.

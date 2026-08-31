@@ -786,26 +786,16 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             if refs.len() == 2 && refs[0].child_hash == GPU
     ));
 
-    // Store these the way PRODUCTION writers do -- under
-    // context_embedding_ref_hash(tenant, node, level), not under the raw node hash. Writing
-    // them under the node hash is what let the traversal reader's addressing bug pass here for
-    // as long as it did: the test built the data to match the reader instead of the writer, so
-    // reader and writer could disagree indefinitely without any test noticing.
+    // Store these the way PRODUCTION writers do: on the node itself, addressed by the node.
     for (node_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
-        let ref_hash = crate::context_workflow::context_embedding_ref_hash(
-            TENANT, node_hash, "node_l0",
-        );
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertEmbedding {
+            command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
-                embedding: ContextEmbedding {
-                    ref_hash,
-                    level: 1,
-                    model_hash: 0,
-                    vector: vec![first, second],
-                    updated_at_ms: EVENT_TIME,
-                },
+                node_hash,
+                model_hash: 1,
+                vector: vec![first, second],
+                updated_at_ms: EVENT_TIME,
             },
         });
         assert!(response.status.ok);
@@ -1411,16 +1401,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
             first_write_only: false,
             cold_storage: false,
         },
-        Command::ContextUpsertEmbedding {
-            tenant_hash: 7,
-            embedding: ContextEmbedding {
-                ref_hash: 90,
-                level: 1,
-                model_hash: 700,
-                vector: vec![0.25, 0.75],
-                updated_at_ms: 51,
-            },
-        },
         Command::ContextUpsertSummary {
             tenant_hash: 7,
             summary: ContextSummary {
@@ -1475,10 +1455,10 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         report.reclaimable_stale_page_slab_count,
         report.stale_page_slab_ids.len()
     );
-    assert!(report.model_policy_family_count >= 7);
+    assert!(report.model_policy_family_count >= 6);
     assert!(report.tombstone_policy_model_count >= 1);
     assert!(report.stale_density_policy_model_count >= 1);
-    assert!(report.layout_aware_policy_model_count >= 6);
+    assert!(report.layout_aware_policy_model_count >= 5);
     assert!(report.before.stale_page_estimate >= 1);
     assert_eq!(report.after.stale_page_estimate, 0);
     assert!(
@@ -1506,7 +1486,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert_eq!(layout("feature").unique_page_refs, 2);
     assert_eq!(layout("feature").packed_timestamped_pages, 2);
     assert_eq!(layout("context_event").index_refs, 1);
-    assert_eq!(layout("context_embedding").unique_page_refs, 1);
     assert_eq!(layout("context_summary").index_refs, 1);
 
     let policy = |model_id: &str| {
@@ -1527,7 +1506,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("feature").layout_aware_rewrite_required);
     assert!(policy("control_state").layout_aware_rewrite_required);
     assert!(policy("context_event").layout_aware_rewrite_required);
-    assert!(policy("context_embedding").layout_aware_rewrite_required);
     assert!(policy("context_summary").layout_aware_rewrite_required);
     assert!(policy("hash").object_page_packing_enabled);
     assert!(policy("feature").cold_page_rewrite_eligible_refs >= 1);
@@ -1550,7 +1528,6 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         "feature",
         "control_state",
         "context_event",
-        "context_embedding",
         "context_summary",
     ] {
         assert!(
@@ -2505,6 +2482,95 @@ fn string_setex_sets_value_and_ttl() {
     assert!(value > 0);
 }
 
+/// A sink that just remembers what it was told, so a test can ask whether a write reached it.
+#[derive(Debug, Default)]
+struct RecordingWalSink {
+    seen: std::sync::Mutex<Vec<(ShardId, Command)>>,
+}
+
+impl crate::data_node::SharedWalSink for RecordingWalSink {
+    fn record_write(&self, shard_id: ShardId, command: &Command) {
+        self.seen
+            .lock()
+            .expect("recording sink lock poisoned")
+            .push((shard_id, command.clone()));
+    }
+}
+
+/// An expiry deletion has to reach the mirror, not only this node's log.
+///
+/// Expiry appends its tombstone straight to the WAL, outside the request path, so nothing at
+/// the data-node layer ever sees it. In shared mode that meant the deletion reached the local
+/// log and no other: a successor replaying the shared log never observed it, reapplied the
+/// earlier write, and the key came back -- which is the very failure the tombstone was added
+/// to prevent, reappearing one level up.
+#[test]
+fn an_expiry_deletion_reaches_the_maintenance_mirror() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    let sink = std::sync::Arc::new(RecordingWalSink::default());
+    engine.set_maintenance_wal_mirror(sink.clone());
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: "expire-me".to_string(),
+                    value: b"gone".to_vec(),
+                    ttl_ms: 1,
+                },
+            })
+            .status
+            .ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+
+    let seen = sink
+        .seen
+        .lock()
+        .expect("recording sink lock poisoned")
+        .clone();
+    assert_eq!(
+        seen,
+        vec![(
+            1u64,
+            Command::CommonDelete {
+                key: "expire-me".to_string()
+            }
+        )],
+        "the expiry tombstone must reach the mirror, not just the local log"
+    );
+}
+
+/// With no mirror attached the sweep behaves exactly as it did before one existed.
+#[test]
+fn an_expiry_sweep_without_a_mirror_is_unchanged() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: "expire-me".to_string(),
+                    value: b"gone".to_vec(),
+                    ttl_ms: 1,
+                },
+            })
+            .status
+            .ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+}
+
 #[test]
 fn expiry_sweep_removes_expired_records_without_lazy_read() {
     let engine = TemporalEngine::default();
@@ -2941,11 +3007,12 @@ fn node_vectors_can_be_asked_for_by_owner() {
     assert!(!by_node.contains_key(&4), "a missing node must not appear");
 }
 
-// shared-corpus: context_node_inline_embedding_query_agrees
+// shared-corpus: context_traversal_scores_from_inline_vector
 #[test]
-fn asking_by_owner_and_by_ref_hash_give_the_same_vector() {
-    // While both paths exist, they must not disagree -- otherwise switching readers over would
-    // silently change what gets scored.
+fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
+    // The retirement-readiness assertion: NO separate embedding record exists here. If the
+    // traversal still reaches for one, dropping those records would silently turn every
+    // tree query into an empty answer -- so this test must hold BEFORE they can go.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
@@ -2954,93 +3021,284 @@ fn asking_by_owner_and_by_ref_hash_give_the_same_vector() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    const TENANT: u64 = 5151;
-    const NODE: u64 = 9;
-    let vector = vec![0.5_f32, 0.25, -0.125];
+    const TENANT: u64 = 5001;
+    const ROOT: u64 = 1;
+    const NEAR: u64 = 2;
+    const FAR: u64 = 3;
+    const EVENT_TIME: u64 = 1_781_600_000_000;
 
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextUpsertNode {
-            tenant_hash: TENANT,
-            node: ContextNode {
-                node_hash: NODE,
-                parent_hash: 0,
-                kind: 1,
-                canonical_name: "n".to_string(),
-                l0: "text".to_string(),
-                status: 0,
-                last_event_time_ms: 0,
-                l1_ref: String::new(),
-                raw_metadata_ref: String::new(),
-                vector: Vec::new(),
-                embedding_model_hash: 0,
-                embedding_updated_at_ms: 0,
+    for (node_hash, name) in [(ROOT, "root"), (NEAR, "near"), (FAR, "far")] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: if node_hash == ROOT { 0 } else { ROOT },
+                    kind: 1,
+                    canonical_name: name.to_string(),
+                    l0: format!("{name} text"),
+                    status: 0,
+                    last_event_time_ms: EVENT_TIME,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                },
             },
-        },
-    });
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextUpsertEmbedding {
-            tenant_hash: TENANT,
-            embedding: ContextEmbedding {
-                ref_hash: crate::context_workflow::context_embedding_ref_hash(
-                    TENANT, NODE, "node_l0",
-                ),
-                level: 1,
-                model_hash: 5,
-                vector: vector.clone(),
-                updated_at_ms: 1_781_000_000_000,
+        });
+        assert!(response.status.ok);
+    }
+    for child_hash in [NEAR, FAR] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertChildRef {
+                tenant_hash: TENANT,
+                child_ref: ContextChildRef {
+                    parent_hash: ROOT,
+                    child_hash,
+                    updated_at_ms: EVENT_TIME,
+                },
             },
-        },
-    });
-    engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextSetNodeEmbedding {
-            tenant_hash: TENANT,
-            node_hash: NODE,
-            model_hash: 5,
-            vector: vector.clone(),
-            updated_at_ms: 1_781_000_000_000,
-        },
-    });
+        });
+        assert!(response.status.ok);
+    }
+    // Vectors arrive ONLY through the node-addressed write -- no ContextUpsertEmbedding at all.
+    for (node_hash, first, second) in [(NEAR, 1.0, 0.0), (FAR, 0.0, 1.0)] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: TENANT,
+                node_hash,
+                model_hash: 7,
+                vector: vec![first, second],
+                updated_at_ms: EVENT_TIME,
+            },
+        });
+        assert!(response.status.ok);
+    }
 
-    let by_owner = match engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryNodeEmbeddings {
-                tenant_hash: TENANT,
-                node_hashes: vec![NODE],
+    let traversal = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextTraverseTree {
+            tenant_hash: TENANT,
+            start_node_hash: ROOT,
+            query_vector: vec![1.0, 0.0],
+            max_depth: Some(2),
+            top_k_per_depth: Some(1),
+            max_children_scored_per_parent: Some(10),
+            max_candidate_nodes: Some(4),
+            leaf_only: true,
+        },
+    });
+    assert!(
+        matches!(
+            traversal.response,
+            CommandResponse::ContextTraversedNodes { ref nodes }
+                if nodes.len() == 1 && nodes[0].node_hash == NEAR && nodes[0].score > 0.99
+        ),
+        "a child whose only vector lives on the node must be scored"
+    );
+}
+
+// shared-corpus: context_extracted_event_time_query
+#[test]
+fn an_extracted_event_is_visible_to_time_ranged_queries() {
+    // The event rekey moved the primary map to EVENT ID keys with a separate time index; this
+    // arm was missed, kept inserting timeline keys into the id-keyed map and never fed the time
+    // index -- so every extracted event wrote successfully and was invisible to time queries.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: serde_json::from_str(r#"{"kind":"context_write_extracted_event","tenant_hash":99,"node_hash":700,"event":{"event_id_hash":701,"event_time_ms":510,"ingestion_time_ms":515,"type":4,"confidence":0.9,"importance":0.8,"text":"probe event"},"indexes":{"entity_hashes":[9001],"status_hash":77,"source_hash":88,"event_time_bucket_ms":500}}"#).unwrap(),
+    });
+    assert!(write.status.ok);
+    assert!(matches!(
+        write.response,
+        CommandResponse::ContextExtractedEventWrite { ref event_object_key, .. }
+            if event_object_key == "ctx:event:99:700"
+    ));
+    let q = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: serde_json::from_str(r#"{"kind":"context_query_events","tenant_hash":99,"node_hash":700,"start_time_ms":500,"end_time_ms":520,"limit":null}"#).unwrap(),
+    });
+    assert!(
+        matches!(
+            q.response,
+            CommandResponse::ContextEvents { ref events, .. }
+                if events.len() == 1 && events[0].event_id_hash == 701
+        ),
+        "a successfully written extracted event must be visible to a time-ranged query"
+    );
+}
+
+#[test]
+fn scratch_engine_index_dir_dies_with_the_last_engine_clone() {
+    let engine = TemporalEngine::default();
+    let index_dir = engine.index_dir.clone();
+    assert!(index_dir.exists(), "a scratch engine must create its index dir");
+    let clone = engine.clone();
+    drop(engine);
+    assert!(index_dir.exists(), "a live engine clone must keep the scratch dir");
+    drop(clone);
+    assert!(
+        !index_dir.exists(),
+        "the last engine clone must remove the scratch index dir on drop"
+    );
+}
+
+#[test]
+fn served_index_container_round_trips_and_still_reads_plain_json() {
+    use crate::engine::{decode_index_bytes, encode_index_bytes};
+
+    let mut shard = ShardState::default();
+    shard.strings.insert(
+        "container-probe".to_string(),
+        BlockAddress {
+            page_slab_id: 7,
+            offset: 11,
+            length: 13,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            band_id: None,
+            generation: None,
+            sha256: None,
+        },
+    );
+
+    // Container OFF: raw JSON, and JSON is what an older binary would have written.
+    // Say "0" rather than unsetting: unsetting selects the DEFAULT, which is the container,
+    // so an unset variable stopped meaning "off" the moment the default changed.
+    std::env::set_var("TS_INDEX_BINARY", "0");
+    let plain = encode_index_bytes(&shard);
+    assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
+    let decoded = decode_index_bytes(&plain).expect("json index decodes");
+    assert!(decoded.strings.contains_key("container-probe"));
+
+    // Container ON: a magic-prefixed payload that decodes back to the same state...
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    let wrapped = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    assert!(wrapped.starts_with(b"TSIDX\x01"), "container on must write the container");
+    assert_ne!(wrapped.first(), Some(&b'{'));
+    let decoded = decode_index_bytes(&wrapped).expect("container index decodes");
+    assert!(decoded.strings.contains_key("container-probe"));
+
+    // ...and reading is unconditional: a container decodes with the flag off, which is what
+    // makes the write flag safe to turn on and off independently of any reader.
+    let decoded_again = decode_index_bytes(&wrapped).expect("container decodes with flag off");
+    assert!(decoded_again.strings.contains_key("container-probe"));
+
+    // An unknown payload codec must be refused, never guessed at: a mis-parsed index serves
+    // wrong data with no error anywhere, which is the failure mode this container exists to stop.
+    let mut future = wrapped.clone();
+    future[6] = 0xEE;
+    let refused = decode_index_bytes(&future).expect_err("unknown codec must refuse");
+    assert!(refused.contains("cannot read"), "unhelpful refusal: {refused}");
+}
+
+#[test]
+fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
+    use crate::engine::{decode_index_bytes, encode_index_bytes};
+
+    let mut shard = ShardState::default();
+    shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+    for i in 0..64u64 {
+        shard.strings.insert(
+            format!("object-{i}"),
+            BlockAddress {
+                page_slab_id: i,
+                offset: i * 7,
+                length: i + 1,
+                page_id: Some(i),
+                object_id: Some(i * 3),
+                routing_bucket: Some((i % 8) as u32),
+                band_id: None,
+                generation: Some(i),
+                sha256: None,
             },
-        })
-        .response
-    {
-        CommandResponse::ContextNodeEmbeddings { embeddings } => embeddings
-            .into_iter()
-            .next()
-            .map(|(_, vector)| vector)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    let by_ref_hash = match engine
-        .execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryEmbeddings {
-                tenant_hash: TENANT,
-                ref_hashes: vec![crate::context_workflow::context_embedding_ref_hash(
-                    TENANT, NODE, "node_l0",
-                )],
-                limit: Some(1),
-            },
-        })
-        .response
-    {
-        CommandResponse::ContextEmbeddings { embeddings } => embeddings
-            .into_iter()
-            .next()
-            .map(|embedding| embedding.vector)
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    assert_eq!(vector, by_owner);
-    assert_eq!(by_ref_hash, by_owner, "the two read paths disagree");
+        );
+    }
+    shard.hashes.entry("hash-object".to_string()).or_default().insert(
+        "component".to_string(),
+        BlockAddress {
+            page_slab_id: 9,
+            offset: 1,
+            length: 2,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            band_id: None,
+            generation: None,
+            sha256: None,
+        },
+    );
+    shard.applied_wal_sequence = Some(4242);
+
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    std::env::set_var("TS_INDEX_CODEC", "msgpack");
+    let binary = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    std::env::remove_var("TS_INDEX_CODEC");
+
+    assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
+    assert_eq!(binary[6], 2, "payload codec id");
+
+    // Exact round-trip: the durable image has to come back as the same state, not merely a
+    // plausible one -- so compare the maps, not just that it decoded.
+    let decoded = decode_index_bytes(&binary).expect("binary index decodes");
+    assert_eq!(decoded.strings.len(), shard.strings.len());
+    for (key, address) in &shard.strings {
+        assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
+    }
+    assert_eq!(decoded.hashes, shard.hashes);
+    assert_eq!(decoded.applied_wal_sequence, shard.applied_wal_sequence);
+    assert_eq!(decoded.index_format_version, shard.index_format_version);
+
+    // The payload is addressed by field ORDER, so a struct of a different shape must be refused
+    // rather than decoded into something plausible and wrong. The version stamp sits outside the
+    // payload precisely so it can be checked before any of it is parsed.
+    let mut wrong_version = binary.clone();
+    wrong_version[7..11].copy_from_slice(&99u32.to_be_bytes());
+    let refused = decode_index_bytes(&wrong_version).expect_err("a foreign struct version refuses");
+    assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
+
+    // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
+    // "0" rather than unset -- unset now selects the container, which is not what is under
+    // test here.
+    std::env::set_var("TS_INDEX_BINARY", "0");
+    let plain = encode_index_bytes(&shard);
+    assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
+    assert_eq!(
+        decode_index_bytes(&plain).expect("json decodes").strings.len(),
+        shard.strings.len()
+    );
+
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    std::env::set_var("TS_INDEX_CODEC", "zstd-json");
+    let compressed_json = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    std::env::remove_var("TS_INDEX_CODEC");
+    assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
+    assert_eq!(
+        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings.len(),
+        shard.strings.len()
+    );
+
+    // The binary payload is the smaller one -- that is the whole point of adding it.
+    assert!(
+        binary.len() < plain.len(),
+        "binary {} not smaller than json {}",
+        binary.len(),
+        plain.len()
+    );
 }

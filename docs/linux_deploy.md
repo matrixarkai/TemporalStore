@@ -73,7 +73,7 @@ RocksDB from source (via `librocksdb-sys`, which uses `bindgen`/libclang).
 Then clone and enter the repo:
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore.git
+git clone https://github.com/matrixarkai/TemporalStore.git
 cd TemporalStore
 ```
 
@@ -94,10 +94,11 @@ dependencies from public GitHub, so `cargo build` fetches them automatically on
 the first build:
 
 ```text
-matrixraft            https://github.com/bjmeetsfo/MatrixRaft.git         (Raft consensus)
-matrixcache           https://github.com/bjmeetsfo/MatrixCache.git        (tiered cache + RocksDB SSD store)
-matrixobjectstore-rs  https://github.com/bjmeetsfo/MatrixObjectStore.git  (optional; enable with --features matrixobject)
+matrixraft            https://github.com/matrixarkai/MatrixRaft.git         (Raft consensus)
+matrixcache           https://github.com/matrixarkai/MatrixCache.git        (tiered cache + RocksDB SSD store)
 ```
+
+An optional object-store backend sits behind `--features matrixobject`. It is not part of this build: the feature ships as an empty stub, so nothing is fetched for it and nothing needs to be.
 
 Each dependency is pinned to an exact revision, so builds are reproducible. You
 do not clone these repos by hand — you only need `git` and network access to
@@ -107,7 +108,7 @@ build.
 
 Offline or air-gapped builds: run `cargo vendor` on a connected host and commit
 the generated `.cargo/config.toml`, or clone MatrixCache/MatrixRaft locally and
-add `[patch."https://github.com/bjmeetsfo/MatrixCache.git"]` / MatrixRaft path
+add `[patch."https://github.com/matrixarkai/MatrixCache.git"]` / MatrixRaft path
 overrides to a workspace `Cargo.toml`.
 
 ## One-Command Build And Deploy

@@ -88,8 +88,8 @@ def sample_report() -> dict:
         row("q2", "temporal", True, True, 1, ["src-2"]),
     ]
     return {
-        "schema": "matrixark_vikingmem_context_benchmark_report_v1",
-        "benchmark_family": "vikingmem_long_memory",
+        "schema": "matrixark_external_baseline_context_benchmark_report_v1",
+        "benchmark_family": "external_baseline_long_memory",
         "dataset": "locomo",
         "mode": "conversation_load_once_query_many",
         "input": "/tmp/locomo10.json",
@@ -109,7 +109,7 @@ def sample_report() -> dict:
         "reader_answer_coverage": 1.0,
         "reader_mode_requested": "deterministic",
         "reader_mode_effective": "deterministic",
-        "reader_provider_name": "vikingmem-gpt-4o-mini-reader",
+        "reader_provider_name": "external_baseline-gpt-4o-mini-reader",
         "reader_model": "gpt-4o-mini",
         "reader_open_source_calls": 0,
         "reader_fallback_count": 0,

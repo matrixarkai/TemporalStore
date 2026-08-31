@@ -15,7 +15,7 @@ Same engine benchmarked on LOCOMO & LongMemEval_s (<https://temporalstore.ai/ben
 A TemporalStore checkout on your machine:
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore
+git clone https://github.com/matrixarkai/TemporalStore
 ```
 
 ## Install
@@ -50,4 +50,4 @@ Codex also supports lifecycle hooks (`[features] hooks = true` + `hooks.json`). 
 injection/ingest through the dedicated Rust codex hook, point a command hook at
 `tools/run_rust_codex_context_hook.sh`. See the Codex hooks docs for the current event schema.
 
-Apache-2.0 · part of [TemporalStore](https://github.com/bjmeetsfo/TemporalStore).
+Apache-2.0 · part of [TemporalStore](https://github.com/matrixarkai/TemporalStore).

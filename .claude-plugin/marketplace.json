@@ -13,7 +13,7 @@
       "source": "./integrations/claude-plugin",
       "description": "Time-aware long-term memory for Claude Code, backed by the Rust TemporalStore engine: automatic ingest/inject lifecycle hooks plus MCP recall/remember tools.",
       "homepage": "https://temporalstore.ai/benchmarks.html",
-      "repository": "https://github.com/bjmeetsfo/TemporalStore",
+      "repository": "https://github.com/matrixarkai/TemporalStore",
       "license": "Apache-2.0",
       "category": "productivity",
       "keywords": ["memory", "context", "temporalstore", "matrixark"],

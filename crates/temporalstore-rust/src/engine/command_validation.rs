@@ -35,7 +35,10 @@ pub(super) fn command_touched_keys(command: &Command) -> Vec<String> {
 
 pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
+        // Touches no object, so it holds no object keys.
+        Command::LeaderEstablish => Vec::new(),
         Command::CommonDelete { key } => associated_record_keys(key),
+        Command::CommonPersist { key } => associated_record_keys(key),
         Command::CommonExpire { key, .. }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
@@ -47,6 +50,23 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::ListPush { key, .. }
+        | Command::ListPop { key, .. }
+        | Command::ListRange { key, .. }
+        | Command::ListLen { key }
+        | Command::ZSetAdd { key, .. }
+        | Command::ZSetScore { key, .. }
+        | Command::ZSetRemove { key, .. }
+        | Command::ZSetCard { key }
+        | Command::ZSetRange { key, .. }
+        | Command::ZSetRangeByScore { key, .. }
+        | Command::ZSetIncrBy { key, .. }
+        | Command::ZSetPop { key, .. }
+        | Command::ZSetRank { key, .. }
+        | Command::BucketTake { key, .. }
+        | Command::BucketPeek { key, .. }
+        | Command::SeenCheck { key, .. }
+        | Command::SeenCard { key }
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
@@ -171,10 +191,6 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
             tenant_hash,
             child_ref,
         } => vec![context_child_key(*tenant_hash, child_ref.parent_hash)],
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => vec![context_embedding_key(*tenant_hash, embedding.ref_hash)],
         Command::ContextSetNodeEmbedding {
             tenant_hash,
             node_hash,
@@ -234,10 +250,16 @@ pub(crate) fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextGetEntity { .. }
         | Command::ContextQueryEntities { .. }
         | Command::ContextQueryChildren { .. }
-        | Command::ContextQueryEmbeddings { .. }
         | Command::ContextTraverseTree { .. }
         | Command::ContextQuerySummaries { .. }
+        | Command::ContextQuerySummaryVectors { .. }
         | Command::ContextQueryCompressionEvents { .. }
+        | Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. }
         | Command::ContextQueryNodeContext { .. } => Vec::new(),
     }
 }
@@ -256,6 +278,12 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::ListPush { .. }
+            | Command::ListPop { .. }
+            | Command::ZSetAdd { .. }
+            | Command::ZSetRemove { .. }
+            | Command::ZSetIncrBy { .. }
+            | Command::ZSetPop { .. }
             | Command::ControlStateIncrement { .. }
             | Command::ControlStateIncrementWithOptions { .. }
             | Command::ControlStateSet { .. }
@@ -269,6 +297,7 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
         command,
         Command::CommonDelete { .. }
             | Command::CommonExpire { .. }
+            | Command::CommonPersist { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }
@@ -279,6 +308,14 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::ListPush { .. }
+            | Command::ListPop { .. }
+            | Command::ZSetAdd { .. }
+            | Command::ZSetRemove { .. }
+            | Command::ZSetIncrBy { .. }
+            | Command::ZSetPop { .. }
+            | Command::BucketTake { .. }
+            | Command::SeenCheck { .. }
             | Command::FeatureAppend { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
@@ -291,6 +328,11 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
             | Command::ControlStateSelectionSet { .. }
+            | Command::ContextResourceBlobBegin { .. }
+            | Command::ContextResourceBlobAppend { .. }
+            | Command::ContextResourceBlobCommit { .. }
+            | Command::ContextResourceBlobPut { .. }
+            | Command::ContextResourceBlobSweep { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }
@@ -300,7 +342,6 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::ContextMarkEmbeddingDirty { .. }
             | Command::ContextUpsertEntity { .. }
             | Command::ContextUpsertChildRef { .. }
-            | Command::ContextUpsertEmbedding { .. }
             | Command::ContextSetNodeEmbedding { .. }
             | Command::ContextUpsertSummary { .. }
             | Command::ContextWriteCompressionEvent { .. }
@@ -412,11 +453,17 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        // Expiry checks here use the SAME replay-aware clock as the executor's
+        // `remove_if_expired`. Validation runs only on the leader today, where the two
+        // clocks coincide, so this changes no production behaviour. It removes a split
+        // that would matter the moment anything validates during replay: deciding
+        // "is this key expired" against the restart clock is what makes a replayed
+        // command fail its precondition and abort a shard load.
         Command::CommonExpire { key, .. } => {
             if shard
                 .expires_at_ms
                 .get(key)
-                .map(|expires_at| *expires_at <= now_ms())
+                .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false)
                 || !record_exists(shard, key)
             {
@@ -486,6 +533,20 @@ pub(super) fn validate_command_preconditions(
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(!node_hashes.is_empty(), "node_hashes are required")?;
+            for node_hash in node_hashes {
+                validate_context_required(*node_hash != 0, "node_hash is required")?;
+            }
+        }
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            as_of_ms,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(!node_hashes.is_empty(), "node_hashes are required")?;
+            validate_context_required(*level != 0, "level is required")?;
+            validate_context_required(*as_of_ms != 0, "as_of_ms is required")?;
             for node_hash in node_hashes {
                 validate_context_required(*node_hash != 0, "node_hash is required")?;
             }
@@ -692,24 +753,6 @@ pub(super) fn validate_command_preconditions(
             validate_context_required(*parent_hash != 0, "parent_hash is required")?;
             validate_context_limit(*limit)?;
         }
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => {
-            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_embedding(embedding)?;
-        }
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            limit,
-        } => {
-            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_limit(*limit)?;
-            if ref_hashes.len() > CONTEXT_MAX_LIMIT {
-                return Err(Status::error("invalid_argument", "too many ref_hashes"));
-            }
-        }
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,
@@ -833,7 +876,7 @@ pub(super) fn validate_command_preconditions(
         if shard
             .expires_at_ms
             .get(key)
-            .map(|expires_at| *expires_at <= now_ms())
+            .map(|expires_at| *expires_at <= resolve_now_ms())
             .unwrap_or(false)
         {
             return Ok(());

@@ -1206,11 +1206,32 @@ pub(super) fn context_query_embedding(
     }
 }
 
+/// Two vectors are comparable only when they are the same width.
+///
+/// A different width means a different embedding space. This system can hold both at once: the
+/// embedding path falls back to a 32-dimension deterministic token-hash vector whenever the
+/// configured provider raises, so one store can carry 32-dimension and 384-dimension vectors with
+/// nothing marking them apart. Scoring the shared prefix of two such vectors returns a perfectly
+/// plausible cosine computed across two unrelated spaces -- there is no length error to raise and
+/// nothing appears in the logs, so the only symptom is ranking that has quietly become noise.
+///
+/// An empty vector on either side is a different condition (un-embedded, not mis-embedded) and is
+/// deliberately not folded in here, so that case keeps behaving exactly as it did.
+pub(super) fn context_embedding_width_conflicts(left: &[f32], right: &[f32]) -> bool {
+    !left.is_empty() && !right.is_empty() && left.len() != right.len()
+}
+
 pub(super) fn context_embedding_similarity_micros(left: &[f32], right: &[f32]) -> i64 {
     if left.is_empty() || right.is_empty() {
         return 0;
     }
-    let len = left.len().min(right.len());
+    // Refuse, rather than score the shared prefix. The callers route a conflict to the lexical
+    // pass before reaching here; this is the backstop that stops any future caller from comparing
+    // across two embedding spaces just by passing two vectors in.
+    if context_embedding_width_conflicts(left, right) {
+        return 0;
+    }
+    let len = left.len();
     let mut dot = 0.0_f32;
     let mut left_norm = 0.0_f32;
     let mut right_norm = 0.0_f32;

@@ -4,6 +4,71 @@
 //! Standalone per-shard command execution extracted from engine.rs.
 use super::*;
 
+/// Put aside an outcome that no page backs: a deletion, a deadline, or state that lives only
+/// in the index snapshot.
+///
+/// The page path stages its outcome inside `upsert_bucket_index_page`, because that is where a
+/// page outcome is produced. These have no such moment, so they say it here.
+#[allow(clippy::too_many_arguments)]
+/// Record a page or a value that belongs to one COMPONENT of an object.
+///
+/// `stage_meta_outcome` states something about the object as a whole -- it is gone, its deadline
+/// is this. This states what one part of it became: which page backs it, or the bytes for state no
+/// page backs at all.
+#[allow(clippy::too_many_arguments)]
+fn stage_component_outcome(
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    routing_bucket: u32,
+    address: Option<crate::block_store::BlockAddress>,
+    value: Option<Vec<u8>>,
+) {
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: object_key.to_string(),
+        component: component.clone(),
+        object_id: stable_page_object_id(shard_id, kind, object_key, component.as_deref()),
+        routing_bucket,
+        address,
+        value,
+        ttl: None,
+        deleted: false,
+        meta: false,
+    });
+}
+
+fn stage_meta_outcome(
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    value: Option<Vec<u8>>,
+    ttl: Option<u64>,
+    deleted: bool,
+) {
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: object_key.to_string(),
+        component: None,
+        object_id: stable_page_object_id(shard_id, kind, object_key, None),
+        routing_bucket: page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket),
+        address: None,
+        value,
+        ttl,
+        deleted,
+        meta: true,
+    });
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -24,7 +89,30 @@ pub(crate) fn execute_on_shard(
     shard.control_distinct_sketch = control_distinct_sketch;
     let mut mutated = false;
     let response = match command {
+        // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
+        // invalidates a cache entry.
+        Command::LeaderEstablish => CommandResponse::Empty,
+        // Blob commands are dispatched before the shard lock (they live beside the engine,
+        // not in shard record state); reaching this arm means the early dispatch was skipped.
+        Command::ContextResourceBlobBegin { .. }
+        | Command::ContextResourceBlobAppend { .. }
+        | Command::ContextResourceBlobCommit { .. }
+        | Command::ContextResourceBlobPut { .. }
+        | Command::ContextResourceBlobFetch { .. }
+        | Command::ContextResourceBlobSweep { .. } => CommandResponse::Empty,
         Command::CommonDelete { key } => {
+            // An outcome with no page: the object is gone. Their log item states the same thing
+            // with `object_deleted`, and replay applies it without re-running a delete.
+            stage_meta_outcome(
+                shard_id,
+                "object",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                None,
+                true,
+            );
             mutated = delete_record(shard, &key);
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
@@ -37,8 +125,56 @@ pub(crate) fn execute_on_shard(
                 }
             }
             mutated = true;
+            // The deadline is recorded ALREADY RESOLVED. That is the point: a replay applying
+            // this outcome needs no clock of its own, where re-running the command would resolve
+            // the TTL against the restart clock and extend every recently-expiring key.
+            stage_meta_outcome(
+                shard_id,
+                "object",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                Some(expires_at),
+                false,
+            );
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
+        }
+        Command::CommonPersist { key } => {
+            // Expired-but-unswept is "missing" here, exactly as reads treat it: removing the
+            // sweep's pending work must not resurrect a value whose deadline already passed.
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                invalidate_record_all(cache, shard_id, &key);
+                CommandResponse::Integer { value: 0 }
+            } else {
+                let mut removed = false;
+                for record_key in associated_record_keys(&key) {
+                    if shard.expires_at_ms.remove(&record_key).is_some()
+                        && record_exists_exact(shard, &record_key)
+                    {
+                        removed = true;
+                    }
+                }
+                if removed {
+                    mutated = true;
+                    stage_meta_outcome(
+                        shard_id,
+                        "object",
+                        &key,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        None,
+                        None,
+                        false,
+                    );
+                    invalidate_record_all(cache, shard_id, &key);
+                }
+                CommandResponse::Integer {
+                    value: i64::from(removed),
+                }
+            }
         }
         Command::CommonTtl { key } => {
             let expired = shard
@@ -116,9 +252,22 @@ pub(crate) fn execute_on_shard(
                     true,
                 );
                 shard.strings.insert(key.clone(), address);
-                shard
-                    .expires_at_ms
-                    .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                shard.expires_at_ms.insert(key.clone(), expires_at);
+                // This write sets a value AND a deadline. Recording only the page passes a probe
+                // that asks whether the record said anything, and produces a recovered key that
+                // never expires -- so the deadline is recorded too, already resolved, exactly as
+                // CommonExpire records its own.
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
@@ -166,11 +315,36 @@ pub(crate) fn execute_on_shard(
                     );
                     shard.strings.insert(key.clone(), address);
                     if let Some(ttl_ms) = ttl_ms {
-                        shard
-                            .expires_at_ms
-                            .insert(key.clone(), resolve_now_ms().saturating_add(ttl_ms));
+                        let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                        shard.expires_at_ms.insert(key.clone(), expires_at);
+                        // A conditional write that refreshes a deadline records the refreshed
+                        // one. Recording only the page leaves a replay installing the value over
+                        // a LAPSED deadline from an earlier record, and the key reads as expired
+                        // even though the leader kept it alive.
+                        stage_meta_outcome(
+                            shard_id,
+                            "object",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            None,
+                            Some(expires_at),
+                            false,
+                        );
                     } else {
                         shard.expires_at_ms.remove(&key);
+                        // No deadline is equally a result. An object outcome carrying neither a
+                        // deadline nor a deletion says exactly that.
+                        stage_meta_outcome(
+                            shard_id,
+                            "object",
+                            &key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            None,
+                            None,
+                            false,
+                        );
                     }
                     mutated = true;
                 }
@@ -202,6 +376,16 @@ pub(crate) fn execute_on_shard(
             })
         }
         Command::StringDelete { key } => {
+            stage_meta_outcome(
+                shard_id,
+                "string",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                None,
+                true,
+            );
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             mutated |= shard.strings.remove(&key).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
@@ -407,7 +591,7 @@ pub(crate) fn execute_on_shard(
             }
         }
         Command::HashDelete { key, field } => {
-            mutated |= mark_bucket_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
+            mutated |= mark_bucket_index_page_deleted(shard, shard_id, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
                 // Mirror hash2::Del: deleting the last field removes the whole key
@@ -455,6 +639,551 @@ pub(crate) fn execute_on_shard(
             let _ = cache.invalidate_record(shard_id, "set", &key);
             CommandResponse::Empty
         }
+        Command::ZSetAdd { key, member, score } => {
+            remove_if_expired(shard, &key);
+            let biased = zset_score_bits(score);
+            let existed = shard
+                .zsets
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(old_biased, _)| *old_biased);
+            if existed == Some(biased) {
+                // Same score: nothing to rewrite, and the answer is still "not new".
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            if let Some(old_biased) = existed {
+                let old_component = zset_component(old_biased, &member);
+                mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&old_component));
+            }
+            let component = zset_component(biased, &member);
+            let object_id = stable_page_object_id(shard_id, "zset", &key, Some(&component));
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &member,
+                Some(object_id),
+                Some(routing_bucket),
+                async_storage,
+            ) {
+                upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    Some(component.clone()),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .zsets
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(member.clone(), (biased, address));
+                mutated = true;
+            }
+            let _ = cache.invalidate_record(shard_id, "zset", &key);
+            CommandResponse::Integer {
+                value: i64::from(existed.is_none()),
+            }
+        }
+        Command::ZSetScore { key, member } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            CommandResponse::Bytes {
+                value: shard
+                    .zsets
+                    .get(&key)
+                    .and_then(|members| members.get(&member))
+                    .map(|(biased, _)| zset_score_string(*biased).into_bytes()),
+            }
+        }
+        Command::ZSetRemove { key, member } => {
+            let removed = shard
+                .zsets
+                .get_mut(&key)
+                .and_then(|members| members.remove(&member));
+            match removed {
+                None => CommandResponse::Integer { value: 0 },
+                Some((biased, _)) => {
+                    mutated = true;
+                    let component = zset_component(biased, &member);
+                    mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&component));
+                    if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
+                        shard.zsets.remove(&key);
+                    }
+                    let _ = cache.invalidate_record(shard_id, "zset", &key);
+                    CommandResponse::Integer { value: 1 }
+                }
+            }
+        }
+        Command::ZSetCard { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            CommandResponse::Integer {
+                value: shard.zsets.get(&key).map_or(0, BTreeMap::len) as i64,
+            }
+        }
+        Command::ZSetRange {
+            key,
+            start,
+            stop,
+            rev,
+        } => {
+            remove_if_expired(shard, &key);
+            let mut ordered = zset_ordered_members(shard, &key);
+            if rev {
+                ordered.reverse();
+            }
+            let length = ordered.len() as i64;
+            let resolve = |index: i64| if index < 0 { length + index } else { index };
+            let from = resolve(start).max(0);
+            let to = resolve(stop).min(length - 1);
+            let members = if from > to || length == 0 {
+                Vec::new()
+            } else {
+                ordered[from as usize..=to as usize]
+                    .iter()
+                    .flat_map(|(member, biased)| {
+                        [member.clone(), zset_score_string(*biased).into_bytes()]
+                    })
+                    .collect()
+            };
+            CommandResponse::Members { members }
+        }
+        Command::ZSetRangeByScore {
+            key,
+            min,
+            max,
+            min_exclusive,
+            max_exclusive,
+            rev,
+        } => {
+            remove_if_expired(shard, &key);
+            let min_bits = zset_score_bits(min);
+            let max_bits = zset_score_bits(max);
+            let mut ordered: Vec<(Vec<u8>, u64)> = zset_ordered_members(shard, &key)
+                .into_iter()
+                .filter(|(_, biased)| {
+                    let above = if min_exclusive {
+                        *biased > min_bits
+                    } else {
+                        *biased >= min_bits
+                    };
+                    let below = if max_exclusive {
+                        *biased < max_bits
+                    } else {
+                        *biased <= max_bits
+                    };
+                    above && below
+                })
+                .collect();
+            if rev {
+                ordered.reverse();
+            }
+            let members = ordered
+                .into_iter()
+                .flat_map(|(member, biased)| {
+                    [member, zset_score_string(biased).into_bytes()]
+                })
+                .collect();
+            CommandResponse::Members { members }
+        }
+        Command::SeenCheck {
+            key,
+            member,
+            window_ms,
+        } => {
+            let now = resolve_now_ms();
+            let floor = now.saturating_sub(window_ms);
+            // No page backs a seen-set; it lives in the index snapshot. So the outcome carries
+            // the member and the moment, which is everything an apply needs.
+            stage_meta_outcome(
+                shard_id,
+                "seen",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(member.clone()),
+                Some(now),
+                false,
+            );
+            let seen = shard.seen.entry(key).or_default();
+            // Bounded sweep from the time-ordered front: enough to keep pace with any
+            // sustained rate, never enough to stall a hot call on a huge backlog.
+            for _ in 0..128 {
+                match seen.by_time.first_key_value() {
+                    Some(((seen_at, _), ())) if *seen_at < floor => {
+                        let ((seen_at, expired), ()) =
+                            seen.by_time.pop_first().expect("front exists");
+                        if seen.by_member.get(&expired) == Some(&seen_at) {
+                            seen.by_member.remove(&expired);
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            let duplicate = seen
+                .by_member
+                .get(&member)
+                .is_some_and(|seen_at| *seen_at >= floor);
+            if !duplicate {
+                if let Some(previous) = seen.by_member.insert(member.clone(), now) {
+                    seen.by_time.remove(&(previous, member.clone()));
+                }
+                seen.by_time.insert((now, member), ());
+            }
+            mutated = true;
+            CommandResponse::Integer {
+                value: i64::from(duplicate),
+            }
+        }
+        Command::SeenCard { key } => CommandResponse::Integer {
+            value: shard
+                .seen
+                .get(&key)
+                .map_or(0, |seen| seen.by_member.len()) as i64,
+        },
+        Command::BucketTake {
+            key,
+            tokens,
+            capacity,
+            refill_per_sec,
+        } => {
+            let now = resolve_now_ms();
+            let current = shard.buckets.get(&key).copied();
+            let (allowed, remaining, retry_after_ms, next) =
+                bucket_take(current, now, tokens, capacity, refill_per_sec);
+            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
+            // not the take itself. Re-running a take would recompute against a different clock;
+            // installing the resulting bucket cannot.
+            let mut bucket_state = Vec::with_capacity(16);
+            bucket_state.extend_from_slice(&next.0.to_le_bytes());
+            bucket_state.extend_from_slice(&next.1.to_le_bytes());
+            stage_meta_outcome(
+                shard_id,
+                "bucket",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(bucket_state),
+                None,
+                false,
+            );
+            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
+            // not the take itself. Re-running a take would recompute against a different clock;
+            // installing the resulting bucket cannot.
+            let mut bucket_state = Vec::with_capacity(16);
+            bucket_state.extend_from_slice(&next.0.to_le_bytes());
+            bucket_state.extend_from_slice(&next.1.to_le_bytes());
+            stage_meta_outcome(
+                shard_id,
+                "bucket",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(bucket_state),
+                None,
+                false,
+            );
+            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
+            // not the take itself. Re-running a take would recompute against a different clock;
+            // installing the resulting bucket cannot.
+            let mut bucket_state = Vec::with_capacity(16);
+            bucket_state.extend_from_slice(&next.0.to_le_bytes());
+            bucket_state.extend_from_slice(&next.1.to_le_bytes());
+            stage_meta_outcome(
+                shard_id,
+                "bucket",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                Some(bucket_state),
+                None,
+                false,
+            );
+            shard.buckets.insert(key, next);
+            mutated = true;
+            CommandResponse::Members {
+                members: bucket_answer(allowed, remaining, retry_after_ms),
+            }
+        }
+        Command::BucketPeek {
+            key,
+            tokens,
+            capacity,
+            refill_per_sec,
+        } => {
+            let now = resolve_now_ms();
+            let current = shard.buckets.get(&key).copied();
+            let (allowed, remaining, retry_after_ms, _) =
+                bucket_take(current, now, tokens, capacity, refill_per_sec);
+            CommandResponse::Members {
+                members: bucket_answer(allowed, remaining, retry_after_ms),
+            }
+        }
+        Command::ZSetIncrBy {
+            key,
+            member,
+            increment,
+        } => {
+            remove_if_expired(shard, &key);
+            let old = shard
+                .zsets
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(biased, _)| *biased);
+            let score = old.map_or(0.0, zset_score_from_bits) + increment;
+            let biased = zset_score_bits(score);
+            if let Some(old_biased) = old {
+                let old_component = zset_component(old_biased, &member);
+                mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&old_component));
+            }
+            let component = zset_component(biased, &member);
+            let object_id = stable_page_object_id(shard_id, "zset", &key, Some(&component));
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &member,
+                Some(object_id),
+                Some(routing_bucket),
+                async_storage,
+            ) {
+                shard
+                    .zsets
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(member.clone(), (biased, address.clone()));
+                upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "zset",
+                    &key,
+                    Some(component),
+                    address,
+                    true,
+                );
+                mutated = true;
+            }
+            let _ = cache.invalidate_record(shard_id, "zset", &key);
+            CommandResponse::Bytes {
+                value: Some(zset_score_string(biased).into_bytes()),
+            }
+        }
+        Command::ZSetPop { key, min, count } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Members {
+                        members: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let mut ordered = zset_ordered_members(shard, &key);
+            if !min {
+                ordered.reverse();
+            }
+            ordered.truncate(count as usize);
+            let mut members = Vec::new();
+            for (member, biased) in ordered {
+                let component = zset_component(biased, &member);
+                mark_bucket_index_page_deleted(shard, shard_id, "zset", &key, Some(&component));
+                if let Some(entries) = shard.zsets.get_mut(&key) {
+                    entries.remove(&member);
+                }
+                mutated = true;
+                members.push(member);
+                members.push(zset_score_string(biased).into_bytes());
+            }
+            if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
+                shard.zsets.remove(&key);
+            }
+            if mutated {
+                let _ = cache.invalidate_record(shard_id, "zset", &key);
+            }
+            CommandResponse::Members { members }
+        }
+        Command::ZSetRank { key, member, rev } => {
+            remove_if_expired(shard, &key);
+            let target = shard
+                .zsets
+                .get(&key)
+                .and_then(|members| members.get(&member))
+                .map(|(biased, _)| (*biased, member.clone()));
+            CommandResponse::Bytes {
+                value: target.map(|(biased, member)| {
+                    let before = shard
+                        .zsets
+                        .get(&key)
+                        .map(|members| {
+                            members
+                                .iter()
+                                .filter(|(other, (other_biased, _))| {
+                                    let other_key = (*other_biased, (*other).clone());
+                                    let target_key = (biased, member.clone());
+                                    if rev {
+                                        other_key > target_key
+                                    } else {
+                                        other_key < target_key
+                                    }
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0);
+                    before.to_string().into_bytes()
+                }),
+            }
+        }
+        Command::ListPush { key, member, left } => {
+            remove_if_expired(shard, &key);
+            let seq = {
+                let list = shard.lists.entry(key.clone()).or_default();
+                if left {
+                    list.keys().next().copied().map_or(0, |first| first - 1)
+                } else {
+                    list.keys().next_back().copied().map_or(0, |last| last + 1)
+                }
+            };
+            // Two's-complement bias makes the hex component sort lexically in list order,
+            // which is what lets recovery and range reads walk the bucket index directly.
+            let component = format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+            let object_id = stable_page_object_id(shard_id, "list", &key, Some(&component));
+            let routing_bucket =
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &member,
+                Some(object_id),
+                Some(routing_bucket),
+                async_storage,
+            ) {
+                upsert_bucket_index_page(
+                    shard,
+                    shard_id,
+                    "list",
+                    &key,
+                    Some(component.clone()),
+                    address.clone(),
+                    true,
+                );
+                shard
+                    .lists
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(seq, address);
+                mutated = true;
+            }
+            let _ = cache.invalidate_record(shard_id, "list", &key);
+            let length = shard.lists.get(&key).map_or(0, BTreeMap::len) as i64;
+            CommandResponse::Integer { value: length }
+        }
+        Command::ListPop { key, left } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "list", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            let popped = shard.lists.get_mut(&key).and_then(|list| {
+                let seq = if left {
+                    list.keys().next().copied()
+                } else {
+                    list.keys().next_back().copied()
+                }?;
+                list.remove(&seq).map(|address| (seq, address))
+            });
+            match popped {
+                None => CommandResponse::Bytes { value: None },
+                Some((seq, address)) => {
+                    let component =
+                        format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64));
+                    mutated = true;
+                    mark_bucket_index_page_deleted(shard, shard_id, "list", &key, Some(&component));
+                    if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
+                        shard.lists.remove(&key);
+                    }
+                    let _ = cache.invalidate_record(shard_id, "list", &key);
+                    CommandResponse::Bytes {
+                        value: read_page_bytes(cache, page_store, shard_id, &address),
+                    }
+                }
+            }
+        }
+        Command::ListRange { key, start, stop } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "list", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Members {
+                        members: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let addresses: Vec<BlockAddress> = shard
+                .lists
+                .get(&key)
+                .map(|list| list.values().cloned().collect())
+                .unwrap_or_default();
+            let length = addresses.len() as i64;
+            let resolve = |index: i64| -> i64 {
+                if index < 0 {
+                    length + index
+                } else {
+                    index
+                }
+            };
+            let from = resolve(start).max(0);
+            let to = resolve(stop).min(length - 1);
+            let members = if from > to || length == 0 {
+                Vec::new()
+            } else {
+                addresses[from as usize..=to as usize]
+                    .iter()
+                    .filter_map(|address| read_page_bytes(cache, page_store, shard_id, address))
+                    .collect()
+            };
+            CommandResponse::Members { members }
+        }
+        Command::ListLen { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "list", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            CommandResponse::Integer {
+                value: shard.lists.get(&key).map_or(0, BTreeMap::len) as i64,
+            }
+        }
         Command::SetMembers { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
@@ -478,7 +1207,7 @@ pub(crate) fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             let member_component = hex::encode(&member);
-            mutated |= mark_bucket_index_page_deleted(shard, "set", &key, Some(&member_component));
+            mutated |= mark_bucket_index_page_deleted(shard, shard_id, "set", &key, Some(&member_component));
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
             }
@@ -509,13 +1238,14 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -576,14 +1306,14 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                    mutated = true;
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -716,10 +1446,14 @@ pub(crate) fn execute_on_shard(
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(timestamp_ms, _)| *timestamp_ms)
                 .collect::<Vec<_>>();
-            for timestamp_ms in replaced {
-                series.remove(&timestamp_ms);
-                mutated = true;
-            }
+            mutated |= drop_timestamped_points(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                &replaced,
+            );
             let points = sorted_feature_points(points);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
@@ -736,14 +1470,14 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                    mutated = true;
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -757,6 +1491,17 @@ pub(crate) fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::FeatureDelete { key } => {
+            // A removal with no component: the whole series went, not one point.
+            stage_meta_outcome(
+                shard_id,
+                "feature",
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+                None,
+                None,
+                true,
+            );
             mutated = shard.features.remove(&key).is_some();
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
@@ -886,13 +1631,14 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            while series.len() > feature_max_size {
-                if let Some(oldest) = series.keys().next().copied() {
-                    series.remove(&oldest);
-                } else {
-                    break;
-                }
-            }
+            mutated |= trim_timestamped_series(
+                shard_id,
+                "feature",
+                &key,
+                routing_bucket,
+                series,
+                feature_max_size,
+            );
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_pages(
                 shard,
@@ -969,12 +1715,27 @@ pub(crate) fn execute_on_shard(
             amount,
         } => {
             remove_if_expired(shard, &key);
-            *shard
-                .control_state
-                .entry(key.clone())
-                .or_default()
-                .entry(timestamp_ms)
-                .or_default() += amount;
+            let resulting = {
+                let counter = shard
+                    .control_state
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(timestamp_ms)
+                    .or_default();
+                *counter += amount;
+                *counter
+            };
+            // The RESULT, not the increment. An increment replayed twice counts twice; a count
+            // installed twice is the same count, which is what makes a record idempotent.
+            stage_component_outcome(
+                shard_id,
+                "control_counter",
+                &key,
+                Some(timestamp_ms.to_string()),
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                None,
+                Some(resulting.to_le_bytes().to_vec()),
+            );
             persist_control_state_page(
                 cache,
                 page_store,
@@ -1042,11 +1803,29 @@ pub(crate) fn execute_on_shard(
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
+            stage_component_outcome(
+                shard_id,
+                "control_change",
+                &key,
+                Some(bucket_ms.to_string()),
+                page_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                None,
+                Some(value.clone()),
+            );
             hll::record_change(shard, &key, bucket_ms, value);
             if let Some(ttl_ms) = ttl_ms {
-                shard
-                    .expires_at_ms
-                    .insert(key, resolve_now_ms().saturating_add(ttl_ms));
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                shard.expires_at_ms.insert(key.clone(), expires_at);
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
             }
             mutated = true;
             CommandResponse::Empty
@@ -1351,6 +2130,20 @@ pub(crate) fn execute_on_shard(
                 })
                 .unwrap_or(true);
             if should_store {
+                // The value that WON the comparison, so a replay installs the winner instead of
+                // re-running a comparison against whatever it happens to hold.
+                stage_component_outcome(
+                    shard_id,
+                    "control_selection",
+                    &key,
+                    Some(match selection_type {
+                        ControlStateSelectionType::First => "first".to_string(),
+                        ControlStateSelectionType::Last => "last".to_string(),
+                    }),
+                    page_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                    None,
+                    Some(value.clone()),
+                );
                 shard.control_state_selection.insert(
                     key.clone(),
                     ControlStateSelectionValue {
@@ -1361,11 +2154,23 @@ pub(crate) fn execute_on_shard(
                 );
             }
             if ttl_ms > 0 {
-                shard
-                    .expires_at_ms
-                    .insert(key, resolve_now_ms().saturating_add(ttl_ms));
+                let expires_at = resolve_now_ms().saturating_add(ttl_ms);
+                shard.expires_at_ms.insert(key.clone(), expires_at);
+                stage_meta_outcome(
+                    shard_id,
+                    "object",
+                    &key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    None,
+                    Some(expires_at),
+                    false,
+                );
             }
-            mutated = true;
+            // A comparison this value LOST stored nothing and set no deadline, so it changed
+            // nothing. Reporting it as a mutation dirtied the shard and appended a record for a
+            // write that did not happen.
+            mutated = should_store || ttl_ms > 0;
             CommandResponse::Empty
         }
         Command::ControlStateSelectionQuery { key } => {
@@ -1578,6 +2383,15 @@ pub(crate) fn execute_on_shard(
                         Some(routing_bucket),
                         async_storage,
                     ) {
+                        stage_component_outcome(
+                            shard_id,
+                            "context_node",
+                            &object_key,
+                            Some(CONTEXT_NODE_FIELD.to_string()),
+                            routing_bucket,
+                            Some(address.clone()),
+                            None,
+                        );
                         shard
                             .hashes
                             .entry(object_key.clone())
@@ -1606,6 +2420,18 @@ pub(crate) fn execute_on_shard(
                 Some(routing_bucket),
                 async_storage,
             ) {
+                // Its own kind, deliberately: this writes a hash page and -- unlike HashSet --
+                // never registers it in the bucket index, so recording it as a "hash" would have
+                // a rebuild add an entry the write never made.
+                stage_component_outcome(
+                    shard_id,
+                    "context_node",
+                    &object_key,
+                    Some(CONTEXT_NODE_FIELD.to_string()),
+                    routing_bucket,
+                    Some(address.clone()),
+                    None,
+                );
                 shard
                     .hashes
                     .entry(object_key.clone())
@@ -1679,7 +2505,7 @@ pub(crate) fn execute_on_shard(
                     page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                 // The PAGE stays timestamp-keyed: pages pack by time, and the load path recovers
                 // the timeline key from the packed point. Only the index key changes.
-                if let Ok(addresses) = append_timestamped_kv_pages(
+                if let Ok(addresses) = append_timestamped_kv_pages_keyed(
                     cache,
                     page_store,
                     shard_id,
@@ -1691,6 +2517,7 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    event_id_hash,
                 ) {
                     for (stored_timeline_key, address) in addresses {
                         series.insert(event_id_hash, address);
@@ -1737,18 +2564,25 @@ pub(crate) fn execute_on_shard(
             // raw context events so index refs, filters, and event pages share the
             // wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
+            let event_id_hash = event.event_id_hash;
             let event_series = shard
                 .context_events
                 .entry(event_object_key.clone())
                 .or_default();
-            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
+            // Same key discipline as ContextWriteEvent since the event rekey: the primary map
+            // is keyed by EVENT ID (idempotence tests the id), the page stays timestamp-keyed,
+            // and the time index maps the stored timeline key back to the id. This arm was
+            // missed by the rekey -- it kept inserting timeline keys into the id-keyed map and
+            // never fed the time index, so every extracted event was invisible to time-ranged
+            // queries while its write reported success.
+            if !(first_write_only && event_series.contains_key(&event_id_hash)) {
                 let value = context_bytes(&event);
                 let routing_bucket = page_routing_bucket(
                     &event_object_key,
                     start_routing_bucket,
                     end_routing_bucket,
                 );
-                if let Ok(addresses) = append_timestamped_kv_pages(
+                if let Ok(addresses) = append_timestamped_kv_pages_keyed(
                     cache,
                     page_store,
                     shard_id,
@@ -1760,9 +2594,15 @@ pub(crate) fn execute_on_shard(
                     }],
                     routing_bucket,
                     async_storage && !cold_storage,
+                    event_id_hash,
                 ) {
-                    for (timestamp_ms, address) in addresses {
-                        event_series.insert(timestamp_ms, address);
+                    for (stored_timeline_key, address) in addresses {
+                        event_series.insert(event_id_hash, address);
+                        shard
+                            .context_event_timeline
+                            .entry(event_object_key.clone())
+                            .or_default()
+                            .insert(stored_timeline_key, event_id_hash);
                         mutated = true;
                     }
                 }
@@ -2298,6 +3138,15 @@ pub(crate) fn execute_on_shard(
                 // insert() on the entity hash OVERWRITES: an entity has one current value, and
                 // its history is the separate context_entity_update_audit series. Keying this
                 // map by time instead would silently turn every upsert into an append.
+                stage_component_outcome(
+                    shard_id,
+                    "context_entity",
+                    &collection_key,
+                    Some(entity.entity_hash.to_string()),
+                    routing_bucket,
+                    Some(address.clone()),
+                    None,
+                );
                 shard
                     .context_entities
                     .entry(collection_key)
@@ -2422,66 +3271,6 @@ pub(crate) fn execute_on_shard(
                 created: None,
             }
         }
-        Command::ContextUpsertEmbedding {
-            tenant_hash,
-            embedding,
-        } => {
-            // Per-embedding key for the PAGE (two embeddings must not share a page) and for the
-            // persisted entry; collection key for the index slot and the reported object key.
-            let object_key = context_embedding_key(tenant_hash, embedding.ref_hash);
-            let collection_key = context_embedding_collection_key(tenant_hash);
-            let object_id = stable_page_object_id(shard_id, "context_embedding", &object_key, None);
-            let routing_bucket =
-                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
-            if let Ok(address) = append_value(
-                cache,
-                page_store,
-                shard_id,
-                &context_bytes(&embedding),
-                Some(object_id),
-                Some(routing_bucket),
-                async_storage,
-            ) {
-                // insert() on the ref hash OVERWRITES: re-embedding a node replaces its vector
-                // rather than accumulating one entry per update.
-                shard
-                    .context_embeddings
-                    .entry(collection_key.clone())
-                    .or_default()
-                    .insert(embedding.ref_hash, address);
-                mutated = true;
-            }
-            invalidate_record_all(cache, shard_id, &object_key);
-            invalidate_record_all(cache, shard_id, &collection_key);
-            CommandResponse::ContextObjectKey {
-                object_key: collection_key,
-            }
-        }
-        Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes,
-            limit,
-        } => {
-            // One map lookup for the tenant's series, then a log-n hit per requested ref --
-            // instead of formatting and hashing a full per-embedding key string per ref.
-            let series = shard
-                .context_embeddings
-                .get(&context_embedding_collection_key(tenant_hash));
-            let embeddings = match series {
-                None => Vec::new(),
-                Some(series) => dedupe_nonzero_u64_preserve_order(ref_hashes)
-                    .into_iter()
-                    .take(context_limit(limit))
-                    .filter_map(|ref_hash| {
-                        series.get(&ref_hash).and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
-                        })
-                    })
-                    .collect(),
-            };
-            CommandResponse::ContextEmbeddings { embeddings }
-        }
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,
@@ -2564,6 +3353,40 @@ pub(crate) fn execute_on_shard(
                 object_key,
                 summaries,
             }
+        }
+        Command::ContextQuerySummaryVectors {
+            tenant_hash,
+            node_hashes,
+            level,
+            as_of_ms,
+        } => {
+            // One summary read per node -- the same per-node cost the separate embedding rows
+            // had, minus the second keyspace. Only the newest summary at or before `as_of_ms`
+            // is consulted; a summary carrying no vector contributes nothing, so the caller can
+            // tell "not embedded" apart from "not summarized" by the node's absence here.
+            let vectors = dedupe_nonzero_u64_preserve_order(node_hashes)
+                .into_iter()
+                .filter_map(|node_hash| {
+                    let object_key = context_summary_key(tenant_hash, node_hash, level);
+                    load_context_summaries(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        &object_key,
+                        as_of_ms,
+                        Some(1),
+                    )
+                    .into_iter()
+                    .next()
+                    .filter(|summary| !summary.vector.is_empty())
+                    .map(|summary| ContextSummaryVector {
+                        node_hash,
+                        vector: summary.vector,
+                    })
+                })
+                .collect();
+            CommandResponse::ContextSummaryVectors { vectors }
         }
         Command::ContextWriteCompressionEvent { tenant_hash, event } => {
             let object_key = context_compression_key(tenant_hash, event.node_hash);
@@ -2773,4 +3596,97 @@ pub(crate) fn execute_on_shard(
         }
     };
     ExecuteOutcome { response, mutated }
+}
+
+/// IEEE-754 total-order bias: flip everything for negatives, set the sign for positives, so
+/// unsigned comparison of the bits is numeric comparison of the floats.
+pub(super) fn zset_score_bits(score: f64) -> u64 {
+    let bits = score.to_bits();
+    if bits & (1 << 63) != 0 {
+        !bits
+    } else {
+        bits | (1 << 63)
+    }
+}
+
+pub(super) fn zset_score_from_bits(biased: u64) -> f64 {
+    if biased & (1 << 63) != 0 {
+        f64::from_bits(biased & !(1 << 63))
+    } else {
+        f64::from_bits(!biased)
+    }
+}
+
+pub(super) fn zset_score_string(biased: u64) -> String {
+    let score = zset_score_from_bits(biased);
+    if score == score.trunc() && score.abs() < 1e17 {
+        format!("{}", score as i64)
+    } else {
+        format!("{score}")
+    }
+}
+
+/// The persisted component: score bits then member, so lexical order is (score, member) order.
+pub(super) fn zset_component(biased: u64, member: &[u8]) -> String {
+    format!("{biased:016x}{}", hex::encode(member))
+}
+
+fn zset_ordered_members(shard: &ShardState, key: &str) -> Vec<(Vec<u8>, u64)> {
+    let mut ordered: Vec<(Vec<u8>, u64)> = shard
+        .zsets
+        .get(key)
+        .map(|members| {
+            members
+                .iter()
+                .map(|(member, (biased, _))| (member.clone(), *biased))
+                .collect()
+        })
+        .unwrap_or_default();
+    ordered.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    ordered
+}
+
+/// The whole token-bucket model in one pure function, so its arithmetic is testable with
+/// explicit clocks: refill by elapsed time at `refill_per_sec` (capped at capacity, and a
+/// clock that moved backwards refills nothing), then take if it fits. Answers
+/// (allowed, remaining AFTER the outcome, retry-after ms, state to store). An absent bucket
+/// starts full.
+pub(super) fn bucket_take(
+    current: Option<(f64, u64)>,
+    now_ms: u64,
+    tokens: f64,
+    capacity: f64,
+    refill_per_sec: f64,
+) -> (bool, f64, u64, (f64, u64)) {
+    let tokens = tokens.max(0.0);
+    let capacity = capacity.max(0.0);
+    let refill_per_sec = refill_per_sec.max(0.0);
+    let filled = match current {
+        None => capacity,
+        Some((had, last_ms)) => {
+            let elapsed_ms = now_ms.saturating_sub(last_ms);
+            (had + refill_per_sec * (elapsed_ms as f64 / 1000.0)).min(capacity)
+        }
+    };
+    if tokens <= filled {
+        let remaining = filled - tokens;
+        (true, remaining, 0, (remaining, now_ms))
+    } else {
+        let shortfall = tokens - filled;
+        let retry_after_ms = if refill_per_sec > 0.0 && tokens <= capacity {
+            (shortfall / refill_per_sec * 1000.0).ceil() as u64
+        } else {
+            // A take larger than capacity can never succeed; answer the sentinel.
+            u64::MAX
+        };
+        (false, filled, retry_after_ms, (filled, now_ms))
+    }
+}
+
+fn bucket_answer(allowed: bool, remaining: f64, retry_after_ms: u64) -> Vec<Vec<u8>> {
+    vec![
+        if allowed { b"1".to_vec() } else { b"0".to_vec() },
+        format!("{remaining:.3}").into_bytes(),
+        retry_after_ms.to_string().into_bytes(),
+    ]
 }

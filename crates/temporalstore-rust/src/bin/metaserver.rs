@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use temporalstore_rust::http::{
-    get_json_with_options, json_response, parse_json, post_json_with_options, serve, HttpRequest,
-    HttpRequestOptions,
+    get_json_with_options, json_response, parse_json, post_json_with_options, serve,
+    serve_with_stream_handler, HttpRequest, HttpRequestOptions, RequestHead, StreamAction,
+    StreamTransfer,
 };
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
@@ -19,7 +20,8 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardPinRequest, ShardReassignment, ShardReassignmentReason, ShardStateRequest,
+    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardPinRequest,
+    ShardReassignment, ShardReassignmentReason, ShardStateRequest, TopologyEventsRequest,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
@@ -34,7 +36,7 @@ use temporalstore_rust::rebalance::{
     TaskSchedulerSnapshot,
 };
 use temporalstore_rust::{
-    production_readiness_report, types::Status, DataNodeLifecycleReport,
+    types::Status, DataNodeLifecycleReport,
     DataNodeShardLifecycleState, LoadShardRequest, LoadShardResponse, SchedulerLifecycleToken,
     UnloadShardRequest, UnloadShardResponse,
 };
@@ -131,7 +133,10 @@ fn main() {
                 ))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_AUTO_REBALANCE ignored: raft backend manages placement itself");
+                warn!(
+                    "TS_META_AUTO_REBALANCE ignored: shard rebalancing is not available on the \
+                     raft backend, and nothing else performs it there"
+                );
                 None
             }
         }
@@ -176,7 +181,10 @@ fn main() {
                 Some(start_shard_divergence_loop(meta.clone(), options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_SHARD_DIVERGENCE_CHECK ignored: raft backend manages placement itself");
+                warn!(
+                    "TS_META_SHARD_DIVERGENCE_CHECK ignored: divergence checking is not available \
+                     on the raft backend, and nothing else performs it there"
+                );
                 None
             }
         }
@@ -216,7 +224,10 @@ fn main() {
                 Some(meta.start_freeze_aging_loop(options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_FREEZE_AGING ignored: raft backend owns its own meta state");
+                warn!(
+                    "TS_META_FREEZE_AGING ignored: the raft backend owns its own meta state and \
+                     does not age frozen resources, so they stay frozen until an operator acts"
+                );
                 None
             }
         }
@@ -252,7 +263,10 @@ fn main() {
                 Some(meta.start_meta_retention_loop(options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_RETENTION_GC ignored: raft backend owns its own meta state");
+                warn!(
+                    "TS_META_RETENTION_GC ignored: the raft backend owns its own meta state and \
+                     does not collect tombstones, so dropped resources accumulate"
+                );
                 None
             }
         }
@@ -283,7 +297,10 @@ fn main() {
                 Some(meta.start_proxy_calibration_loop(options, interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_META_PROXY_CALIBRATION ignored: raft backend owns its own meta state");
+                warn!(
+                    "TS_META_PROXY_CALIBRATION ignored: the raft backend owns its own meta state \
+                     and does not calibrate proxy groups, so they keep whatever size they have"
+                );
                 None
             }
         }
@@ -309,18 +326,78 @@ fn main() {
                 Some(start_raft_failover_loop(meta.clone(), interval_ms))
             }
             MetaBackend::Raft(_) => {
-                warn!("TS_RAFT_AUTO_FAILOVER ignored: raft backend fails over itself");
+                warn!(
+                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode                      raft shard groups, which the raft backend does not do -- a frozen datanode                      leaves its groups without a trigger and writes to them stall"
+                );
                 None
             }
         }
     } else {
         None
     };
+    // Admin-surface authentication: read once at startup, like every other
+    // security-relevant setting. Changing the variable on a running process
+    // deliberately does nothing.
+    let admin_token = temporalstore_rust::meta::admin_auth_token();
+    if admin_token.is_some() {
+        info!("metaserver admin token required (TS_META_ADMIN_TOKEN is set)");
+    }
     info!(%addr, "temporalstore metaserver listening");
-    if let Err(err) = serve(&addr, move |request| handle(&backend, &scheduler, request)) {
+    if let Err(err) = serve_with_stream_handler(
+        &addr,
+        move |head: &RequestHead, transfer: &mut StreamTransfer| {
+            admin_auth_gate(admin_token.as_deref(), head, transfer)
+        },
+        move |request| handle(&backend, &scheduler, request),
+    ) {
         error!(%err, "metaserver serve loop exited");
         std::process::exit(1);
     }
+}
+
+/// Routes served without a credential even when an admin token is required:
+/// the liveness/readiness probes and the metrics scrape. Load balancers and
+/// Prometheus cannot reasonably attach a bearer token, and none of these
+/// mutate or reveal tenant data.
+fn admin_auth_exempt(path: &str) -> bool {
+    matches!(
+        path,
+        "/health" | "/readiness" | "/metrics" | "/MasterService/Metrics"
+    )
+}
+
+/// Whether a request may proceed, given the required admin token (None = the
+/// surface is open, the previous behavior).
+fn admin_request_allowed(required: Option<&str>, head: &RequestHead) -> bool {
+    let Some(required) = required else { return true };
+    if admin_auth_exempt(&head.path) {
+        return true;
+    }
+    head.bearer_token.as_deref() == Some(required)
+}
+
+/// The head-stage gate in front of every route: a request that fails the token
+/// check is answered 401 before its body is read into memory, and the
+/// connection stays framed for keep-alive. Allowed requests fall through to
+/// the buffered handler untouched.
+fn admin_auth_gate(
+    required: Option<&str>,
+    head: &RequestHead,
+    transfer: &mut StreamTransfer,
+) -> StreamAction {
+    if admin_request_allowed(required, head) {
+        return StreamAction::Declined;
+    }
+    let body = serde_json::to_vec(&Status::error(
+        "unauthorized",
+        "missing or invalid admin token (TS_META_ADMIN_TOKEN)",
+    ))
+    .unwrap_or_default();
+    let _ = transfer.drain_body();
+    let _ = transfer.send_head(401, "application/json", body.len());
+    let _ = transfer.write_chunk(&body);
+    let _ = transfer.flush();
+    StreamAction::Handled
 }
 
 /// Which node an operation is about.
@@ -1384,7 +1461,8 @@ fn handle(
             metaserver_prometheus_metrics(meta, scheduler).into_bytes(),
         ),
         ("GET", "/readiness") => {
-            json_response(200, &production_readiness_report())
+            let (code, body) = meta.readiness();
+            json_response(code, &body)
         }
         ("GET", "/meta/info") => json_response(200, &backend_call!(meta, info)),
         ("GET", "/meta/stats") => json_response(200, &backend_call!(meta, stats)),
@@ -1443,6 +1521,11 @@ fn handle(
         }
         ("GET", "/meta/scheduler") | ("GET", "/meta/scheduler/snapshot") => {
             json_response(200, &scheduler.snapshot())
+        }
+        ("POST", "/meta/topology_events") => {
+            parse_or(&request.body, |req: TopologyEventsRequest| {
+                backend_call!(meta, topology_events, req)
+            })
         }
         ("GET", "/meta/scheduler/executions") => json_response(200, &scheduler.executions()),
         ("POST", "/meta/scheduler/submit") => {
@@ -1646,6 +1729,8 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     let proxies = backend_call!(meta, list_proxies).proxies;
     let namespaces = backend_call!(meta, list_namespaces).namespaces;
     let tables = backend_call!(meta, list_tables).tables;
+    let proxy_groups = backend_call!(meta, list_proxy_groups).groups;
+    let reserved = backend_call!(meta, reserved_names).reserved;
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
     let mut out = String::new();
@@ -1683,6 +1768,9 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
         ("server", servers.len() as u64),
         ("proxy", proxies.len() as u64),
         ("shard", stats.shard_count as u64),
+        ("proxy_group", proxy_groups.len() as u64),
+        ("reserved_namespace", reserved.namespaces.len() as u64),
+        ("reserved_table", reserved.tables.len() as u64),
     ] {
         push_meta_metric(
             &mut out,
@@ -1724,7 +1812,143 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
                 .filter(|table| table.state.as_str() == state)
                 .count() as u64,
         );
+        // A namespace has had a state since it became something an operator can
+        // freeze and drop; nothing reported it.
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "namespace"), ("state", state)],
+            namespaces
+                .iter()
+                .filter(|namespace| namespace.state.as_str() == state)
+                .count() as u64,
+        );
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "proxy_group"), ("state", state)],
+            proxy_groups
+                .iter()
+                .filter(|group| group.state.as_str() == state)
+                .count() as u64,
+        );
     }
+    // The size of what each node is holding, which every heartbeat has carried
+    // and nothing reported. Per server rather than per shard: there can be
+    // hundreds of thousands of shards, and a series each would be unusable.
+    out.push_str(
+        "# HELP temporalstore_meta_server_records Records held per server, as the server reports them.
+",
+    );
+    out.push_str("# TYPE temporalstore_meta_server_records gauge
+");
+    for server in &servers {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_server_records",
+            &[("server", server.server_addr.as_str())],
+            server.reported_record_count,
+        );
+    }
+    out.push_str(
+        "# HELP temporalstore_meta_server_storage_bytes Stored bytes per server, as the server reports them.
+",
+    );
+    out.push_str("# TYPE temporalstore_meta_server_storage_bytes gauge
+");
+    for server in &servers {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_server_storage_bytes",
+            &[("server", server.server_addr.as_str())],
+            server.reported_storage_bytes,
+        );
+    }
+
+    // Which topology each node last applied. The metaserver already exports
+    // its own version, so the distance between the two is how far behind a node
+    // is on routing changes -- a shard frozen or moved is not in effect on a
+    // node that has not caught up yet, and nothing surfaced that.
+    //
+    // Reported raw rather than as a computed lag: a node that has never told us
+    // a version reports zero, and subtracting that from the current version
+    // would invent an enormous lag for a node that is merely new.
+    out.push_str(
+        "# HELP temporalstore_meta_server_applied_topology Topology version each server last applied; compare against temporalstore_meta_topology_version.
+",
+    );
+    out.push_str("# TYPE temporalstore_meta_server_applied_topology gauge
+");
+    for server in &servers {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_server_applied_topology",
+            &[("server", server.server_addr.as_str())],
+            server.runtime_load.last_meta_topology_version,
+        );
+    }
+
+    // What each node is turning away. Reported on every heartbeat and read by
+    // nothing, so a node shedding or timing out work was invisible here.
+    for (name, help) in [
+        ("rejected", "Requests a server rejected."),
+        ("timed_out", "Requests a server timed out."),
+        ("canceled", "Requests a server canceled."),
+    ] {
+        out.push_str(&format!(
+            "# HELP temporalstore_meta_server_{name}_total {help}
+# TYPE temporalstore_meta_server_{name}_total counter
+"
+        ));
+        for server in &servers {
+            let value = match name {
+                "rejected" => server.runtime_load.rejected_total,
+                "timed_out" => server.runtime_load.timed_out_total,
+                _ => server.runtime_load.canceled_total,
+            };
+            push_meta_metric(
+                &mut out,
+                &format!("temporalstore_meta_server_{name}_total"),
+                &[("server", server.server_addr.as_str())],
+                value,
+            );
+        }
+    }
+
+    // A datanode that restarts in place is detected and reported; a proxy
+    // that does the same has been counted on its record since restart counting
+    // existed, and nothing read the number. A proxy cycling repeatedly is worth
+    // seeing for the same reason a datanode is.
+    out.push_str(
+        "# HELP temporalstore_meta_proxy_restarts Proxy restarts observed in place, by proxy.
+",
+    );
+    out.push_str("# TYPE temporalstore_meta_proxy_restarts gauge
+");
+    for proxy in &proxies {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_proxy_restarts",
+            &[("proxy", proxy.proxy_addr.as_str())],
+            proxy.restart_count,
+        );
+    }
+
+    // Shards are counted from the stats rather than listed: there can be
+    // hundreds of thousands of them, and a scrape should not page through the
+    // whole placement table to count two numbers.
+    push_meta_metric(
+        &mut out,
+        "temporalstore_meta_resource_state",
+        &[("resource", "shard"), ("state", "normal")],
+        stats.shard_count.saturating_sub(stats.frozen_shard_count) as u64,
+    );
+    push_meta_metric(
+        &mut out,
+        "temporalstore_meta_resource_state",
+        &[("resource", "shard"), ("state", "frozen")],
+        stats.frozen_shard_count as u64,
+    );
 
     out.push_str(
         "# HELP temporalstore_meta_topology_version Current metaserver topology version.\n",
@@ -1834,38 +2058,13 @@ struct MasterTableOptionsRequest {
 
 impl MasterTableOptionsRequest {
     fn serving_options(&self) -> temporalstore_rust::meta::TableServingOptions {
-        let mut options = temporalstore_rust::meta::TableServingOptions::default();
-        if let Some(pin_primary) = self.pin_primary {
-            options.pin_primary = pin_primary;
-        }
-        if let Some(replica_read_policy) = &self.replica_read_policy {
-            options.replica_read_policy = replica_read_policy.clone();
-        }
-        if let Some(preferred_location) = &self.preferred_location {
-            options.preferred_location = preferred_location.clone();
-        }
-        if let Some(drop_percent) = self.drop_percent {
-            options.drop_percent = drop_percent;
-        }
-        if let Some(max_read_retries) = self.max_read_retries {
-            options.max_read_retries = max_read_retries;
-        }
-        if let Some(max_write_retries) = self.max_write_retries {
-            options.max_write_retries = max_write_retries;
-        }
-        if let Some(retry_backoff_ms) = self.retry_backoff_ms {
-            options.retry_backoff_ms = retry_backoff_ms;
-        }
-        if let Some(continuous_failed_time_ms) = self.continuous_failed_time_ms {
-            options.continuous_failed_time_ms = continuous_failed_time_ms;
-        }
-        if let Some(io_timeout_ms) = self.io_timeout_ms {
-            options.io_timeout_ms = io_timeout_ms;
-        }
-        if let Some(connect_timeout_ms) = self.connect_timeout_ms {
-            options.connect_timeout_ms = connect_timeout_ms;
-        }
-        options
+        // Built through the patch rather than field by field, so a table created with
+        // an explicit setting is recorded as having set it. Rebuilding the merge here
+        // by hand meant the create path silently dropped that, and a table created
+        // asking for a default value -- `drop_percent: 0`, "never shed this table" --
+        // could not be told apart from one that had asked for nothing.
+        self.serving_options_patch()
+            .onto(temporalstore_rust::meta::TableServingOptions::default())
     }
 
     fn serving_options_patch(&self) -> temporalstore_rust::meta::TableServingOptionsPatch {
@@ -2066,6 +2265,13 @@ fn runtime_options_from_env() -> ProductionMetaRaftRuntimeOptions {
         election_tick_ms: env_u64("TS_META_RAFT_ELECTION_TICK_MS", 50),
         failure_detector_interval_ms: env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000),
         stale_server_after_ms: env_u64("TS_META_STALE_AFTER_MS", 30_000),
+        // Read here as well as on the single-node path: `from_env` returns the
+        // raft backend before it reaches that one, so this setting used to do
+        // nothing at all on a raft-backed metaserver.
+        forbid_self_clearing_conviction: env_bool(
+            "TS_META_FORBID_SELF_CLEARING_CONVICTION",
+            false,
+        ),
     }
 }
 
@@ -2098,6 +2304,29 @@ fn parse_meta_raft_nodes() -> Vec<ProductionRaftNode> {
         })
 }
 
+/// What to say about a metaserver raft group's node list, if anything.
+///
+/// A metaserver raft group is built entirely inside the process that starts it,
+/// and no meta raft entry is ever sent between processes. With one node that is
+/// simply the truth: the group is this process. With more, the list describes
+/// peers that will never be dialled -- and if a second metaserver is started
+/// from the same list it keeps its own metadata, makes the same node leader,
+/// and answers ok to writes the first never sees.
+///
+/// Returned rather than logged so it can be tested; the caller logs it.
+fn unreplicated_meta_raft_warning(nodes: &[ProductionRaftNode]) -> Option<String> {
+    if nodes.len() <= 1 {
+        return None;
+    }
+    Some(format!(
+        "metaserver raft is configured with {} nodes, but meta raft entries are never sent \
+         between processes: this group is built inside this process alone. One metaserver \
+         started from this list is consistent; a second one started from it keeps its own \
+         metadata and the two diverge silently.",
+        nodes.len()
+    ))
+}
+
 fn parse_meta_raft_node(index: usize, value: &str) -> Option<ProductionRaftNode> {
     if let Some((id, addr)) = value.split_once('=') {
         return Some(ProductionRaftNode {
@@ -2126,6 +2355,53 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_metaserver_that_cannot_serve_fails_its_readiness_probe() {
+        // The probe answered 200 unconditionally, because it returned
+        // production_readiness_report() -- a static description of what the codebase
+        // supports, which takes no arguments and reads no live state. A metaserver that
+        // had lost quorum, or had only just started, said "ready" exactly as loudly as
+        // one serving normally, so a load balancer kept sending it traffic it could not
+        // answer. The verdict it needed already existed in validate_ready; nothing was
+        // asking for it.
+        let (code, body) = meta_readiness_response("raft", Err("no majority: 1/2".to_string()));
+        assert_eq!(
+            code, 503,
+            "a metaserver that cannot serve must fail the probe, not report 200"
+        );
+        assert!(!body.ready);
+        assert_eq!(body.backend, "raft");
+        assert!(
+            body.reason.contains("no majority"),
+            "the reason must be reported rather than left to be inferred from a bare 503: {:?}",
+            body.reason
+        );
+        assert!(!body.status.ok);
+        assert_eq!(body.status.code, "meta_not_ready");
+    }
+
+    #[test]
+    fn a_serving_metaserver_passes_its_readiness_probe() {
+        // The other half: this must not become a probe that always fails.
+        let (code, body) = meta_readiness_response("single", Ok(()));
+        assert_eq!(code, 200);
+        assert!(body.ready);
+        assert_eq!(body.backend, "single");
+        assert!(body.reason.is_empty());
+        assert!(body.status.ok);
+    }
+
+    #[test]
+    fn a_single_node_metaserver_is_ready_and_a_raft_one_answers_for_itself() {
+        // Wiring, not just the mapping: a single-node backend has no quorum to lose, so
+        // it is ready once it is up.
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let (code, body) = backend.readiness();
+        assert_eq!(code, 200);
+        assert!(body.ready);
+        assert_eq!(body.backend, "single");
+    }
     use tempfile::tempdir;
     use temporalstore_rust::data_node::DataNodeLifecycleSnapshot;
     use temporalstore_rust::http::HttpRequest;
@@ -2237,6 +2513,29 @@ mod tests {
     }
 
     #[test]
+    fn a_meta_raft_group_says_it_does_not_span_processes() {
+        // The group is built inside the process that starts it and no meta raft
+        // entry is ever sent between processes, so a list of peers describes
+        // addresses that will never be dialled. One node is that truth stated
+        // plainly and needs nothing said; more than one is worth saying, because
+        // a second metaserver started from the same list diverges in silence.
+        let node = |node_id| ProductionRaftNode {
+            node_id,
+            addr: format!("10.0.0.{node_id}:17001"),
+        };
+        assert_eq!(unreplicated_meta_raft_warning(&[]), None);
+        assert_eq!(unreplicated_meta_raft_warning(&[node(1)]), None);
+
+        let warning = unreplicated_meta_raft_warning(&[node(1), node(2), node(3)])
+            .expect("three nodes is worth saying something about");
+        assert!(warning.contains("3"), "it should say how many: {warning}");
+        assert!(
+            warning.contains("diverge"),
+            "it should say what goes wrong: {warning}"
+        );
+    }
+
+    #[test]
     fn the_scheduler_takes_its_pacing_from_the_environment() {
         // Every other background subsystem here is configurable; this one had
         // its backoff and its concurrency compiled in.
@@ -2298,6 +2597,344 @@ mod tests {
         // that supplying options is still accepted rather than rejected.
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(parsed.get("status").is_some());
+    }
+
+    /// Scrape `/metrics` from a backend the caller has set up.
+    fn scrape(backend: &MetaBackend) -> String {
+        let scheduler = MetaTaskScheduler::default();
+        let (code, body) = handle(
+            backend,
+            &scheduler,
+            HttpRequest {
+                method: "GET".to_string(),
+                path: "/metrics".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+        String::from_utf8(body).expect("utf8")
+    }
+
+    /// A heartbeat reporting shards of the given sizes.
+    fn report_sizes(meta: &SingleNodeMeta, addr: &str, sizes: &[(usize, u64)]) {
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: addr.to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
+            runtime_load: temporalstore_rust::meta::ServerRuntimeLoad::default(),
+            shard_states: sizes
+                .iter()
+                .enumerate()
+                .map(|(index, (records, bytes))| temporalstore_rust::meta::ServerShardServingState {
+                    shard_id: index as temporalstore_rust::types::ShardId + 1,
+                    serving_state: "serving".to_string(),
+                    worker_index: 0,
+                    worker_threads: 1,
+                    loaded: true,
+                    readonly: false,
+                    load_version: 1,
+                    table_name: "ns.orders".to_string(),
+                    shard_uri: String::new(),
+                    start_routing_bucket: 0,
+                    end_routing_bucket: u32::MAX,
+                    total_records: *records,
+                    storage_bytes: *bytes,
+                    cache_memory_bytes: 0,
+                    storage: Default::default(),
+                    block_store_bytes_written: 0,
+                    wal_sequence: 0,
+                    dirty_object_count: 0,
+                    dirty_bucket_count: 0,
+                })
+                .collect(),
+        });
+    }
+
+    /// A heartbeat carrying a runtime-load report.
+    fn report_runtime(
+        meta: &SingleNodeMeta,
+        addr: &str,
+        load: temporalstore_rust::meta::ServerRuntimeLoad,
+    ) {
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: addr.to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
+            runtime_load: load,
+            shard_states: Vec::new(),
+        });
+    }
+
+    fn joined(meta: &SingleNodeMeta, addr: &str) {
+        meta.register_server(RegisterServerRequest {
+            server_addr: addr.to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn how_far_behind_a_node_is_on_topology_is_visible() {
+        // The metaserver already exports its own topology version; each node
+        // reports the last one it applied, and nothing compared them. A shard
+        // frozen or moved is not in effect on a node that has not caught up.
+        let meta = SingleNodeMeta::default();
+        joined(&meta, "node-a");
+        report_runtime(
+            &meta,
+            "node-a",
+            temporalstore_rust::meta::ServerRuntimeLoad {
+                last_meta_topology_version: 7,
+                ..Default::default()
+            },
+        );
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(
+            out.contains("temporalstore_meta_server_applied_topology{server=\"node-a\"} 7")
+        );
+        // The metaserver's own version is exported too, so the two can be
+        // compared without the metaserver inventing a lag figure.
+        assert!(out.contains("temporalstore_meta_topology_version"));
+    }
+
+    #[test]
+    fn a_node_that_has_never_said_reports_zero_not_a_huge_lag() {
+        // Reported raw on purpose: subtracting an unreported zero from the
+        // current version would invent an enormous lag for a node that is
+        // merely new.
+        let meta = SingleNodeMeta::default();
+        joined(&meta, "node-a");
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(
+            out.contains("temporalstore_meta_server_applied_topology{server=\"node-a\"} 0")
+        );
+    }
+
+    #[test]
+    fn what_a_node_turns_away_is_reported() {
+        let meta = SingleNodeMeta::default();
+        joined(&meta, "node-a");
+        report_runtime(
+            &meta,
+            "node-a",
+            temporalstore_rust::meta::ServerRuntimeLoad {
+                rejected_total: 12,
+                timed_out_total: 3,
+                canceled_total: 5,
+                ..Default::default()
+            },
+        );
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_server_rejected_total{server=\"node-a\"} 12"));
+        assert!(out.contains("temporalstore_meta_server_timed_out_total{server=\"node-a\"} 3"));
+        assert!(out.contains("temporalstore_meta_server_canceled_total{server=\"node-a\"} 5"));
+    }
+
+    #[test]
+    fn the_size_a_node_holds_is_reported() {
+        // Every heartbeat has carried these figures per shard and nothing read
+        // either, so the metaserver knew how much data sat on every node and
+        // had no way to say so.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        report_sizes(&meta, "node-a", &[(10, 1_000), (20, 2_000), (30, 3_000)]);
+
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_server_records{server=\"node-a\"} 60"));
+        assert!(
+            out.contains("temporalstore_meta_server_storage_bytes{server=\"node-a\"} 6000")
+        );
+    }
+
+    #[test]
+    fn a_node_that_sheds_shards_reports_less() {
+        // The summary describes the latest report. Accumulating would make a
+        // node look permanently full once it had ever been busy -- the same
+        // trap as the placement figures beside it.
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        report_sizes(&meta, "node-a", &[(10, 1_000), (20, 2_000)]);
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend).contains("temporalstore_meta_server_records{server=\"node-a\"} 30"));
+
+        report_sizes(&meta, "node-a", &[(5, 500)]);
+        let after = scrape(&backend);
+        assert!(after.contains("temporalstore_meta_server_records{server=\"node-a\"} 5"));
+        assert!(after.contains("temporalstore_meta_server_storage_bytes{server=\"node-a\"} 500"));
+    }
+
+    #[test]
+    fn a_node_that_has_said_nothing_reports_nothing() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_server_records{server=\"node-a\"} 0"));
+    }
+
+    #[test]
+    fn a_proxy_cycling_in_place_is_visible() {
+        // The count has been kept on the proxy's record since restart counting
+        // existed and nothing read it. A datanode that restarts in place is
+        // detected and reported; a proxy doing the same was silent.
+        let meta = SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+        });
+        let beat = |boot_time_ms: u64| {
+            meta.proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 0,
+                boot_time_ms,
+                binary_version: "v1".to_string(),
+            });
+        };
+        beat(100);
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend)
+            .contains("temporalstore_meta_proxy_restarts{proxy=\"proxy-a\"} 0"));
+
+        // Same address, different boot time: it came back as a new process.
+        beat(200);
+        assert!(scrape(&backend)
+            .contains("temporalstore_meta_proxy_restarts{proxy=\"proxy-a\"} 1"));
+
+        // A heartbeat from the same process must not count again.
+        beat(200);
+        assert!(scrape(&backend)
+            .contains("temporalstore_meta_proxy_restarts{proxy=\"proxy-a\"} 1"));
+    }
+
+    #[test]
+    fn a_frozen_namespace_shows_up_on_the_dashboard() {
+        // A namespace has had a state since it became something an operator can
+        // freeze and drop, and nothing reported it: you could take a tenant out
+        // of service and see no change on any dashboard.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "tenant".to_string(),
+        });
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend).contains(
+            "temporalstore_meta_resource_state{resource=\"namespace\",state=\"normal\"} 1"
+        ));
+
+        assert!(
+            meta.freeze_namespace(AddNamespaceRequest {
+                namespace: "tenant".to_string(),
+            })
+            .status
+            .ok
+        );
+        let after = scrape(&backend);
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"namespace\",state=\"frozen\"} 1"
+        ));
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"namespace\",state=\"normal\"} 0"
+        ));
+    }
+
+    #[test]
+    fn a_frozen_shard_shows_up_on_the_dashboard() {
+        let meta = SingleNodeMeta::default();
+        for shard_id in [1, 2] {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        let backend = MetaBackend::Single(meta.clone());
+        assert!(scrape(&backend).contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"normal\"} 2"
+        ));
+
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 1 }).status.ok);
+        let after = scrape(&backend);
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"frozen\"} 1"
+        ));
+        assert!(after.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"normal\"} 1"
+        ));
+    }
+
+    #[test]
+    fn the_inventory_counts_groups_and_reserved_names() {
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
+                group: "front".to_string(),
+                namespace: "tenant".to_string(),
+                location: String::new(),
+                instance_num: 2,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.set_reserved_names(ReservedNames {
+                namespaces: ["system".to_string()].into_iter().collect(),
+                tables: ["audit".to_string(), "wal".to_string()].into_iter().collect(),
+            })
+            .status
+            .ok
+        );
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"proxy_group\"} 1"));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"reserved_namespace\"} 1"));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"reserved_table\"} 2"));
+    }
+
+    #[test]
+    fn the_shard_states_always_add_up_to_the_total() {
+        // The two rows are derived from one another, so a mistake in either
+        // shows as a total that does not match the inventory.
+        let meta = SingleNodeMeta::default();
+        for shard_id in 1..=5 {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 3 }).status.ok);
+        let out = scrape(&MetaBackend::Single(meta));
+        assert!(out.contains("temporalstore_meta_inventory{kind=\"shard\"} 5"));
+        assert!(out.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"normal\"} 4"
+        ));
+        assert!(out.contains(
+            "temporalstore_meta_resource_state{resource=\"shard\",state=\"frozen\"} 1"
+        ));
     }
 
     #[test]
@@ -2373,6 +3010,44 @@ mod tests {
             .contains("temporalstore_meta_resource_state{resource=\"proxy\",state=\"frozen\"} 1"));
         assert!(metrics.contains("temporalstore_meta_scheduler_queue_depth 1"));
         assert!(metrics.contains("temporalstore_meta_topology_version"));
+    }
+
+    #[test]
+    fn the_raft_backend_reports_no_background_subsystem_activity() {
+        // The startup warnings tell an operator that rebalancing, divergence
+        // checking, freeze aging, retention and proxy calibration do not happen
+        // on this backend. Two of them used to claim raft "manages placement
+        // itself"; nothing in the raft module plans a rebalance or checks
+        // divergence, and both loops are started only from Single arms.
+        //
+        // This pins the fact those messages now assert, so a future change that
+        // gives raft one of these capabilities has to update the text as well.
+        let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
+            snapshot_check_interval_ms: 0,
+            engine: ProductionRaftEngineKind::TemporalRaft,
+            local_node_id: 1,
+            nodes: vec![ProductionRaftNode {
+                node_id: 1,
+                addr: "127.0.0.1:18211".to_string(),
+            }],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 100,
+            election_tick_ms: 50,
+            failure_detector_interval_ms: 1_000,
+            stale_server_after_ms: 30_000,
+        })
+        .unwrap();
+        let backend = MetaBackend::Raft(runtime);
+        assert!(
+            backend.subsystem_prometheus().is_empty(),
+            "the raft backend reported subsystem activity it does not perform"
+        );
+
+        // The single-node backend does drive them, so an empty report there
+        // would mean the check above proves nothing.
+        let single = MetaBackend::Single(SingleNodeMeta::default());
+        let _ = single.subsystem_prometheus();
     }
 
     #[test]
@@ -2575,6 +3250,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot_path = dir.path().join("meta-raft-route-snapshot.json");
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
@@ -2702,6 +3378,7 @@ mod tests {
         assert_eq!(servers.servers[0].state, MetaEntityState::Normal);
 
         let restored_runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
@@ -2879,6 +3556,58 @@ mod tests {
         assert!(run.status.ok);
         assert_eq!(run.report.unwrap().task_id, low.task.unwrap().id);
         assert_eq!(run.queue_len, 1);
+    }
+
+    fn one_execution_record() -> MetaSchedulerExecutionRecord {
+        MetaSchedulerExecutionRecord {
+            task_id: 1,
+            node_addr: "127.0.0.1:1".to_string(),
+            status: Status::ok(),
+            scheduler_result: SchedulerTaskResult::Ok,
+            retry_times: 0,
+            next_run_time_ms: None,
+            calls: Vec::new(),
+            lifecycle_token: None,
+            lifecycle_state: None,
+            raft_membership_report: None,
+            queue_len: 0,
+        }
+    }
+
+    #[test]
+    fn an_execution_that_cannot_be_persisted_says_so() {
+        // `persist_current` writes the execution history and the scheduler
+        // snapshot together. Its result used to be dropped here while `submit`,
+        // `run_next` and `restore` all return theirs, so a failed write left the
+        // post-execution state non-durable with nobody told -- and a restart
+        // could hand out a task that had already run.
+        let dir = tempfile::tempdir().unwrap();
+        // A regular file where a directory would have to be: `create_dir_all`
+        // cannot make a directory under it, so persisting fails for a reason
+        // that has nothing to do with the execution itself.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let scheduler =
+            MetaTaskScheduler::with_snapshot_path(blocker.join("sub").join("scheduler.json"))
+                .unwrap();
+
+        let persisted = scheduler.record_execution(one_execution_record());
+        assert!(
+            !persisted.ok,
+            "persisting was impossible and it reported success"
+        );
+        assert_eq!(persisted.code, "scheduler_persist_failed");
+    }
+
+    #[test]
+    fn an_execution_that_persists_reports_ok() {
+        // The other half: the guard must not turn a healthy round into an error.
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler =
+            MetaTaskScheduler::with_snapshot_path(dir.path().join("scheduler.json")).unwrap();
+        let persisted = scheduler.record_execution(one_execution_record());
+        assert!(persisted.ok, "{persisted:?}");
+        assert_eq!(scheduler.executions().executions.len(), 1);
     }
 
     #[test]
@@ -3780,6 +4509,7 @@ mod tests {
     #[test]
     fn raft_backed_metaserver_scheduler_drives_lifecycle_workflow() {
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            forbid_self_clearing_conviction: false,
             snapshot_check_interval_ms: 0,
             engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
@@ -4786,5 +5516,89 @@ mod tests {
         let addr = listener.local_addr().unwrap().to_string();
         drop(listener);
         addr
+    }
+
+    fn head_with(path: &str, bearer_token: Option<&str>) -> RequestHead {
+        RequestHead {
+            method: "POST".to_string(),
+            path: path.to_string(),
+            content_length: 0,
+            keep_alive: false,
+            blob_peer_fetch_loop_guard: false,
+            bearer_token: bearer_token.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn without_a_configured_token_every_route_stays_open() {
+        assert!(admin_request_allowed(None, &head_with("/meta/mute", None)));
+        assert!(admin_request_allowed(None, &head_with("/servers/register", None)));
+        assert!(admin_request_allowed(None, &head_with("/health", None)));
+    }
+
+    #[test]
+    fn a_configured_token_gates_every_route_except_the_probes() {
+        let required = Some("s3cret");
+        // Probes stay open: a load balancer cannot attach a bearer token.
+        for probe in ["/health", "/readiness", "/metrics", "/MasterService/Metrics"] {
+            assert!(
+                admin_request_allowed(required, &head_with(probe, None)),
+                "{probe} must stay open"
+            );
+        }
+        // Everything else needs the exact token.
+        for route in ["/meta/mute", "/meta/raft/remove_node", "/meta/snapshot/restore", "/shards"] {
+            assert!(
+                !admin_request_allowed(required, &head_with(route, None)),
+                "{route} must be denied without a token"
+            );
+            assert!(
+                !admin_request_allowed(required, &head_with(route, Some("wrong"))),
+                "{route} must be denied with the wrong token"
+            );
+            assert!(
+                admin_request_allowed(required, &head_with(route, Some("s3cret"))),
+                "{route} must be allowed with the right token"
+            );
+        }
+    }
+
+    #[test]
+    fn the_serve_gate_answers_401_before_the_handler_and_still_serves_health() {
+        let addr = reserve_unused_loopback_addr();
+        let server_addr = addr.clone();
+        std::thread::spawn(move || {
+            let _ = serve_with_stream_handler(
+                &server_addr,
+                |head: &RequestHead, transfer: &mut StreamTransfer| {
+                    admin_auth_gate(Some("s3cret"), head, transfer)
+                },
+                |_request| json_response(200, &Status::ok()),
+            );
+        });
+        let options = HttpRequestOptions {
+            connect_timeout_ms: 1000,
+            io_timeout_ms: 1000,
+            max_retries: 10,
+        };
+        // The probe is served without a credential.
+        let health: Status =
+            get_json_with_options(&addr, "/health", options.clone()).expect("health while gated");
+        assert!(health.ok);
+        // A gated route without the token is refused at the head stage.
+        let denied = get_json_with_options::<Status>(&addr, "/meta/info", options.clone());
+        match denied {
+            Ok(status) => assert!(!status.ok, "an unauthenticated request must not reach the handler"),
+            Err(_) => {} // non-200 surfaces as an HttpError; either shape is a refusal
+        }
+        // The same route with the token reaches the handler.
+        let allowed: Status = temporalstore_rust::http::get_json_with_options_and_headers(
+            &addr,
+            "/meta/info",
+            "Authorization: Bearer s3cret\r\n",
+            options,
+        )
+        .expect("authorized request should reach the handler");
+        assert!(allowed.ok);
     }
 }

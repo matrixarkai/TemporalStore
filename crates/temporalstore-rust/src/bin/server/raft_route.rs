@@ -540,6 +540,13 @@ fn command_response(
 fn incoming_raft_peer_id(request: &HttpRequest) -> Option<RaftNodeId> {
     match request.path.as_str() {
         "/raft/append_entries" | "/raft/install_snapshot" | "/raft/install_snapshot_chunk" => {
+            // A binary body has no field to read out by name, so decode it. Returning None
+            // here would quietly stop attributing the request to the peer that sent it.
+            if temporalstore_rust::raft::is_binary_rpc(&request.body) {
+                return temporalstore_rust::raft::decode_append_entries(&request.body)
+                    .ok()
+                    .map(|decoded| decoded.leader_id);
+            }
             serde_json::from_slice::<serde_json::Value>(&request.body)
                 .ok()?
                 .get("leader_id")?

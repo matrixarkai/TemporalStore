@@ -5,7 +5,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
 use crate::{
-    temporalstore_free_string, CFeaturePointArray, CIpsFeatureArray, COptions, Error, FeaturePoint,
+    temporalstore_free_string, CFeaturePointArray, COptions, Error, FeaturePoint,
 };
 
 pub(crate) struct CStringOptions {

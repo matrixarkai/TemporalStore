@@ -39,6 +39,24 @@ DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUN
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
 DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
+DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
+DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
+DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"))
+# Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
+# 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
+# 204 records and 8.9 MB. It had no knob, so no deployment could reach it.
+DEFAULT_MAX_CHUNK_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240"))
+DEFAULT_OVERLAP_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_TOKENS", "24"))
+# Both caps bind, whichever is hit first. Deriving the character cap from the
+# token cap keeps raising one from being silently cancelled by the other.
+DEFAULT_MAX_CHUNK_CHARS = int(
+    os.environ.get(
+        "MATRIXARK_RESOURCE_MAX_CHUNK_CHARS",
+        str(1400 if DEFAULT_MAX_CHUNK_TOKENS <= 240 else DEFAULT_MAX_CHUNK_TOKENS * 8),
+    )
+)
+DEFAULT_OVERLAP_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_CHARS", "120"))
+EMBEDDING_TEXT_PREFIX_SHARE = float(os.environ.get("MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE", "0.2"))
 DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
 
 
@@ -123,8 +141,54 @@ def infer_resource_type(raw_uri: str, resource_type: str | None = None) -> str:
     return aliases.get(kind, kind)
 
 
+_CJK_CLASS = "぀-ヿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ"
+_LATIN_RUN_RE = re.compile(r"[A-Za-z0-9_]+")
+_CJK_CHAR_RE = re.compile("[" + _CJK_CLASS + "]")
+_OTHER_SYMBOL_RE = re.compile("[^" + _CJK_CLASS + r"\sA-Za-z0-9_]")
+CJK_AWARE_TOKENS = os.environ.get("MATRIXARK_RESOURCE_CJK_TOKENS", "1") not in {"0", "false", "False", ""}
+_SPLIT_SPAN_RE = re.compile(
+    "[" + _CJK_CLASS + r"]|[A-Za-z0-9_]+|[^" + _CJK_CLASS + r"\sA-Za-z0-9_]+"
+)
+
+
+def _is_cjk_codepoint(code: int) -> bool:
+    return (
+        0x3040 <= code <= 0x30FF
+        or 0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0xFF66 <= code <= 0xFF9F
+    )
+
+
+def _span_weight(span_text: str) -> float:
+    # Spans come from _SPLIT_SPAN_RE, so the first character already determines the class:
+    # a CJK span is exactly one CJK character, a latin span is all word characters, and
+    # anything else is a symbol run. A codepoint test is much cheaper than re-matching the
+    # span, and this runs once per span of every chunk. CJK is tested first because
+    # str.isalnum() is True for CJK characters.
+    code = ord(span_text[0])
+    if _is_cjk_codepoint(code):
+        return 0.75
+    if span_text[0].isalnum() or code == 0x5F:
+        return 1.1
+    return 1.3 * len(span_text)
+
+
 def token_estimate(text: str) -> int:
-    return max(1, len(re.findall(r"[A-Za-z0-9_]+", text)))
+    """Estimate LLM tokens for mixed CJK/Latin text.
+
+    Counting only ``[A-Za-z0-9_]+`` runs undercounts Chinese by ~37x (a pure-CJK
+    sentence scores 1), which silently blows any ``max_context_tokens`` budget on
+    a CJK corpus. Coefficients calibrated against the multilingual MiniLM
+    tokenizer: median estimate/actual 1.00 over a mixed CN/EN sample.
+    """
+    if not CJK_AWARE_TOKENS:
+        return max(1, len(_LATIN_RUN_RE.findall(text)))
+    latin = len(_LATIN_RUN_RE.findall(text))
+    cjk = len(_CJK_CHAR_RE.findall(text))
+    other = len(_OTHER_SYMBOL_RE.findall(text))
+    return max(1, int(1.1 * latin + 0.75 * cjk + 1.3 * other))
 
 
 def slugify(value: str) -> str:
@@ -180,24 +244,114 @@ def resource_content_version(raw_uri: str, units: list[Json]) -> str:
     return digest.hexdigest()[:16]
 
 
+CJK_KEYWORD_BIGRAMS = os.environ.get("MATRIXARK_RESOURCE_CJK_KEYWORDS", "1") not in {"0", "false", "False", ""}
+_CJK_RUN_RE = re.compile("[" + _CJK_CLASS + "]{2,}")
+
+
 def keywords_for_text(text: str, limit: int = 12) -> list[str]:
+    """Keywords for the secondary index.
+
+    Latin runs alone leave Chinese text with NO keywords, so on a CJK corpus the keyword
+    index — the part of the secondary index carrying any selectivity — indexes nothing.
+    Chinese has no spaces to split on, so CJK runs contribute overlapping character
+    bigrams, which a lexical index can match without a segmenter.
+
+    The two are interleaved rather than concatenated. Taking Latin first and stopping at
+    the limit lets a few English words in a mixed passage exhaust the quota, leaving the
+    Chinese half of the same chunk unindexed — which is what happened before.
+    """
     stop = {
         "the", "and", "for", "that", "with", "from", "this", "will", "are", "was", "were", "has", "have",
         "should", "into", "when", "where", "what", "which", "your", "their", "about", "after", "before",
     }
+    latin: list[str] = []
     seen: set[str] = set()
-    out: list[str] = []
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", text.lower()):
         if token in stop or token in seen:
             continue
         seen.add(token)
-        out.append(token)
-        if len(out) >= limit:
-            break
+        latin.append(token)
+    cjk: list[str] = []
+    if CJK_KEYWORD_BIGRAMS:
+        for run in _CJK_RUN_RE.findall(text):
+            for index in range(len(run) - 1):
+                bigram = run[index : index + 2]
+                if bigram in seen:
+                    continue
+                seen.add(bigram)
+                cjk.append(bigram)
+    out: list[str] = []
+    for index in range(max(len(latin), len(cjk))):
+        if index < len(latin):
+            out.append(latin[index])
+            if len(out) >= limit:
+                return out
+        if index < len(cjk):
+            out.append(cjk[index])
+            if len(out) >= limit:
+                return out
     return out
 
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Trim text to roughly max_tokens estimated tokens, on a span boundary."""
+    if max_tokens <= 0:
+        return ""
+    spans = [(m.start(), m.end()) for m in _SPLIT_SPAN_RE.finditer(text)]
+    if not spans:
+        return text
+    used = 0.0
+    for index, (start, end) in enumerate(spans):
+        used += _span_weight(text[start:end])
+        if used > max_tokens:
+            return text[: spans[index][0]].strip()
+    return text
 
-def build_embedding_text(text: str, metadata: Json, source_ref: str) -> str:
+
+def build_embedding_text(
+    text: str,
+    metadata: Json,
+    source_ref: str,
+    max_tokens: int | None = None,
+) -> str:
+    """Build the text handed to the encoder for a chunk.
+
+    The encoder has a fixed input window (128 tokens for the multilingual MiniLM
+    used here) and silently truncates past it. Emitting every metadata field
+    first spent that whole window on the header: measured on markdown, the prefix
+    was 123 of 128 tokens and only 2.8% of the chunk's own content reached the
+    model, so chunks were matched on their heading/path/keyword header rather
+    than on what they say.
+
+    So the content leads, and a compact locating prefix is allowed only a small
+    slice of the window. ``max_tokens=0`` restores the unbounded field dump.
+    """
+    if max_tokens is None:
+        max_tokens = DEFAULT_EMBEDDING_TEXT_MAX_TOKENS
+    if max_tokens <= 0:
+        return _build_embedding_text_unbounded(text, metadata, source_ref)
+
+    prefix_budget = max(8, int(max_tokens * EMBEDDING_TEXT_PREFIX_SHARE))
+    locators: list[str] = []
+    heading_path = metadata.get("heading_path")
+    if isinstance(heading_path, list) and heading_path:
+        locators.append(" / ".join(str(item) for item in heading_path if str(item).strip()))
+    else:
+        for key in ("heading", "title", "document_title", "relative_path"):
+            value = metadata.get(key)
+            if value:
+                locators.append(str(value))
+                break
+    columns = metadata.get("columns")
+    if isinstance(columns, list) and columns:
+        locators.append(", ".join(str(item) for item in columns if str(item).strip()))
+    prefix = _truncate_to_tokens(compact_ws(" | ".join(locators)), prefix_budget)
+    body_budget = max_tokens - (token_estimate(prefix) if prefix else 0)
+    body = _truncate_to_tokens(compact_ws(text), body_budget)
+    return compact_ws(prefix + chr(10) + body) if prefix else compact_ws(body)
+
+
+def _build_embedding_text_unbounded(text: str, metadata: Json, source_ref: str) -> str:
+
     fields: list[str] = []
     for key in [
         "document_title",
@@ -259,10 +413,10 @@ def parse_resource(
     *,
     resource_type: str | None = None,
     text: str | None = None,
-    max_chunk_chars: int = 1400,
-    overlap_chars: int = 120,
-    max_chunk_tokens: int = 240,
-    overlap_tokens: int = 24,
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS,
+    overlap_chars: int = DEFAULT_OVERLAP_CHARS,
+    max_chunk_tokens: int = DEFAULT_MAX_CHUNK_TOKENS,
+    overlap_tokens: int = DEFAULT_OVERLAP_TOKENS,
     chunk_hash_base: int | None = None,
     resource_version: str | None = None,
     supersedes_chunk_hashes: dict[str, int] | None = None,
@@ -271,6 +425,8 @@ def parse_resource(
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
     max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
     max_inline_text_chars: int | None = None,
+    pack_markdown_sections: bool | None = None,
+    slim_chunk_metadata_fields: bool | None = None,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
 
@@ -309,6 +465,13 @@ def parse_resource(
         max_inline_text_chars=max_inline_text_chars,
     )
 
+    if slim_chunk_metadata_fields is None:
+        slim_chunk_metadata_fields = DEFAULT_SLIM_CHUNK_METADATA
+    if pack_markdown_sections is None:
+        pack_markdown_sections = DEFAULT_MD_PACK_SECTIONS
+    if pack_markdown_sections and kind in {"md", "skill"}:
+        units = _pack_markdown_units(units, max_chunk_tokens)
+
     chunks: list[ParsedResourceChunk] = []
     version = resource_version or resource_content_version(raw_uri_text, units)
     supersedes = supersedes_chunk_hashes or {}
@@ -342,7 +505,7 @@ def parse_resource(
                     "max_chunk_tokens": max_chunk_tokens,
                     "overlap_tokens": overlap_tokens,
                     "content_hash": piece_hash,
-                    "keywords": keywords_for_text(piece),
+                    "keywords": [] if slim_chunk_metadata_fields else keywords_for_text(piece),
                 }
             )
             if "page" in metadata and split_index:
@@ -350,10 +513,16 @@ def parse_resource(
             source_ref = _source_ref(raw_uri_text, metadata)
             metadata["citation"] = source_ref
             metadata["supersedes_chunk_hash"] = supersedes.get(source_ref) or supersedes.get(piece_hash)
-            metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
+            # Only build the encoder string when it will actually be kept. It is 41% of
+            # parse time and slim metadata drops it, so computing it there is pure waste;
+            # the embedding step recomputes it from the chunk when it needs it.
+            if not slim_chunk_metadata_fields:
+                metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
             metadata["parse_warnings"] = normalize_parse_warnings(metadata)
             metadata["raw_storage_policy"] = "raw_uri_only"
             metadata["raw_bytes_stored"] = False
+            if slim_chunk_metadata_fields:
+                metadata = slim_chunk_metadata(metadata)
             chunk_hash = (
                 chunk_hash_base + len(chunks)
                 if chunk_hash_base is not None
@@ -509,6 +678,105 @@ def _markdown_units(text: str) -> list[Json]:
             }
         )
     return units
+
+
+def _pack_markdown_units(units: list[Json], max_chunk_tokens: int) -> list[Json]:
+    """Merge consecutive small markdown sections up to the chunk token budget.
+
+    ``_markdown_units`` emits one unit per heading, so a document made of many
+    short sections produces many chunks far below ``max_chunk_tokens``. Packing
+    adjacent siblings keeps each chunk near the budget without splitting a
+    section across chunks. The pack keeps the first section's heading and
+    records every heading it covers, so citations stay resolvable.
+    """
+    if not units:
+        return units
+    packed: list[Json] = []
+    current: Json | None = None
+    current_tokens = 0
+    joiner = chr(10) + chr(10)
+    for unit in units:
+        if unit.get("unit_kind") != "markdown_section":
+            if current is not None:
+                packed.append(current)
+                current = None
+                current_tokens = 0
+            packed.append(unit)
+            continue
+        tokens = token_estimate(str(unit.get("text", "")))
+        if tokens >= max_chunk_tokens:
+            if current is not None:
+                packed.append(current)
+                current = None
+                current_tokens = 0
+            packed.append(unit)
+            continue
+        parent = tuple(unit.get("heading_path", [])[:-1])
+        if current is not None:
+            same_parent = tuple(current.get("_pack_parent", ())) == parent
+            if same_parent and current_tokens + tokens <= max_chunk_tokens:
+                current["text"] = current["text"] + joiner + str(unit.get("text", ""))
+                current["line_end"] = unit.get("line_end", current.get("line_end"))
+                current["packed_headings"].append(unit.get("heading", ""))
+                current["packed_sections"] = len(current["packed_headings"])
+                current_tokens += tokens
+                continue
+            packed.append(current)
+        current = dict(unit)
+        current["_pack_parent"] = parent
+        current["packed_headings"] = [unit.get("heading", "")]
+        current["packed_sections"] = 1
+        current_tokens = tokens
+    if current is not None:
+        packed.append(current)
+    for unit in packed:
+        unit.pop("_pack_parent", None)
+    return packed
+
+
+
+
+# Fields a served chunk actually needs: enough to retrieve it, cite it, order it
+# within its document, and detect that its content changed. Everything else is
+# recomputable from the text or from the resource manifest.
+SLIM_CHUNK_METADATA_FIELDS = frozenset({
+    "resource_type",
+    "resource_version",
+    "chunk_index",
+    "unit_index",
+    "split_index",
+    "content_hash",
+    "citation",
+    "token_count",
+    "heading",
+    "heading_slug",
+    "line_start",
+    "line_end",
+    "page",
+    "page_number",
+    "slide_number",
+    "record_index",
+    "record_start",
+    "record_end",
+    "row_index",
+    "row_range",
+    "unit_kind",
+    "packed_sections",
+    "parse_warnings",
+    "supersedes_chunk_hash",
+})
+
+
+def slim_chunk_metadata(metadata: Json) -> Json:
+    """Drop metadata that is duplicated, derivable, or constant.
+
+    ``embedding_text`` alone is ~67% of a chunk's metadata: it is a second copy
+    of the chunk text enriched for the encoder, and it is only needed while the
+    vector is being produced. ``keywords`` feeds a lexical posting list that a
+    vector index already covers. Both are recomputed on demand via
+    ``build_embedding_text`` / ``keywords_for_text`` when a caller wants them.
+    """
+    return {key: value for key, value in metadata.items() if key in SLIM_CHUNK_METADATA_FIELDS}
 
 
 def _split_simple_front_matter(text: str) -> tuple[Json, str]:
@@ -1059,16 +1327,26 @@ def _split_text(
 
 
 def _split_text_by_tokens(text: str, max_chunk_tokens: int, overlap_tokens: int) -> list[str]:
-    spans = [(match.start(), match.end()) for match in re.finditer(r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_]+", text)]
-    if len(spans) <= max_chunk_tokens:
+    spans = [(match.start(), match.end()) for match in _SPLIT_SPAN_RE.finditer(text)]
+    # Weight each span the way token_estimate does, so a piece that fits
+    # max_chunk_tokens spans also fits max_chunk_tokens estimated tokens.
+    weights = [_span_weight(text[a:b]) for a, b in spans]
+    cumulative = [0.0]
+    for w in weights:
+        cumulative.append(cumulative[-1] + w)
+    if cumulative[-1] <= max_chunk_tokens:
         return [text]
     pieces: list[str] = []
     start_token = 0
     while start_token < len(spans):
-        end_token = min(len(spans), start_token + max_chunk_tokens)
+        budget = cumulative[start_token] + max_chunk_tokens
+        end_token = start_token + 1
+        while end_token < len(spans) and cumulative[end_token + 1] <= budget:
+            end_token += 1
+        end_token = min(len(spans), max(end_token, start_token + 1))
         if end_token < len(spans):
             boundary = _token_boundary(text, spans, start_token, end_token)
-            if boundary > start_token + max_chunk_tokens // 2:
+            if cumulative[boundary] - cumulative[start_token] > max_chunk_tokens / 2:
                 end_token = boundary
         start_char = spans[start_token][0]
         end_char = spans[end_token - 1][1]

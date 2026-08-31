@@ -781,28 +781,44 @@ pub(super) fn unique_feature_page_addresses(series: &BTreeMap<u64, BlockAddress>
 
 pub(super) fn timestamped_kv_series<'a>(
     shard: &'a ShardState,
-) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, BlockAddress>)> {
+) -> Vec<(&'static str, &'a str, std::borrow::Cow<'a, BTreeMap<u64, BlockAddress>>)> {
+    use std::borrow::Cow;
     let mut series = Vec::new();
     for (key, timeline) in &shard.features {
-        series.push(("feature", key.as_str(), timeline));
+        series.push(("feature", key.as_str(), Cow::Borrowed(timeline)));
     }
-    for (key, timeline) in &shard.context_events {
-        series.push(("context_event", key.as_str(), timeline));
+    // Since the event rekey, context_events is keyed by EVENT ID; the timestamps live in
+    // context_event_timeline (timeline key -> event id). The validator compares index keys
+    // against the timestamps packed in pages, so it must see the TIMELINE view -- handing it
+    // the id-keyed map made every context event look like a missing indexed timestamp.
+    for (key, ids_by_time) in &shard.context_event_timeline {
+        let Some(by_id) = shard.context_events.get(key) else {
+            continue;
+        };
+        let timeline: BTreeMap<u64, BlockAddress> = ids_by_time
+            .iter()
+            .filter_map(|(timeline_key, event_id)| {
+                by_id
+                    .get(event_id)
+                    .map(|address| (*timeline_key, address.clone()))
+            })
+            .collect();
+        series.push(("context_event", key.as_str(), Cow::Owned(timeline)));
     }
     for (key, timeline) in &shard.context_indexes {
-        series.push(("context_index", key.as_str(), timeline));
+        series.push(("context_index", key.as_str(), Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_audits {
-        series.push(("context_audit", key.as_str(), timeline));
+        series.push(("context_audit", key.as_str(), Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_children {
-        series.push(("context_child", key.as_str(), timeline));
+        series.push(("context_child", key.as_str(), Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_summaries {
-        series.push(("context_summary", key.as_str(), timeline));
+        series.push(("context_summary", key.as_str(), Cow::Borrowed(timeline)));
     }
     for (key, timeline) in &shard.context_compressions {
-        series.push(("context_compression", key.as_str(), timeline));
+        series.push(("context_compression", key.as_str(), Cow::Borrowed(timeline)));
     }
     series
 }
@@ -830,7 +846,7 @@ pub(super) fn storage_feature_page_layout_report(
         });
         family.indexed_points = family.indexed_points.saturating_add(series.len());
         let mut timestamps_by_address = HashMap::<BlockAddress, BTreeSet<u64>>::new();
-        for (timestamp_ms, address) in series {
+        for (timestamp_ms, address) in series.iter() {
             timestamps_by_address
                 .entry(address.clone())
                 .or_default()

@@ -161,8 +161,10 @@ pub(super) fn bucket_index_page_address(
     object_key: &str,
     component: Option<&str>,
 ) -> Option<BlockAddress> {
-    let lookup_key = object_page_lookup_key(model_id, object_key, component);
-    if let Some(page_refs) = shard.bucket_index.object_page_lookup.get(&lookup_key) {
+    if let Some(page_refs) = shard
+        .bucket_index
+        .page_refs_for(model_id, object_key, component)
+    {
         for page_ref in page_refs {
             let Some(bucket) = shard.bucket_index.bucket_map.get(&page_ref.routing_bucket) else {
                 continue;
@@ -205,10 +207,9 @@ pub(super) fn bucket_index_component_page_addresses(
     model_id: &str,
     object_key: &str,
 ) -> Vec<(Option<String>, BlockAddress)> {
-    let lookup_key = object_component_lookup_key(model_id, object_key);
-    if let Some(page_refs) = shard.bucket_index.object_component_lookup.get(&lookup_key) {
-        let mut refs = page_refs
-            .iter()
+    if let Some(object_refs) = shard.bucket_index.object_page_refs(model_id, object_key) {
+        let mut refs = object_refs
+            .all_refs()
             .filter_map(|page_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&page_ref.routing_bucket)?;
                 let page = bucket.page_index.get(&page_ref.page_ref_key)?;
@@ -226,7 +227,7 @@ pub(super) fn bucket_index_component_page_addresses(
         return Vec::new();
     }
 
-    if !shard.bucket_index.object_component_lookup.is_empty() {
+    if !shard.bucket_index.object_page_lookup.is_empty() {
         return Vec::new();
     }
 

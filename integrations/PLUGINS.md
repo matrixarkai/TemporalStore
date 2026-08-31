@@ -16,7 +16,7 @@ slash commands. It drives a **TemporalStore checkout** on your machine (`matrixa
 ## Prerequisite (both)
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore
+git clone https://github.com/matrixarkai/TemporalStore
 cd TemporalStore
 ```
 
@@ -71,4 +71,4 @@ they emit a benign result and never block or slow a turn.
 `integrations/agent-hooks/` is the earlier, settings.json-based hook installer (still supported).
 These plugin packages are the modern, marketplace/`config.toml` distribution of the same engine.
 
-Apache-2.0 · part of [TemporalStore](https://github.com/bjmeetsfo/TemporalStore).
+Apache-2.0 · part of [TemporalStore](https://github.com/matrixarkai/TemporalStore).

@@ -26,6 +26,14 @@ except ImportError:
 )
 
 
+def _idle_drain_min_interval_ms() -> int:
+    """How long a quiet session may go unchecked for a due idle commit (default 1s, 0 disables)."""
+    try:
+        return max(0, int(os.environ.get("MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS", "1000")))
+    except (TypeError, ValueError):
+        return 1000
+
+
 class _LocalAdapterRetrievalMixin:
     def reload_context_hot_state_from_disk(self, *, scope: Json | None = None) -> Json:
         """Rebuild process-local serving state from the durable JSONL record log."""
@@ -167,6 +175,13 @@ class _LocalAdapterRetrievalMixin:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
+            # A folded owner carries the retired embedding record's fields under embedding_meta;
+            # the access scope that used to be recovered from the separate record is there.
+            meta = record.get("embedding_meta")
+            if isinstance(meta, dict):
+                record_scope = candidate_access_scope(meta)
+                if record_scope:
+                    return record_scope
             if record.get("record_type") == "context_embedding":
                 ref_scope = ref_scope_by_key.get((str(record.get("ref_type") or ""), record.get("ref_hash")))
                 if ref_scope:
@@ -404,6 +419,39 @@ class _LocalAdapterRetrievalMixin:
                 if node_hash is not None:
                     secondary_posting_node_hashes.add(str(node_hash))
 
+            # Since the fold-and-drop, a NEW log has no separate embedding records: the owner
+            # itself carries the vector (and the ride-along embedding_meta). The owner is the
+            # real record, so it is matched directly -- no synthetic reconstruction needed.
+            _owner_ref_fields = {
+                "context_event": "event_id_hash",
+                "context_entity": "entity_hash",
+                "context_summary": "summary_hash",
+                "context_segment": "segment_hash",
+                "context_compression_event": "compression_id_hash",
+                "resource_chunk": "chunk_hash",
+                "skill_section": "section_hash",
+                "context_node": "node_hash",
+            }
+            for owner_record in raw_records:
+                ref_field = _owner_ref_fields.get(str(owner_record.get("record_type") or ""))
+                if ref_field is None:
+                    continue
+                if not owner_record.get("vector") and not owner_record.get("embedding_meta"):
+                    continue
+                ref_hash = owner_record.get(ref_field)
+                if ref_hash in (None, ""):
+                    continue
+                if not recovered_scope_matches(owner_record, scope) and not profile_bridge_scope_matches(owner_record, scope):
+                    continue
+                owner_terms = candidate_index_terms(owner_record, {}, {})
+                if not owner_terms.intersection(required_index_terms):
+                    continue
+                secondary_embedding_matched_count += 1
+                secondary_posting_ref_hashes.add(str(ref_hash))
+                node_hash = owner_record.get("node_hash")
+                if node_hash is not None:
+                    secondary_posting_node_hashes.add(str(node_hash))
+
         secondary_prefilter_enabled = bool(
             required_index_terms and (secondary_matched_index_count > 0 or secondary_embedding_matched_count > 0)
         )
@@ -558,7 +606,8 @@ class _LocalAdapterRetrievalMixin:
                 events = [self._context_event_by_hash[event_hash] for event_hash in pending_ids if event_hash in self._context_event_by_hash]
                 return events[:limit] if limit is not None else events
         committed: set[int] = set()
-        records = self.read_all()
+        reader = getattr(self, "records_for_session_buffer", None)
+        records = reader(scope) if callable(reader) else self.read_all()
         for record in records:
             if record.get("record_type") == "context_batch_commit" and session_buffer_key_from_scope(record.get("scope", {})) == key:
                 for ref in record.get("source_event_ids", []):
@@ -674,6 +723,24 @@ class _LocalAdapterRetrievalMixin:
 
     def drain_due_idle_session_commits(self, *, scope: Json, args: Json, hook: Json | None) -> Json:
         now = now_ms()
+        # This runs on EVERY ingest and its only question is whether a scheduled idle deadline has
+        # passed. Answering it costs a typed scan: measured on a 200-memory store, the scan the
+        # drain issues was 53.7 ms of a 270 ms add, one of three scans that together were 61% of
+        # the whole call. Re-asking it a few milliseconds after the last "no" cannot produce a
+        # different answer -- an idle timeout is measured in seconds.
+        #
+        # So after a pass that finds nothing due, this session's key is quiet until the interval
+        # elapses. A deadline that falls inside that window fires up to one interval late, against
+        # an idle timeout orders of magnitude longer. A pass that DOES drain something sets no
+        # gate, so a busy session keeps being checked every time.
+        drain_key = session_buffer_key_from_scope(scope)
+        gate = getattr(self, "_idle_drain_next_ms", None)
+        if gate is None:
+            gate = {}
+            self._idle_drain_next_ms = gate
+        if now < int(gate.get(drain_key, 0)):
+            return {"status": "idle", "due_task_count": 0, "drained_task_count": 0, "drained": [],
+                    "idle_drain_gated": True}
         records = self._idle_commit_candidate_records(scope)
         latest_status_by_task_hash: dict[int, str] = {}
         latest_order_by_task_hash: dict[int, int] = {}
@@ -687,6 +754,7 @@ class _LocalAdapterRetrievalMixin:
             latest_status_by_task_hash[task_hash] = str(record.get("status") or "")
             latest_order_by_task_hash[task_hash] = index
         due_tasks: list[Json] = []
+        scheduled_here = 0
         requested_key = session_buffer_key_from_scope(scope)
         for index, record in enumerate(records):
             if record.get("record_type") != "matrixark_async_pipeline_task":
@@ -702,10 +770,11 @@ class _LocalAdapterRetrievalMixin:
                 continue
             if latest_status_by_task_hash.get(task_hash) != "idle_commit_scheduled":
                 continue
-            if deadline_ms > now:
-                continue
             task_scope = record.get("scope", {}) if isinstance(record.get("scope"), dict) else {}
             if session_buffer_key_from_scope(task_scope) != requested_key:
+                continue
+            scheduled_here += 1
+            if deadline_ms > now:
                 continue
             due_tasks.append(record)
         due_tasks.sort(
@@ -784,6 +853,17 @@ class _LocalAdapterRetrievalMixin:
                     "batch_id_hash": result.get("batch_id_hash"),
                 }
             )
+        if scheduled_here == 0:
+            # Nothing is even SCHEDULED for this session, so nothing can come due until something
+            # schedules one -- and scheduling happens on this same path. Going quiet is free.
+            #
+            # Gating on "nothing DUE" instead was measurably worse where it counts: p50 fell but
+            # p95 went 367 -> 820 ms, because a session with a pending deadline stopped being
+            # checked, the due work piled up, and the add that finally drained paid for several
+            # session commits at once. A pending task keeps being checked every time.
+            gate[drain_key] = now + _idle_drain_min_interval_ms()
+        else:
+            gate.pop(drain_key, None)
         return {
             "status": "drained" if drained else "idle",
             "due_task_count": len(due_tasks),

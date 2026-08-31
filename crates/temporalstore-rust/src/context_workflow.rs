@@ -36,6 +36,21 @@ const LEXICAL_MATCH_MICROS: i64 = 500_000;
 /// stored summary embedding is scored by query/text lexical overlap instead of the
 /// flat 0 it used to get, so a freshly bulk-loaded store returns relevant results
 /// before the embed drainer catches up. Embedded-node scoring is unchanged.
+/// MATRIXARK_CONTEXT_SECONDARY_INDEX (default OFF): whether ingest builds the ctxidx
+/// secondary-index refs at all.
+///
+/// Retrieval does not read them -- candidate selection is namespace nodes plus vector and
+/// lexical scoring -- so on the live path they are write-only cost: one durable command per
+/// (index, value) per ingest whose only reader is the ingest verifier checking that the writes
+/// it just made landed. Skipped by default until the redesign gives them a reader; the env var
+/// is the escape hatch for anything still relying on the query-back surface.
+pub(crate) fn context_secondary_index_enabled() -> bool {
+    std::env::var("MATRIXARK_CONTEXT_SECONDARY_INDEX")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 fn context_hybrid_lexical_enabled() -> bool {
     std::env::var("MATRIXARK_CONTEXT_HYBRID_LEXICAL")
         .ok()
@@ -61,7 +76,7 @@ mod reports;
 mod skill;
 
 pub use resource::{
-    context_resource_chunk_embedding, parse_context_resource, update_context_resource_lifecycle,
+    parse_context_resource, update_context_resource_lifecycle,
 };
 pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
 pub(crate) use benchmark::*;
@@ -89,7 +104,7 @@ use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::types::{
     context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextChildRef,
-    ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent, ContextIndexRef,
+    ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
     ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
     ContextDirtyNode, ExecuteRequest, ShardId, Status,
 };
@@ -411,10 +426,21 @@ pub struct ContextResourceLifecycleRecord {
     pub payload_size_bytes: usize,
     #[serde(default)]
     pub max_inline_bytes: usize,
-    #[serde(default)]
+    /// Whether the payload is held in the record rather than in the object store.
+    ///
+    /// Defaulted explicitly rather than with a bare `#[serde(default)]`: on a bool that decodes an
+    /// ABSENT field to `false`, which here means "the payload is elsewhere" and sends a reader to
+    /// an `external_object_uri` that such a record does not carry. This type's own `Default` says
+    /// true, and decoding it should not disagree with constructing it.
+    #[serde(default = "inline_payload_default")]
     pub inline_payload: bool,
     #[serde(default)]
     pub external_object_uri: String,
+}
+
+/// A record with nothing said about where its payload lives holds it inline; see the field.
+fn inline_payload_default() -> bool {
+    true
 }
 
 impl Default for ContextResourceLifecycleRecord {
@@ -809,7 +835,6 @@ pub struct ContextResourceSkillIngestReport {
     #[serde(default)]
     pub skill_selection: ContextSkillSelectionReport,
     pub ingest: ContextIngestExtractReport,
-    pub embedding_refs: Vec<u64>,
     #[serde(default)]
     pub embedding_evidence: ContextResourceSkillEmbeddingEvidenceReport,
     pub fanout: ContextResourceSkillModelFanoutReport,
@@ -1078,6 +1103,19 @@ pub struct ContextFanoutPlanReport {
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
+    // Candidate nodes whose node record carries no vector at all -- un-embedded, scored by the
+    // hybrid lexical pass instead. (Named for the retired separate-row fallback it once
+    // counted; the rows are gone, so any nonzero here means the backfill has work to do.)
+    #[serde(default)]
+    pub l0_row_fallback_nodes: usize,
+    // Candidate vectors declined because their width did not match the query's, i.e. they were
+    // written in a different embedding space. Counted separately from the un-embedded ones above
+    // because the two ask for different repairs: an un-embedded node needs the backfill to run,
+    // whereas a width conflict means the store holds vectors from two encoders and re-embedding
+    // is the only fix. Nonzero here is the signal that would otherwise not exist -- comparing
+    // across embedding spaces raises no error on its own.
+    #[serde(default)]
+    pub embedding_width_conflict_nodes: usize,
     #[serde(default)]
     pub event_query_budget: usize,
     #[serde(default)]
@@ -1544,7 +1582,7 @@ pub(crate) fn extract_context_gated(
         String::new()
     };
     let l2_ref = summaries.l2_ref;
-    let node = ContextNode {
+    let mut node = ContextNode {
         node_hash,
         parent_hash: 0,
         kind: source_kind_code(request.source_kind),
@@ -1655,71 +1693,28 @@ pub(crate) fn extract_context_gated(
             (Vec::new(), ContextEmbeddingGenerationReport::default(), true)
         }
     };
-    // Embedding upsert commands are built only when embeddings actually succeeded;
-    // when deferred we skip them and mark the node embedding-dirty instead.
-    let embedding_commands: Vec<Command> = if embedding_deferred {
-        Vec::new()
-    } else {
-        let embedding_l0 = ContextEmbedding {
-            ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
-            level: 1,
-            model_hash: context_embedding_model_hash(&provider.model),
-            vector: embedding_vectors[0].clone(),
-            updated_at_ms: timestamp_ms,
-        };
-        let embedding_l1 = if emit_l1 {
-            Some(ContextEmbedding {
-                ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
-                level: 2,
-                model_hash: context_embedding_model_hash(&provider.model),
-                vector: embedding_vectors[1].clone(),
-                updated_at_ms: timestamp_ms,
-            })
-        } else {
-            None
-        };
-        let event_vector_index = if emit_l1 { 2 } else { 1 };
-        let embedding_event = ContextEmbedding {
-            ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
-            level: 3,
-            model_hash: context_embedding_model_hash(&provider.model),
-            vector: embedding_vectors[event_vector_index].clone(),
-            updated_at_ms: timestamp_ms,
-        };
-        let mut embedding_commands = vec![Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_l0,
-        }];
-        if let Some(embedding_l1) = embedding_l1 {
-            embedding_commands.push(Command::ContextUpsertEmbedding {
-                tenant_hash: request.tenant_hash,
-                embedding: embedding_l1,
-            });
-        }
-        embedding_commands.push(Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_event,
-        });
-        embedding_commands
-    };
 
-    // Step 2 of the embedding fold: carry the event's vector on the event record itself,
-    // alongside the separate ContextEmbedding row that readers still address by ref_hash.
-    // Dual-write on purpose -- ref_hash is a one-way hash of (tenant, owner, level), so no
-    // reader can reach an owner record from it, and the separate rows cannot be dropped until
-    // every reader is migrated to (owner, level) addressing. Populating first means that
-    // migration can be verified against records that already carry their vector, instead of
-    // flipping storage and addressing in one step.
+    // The vectors live on their owners and nowhere else: the summaries, the event and the node
+    // each carry their own. The separate ContextEmbedding rows this used to also write were
+    // addressed by a one-way hash of (tenant, owner, level) -- nothing holding one could ever
+    // find its owner again -- and every reader now asks the owner, so the rows are retired.
     //
     // Left empty when embedding was deferred (provider failure): the node is marked
     // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
     // means "not yet", never "none". skip_serializing_if keeps that costing nothing on disk.
     if !embedding_deferred {
-        // embedding_inputs order is node_l0, [node_l1], event_text -- the same order the
-        // ContextEmbedding rows above index into, so the vectors line up with their owners:
-        // index 0 is the L0 summary, index 1 the L1 summary when emitted, and the event last.
+        // embedding_inputs order is node_l0, [node_l1], event_text, so the vectors line up
+        // with their owners: index 0 is the L0 summary (and the node), index 1 the L1 summary
+        // when emitted, and the event last.
         if let Some(vector) = embedding_vectors.first() {
             summary_l0.vector = vector.clone();
+            // The node itself carries its L0 vector too: the traversal scores children from
+            // node.vector first, and without this the happy path would leave it empty on every
+            // fresh ingest -- only the drainer's deferred path would ever fill it, so the
+            // fallback to the separate record could never be retired.
+            node.vector = vector.clone();
+            node.embedding_model_hash = context_embedding_model_hash(&provider.model);
+            node.embedding_updated_at_ms = timestamp_ms;
         }
         if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
             summary.vector = vector.clone();
@@ -1742,14 +1737,6 @@ pub(crate) fn extract_context_gated(
             first_write_only: false,
             cold_storage: false,
         },
-        Command::ContextWriteIndexRef {
-            tenant_hash: request.tenant_hash,
-            index_name: "source".to_string(),
-            index_value_hash: stable_hash64(&request.source_id),
-            scope_hash: 0,
-            event_time_ms: timestamp_ms,
-            index_ref: index_ref.clone(),
-        },
         Command::ContextMarkSummaryDirty {
             tenant_hash: request.tenant_hash,
             node_hash: dirty_marker.node_hash,
@@ -1769,6 +1756,16 @@ pub(crate) fn extract_context_gated(
             summary: summary_l1,
         });
     }
+    if context_secondary_index_enabled() {
+        commands.push(Command::ContextWriteIndexRef {
+            tenant_hash: request.tenant_hash,
+            index_name: "source".to_string(),
+            index_value_hash: stable_hash64(&request.source_id),
+            scope_hash: 0,
+            event_time_ms: timestamp_ms,
+            index_ref: index_ref.clone(),
+        });
+    }
     if embedding_deferred {
         // Live-path embed failed: persist the node without vectors and mark it
         // embedding-dirty so the async drainer retries. Happy path marks nothing.
@@ -1782,7 +1779,6 @@ pub(crate) fn extract_context_gated(
         });
     }
     // Embedding upserts (empty when deferred).
-    commands.extend(embedding_commands);
     for command in commands {
         let response = engine.execute_durable(ExecuteRequest {
             shard_id: request.shard_id,
@@ -1914,49 +1910,93 @@ pub fn retrieve_context(
         }
     };
     trace_stage("query_embedding");
-    let mut summary_ref_owners = BTreeMap::new();
-    let mut summary_ref_hashes = Vec::with_capacity(node_hashes.len().saturating_mul(2));
-    for node_hash in &node_hashes {
-        for label in ["node_l0", "node_l1"] {
-            let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, label);
-            summary_ref_owners.insert(ref_hash, *node_hash);
-            summary_ref_hashes.push(ref_hash);
-        }
-    }
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
-    // The engine caps a single ContextQueryEmbeddings at CONTEXT_MAX_LIMIT
-    // ref_hashes -- command validation REJECTS a larger request outright rather
-    // than truncating it. A large (bulk-ingested) namespace has many more nodes
-    // than that, so the summary-embedding pass MUST chunk its lookups: sending
-    // all node_hashes*2 ref_hashes in one command silently fails, leaving every
-    // node at score 0 and collapsing retrieval to the lexical/recency fallback
-    // (0% focused recall at scale). Chunk at the cap so every node is scored.
-    for chunk in summary_ref_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+    // node_l0 comes from the node records themselves: the vector lives on the node, which is
+    // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
+    // separate rows left to fall back to. A node carrying no vector is simply un-embedded and
+    // is handed to the hybrid lexical pass below, exactly like before it was embedded. Chunked
+    // because a single oversized command is rejected outright, not truncated, and an unscored
+    // node silently collapses to the lexical/recency fallback.
+    let mut l0_row_fallback: Vec<u64> = Vec::new();
+    let mut width_conflict_nodes = 0usize;
+    for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
         }
-        let chunk_refs = chunk.to_vec();
-        let chunk_len = chunk_refs.len();
-        let embeddings = engine.execute(ExecuteRequest {
+        let response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
-            command: Command::ContextQueryEmbeddings {
+            command: Command::ContextGetNodes {
                 tenant_hash: request.tenant_hash,
-                ref_hashes: chunk_refs,
-                limit: Some(chunk_len.max(1)),
+                node_hashes: chunk.to_vec(),
             },
         });
-        if let CommandResponse::ContextEmbeddings { embeddings } = embeddings.response {
-            for embedding in embeddings {
-                if let Some(node_hash) = summary_ref_owners.get(&embedding.ref_hash) {
+        let mut returned = BTreeSet::new();
+        if let CommandResponse::ContextNodes { nodes } = response.response {
+            for node in nodes {
+                returned.insert(node.node_hash);
+                if node.vector.is_empty() {
+                    l0_row_fallback.push(node.node_hash);
+                } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
+                    // Written in a different embedding space. Hand it to the hybrid lexical pass
+                    // exactly as an un-embedded node is handed over -- which means NOT recording
+                    // a score here, because that pass selects on the score COUNT being zero, not
+                    // on the score value. Recording a zero would mark the node as scored and
+                    // strand it at the bottom of the ranking with no second chance.
+                    width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    l0_row_fallback.push(node.node_hash);
+                } else {
                     let score =
-                        context_embedding_similarity_micros(&query_embedding, &embedding.vector);
-                    let entry = summary_scores_by_node.entry(*node_hash).or_default();
+                        context_embedding_similarity_micros(&query_embedding, &node.vector);
+                    let entry = summary_scores_by_node.entry(node.node_hash).or_default();
                     entry.0 = entry.0.max(score);
                     entry.1 = entry.1.saturating_add(1);
                 }
             }
         }
+        // A node the engine did not return cannot carry a vector either.
+        for node_hash in chunk {
+            if !returned.contains(node_hash) {
+                l0_row_fallback.push(*node_hash);
+            }
+        }
     }
+    // Diagnostic only now: candidates whose node carries no vector at all (un-embedded).
+    fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
+    // node_l1 comes from the L1 summaries' own vectors -- the ingest has filled them since the
+    // fold, and the summary is addressable by the node hash already in hand. Level 2 here is
+    // the summary-record level for L1 (ContextQuerySummaries uses 1 = L0, 2 = L1).
+    for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextQuerySummaryVectors {
+                tenant_hash: request.tenant_hash,
+                node_hashes: chunk.to_vec(),
+                level: 2,
+                as_of_ms: request.end_time_ms.max(1),
+            },
+        });
+        if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
+            for entry in vectors {
+                if context_embedding_width_conflicts(&query_embedding, &entry.vector) {
+                    // Same reasoning as the node pass: skip entirely rather than record a zero,
+                    // so the count stays at zero and the lexical pass still owns this node.
+                    width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    continue;
+                }
+                let score =
+                    context_embedding_similarity_micros(&query_embedding, &entry.vector);
+                let scores = summary_scores_by_node.entry(entry.node_hash).or_default();
+                scores.0 = scores.0.max(score);
+                scores.1 = scores.1.saturating_add(1);
+            }
+        }
+    }
+    // Set after BOTH vector passes -- the node pass and the summary pass each contribute, and the
+    // node pass alone would under-report.
+    fanout_plan.embedding_width_conflict_nodes = width_conflict_nodes;
     trace_stage("summary_embedding_lookup");
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
@@ -2899,7 +2939,11 @@ fn context_policy_report_for_text(
     } else {
         text.to_string()
     };
-    let pii_filtering_applied = !policy.pii_filtering_enabled || sanitized_text != text;
+    // "Applied" is about whether this text went through the filter, not about whether the
+    // filter found anything. Answering `sanitized_text != text` meant a record with no personal
+    // data in it -- the ordinary case, and the great majority of them -- reported that filtering
+    // had not been applied, so anyone auditing whether it runs read "no" nearly every time.
+    let pii_filtering_applied = policy.pii_filtering_enabled;
     let accepted = provider_allowed
         && model_allowed
         && body_size_allowed

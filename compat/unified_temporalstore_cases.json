@@ -579,7 +579,7 @@
           "command": {
             "amount": 3,
             "key": "unified:risk",
-            "kind": "risk_increment",
+            "kind": "control_state_increment",
             "timestamp_ms": 4000
           },
           "expect": {
@@ -591,7 +591,7 @@
           "command": {
             "end_ms": 4010,
             "key": "unified:risk",
-            "kind": "risk_count",
+            "kind": "control_state_count",
             "start_ms": 3990
           },
           "expect": {
@@ -611,7 +611,7 @@
             "amount": 7,
             "family": "cpc",
             "key": "unified:risk:family",
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "timestamp_ms": 4100
           },
           "expect": {
@@ -625,7 +625,7 @@
             "end_ms": 4110,
             "family": "cpc",
             "key": "unified:risk:family",
-            "kind": "risk_family_query",
+            "kind": "control_state_family_query",
             "start_ms": 4090
           },
           "expect": {
@@ -650,7 +650,7 @@
             "end_ms": 4111,
             "family": "cpc",
             "key": "unified:risk:family",
-            "kind": "risk_family_query",
+            "kind": "control_state_family_query",
             "start_ms": 4091
           },
           "expect": {
@@ -670,7 +670,7 @@
             "amount": 5,
             "family": "h",
             "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "timestamp_ms": 6100
           },
           "expect": {
@@ -683,7 +683,7 @@
             "amount": 7,
             "family": "h",
             "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "timestamp_ms": 6200
           },
           "expect": {
@@ -696,7 +696,7 @@
             "amount": 3,
             "family": "cpc",
             "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "timestamp_ms": 6100
           },
           "expect": {
@@ -709,7 +709,7 @@
             "amount": 11,
             "family": "fol",
             "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "timestamp_ms": 6100
           },
           "expect": {
@@ -724,7 +724,7 @@
             "end_ms": 6300,
             "family": "cpc",
             "key": "unified:risk:deep",
-            "kind": "risk_set_and_get",
+            "kind": "control_state_set_and_get",
             "start_ms": 6000,
             "timestamp_ms": 6200
           },
@@ -738,7 +738,7 @@
           "command": {
             "fol_type": "first",
             "key": "unified:risk:fol:first",
-            "kind": "risk_fol_set",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6200,
             "ttl_ms": 60000,
             "value": [
@@ -759,7 +759,7 @@
           "command": {
             "fol_type": "first",
             "key": "unified:risk:fol:first",
-            "kind": "risk_fol_set",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6100,
             "ttl_ms": 60000,
             "value": [
@@ -779,7 +779,7 @@
           "command": {
             "fol_type": "last",
             "key": "unified:risk:fol:last",
-            "kind": "risk_fol_set",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6200,
             "ttl_ms": 60000,
             "value": [
@@ -800,7 +800,7 @@
           "command": {
             "fol_type": "last",
             "key": "unified:risk:fol:last",
-            "kind": "risk_fol_set",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6300,
             "ttl_ms": 60000,
             "value": [
@@ -818,7 +818,7 @@
         {
           "command": {
             "key": "unified:risk:fol:first",
-            "kind": "risk_fol_query"
+            "kind": "control_state_fol_query"
           },
           "expect": {
             "kind": "bytes",
@@ -835,7 +835,7 @@
         {
           "command": {
             "key": "unified:risk:fol:last",
-            "kind": "risk_fol_query"
+            "kind": "control_state_fol_query"
           },
           "expect": {
             "kind": "bytes",
@@ -851,7 +851,7 @@
         {
           "command": {
             "key": "unified:risk:deep",
-            "kind": "risk_manager"
+            "kind": "control_state_manager"
           },
           "expect": {
             "entries": [
@@ -902,7 +902,7 @@
           "command": {
             "end_ms": 6150,
             "key": "unified:risk:deep",
-            "kind": "risk_debug",
+            "kind": "control_state_debug",
             "start_ms": 6000
           },
           "expect": {
@@ -1267,21 +1267,21 @@
           "expect": {
             "events": [
               {
-                "confidence": 0.75,
-                "event_id_hash": 9001,
-                "event_time_ms": 9000,
-                "ingestion_time_ms": 9000,
-                "importance": 0.5,
-                "text": "context event from shared corpus",
-                "type": 4
-              },
-              {
                 "confidence": 0.8,
                 "event_id_hash": 9002,
                 "event_time_ms": 9000,
                 "ingestion_time_ms": 9000,
                 "importance": 0.6,
                 "text": "second context event in same millisecond",
+                "type": 4
+              },
+              {
+                "confidence": 0.75,
+                "event_id_hash": 9001,
+                "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
+                "importance": 0.5,
+                "text": "context event from shared corpus",
                 "type": 4
               }
             ],
@@ -1409,13 +1409,11 @@
         {
           "command": {
             "kind": "context_mark_summary_dirty",
-            "marker": {
-              "event_time_ms": 9200,
-              "node_hash": 700,
-              "propagate_depth": 3,
-              "reason": 2
-            },
-            "tenant_hash": 101
+            "tenant_hash": 101,
+            "node_hash": 700,
+            "event_time_ms": 9200,
+            "reason": 2,
+            "propagate_depth": 3
           },
           "expect": {
             "kind": "context_object_key",
@@ -1427,24 +1425,42 @@
           "command": {
             "end_time_ms": 9210,
             "kind": "context_query_summary_dirty",
+            "limit": 9,
+            "node_hash": 700,
+            "start_time_ms": 9190,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_summary_dirty_nodes",
+            "object_key": "ctx:dirty:101:700",
+            "nodes": [
+              {
+                "node_hash": 700,
+                "first_event_time_ms": 9200,
+                "last_event_time_ms": 9200,
+                "reason": 2,
+                "propagate_depth": 3,
+                "mark_count": 1
+              }
+            ]
+          },
+          "name": "context_query_summary_dirty_model_live"
+        },
+        {
+          "command": {
+            "end_time_ms": 9210,
+            "kind": "context_query_summary_dirty",
             "limit": 10,
             "node_hash": 700,
             "start_time_ms": 9190,
             "tenant_hash": 101
           },
           "expect": {
-            "kind": "context_summary_dirty_markers",
-            "markers": [
-              {
-                "event_time_ms": 9200,
-                "node_hash": 700,
-                "propagate_depth": 3,
-                "reason": 2
-              }
-            ],
-            "object_key": "ctx:dirty:101:700"
+            "kind": "context_summary_dirty_nodes",
+            "object_key": "ctx:dirty:101:700",
+            "nodes": []
           },
-          "name": "context_query_summary_dirty_model",
+          "name": "context_query_summary_dirty_model_after_restart",
           "restart_before": true
         }
       ]
@@ -2769,8 +2785,7 @@
             "native_contract": "ObjectManager/PageStore persists local disk state, restores a checkpoint into a follower, replays sync and async WAL entries, and blocks unsafe cursor GC.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_test": "disk_and_shared_store_persistence_recover_through_restart_and_replay",
             "suite": "native_storage_parity"
           },
@@ -2794,8 +2809,7 @@
             "native_contract": "OpLogger exposes versioned OpLog LogItem metadata, AppendReplayedLog idempotence, Commit flush durability, stream length/persistent length, start/current sequence, and truncate/replay APIs.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_test": "wal_record_metadata_tracks_style_log_item_shape;append_replayed_record_is_idempotent_and_flushes_like_stream_commit;flush_and_info_report_persistent_wal_boundaries",
             "suite": "native_storage_parity"
           },
@@ -2817,8 +2831,7 @@
             "description": "storage object/page/slot ownership sources must remain present while Rust storage parity is validated against this shared corpus.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_storage_parity"
           },
           "name": "native_object_page_slot_storage_sources_present"
@@ -2836,8 +2849,7 @@
             "suite": "native_storage_parity",
             "mode": "static",
             "description": "object manager, page store/oplog page index, and slot store sources must remain present for cross-format storage lifecycle parity comparison.",
-            "required_paths": [
-            ]
+            "required_paths": []
           }
         }
       ]
@@ -2851,8 +2863,7 @@
             "description": "StorageManager, compaction, and GC sources must remain present for storage lifecycle parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_storage_parity"
           },
           "name": "native_storage_manager_compaction_gc_sources_present"
@@ -2868,8 +2879,7 @@
             "description": "storage oplog replay surface must remain present for durability and recovery parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_storage_parity"
           },
           "name": "native_storage_oplog_sources_present"
@@ -2885,8 +2895,7 @@
             "description": "slot context test coverage must remain present for slot lifecycle parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_storage_parity"
           },
           "name": "native_slot_context_test_present"
@@ -2902,8 +2911,7 @@
             "description": "data-Raft consensus sources must remain present for consensus parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_data_raft_parity"
           },
           "name": "native_data_raft_consensus_sources_present"
@@ -2919,8 +2927,7 @@
             "description": "data-Raft replication sources must remain present for replication parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_data_raft_parity"
           },
           "name": "native_data_raft_replication_sources_and_harnesses_present"
@@ -2936,8 +2943,7 @@
             "description": "data-Raft unit test must remain present for command/log/safety parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_data_raft_parity"
           },
           "name": "native_data_raft_unit_test_present"
@@ -3007,8 +3013,7 @@
             "description": "Current object, zone, eviction, expiry, and storage flag surfaces must remain present for storage lifecycle parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_storage_parity"
           },
           "name": "native_storage_object_zone_evicter_expirer_sources_present"
@@ -3122,8 +3127,7 @@
             "description": "Unified conformance Raft case for the data_raft_replication_test and the Rust distributed Raft validation harness. Rust evidence must cover both the data-node Raft path and the shared-store snapshot/replay path through shared_store_path_evidence.",
             "kind": "existing_test",
             "mode": "runtime",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-replication",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
@@ -3545,8 +3549,7 @@
             "description": "Current client meta-sync, router, pipeline, and request command surfaces must remain present for Rust client retry/topology parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_client_control_plane_parity"
           },
           "name": "native_client_meta_sync_router_sources_present"
@@ -3580,8 +3583,7 @@
             "description": "Current metaserver scheduler, repair, placement, heartbeat, and task retry surfaces must remain present for Rust metaserver repair/rebalance parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_metaserver_control_plane_parity"
           },
           "name": "native_metaserver_scheduler_repair_sources_present"
@@ -3597,8 +3599,7 @@
             "description": "Current partition server heartbeat, server service, and metaserver partition-server client surfaces must remain present for Rust data-node lifecycle/load/unload parity comparison.",
             "kind": "existing_test",
             "mode": "static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "suite": "native_data_node_lifecycle_parity"
           },
           "name": "native_data_node_lifecycle_server_sources_present"
@@ -3614,8 +3615,7 @@
             "description": "Shared conformance control-plane case for topology-version changes. Rust validates table topology sync, proxy/meta topology refresh, and readiness evidence; surfaces keep the caller migration and deployment routing hooks visible.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust client_background_meta_sync_updates_existing_table_handle -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_client_control_plane_parity"
@@ -3633,8 +3633,7 @@
             "description": "Shared conformance stale-route invalidation case covering client stale cached routes, proxy topology-version guarded invalidation, and one-refresh retry behavior.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust direct_client_refreshes_cached_route_after_failure -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_client_control_plane_parity"
@@ -3652,8 +3651,7 @@
             "description": "Shared conformance proxy admission case for drop-percent, degraded/overload reporting, and request preflight policy counters.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust proxy_policy_blocks_writes_not_serving_and_drop_percent -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
@@ -3671,8 +3669,7 @@
             "description": "Shared conformance table policy case for frozen/not-serving/readonly/write-disabled states rejecting writes before backend execution while allowing safe reads where applicable.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust startup_load_request_uses_readonly_secondary_env -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
@@ -3690,8 +3687,7 @@
             "description": "Shared conformance route quarantine/recovery case for repeated backend failures, quarantined route avoidance, recovery probing, and degraded preflight evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust proxy_skips_cached_backend_after_continuous_failure_threshold -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
@@ -3709,8 +3705,7 @@
             "description": "Shared conformance data-node lifecycle case for load, reload, readonly serving, unload, stale load-version rejection, lifecycle write barriers, and restart persistence evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust runtime_load_reload_unload_records_lifecycle_transitions -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_data_node_lifecycle_parity"
@@ -3728,8 +3723,7 @@
             "description": "Shared conformance data-node ServerService alias case for lifecycle-token, load, reload, unload, snapshot, and status route compatibility over the Rust-native migration surface.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust --bin server native_server_service_aliases_cover_partition_manager_surface -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_data_node_lifecycle_parity"
@@ -3747,8 +3741,7 @@
             "description": "Shared conformance metaserver scheduler case for scheduler-issued load/reload/unload tokens, stale generation rejection, task retry persistence, and data-node lifecycle callback verification.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_metaserver_control_plane_parity"
@@ -3932,8 +3925,7 @@
             "description": "Shared conformance Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/risk memories.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust context_relevance_ranks_qa_synonyms_and_phrases -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "native_context_pipeline_parity"
@@ -4099,7 +4091,7 @@
         {
           "command": {
             "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_vikingmem_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
+            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_external_baseline_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
             "datasets": [
               {
                 "artifact_kind": "checked_in_or_generated_fixture",
@@ -4118,7 +4110,7 @@
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -4201,7 +4193,7 @@
         {
           "command": {
             "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_vikingmem_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
+            "native_runner_contract": "runner consumes the same dataset entries, emits matrixark_external_baseline_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
             "datasets": [
               {
                 "artifact_kind": "external_full_dataset",
@@ -4229,7 +4221,7 @@
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5259,7 +5251,7 @@
     {
       "description": "Shared conformance storage stream case: stream-backed zones roll, read logical ranges, persist manifests, expose block-segment used-byte stats, and track delayed destroy lifecycle.",
       "family": "storage/cache",
-      "name": "storage_stream_backed_extent_runtime",
+      "name": "storage_stream_backed_band_runtime",
       "shard_id": 92,
       "steps": [
         {
@@ -5272,7 +5264,7 @@
             "expect_extent_manifest": true,
             "expect_logical_stream_read": true,
             "expect_zone_stats": true,
-            "kind": "storage_stream_backed_extent_runtime"
+            "kind": "storage_stream_backed_band_runtime"
           },
           "name": "stream_backed_extents_roll_read_reopen_and_delay_destroy",
           "skip_client": true
@@ -5282,7 +5274,7 @@
     {
       "description": "Shared conformance storage stream case: missing manifests rebuild from sealed/active extents, manifest/live-stream divergence is reconciled on open, and partial corrupt tails preserve readable prefixes with explicit corruption evidence.",
       "family": "storage/cache",
-      "name": "storage_stream_partial_extent_rebuild",
+      "name": "storage_stream_partial_band_rebuild",
       "shard_id": 92,
       "steps": [
         {
@@ -5292,7 +5284,7 @@
             "expect_extent_manifest_disk_consistent": true,
             "expect_extent_manifest_rebuild": true,
             "expect_partial_extent_recovery": true,
-            "kind": "storage_stream_partial_extent_rebuild"
+            "kind": "storage_stream_partial_band_rebuild"
           },
           "name": "partial_extent_manifest_rebuild_preserves_readable_prefix",
           "skip_client": true
@@ -5447,33 +5439,9 @@
       ]
     },
     {
-      "description": "Shared conformance StorageManager lifecycle case: one background loop reports prepare, reclaim, evict, expire, compact, and index-GC phases.",
-      "family": "storage/cache",
-      "name": "storage_manager_background_loop",
-      "shard_id": 92,
-      "steps": [
-        {
-          "command": {
-            "description": "Runs the Rust-native StorageManager loop over dirty slots, reclaim candidates, cache eviction, TTL expiry, model-layout compaction, and slot dump manifest/index cleanup.",
-            "kind": "storage_manager_background_loop",
-            "expect_phases": [
-              "prepare",
-              "reclaim",
-              "evict",
-              "expire",
-              "compact",
-              "index_gc"
-            ]
-          },
-          "name": "storage_manager_loop_prepare_reclaim_evict_expire_compact_index_gc",
-          "skip_client": true
-        }
-      ]
-    },
-    {
       "description": "Shared conformance storage dump/load case: one merged policy coordinates dirty-slot dump, manifest validation, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
       "family": "storage/cache",
-      "name": "storage_merged_dump_load_policy",
+      "name": "storage_merged_dump_load_policy_2",
       "shard_id": 92,
       "steps": [
         {
@@ -5540,8 +5508,7 @@
             "expect_alias_lookup": true,
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust context_models_round_trip_wire_payloads_and_type_alias --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "native_context_pipeline_parity"
@@ -5599,8 +5566,7 @@
             "description": "Shared control-plane case for multi-proxy topology convergence, backend quarantine, recovery probing, and stale-cache comparison.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust proxy_backend_failure_quarantines_route_then_recovers proxy_cache_ttl_and_topology_version_guard_invalidate_routes -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_proxy_control_plane_parity"
@@ -5618,8 +5584,7 @@
             "description": "Shared control-plane case for metaserver scheduler-issued load/reload/unload tokens and stale generation rejection.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_execute_next_installs_token_then_loads_node metaserver_scheduler_retries_busy_unload_without_dropping_task -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_metaserver_control_plane_parity"
@@ -5637,8 +5602,7 @@
             "description": "Shared control-plane case for data-node load/reload/readonly/unload lifecycle, lifecycle snapshot restore, and restart diagnostics.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust runtime_lifecycle_snapshot_restores_transitions_and_tokens runtime_auto_persists_lifecycle_snapshot_across_transitions runtime_reports_bad_lifecycle_snapshot_restore_in_preflight -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_data_node_lifecycle_parity"
@@ -5656,8 +5620,7 @@
             "description": "Shared control-plane case for client read/write retry budgets, topology refresh on version changes, stale route invalidation, and no duplicate unsafe writes.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust client_retries_retryable_read_status_before_returning client_does_not_retry_write_status_without_write_retry_budget client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_conformance_evidence.py",
             "suite": "native_client_control_plane_parity"
@@ -5675,8 +5638,7 @@
             "description": "Shared ingestion case for Kafka consumer-group runtime, assignment changes, rebalance-required detection, and backpressure under in-flight pressure.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust kafka_consumer_group_runtime_reports_rebalance_and_backpressure -- --test-threads=1",
             "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
@@ -5694,8 +5656,7 @@
             "description": "Shared ingestion case for Flink precommit/commit/abort lifecycle across restart/failover idempotence.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust flink_checkpoint_lifecycle_precommit_commit_abort ingestion_restart_replays_offsets_and_checkpoints_idempotently -- --test-threads=1",
             "rust_validator": "python3 tools/validate_ingestion_ops_conformance_evidence.py",
             "suite": "native_ingestion_parity"
@@ -5731,7 +5692,7 @@
         {
           "command": {
             "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "native_runner_contract": "runner emits matrixark_external_baseline_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
             "datasets": [
               {
                 "artifact_kind": "real_or_fixture_json",
@@ -5744,11 +5705,11 @@
                 "threshold_profile": "oss_reader_full"
               }
             ],
-            "description": "Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and VikingMem-style fields.",
+            "description": "Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and ExternalBaseline-style fields.",
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5829,7 +5790,7 @@
         {
           "command": {
             "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "native_runner_contract": "runner emits matrixark_external_baseline_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
             "datasets": [
               {
                 "artifact_kind": "real_or_fixture_json",
@@ -5842,11 +5803,11 @@
                 "threshold_profile": "oss_reader_full"
               }
             ],
-            "description": "Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and VikingMem-style fields.",
+            "description": "Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and ExternalBaseline-style fields.",
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -5921,13 +5882,13 @@
       ]
     },
     {
-      "name": "benchmark_rust_vikingmem_report_comparator",
+      "name": "benchmark_rust_external_baseline_report_comparator",
       "shard_id": 70,
       "steps": [
         {
           "command": {
             "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
-            "native_runner_contract": "runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "native_runner_contract": "runner emits matrixark_external_baseline_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
             "datasets": [
               {
                 "artifact_kind": "archived_report_pair",
@@ -5945,11 +5906,11 @@
                 "threshold_profile": "fixture"
               }
             ],
-            "description": "Shared benchmark contract for comparing and Rust matrixark_vikingmem_context_benchmark_report_v1 archives case-by-case.",
+            "description": "Shared benchmark contract for comparing and Rust matrixark_external_baseline_context_benchmark_report_v1 archives case-by-case.",
             "kind": "existing_test",
             "mode": "shared_benchmark_contract",
             "report_contract": {
-              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "format": "matrixark_external_baseline_context_benchmark_report_v1",
               "per_query_required_fields": [
                 "query_id",
                 "category",
@@ -6020,7 +5981,7 @@
               "longmemeval_full"
             ]
           },
-          "name": "native_rust_vikingmem_report_comparator_shared"
+          "name": "native_rust_external_baseline_report_comparator_shared"
         }
       ]
     },
@@ -7564,8 +7525,7 @@
             "description": "Data-node Raft status/admin election route parity.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_status_and_admin_routes -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
             "suite": "native_data_raft_parity"
@@ -7585,8 +7545,7 @@
             "description": "Data-node Raft apply-health route parity.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_apply_health_route -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
             "suite": "native_data_raft_parity"
@@ -7606,8 +7565,7 @@
             "description": "Data-node Raft membership apply route parity.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_membership_apply_route -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
             "suite": "native_data_raft_parity"
@@ -7627,8 +7585,7 @@
             "description": "Data-node Raft scale down/up route parity.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_raft_control_scale_up_down_preserves_serving -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
             "suite": "native_data_raft_parity"
@@ -7648,8 +7605,7 @@
             "description": "Data-node Raft leadership-transfer route parity.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_raft_control_accept_leadership_matches_raft_node_route -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
             "suite": "native_data_raft_parity"
@@ -7669,8 +7625,7 @@
             "description": "Data-node Raft wait-applied and local-catch-up route parity.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_raft_admin_wait_applied_reports_lag_and_success_after_catchup -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
             "suite": "native_data_raft_parity"
@@ -8017,8 +7972,7 @@
     {
       "name": "all_family_api_redis_admin_product_models",
       "shard_id": 36,
-      "steps": [
-      ]
+      "steps": []
     },
     {
       "name": "all_family_benchmark_locomo_longmemeval_contract",
@@ -8040,7 +7994,7 @@
               ]
             },
             "archive_contract": "Reports include dataset hash, case count, model/provider, reader mode, thresholds, p50/p95, token reduction, category breakdown, and JSON path.",
-            "native_runner_contract": "benchmark adapter emits matrixark_vikingmem_context_benchmark_report_v1 for case-by-case comparator use.",
+            "native_runner_contract": "benchmark adapter emits matrixark_external_baseline_context_benchmark_report_v1 for case-by-case comparator use.",
             "datasets": [
               {
                 "artifact_kind": "real_or_fixture_json",
@@ -8119,8 +8073,7 @@
             "description": "Shared Raft library case for MatrixRaft WAL/log record compatibility: standard data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust data_raft_log_codec_round_trips_native_style_header data_raft_log_codec_rejects_bad_header_and_sequence data_raft_command_codec_round_trips_batch_request data_raft_command_codec_round_trips_chunked_timestamped_kv_payload native_data_raft_replication_rejects_corrupt_log_payload --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
@@ -8486,8 +8439,7 @@
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
             "native_report_adapter": "compat/native_unified_case_report_adapter.h"
@@ -8537,8 +8489,7 @@
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
             "native_report_adapter": "compat/native_unified_case_report_adapter.h"
@@ -8592,8 +8543,7 @@
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
             "native_report_adapter": "compat/native_unified_case_report_adapter.h"
@@ -8644,8 +8594,7 @@
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
             "native_report_adapter": "compat/native_unified_case_report_adapter.h"
@@ -8707,8 +8656,7 @@
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
             "native_runner_contract": "MatrixRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
             "comparator": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "TS_NATIVE_UNIFIED_NATIVE_CMD='<native-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --native --require-native-native",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
             "native_report_adapter": "compat/native_unified_case_report_adapter.h"
@@ -8787,8 +8735,7 @@
             "description": "Shared MatrixRaft admin-surface case: Rust and must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence, quorum peer progress, and non-vacuous per-peer pipeline activity are required.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust matrixraft_admin_status_surface_requires_wal_and_peer_pipeline_fields --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-matrixraft-admin-surface.json>",
@@ -8837,8 +8784,7 @@
             "description": "Shared data-node API case for the Rust-native /raft/control/matrixraft_runtime_admin route and equivalent admin/status surface.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "runner": "cmake --build build-ubuntu22/release --target server_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_matrixraft_runtime_admin_report --bin raft_node -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-matrixraft-admin.json>",
@@ -9148,8 +9094,7 @@
             "native_contract": "ObjectManager/PageStore cold read reloads by PageAddress after eviction and preserves logical reads",
             "kind": "storage_cache_cold_read_after_eviction",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_test": "cache_cold_read_refills_from_disk_or_block_store_after_eviction",
             "suite": "native_storage_parity"
           },
@@ -9173,8 +9118,7 @@
             "native_contract": "StorageManager merged dump/load install is atomic across slots and reports stale object/page conflicts",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_test": "merged_dump_load_interruption_rolls_back_and_recovers",
             "suite": "native_storage_parity"
           },
@@ -9203,8 +9147,7 @@
             "native_contract": "MatrixRaft process harness proves per-node WAL status, read-index, restart recovery, and log-store inspection",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_runner": "tools/run_raft_distributed_conformance.sh",
             "rust_test": "openraft_process_path_reports_independent_wal_snapshot_and_read_index",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
@@ -9229,8 +9172,7 @@
             "native_contract": "client/proxy handles topology churn with retry-safe classification, stale route invalidation, quarantine, and convergence",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_test": "client_proxy_route_churn_converges_without_duplicate_unsafe_writes",
             "suite": "native_client_proxy_control_plane_parity"
           },
@@ -9253,8 +9195,7 @@
             "native_contract": "context pipeline writes resource, skill, entity, summary, embedding, dirty marker, and secondary index records with restart-safe lookup",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "rust_test": "resource_skill_ingest_secondary_indexes_survive_restart",
             "suite": "native_context_pipeline_parity"
           },
@@ -9281,8 +9222,7 @@
             "kind": "storage_slot_object_block_index_authority",
             "description": "Writes string/hash/set/timestamped/context objects, rebuilds logical views from slot/object/block index authority, and verifies cold reads by block address.",
             "rust_test": "slot_object_block_index_is_primary_authority_and_rebuilds_model_views",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_authority_fields": [
               "slot_id",
               "object_id",
@@ -9324,8 +9264,7 @@
             "kind": "storage_slot_layout_transitions",
             "description": "Exercises growth, delete/tombstone, compaction, dump/load, and restart while checking SlotNode-like layout transitions.",
             "rust_test": "slot_store_layout_transitions_survive_growth_delete_compaction_dump_load_restart",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_layout_states": [
               "empty",
               "single_object",
@@ -9365,8 +9304,7 @@
             "kind": "storage_block_address_fallback",
             "description": "Evicts hot objects, verifies memory miss, then reads by block address from disk/page-compatible block store or shared-store replay and refills memory.",
             "rust_test": "cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_fallback_order": [
               "memory_miss",
               "disk_cache_lookup",
@@ -9400,8 +9338,7 @@
             "kind": "storage_stream_segment_manifest_rebuild",
             "description": "Covers the zone/stream concept using Rust block segment naming: active, sealed, delayed destroy, purged, missing manifest rebuild, partial segment, and corrupt segment reporting.",
             "rust_test": "missing_extent_manifest_rebuilds_from_existing_segments",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_segment_states": [
               "active",
               "sealed",
@@ -9443,8 +9380,7 @@
             "kind": "storage_model_aware_block_compaction",
             "description": "Compacts string/hash/set/timestamped/context/Risk layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
             "rust_test": "model_layout_compaction_rewrites_live_refs_and_marks_stale_blocks_reclaimable",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_models": [
               "string",
               "hash",
@@ -9485,8 +9421,7 @@
             "kind": "storage_gc_eviction_cold_reads",
             "description": "Runs weighted eviction and GC under pressure; GC refuses live refs, dump manifests, checkpoints, follower cursors, Raft snapshots, and delayed-destroy grace, then verifies evicted cold reads refill.",
             "rust_test": "storage_manager_gc_and_eviction_preserve_cold_reads_under_pressure",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_retention_blockers": [
               "live_refs",
               "dump_manifests",
@@ -9526,8 +9461,7 @@
             "kind": "storage_wal_index_gc_reclaim",
             "description": "Reclaims WAL/index-log only after durable slot dump and retention floors, commits dirty slots before index-GC, restarts, and verifies recovery boundary plus logical reads.",
             "rust_test": "storage_manager_wal_index_gc_reclaims_only_after_slot_generation_floors",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_reclaim_floors": [
               "slot_dump_generation",
               "follower_cursor",
@@ -9565,8 +9499,7 @@
             "kind": "storage_cache_replacement_soak",
             "description": "Runs memory and disk cache pressure with pinned handles, placement semantics, async writeback/backpressure, latency histograms, eviction/refill, and restart recovery.",
             "rust_test": "cache_replacement_policy_soak_under_memory_disk_pressure_and_restart",
-            "required_paths": [
-            ],
+            "required_paths": [],
             "expect_cache_features": [
               "pinned_handles",
               "dram_ssd_placement",
@@ -10316,24 +10249,10 @@
                 ]
               },
               {
-                "timestamp_ms": 1010,
-                "value": [
-                  50,
-                  48
-                ]
-              },
-              {
                 "timestamp_ms": 1015,
                 "value": [
                   51,
                   48
-                ]
-              },
-              {
-                "timestamp_ms": 1020,
-                "value": [
-                  45,
-                  53
                 ]
               },
               {
@@ -10633,7 +10552,7 @@
         {
           "name": "risk_h_set",
           "command": {
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "family": "h",
             "key": "parity:risk",
             "timestamp_ms": 400,
@@ -10646,7 +10565,7 @@
         {
           "name": "risk_cpc_set",
           "command": {
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "family": "cpc",
             "key": "parity:risk",
             "timestamp_ms": 410,
@@ -10659,7 +10578,7 @@
         {
           "name": "risk_query_h_sum",
           "command": {
-            "kind": "risk_family_query",
+            "kind": "control_state_family_query",
             "family": "h",
             "key": "parity:risk",
             "start_ms": 390,
@@ -10674,7 +10593,7 @@
         {
           "name": "risk_fol_first",
           "command": {
-            "kind": "risk_fol_set",
+            "kind": "control_state_fol_set",
             "key": "parity:risk:fol",
             "value": [
               102,
@@ -10694,7 +10613,7 @@
         {
           "name": "risk_fol_query",
           "command": {
-            "kind": "risk_fol_query",
+            "kind": "control_state_fol_query",
             "key": "parity:risk:fol"
           },
           "expect": {
@@ -10811,7 +10730,7 @@
           },
           "expect": {
             "kind": "context_object_key",
-            "object_key": "ctx:entity:99:700:9001"
+            "object_key": "ctx:entity:99:700"
           }
         },
         {
@@ -10886,49 +10805,42 @@
         {
           "name": "context_embedding",
           "command": {
-            "kind": "context_upsert_embedding",
+            "kind": "context_set_node_embedding",
             "tenant_hash": 99,
-            "embedding": {
-              "ref_hash": 700,
-              "level": 1,
-              "model_hash": 123,
-              "vector": [
-                0.1,
-                0.2,
-                0.3
-              ],
-              "updated_at_ms": 540
-            }
+            "node_hash": 700,
+            "model_hash": 123,
+            "vector": [
+              0.1,
+              0.2,
+              0.3
+            ],
+            "updated_at_ms": 540
           },
           "expect": {
             "kind": "context_object_key",
-            "object_key": "ctx:embedding:99:700"
+            "object_key": "ctx:node:99:700"
           }
         },
         {
           "name": "context_query_embedding",
           "command": {
-            "kind": "context_query_embeddings",
+            "kind": "context_query_node_embeddings",
             "tenant_hash": 99,
-            "ref_hashes": [
+            "node_hashes": [
               700
-            ],
-            "limit": null
+            ]
           },
           "expect": {
-            "kind": "context_embeddings",
+            "kind": "context_node_embeddings",
             "embeddings": [
-              {
-                "ref_hash": 700,
-                "level": 1,
-                "model_hash": 123,
-                "vector": [
+              [
+                700,
+                [
                   0.1,
                   0.2,
                   0.3
-                ],
-                "updated_at_ms": 540
-              }
+                ]
+              ]
             ]
           }
         },
@@ -11407,16 +11319,18 @@
             "kind": "context_write_event",
             "tenant_hash": 3010,
             "node_hash": 9200,
-            "event_id_hash": 8000,
-            "event_time_ms": 1782400000000,
-            "ingestion_time_ms": 1782400000000,
-            "event_type": 7,
-            "text": "Cold backfill event 0",
-            "source_ref": "backfill://raw-query",
-            "confidence": 0.95,
-            "importance": 0.85,
             "first_write_only": false,
-            "cold_storage": true
+            "cold_storage": true,
+            "event": {
+              "event_id_hash": 8000,
+              "event_time_ms": 1782400000000,
+              "ingestion_time_ms": 1782400000000,
+              "event_type": 7,
+              "confidence": 0.95,
+              "importance": 0.85,
+              "text": "Cold backfill event 0",
+              "source_ref": "backfill://raw-query"
+            }
           },
           "expect": {
             "kind": "context_object_key",
@@ -11430,7 +11344,7 @@
             "tenant_hash": 3010,
             "node_hash": 9200,
             "start_time_ms": 1782400000000,
-            "end_time_ms": 1782400000000,
+            "end_time_ms": 1782400000001,
             "limit": 10
           },
           "expect": {
@@ -11451,16 +11365,18 @@
             "kind": "context_write_event",
             "tenant_hash": 3011,
             "node_hash": 9201,
-            "event_id_hash": 8100,
-            "event_time_ms": 1782500000000,
-            "ingestion_time_ms": 1782500000000,
-            "event_type": 7,
-            "text": "Old event used only for temporal compression",
-            "source_ref": "backfill://temporal-compression",
-            "confidence": 0.95,
-            "importance": 0.85,
             "first_write_only": false,
-            "cold_storage": true
+            "cold_storage": true,
+            "event": {
+              "event_id_hash": 8100,
+              "event_time_ms": 1782500000000,
+              "ingestion_time_ms": 1782500000000,
+              "event_type": 7,
+              "confidence": 0.95,
+              "importance": 0.85,
+              "text": "Old event used only for temporal compression",
+              "source_ref": "backfill://temporal-compression"
+            }
           },
           "expect": {
             "kind": "context_object_key",
@@ -11474,7 +11390,7 @@
             "tenant_hash": 3011,
             "node_hash": 9201,
             "source_start_ms": 1782500000000,
-            "source_end_ms": 1782500000000,
+            "source_end_ms": 1782500000001,
             "compressed_time_ms": 1782500001000,
             "max_source_events": 3,
             "min_confidence": 0.9,
@@ -11621,7 +11537,7 @@
       {
         "comparison_command": "python3 tools/compare_unified_rust_case_reports.py --rust-report <rust-report.json> --native-report <native-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
         "family": "benchmarks",
-        "runner_command": "compat/native_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and reports.",
+        "runner_command": "compat/native_context_benchmark_report_adapter.h emits matrixark_external_baseline_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and reports.",
         "status": "mixed_native_and_static_surface_gate",
         "suites": [
           "native_context_benchmark_parity"
@@ -11822,8 +11738,8 @@
       "storage_rustraft_shared_store_async_replay",
       "storage_stream_cross_block_large_values",
       "storage_stream_random_size_reopen_scan",
-      "storage_stream_backed_extent_runtime",
-      "storage_stream_partial_extent_rebuild",
+      "storage_stream_backed_band_runtime",
+      "storage_stream_partial_band_rebuild",
       "storage_stream_manifest_disk_reconciliation",
       "storage_manager_background_loop",
       "storage_manager_pressure_scale_evidence",
@@ -11844,7 +11760,7 @@
       "ingestion_dead_letter_lag_report_contract",
       "benchmark_locomo_rust_full_replay_contract",
       "benchmark_longmemeval_rust_full_replay_contract",
-      "benchmark_rust_vikingmem_report_comparator",
+      "benchmark_rust_external_baseline_report_comparator",
       "ops_scale_readiness_slo_gate",
       "ops_production_readiness_service_summary",
       "ops_grafana_metrics_parity",
@@ -11949,10 +11865,10 @@
       "sequence_add",
       "sequence_query",
       "sequence_batch_query",
-      "risk_increment",
-      "risk_count",
-      "risk_set",
-      "risk_family_query",
+      "control_state_increment",
+      "control_state_count",
+      "control_state_set",
+      "control_state_family_query",
       "context_upsert_node",
       "context_get_node",
       "context_write_event",
@@ -11966,11 +11882,11 @@
       "common_exists",
       "common_expire",
       "existing_test",
-      "risk_set_and_get",
-      "risk_fol_set",
-      "risk_fol_query",
-      "risk_manager",
-      "risk_debug",
+      "control_state_set_and_get",
+      "control_state_fol_set",
+      "control_state_fol_query",
+      "control_state_manager",
+      "control_state_debug",
       "storage_dump_load_recovery",
       "storage_fault_matrix",
       "storage_follower_safe_gc",
@@ -11980,7 +11896,7 @@
       "storage_shared_store_replay",
       "storage_disk_shared_store_persistence_parity",
       "storage_stream_reopen_scan",
-      "storage_stream_partial_extent_rebuild",
+      "storage_stream_partial_band_rebuild",
       "storage_stream_manifest_disk_reconciliation",
       "storage_manager_pressure_scale_evidence",
       "storage_wal_index_gc_generation_retention",
@@ -12047,8 +11963,7 @@
       "context_events",
       "context_index_refs",
       "context_pack_audits",
-      "context_summary_dirty_markers",
-      "feature_point_groups",
+      "context_summary_dirty_nodes",
       "object_store_backend"
     ],
     "feature_parity_cases": [

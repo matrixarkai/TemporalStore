@@ -227,21 +227,6 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     }
 }
 
-pub fn context_resource_chunk_embedding(
-    chunk: &ContextParsedResourceChunk,
-    model: impl AsRef<str>,
-    updated_at_ms: u64,
-) -> ContextEmbedding {
-    let model = model.as_ref();
-    ContextEmbedding {
-        ref_hash: chunk.embedding_ref_hash,
-        level: 2,
-        model_hash: context_embedding_model_hash(model),
-        vector: deterministic_context_embedding(model, &chunk.text),
-        updated_at_ms,
-    }
-}
-
 pub fn update_context_resource_lifecycle(
     mut resources: Vec<ContextResourceLifecycleRecord>,
     updates: Vec<ContextResourceLifecycleUpdate>,

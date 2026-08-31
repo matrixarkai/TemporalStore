@@ -27,6 +27,7 @@ pub mod raft;
 pub mod readiness;
 pub mod rebalance;
 pub mod redis;
+mod scratch;
 pub mod sdk;
 pub mod shared_store;
 pub mod storage_backend;
@@ -34,7 +35,9 @@ pub mod storage_config;
 pub mod storage_descriptor;
 pub mod telemetry;
 pub mod types;
+pub mod fault;
 pub mod wal;
+mod wal_proto;
 pub mod record_framing;
 pub mod index_log_record;
 pub mod wal_record;
@@ -51,7 +54,7 @@ pub use client::{
 pub use context_workflow::{
     context_backfill_embeddings, context_embedding_ref_hash, context_pipeline_manage_report,
     context_pipeline_parity_evidence,
-    context_resource_chunk_embedding, context_skill_registry_from_parsed,
+    context_skill_registry_from_parsed,
     context_workflow_state_report, default_context_model_providers, extract_context,
     ingest_extract_context, ingest_resource_skill_context, inject_context,
     reference_open_source_model_profiles, parse_context_resource, parse_context_skill_markdown,
@@ -219,7 +222,7 @@ pub use storage_backend::{
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
     ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
-    ContextCompressionModel, ContextEmbedding, ContextEmbeddingModel,
+    ContextCompressionModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
     ContextSlab, ContextSummary, ContextDirtyNode, ContextSummaryModel,
