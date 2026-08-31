@@ -5261,7 +5261,84 @@ mod tests {
     }
 
     #[test]
-    fn a_namespace_that_still_holds_a_table_is_not_dropped() {
+fn counting_a_namespace_tables_agrees_with_counting_them_one_by_one() {
+        let meta = SingleNodeMeta::default();
+        // Three namespaces holding different numbers of tables, one holding
+        // none at all, and a dropped table that must not be counted.
+        for (namespace, table_name) in [
+            ("alpha", "a1"),
+            ("alpha", "a2"),
+            ("alpha", "a3"),
+            ("beta", "b1"),
+            ("gamma", "g1"),
+            ("gamma", "dropped"),
+        ] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: namespace.to_string(),
+                    table_name: table_name.to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "empty".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "gamma".to_string(),
+                table_name: "dropped".to_string(),
+            })
+            .status
+            .ok);
+
+        let listed = meta.list_namespaces();
+        assert!(listed.status.ok);
+
+        // Recomputed the long way: for each namespace, walk every table. This
+        // is what the listing used to do, and the tally has to match it.
+        let tables = meta.list_tables().tables;
+        for namespace in &listed.namespaces {
+            let counted_one_by_one = tables
+                .iter()
+                .filter(|table| {
+                    table.namespace == namespace.namespace
+                        && table.state != MetaEntityState::Dropped
+                })
+                .count();
+            assert_eq!(
+                namespace.table_count, counted_one_by_one,
+                "namespace {} was tallied as {} but holds {}",
+                namespace.namespace, namespace.table_count, counted_one_by_one
+            );
+        }
+
+        // And the counts are what they should be, so this is not agreeing on
+        // zero everywhere.
+        let count_of = |wanted: &str| {
+            listed
+                .namespaces
+                .iter()
+                .find(|namespace| namespace.namespace == wanted)
+                .unwrap_or_else(|| panic!("{wanted} is missing from the listing"))
+                .table_count
+        };
+        assert_eq!(count_of("alpha"), 3);
+        assert_eq!(count_of("beta"), 1);
+        assert_eq!(count_of("gamma"), 1, "the dropped table was counted");
+        assert_eq!(count_of("empty"), 0);
+    }
+
+    #[test]
+        fn a_namespace_that_still_holds_a_table_is_not_dropped() {
         // Dropping the namespace out from under a live table would leave the
         // table addressable by name but unreachable through its namespace.
         let meta = namespaced_meta();
