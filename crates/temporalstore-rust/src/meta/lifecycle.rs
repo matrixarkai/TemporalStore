@@ -151,21 +151,6 @@ impl SingleNodeMeta {
             request.limit.min(LIST_SHARDS_DEFAULT_LIMIT)
         };
 
-        // One pass over the tables to build shard id -> owning table, rather
-        // than asking per shard: the per-shard lookup scans every table, so
-        // doing it inside the loop would be quadratic in a large deployment.
-        let mut shard_tables = BTreeMap::new();
-        for table in state.tables.values() {
-            for offset in 0..table.info.shard_count {
-                if let Ok(shard_id) = table_shard_id(&table.info, offset) {
-                    shard_tables.insert(
-                        shard_id,
-                        (table.info.namespace.clone(), table.info.table_name.clone()),
-                    );
-                }
-            }
-        }
-
         let mut ids = state
             .shards
             .keys()
@@ -174,7 +159,12 @@ impl SingleNodeMeta {
             .collect::<Vec<_>>();
         ids.sort_unstable();
 
-        let mut shards = Vec::new();
+        // Which shards this answer will carry, decided before anything is
+        // looked up for them. Naming the table that owns a shard used to be
+        // done by building that map for every shard in the cluster -- walking
+        // every table, over every shard it declares, cloning its namespace and
+        // its name for each -- and then using at most one page of it.
+        let mut page = Vec::new();
         let mut next_after_shard_id = None;
         for shard_id in ids {
             let Some(location) = state.shards.get(&shard_id) else {
@@ -183,12 +173,39 @@ impl SingleNodeMeta {
             if !request.server_addr.is_empty() && location.server_addr != request.server_addr {
                 continue;
             }
-            if shards.len() == limit {
+            if page.len() == limit {
                 // A full page and at least one more match: hand back where to
                 // resume rather than silently truncating.
-                next_after_shard_id = shards.last().map(|entry: &ShardListEntry| entry.shard_id);
+                next_after_shard_id = page.last().map(|(shard_id, _): &(ShardId, &ShardLocation)| *shard_id);
                 break;
             }
+            page.push((shard_id, location));
+        }
+
+        // The page is sorted and a table's shards are a contiguous range, so
+        // the entries of the page that belong to a table are a slice of it.
+        let page_ids = page.iter().map(|(shard_id, _)| *shard_id).collect::<Vec<_>>();
+        let mut shard_tables: BTreeMap<ShardId, (String, String)> = BTreeMap::new();
+        for table in state.tables.values() {
+            let first = table.info.first_shard_id;
+            let end = first.saturating_add(table.info.shard_count);
+            let from = page_ids.partition_point(|shard_id| *shard_id < first);
+            let until = page_ids.partition_point(|shard_id| *shard_id < end);
+            for shard_id in &page_ids[from..until] {
+                // First table in map order wins a contested shard, which is how
+                // the map built shard by shard resolved two tables whose ranges
+                // overlap.
+                shard_tables.entry(*shard_id).or_insert_with(|| {
+                    (
+                        table.info.namespace.clone(),
+                        table.info.table_name.clone(),
+                    )
+                });
+            }
+        }
+
+        let mut shards = Vec::new();
+        for (shard_id, location) in page {
             let (namespace, table_name) = shard_tables.get(&shard_id).cloned().unwrap_or_default();
             shards.push(ShardListEntry {
                 shard_id,
