@@ -1367,20 +1367,92 @@ impl LocalMetaMutationLog {
         Ok(())
     }
 
+    /// Read the log back.
+    ///
+    /// A partial record at the END is what a crash partway through an append
+    /// leaves behind, and it is dropped rather than refused. That record was
+    /// never acknowledged: a writer only returns once a sync covering its bytes
+    /// has completed, so nothing was promised to anybody about it. Refusing the
+    /// whole file for it meant a metaserver whose metadata was entirely durable
+    /// except for a fraction of one record would not start.
+    ///
+    /// A line that does not parse with records AFTER it is a different thing.
+    /// Those later records WERE acknowledged, and stopping there would discard
+    /// them silently, so that is still an error. The distinction is the whole
+    /// point: the tail is expected, the middle is not.
+    /// Read the log back, repairing a torn tail if there is one.
+    ///
+    /// A partial record at the END is what a crash partway through an append
+    /// leaves behind. It is dropped rather than refused: that record was never
+    /// acknowledged, because a writer only returns once a sync covering its
+    /// bytes has completed, so nothing was promised to anybody about it.
+    /// Refusing the whole file for it meant a metaserver whose metadata was
+    /// entirely durable except for a fraction of one record would not start.
+    ///
+    /// The fragment is also REMOVED, not merely skipped. Appends open the file
+    /// for append and write at the end; left in place, the fragment would be
+    /// spliced onto the front of the next record and stop that line parsing.
+    /// That line would then be the last one, so the following restart would
+    /// drop it as a torn tail -- silently losing a write that WAS acknowledged.
+    /// Truncating to the end of the last record that parsed means the next
+    /// append starts on a record boundary.
+    ///
+    /// A line that does not parse with records AFTER it is a different thing.
+    /// Those later records were acknowledged, and stopping there would discard
+    /// them silently, so that is still an error. The tail is expected; the
+    /// middle is not.
     pub fn load(&self) -> io::Result<Vec<MetaMutationRecord>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let file = OpenOptions::new().read(true).open(&self.path)?;
+        let text = fs::read_to_string(&self.path)?;
         let mut mutations = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
+        // Where the last record that parsed ends, including its newline. This is
+        // the only point the file can be safely cut back to.
+        let mut good_end = 0usize;
+        let mut offset = 0usize;
+        // Held rather than returned: a line that does not parse is only a torn
+        // tail if nothing follows it. Anything following turns it into an error.
+        let mut unparsed: Option<(usize, String)> = None;
+        for (number, line) in text.split('\n').enumerate() {
+            let line_end = (offset + line.len() + 1).min(text.len());
+            offset += line.len() + 1;
             if line.trim().is_empty() {
                 continue;
             }
-            let record =
-                serde_json::from_str::<MetaMutationRecord>(&line).map_err(io::Error::other)?;
-            mutations.push(record);
+            if let Some((bad_number, message)) = unparsed.take() {
+                return Err(io::Error::other(format!(
+                    "meta mutation log {}: line {} does not parse and more lines follow it, \
+                     so it is not a torn tail: {}",
+                    self.path.display(),
+                    bad_number + 1,
+                    message
+                )));
+            }
+            match serde_json::from_str::<MetaMutationRecord>(line) {
+                Ok(record) => {
+                    mutations.push(record);
+                    good_end = line_end;
+                }
+                Err(err) => unparsed = Some((number, err.to_string())),
+            }
+        }
+        if let Some((number, message)) = unparsed {
+            tracing::warn!(
+                path = %self.path.display(),
+                line = number + 1,
+                recovered = mutations.len(),
+                truncated_to = good_end,
+                error = %message,
+                "metadata log ends in a partial record; it was never acknowledged, so it is \
+                 dropped and the file is cut back to the last whole record"
+            );
+            let file = OpenOptions::new().write(true).open(&self.path)?;
+            file.set_len(good_end as u64)?;
+            // The cut has to survive the crash that follows it, or the fragment
+            // comes back and the next append splices onto it again.
+            crate::durability_metrics::record_barrier("meta_log_truncate");
+            file.sync_all()?;
         }
         Ok(mutations)
     }
@@ -8415,6 +8487,183 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             scheduler_generation: None,
         });
         assert_eq!(frozen.status.code, "resource_frozen");
+    }
+
+    #[test]
+    fn a_log_cut_off_mid_record_still_brings_the_metaserver_back() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            for shard in 1..=3u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+
+        // What a process dying partway through an append leaves: a record that
+        // starts and stops, with no newline after it.
+        let mut file = OpenOptions::new().append(true).open(&log_path).unwrap();
+        file.write_all(b"{\"at_ms\":123,\"mutation\":{\"RegisterSha").unwrap();
+        drop(file);
+
+        // It comes back, with everything that was acknowledged.
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("a torn last record must not stop the metaserver starting");
+        let listed = recovered.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        assert!(listed.status.ok);
+        let ids = listed
+            .shards
+            .iter()
+            .map(|entry| entry.shard_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "every shard acknowledged before the crash must come back"
+        );
+        assert_eq!(
+            recovered.list_servers().servers.len(),
+            1,
+            "the server registration was acknowledged before the crash"
+        );
+    }
+
+    #[test]
+    fn a_write_after_recovering_from_a_crash_survives_the_next_restart() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            for shard in 1..=2u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+        // A crash partway through an append.
+        let mut file = OpenOptions::new().append(true).open(&log_path).unwrap();
+        file.write_all(b"{\"at_ms\":9,\"mutation\":{\"RegisterSha").unwrap();
+        drop(file);
+
+        // Come back and keep serving, which is the whole point of recovering.
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path)
+                .expect("a torn last record must not stop the metaserver starting");
+            assert!(
+                meta.register(RegisterShardRequest {
+                    shard_id: 3,
+                    server_addr: "node-a".to_string(),
+                })
+                .status
+                .ok,
+                "the registration after recovery was acknowledged"
+            );
+        }
+
+        // Restart again. Shard 3 was acknowledged AFTER the crash, so losing it
+        // here would be losing a write that was promised -- and losing it
+        // quietly, because the damaged line would be last and read as a torn
+        // tail. Leaving the fragment in the file is what caused that: the next
+        // append was spliced onto the end of it.
+        let again = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("the log must still be readable after recovering and writing");
+        let listed = again.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        assert!(listed.status.ok);
+        let ids = listed
+            .shards
+            .iter()
+            .map(|entry| entry.shard_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "a write acknowledged after recovery was lost on the next restart"
+        );
+
+        // And the file itself is clean: every line parses, so no fragment is
+        // waiting to swallow the next record.
+        for (number, line) in fs::read_to_string(&log_path).unwrap().lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                serde_json::from_str::<MetaMutationRecord>(line).is_ok(),
+                "line {} of the recovered log does not parse: {line}",
+                number + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_log_damaged_in_the_middle_is_refused_rather_than_half_read() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            for shard in 1..=3u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+
+        // Damage a line that has records after it. Those later records were
+        // acknowledged, so stopping at the damage would lose them silently --
+        // which is the thing that must not happen quietly.
+        let text = fs::read_to_string(&log_path).unwrap();
+        let mut lines = text.lines().collect::<Vec<_>>();
+        assert!(lines.len() >= 3, "need a line with records after it");
+        lines[1] = "{ this is not a record";
+        fs::write(&log_path, lines.join("\n") + "\n").unwrap();
+
+        let refused = SingleNodeMeta::with_mutation_log(&log_path);
+        assert!(
+            refused.is_err(),
+            "damage with acknowledged records after it must be refused, not half-read"
+        );
+        let message = refused.err().unwrap().to_string();
+        assert!(
+            message.contains("not a torn tail"),
+            "the error should say why it is not simply a crash: {message}"
+        );
     }
 
     #[test]
