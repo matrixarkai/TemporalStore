@@ -124,6 +124,16 @@
   pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
       overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
   .empty{color:var(--faint);font-size:14px;padding:6px 0}
+  .enc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:9px;
+       background:var(--panel-2)}
+  .enc.active{border-color:var(--accent);background:var(--accent-soft)}
+  .enc-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+  .enc-name{font-weight:600}
+  .enc-nums{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .enc-nums b{color:var(--ink);font-weight:600}
+  .enc-note{font-size:13px;color:var(--faint);margin-top:7px;line-height:1.5}
+  .enc-cfg{margin-top:9px} .enc-cfg pre{margin:0;font-size:12px}
   a{color:var(--accent)}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
@@ -152,6 +162,15 @@
   <section>
     <h2>Deployment <span class="aux" id="cfgTime"></span></h2>
     <div id="config"><div class="empty">Loading configuration…</div></div>
+  </section>
+
+  <section>
+    <h2>Embedding model <span class="aux">measured on 298 retrieval queries</span></h2>
+    <div id="encoders"><div class="empty">Loading…</div></div>
+    <div class="hint">Switching model changes what every new vector means. Embeddings are keyed per
+      model, so nothing incomparable is mixed — but an existing corpus has <strong>no vectors under
+      the new model</strong> until a backfill runs, and two models of equal width raise no error to
+      warn you. Plan the backfill before switching a populated store.</div>
   </section>
 
   <section>
@@ -264,6 +283,7 @@
       ["Skill budget", d.skills.shared_skill_budget_ratio + " of " + d.skills.max_budget_tokens +
                        " tokens · " + d.skills.skill_chunks_per_skill + " sections per skill"]
     ];
+    renderEncoders(d.encoders || []);
     var html = (d.warnings || []).map(function (w) {
       return '<div class="note">' + esc(w) + "</div>";
     }).join("");
@@ -321,6 +341,30 @@
         }).join("") + "</ul></details>";
     }
     return h + "</div>";
+  }
+
+  function renderEncoders(list) {
+    var host = $("encoders");
+    if (!list.length) { host.innerHTML = '<div class="empty">No catalog reported.</div>'; return; }
+    host.innerHTML = list.map(function (e) {
+      var cfg = "MATRIXARK_EMBEDDING_MODEL=" + e.id + (e.needs_prefix
+        ? String.fromCharCode(10) + "# query:/passage: prefixes applied automatically"
+        : "");
+      return '<div class="enc' + (e.active ? " active" : "") + '">' +
+        '<div class="enc-head"><span class="enc-name">' + esc(e.label) + "</span>" +
+        (e.active ? '<span class="pill completed">in use</span>' : "") +
+        (e.recommended ? '<span class="pill running">recommended</span>' : "") +
+        "</div><div class='enc-nums'>" +
+          "<span>hit@1 <b>" + e.hit_at_1 + "%</b></span>" +
+          "<span>hit@5 <b>" + e.hit_at_5 + "%</b></span>" +
+          "<span><b>" + e.texts_per_s + "</b> texts/s</span>" +
+          "<span><b>" + e.dims + "</b> dims</span>" +
+          "<span><b>" + e.params_m + "M</b> params</span>" +
+          "<span>window <b>" + e.window + "</b></span>" +
+          "<span><b>" + e.vectors_mb_per_doc + " MB</b>/doc</span>" +
+        "</div><div class='enc-note'>" + esc(e.note) + "</div>" +
+        "<div class='enc-cfg'><pre>" + esc(cfg) + "</pre></div></div>";
+    }).join("");
   }
 
   function renderJobs(jobs) {

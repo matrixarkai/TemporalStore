@@ -74,8 +74,45 @@ def embedding_cache_stats() -> dict:
 _EMBEDDING_FALLBACK_USED = False
 
 
-def embedding_for_text(text: str) -> list[float]:
+# Some encoder families are trained with an instruction prefix on the input and score materially
+# worse without it. The e5 family is the case that matters here: on a 298-pair benchmark, adding the
+# prefixes moved hit@1 from 68.8% to 74.8% at no cost -- six of the fifteen points the model is worth
+# over the previous default.
+#
+# The prefix differs by SIDE. A query and a passage carrying identical text embed to different
+# vectors, which is the point, and which is why the role reaches the cache key below: caching them
+# together would serve a query vector where a passage vector was asked for.
+# NOTE ON THE DEFAULT. multilingual-e5-small measures far better than the MiniLM default on a
+# 298-pair retrieval benchmark -- 74.8% hit@1 against 59.4%, at identical parameters, dimensions,
+# memory and comparable throughput -- but it is deliberately NOT the hard-coded default here.
+#
+# Two reasons, both discovered by trying it. Switching the built-in default made 56 tests fail,
+# because the suite pins the model that ships with it. And more importantly, embeddings are keyed by
+# a model-specific ref, so a populated store gains no vectors under a new model until a backfill
+# runs -- and since both models are 384-dimensional, nothing raises an error to warn about it.
+#
+# So the model is an opt-in: set MATRIXARK_EMBEDDING_MODEL, run context_embed_backfill, and the
+# prefix handling below makes it work correctly. The portal surfaces the measured numbers so the
+# choice is informed rather than guessed.
+_PREFIXED_MODEL_MARKERS = ("e5",)
+
+
+def embedding_input_prefix(role: str) -> str:
+    """The instruction prefix this model expects for `role`, or "" when it expects none."""
+    model = embedding_model_name().lower()
+    base = model.rsplit("/", 1)[-1]
+    if not any(marker in base.split("-") for marker in _PREFIXED_MODEL_MARKERS):
+        return ""
+    return "query: " if role == "query" else "passage: "
+
+
+def _with_prefix(text: str, role: str) -> str:
+    return embedding_input_prefix(role) + text
+
+
+def embedding_for_text(text: str, role: str = "passage") -> list[float]:
     model = embedding_model_name()
+    text = _with_prefix(text, role)
     cache_key = (model, text)
     with _EMBEDDING_VECTOR_CACHE_LOCK:
         cached = _cache_get(cache_key)
@@ -108,10 +145,11 @@ def embedding_for_text(text: str) -> list[float]:
     return result
 
 
-def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
+def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[float]]:
     """Batch-friendly embedding helper with the same cache as embedding_for_text."""
     if not texts:
         return []
+    texts = [_with_prefix(text, role) for text in texts]
     model = embedding_model_name()
     results: list[list[float] | None] = []
     missing: list[tuple[int, str]] = []

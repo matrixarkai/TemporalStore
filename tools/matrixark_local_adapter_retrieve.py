@@ -962,7 +962,8 @@ class _LocalAdapterRetrieveMixin:
                 "Python reference packing is disabled unless explicitly overridden for local debug."
             )
         embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(retrieval_query)
+        # The query side takes the query prefix; every other call here embeds document text.
+        query_embedding = embedding_for_text(retrieval_query, role="query")
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(

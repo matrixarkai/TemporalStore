@@ -1063,6 +1063,75 @@ def _portal_html_bytes() -> bytes:
 _STORE_SENTINELS = {"", "local", "none", "standalone", "off"}
 
 
+# Encoders this deployment can be pointed at, with what they measured on a 298-pair retrieval
+# benchmark built from real documentation. The numbers are here so an operator choosing a model sees
+# the trade rather than guessing from parameter counts -- which mislead: the 118M model outscored the
+# 560M one, and the widest-window model scored worst of all.
+#
+# These are measurements on ONE corpus of technical documentation with English and Chinese queries.
+# They rank these models on that corpus; they do not promise the same ranking on a different one,
+# which is why the portal presents them as evidence rather than as a recommendation to apply blindly.
+_ENCODER_CATALOG = [
+    {
+        "id": "intfloat/multilingual-e5-small",
+        "label": "multilingual-e5-small",
+        "params_m": 118, "dims": 384, "window": 512,
+        "hit_at_1": 74.8, "hit_at_5": 90.6, "texts_per_s": 22.2,
+        "vectors_mb_per_doc": 8.02, "needs_prefix": True, "recommended": True,
+        "note": "Best measured quality per unit of cost. Needs the query:/passage: prefixes, "
+                "which are applied automatically and are worth 6 of its 15 points over MiniLM.",
+    },
+    {
+        "id": "intfloat/multilingual-e5-base",
+        "label": "multilingual-e5-base",
+        "params_m": 278, "dims": 768, "window": 512,
+        "hit_at_1": 74.8, "hit_at_5": 91.3, "texts_per_s": 9.0,
+        "vectors_mb_per_doc": 16.05, "needs_prefix": True, "recommended": False,
+        "note": "Ties e5-small on hit@1 for 2.4x the parameters, twice the vector memory and a "
+                "third of the throughput. Choose it only if hit@5 is what you optimise.",
+    },
+    {
+        "id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "label": "MiniLM-L12 (previous default)",
+        "params_m": 118, "dims": 384, "window": 512,
+        "hit_at_1": 59.4, "hit_at_5": 82.2, "texts_per_s": 31.7,
+        "vectors_mb_per_doc": 8.02, "needs_prefix": False, "recommended": False,
+        "note": "Fastest of the measured set and the weakest on quality. Retained because existing "
+                "stores were embedded with it.",
+    },
+    {
+        "id": "intfloat/multilingual-e5-large",
+        "label": "multilingual-e5-large",
+        "params_m": 560, "dims": 1024, "window": 512,
+        "hit_at_1": 63.8, "hit_at_5": 88.6, "texts_per_s": 2.0,
+        "vectors_mb_per_doc": 21.40, "needs_prefix": True, "recommended": False,
+        "note": "Scores BELOW e5-small despite 4.7x the parameters, at eleven times the encode cost "
+                "and 2.7x the vector memory. Included as evidence that size is not the axis.",
+    },
+    {
+        "id": "BAAI/bge-m3",
+        "label": "bge-m3 (long context)",
+        "params_m": 568, "dims": 1024, "window": 8192,
+        "hit_at_1": 49.7, "hit_at_5": 70.8, "texts_per_s": 0.2,
+        "vectors_mb_per_doc": 2.42, "needs_prefix": False, "recommended": False,
+        "note": "An 8192-token window needs far fewer vectors -- 2.42 MB per document against 8.02 -- "
+                "but scored worst on retrieval and encodes over a hundred times slower. Consider it "
+                "only when vector storage is the binding constraint.",
+    },
+]
+
+
+def encoder_catalog() -> list:
+    """The catalog, with the active model marked, for the portal's model picker."""
+    active = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
+    out = []
+    for entry in _ENCODER_CATALOG:
+        item = dict(entry)
+        item["active"] = bool(active) and active == entry["id"]
+        out.append(item)
+    return out
+
+
 def _model_config_snapshot() -> Json:
     """The effective extraction/embedding/skill-budget configuration, redacted for display.
 
@@ -1166,6 +1235,7 @@ def _model_config_snapshot() -> Json:
         "embedding": embedding,
         "skills": skills,
         "warnings": warnings,
+        "encoders": encoder_catalog(),
     }
 
 
