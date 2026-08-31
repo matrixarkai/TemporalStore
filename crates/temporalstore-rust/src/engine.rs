@@ -2612,8 +2612,9 @@ pub(super) fn wal_single_barrier() -> bool {
 /// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
 /// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
 /// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
-/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default OFF ->
-/// byte-identical to the legacy in-lock `append_with_sync` barrier. The ack is always returned
+/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default ON; set
+/// the variable to 0 for byte-identical behaviour to the legacy in-lock `append_with_sync`
+/// barrier. The ack is always returned
 /// strictly AFTER the covering barrier succeeds, so durability is never weakened.
 fn engine_concurrent_commit() -> bool {
     env_flag_default_on("TS_ENGINE_CONCURRENT_COMMIT")
@@ -2627,8 +2628,9 @@ fn engine_concurrent_commit() -> bool {
 /// `execute_with_storage_override`, which walks + clones every live model-map entry only to
 /// re-confirm that `bucket_index` (which every write already keeps authoritative) is in sync. With
 /// the gate on, once a promote scan has confirmed sync (`ShardState.promote_scan_done`) the hot
-/// path skips the repeat scan. Default OFF -> byte-identical (the scan runs every command exactly
-/// as before). Sharing one gate with the WAL fast-append so a single switch flattens phase-1.
+/// path skips the repeat scan. Default ON; set the variable to 0 for byte-identical behaviour
+/// (the scan then runs every command exactly as before). Sharing one gate with the WAL
+/// fast-append so a single switch flattens phase-1.
 fn phase1_flat_enabled() -> bool {
     env_flag_default_on("TS_PHASE1_FLAT")
 }
@@ -2636,7 +2638,8 @@ fn phase1_flat_enabled() -> bool {
 /// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
 /// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
 /// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
-/// O(1) cached WAL sequence. Default OFF -> per-entry `execute_raft_apply` (byte-identical). The
+/// O(1) cached WAL sequence. Default ON; set the variable to 0 for per-entry
+/// `execute_raft_apply` (byte-identical). The
 /// raft log stays the durability + reconstruction source; the coalesced barrier still completes
 /// before the raft runtime advances the durable applied_index.
 fn raft_apply_coalesce() -> bool {
@@ -3677,3 +3680,114 @@ fn object_manager_stats(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod flag_default_doc_tests {
+    use std::path::Path;
+
+    /// A flag's doc comment must not claim the opposite default from its code.
+    ///
+    /// Seven of them did: they called `env_flag_default_on` -- true unless the variable is
+    /// explicitly 0/false/no/off -- while their comment said "Default OFF", usually with a
+    /// reassuring "byte-identical / exactly as before" after it. A reader asking the question
+    /// that matters ("is this path actually live?") got the wrong answer, and nothing failed,
+    /// because a comment cannot fail. This reads the sources so it can.
+    #[test]
+    fn flag_docs_state_the_default_the_code_actually_has() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut wrong: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        collect_rs(&root, &mut files);
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                if !trimmed.starts_with("fn ") || !trimmed.ends_with("() -> bool {") {
+                    continue;
+                }
+                // body: up to the closing brace at the same indent
+                let mut body = String::new();
+                for next in lines.iter().skip(index + 1) {
+                    if next.trim_start() == "}" && next.len() - next.trim_start().len()
+                        == line.len() - line.trim_start().len()
+                    {
+                        break;
+                    }
+                    body.push_str(next);
+                    body.push('\n');
+                }
+                let actual_on = if body.contains("env_flag_default_on") {
+                    true
+                } else if body.contains("env_flag_on") {
+                    false
+                } else {
+                    continue;
+                };
+
+                // doc block immediately above
+                let mut doc = String::new();
+                for back in (0..index).rev() {
+                    let candidate = lines[back].trim_start();
+                    if candidate.starts_with("///") {
+                        doc.insert_str(0, &format!("{candidate}\n"));
+                    } else if candidate.starts_with("#[") {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                if doc.is_empty() {
+                    continue;
+                }
+                checked += 1;
+                let low = doc.to_ascii_lowercase();
+                let says_off = low.contains("default off") || low.contains("defaults off");
+                let says_on = low.contains("default on") || low.contains("defaults on");
+                let name = trimmed
+                    .trim_start_matches("fn ")
+                    .split('(')
+                    .next()
+                    .unwrap_or("?");
+                if actual_on && says_off && !says_on {
+                    wrong.push(format!(
+                        "{}::{name} documents \"default off\" but calls env_flag_default_on",
+                        file.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                if !actual_on && says_on && !says_off {
+                    wrong.push(format!(
+                        "{}::{name} documents \"default on\" but calls env_flag_on",
+                        file.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+            }
+        }
+
+        assert!(checked > 0, "no documented flag functions found; the scan is broken");
+        assert!(
+            wrong.is_empty(),
+            "flag docs contradict their code ({} of {checked} checked):\n  {}",
+            wrong.len(),
+            wrong.join("\n  ")
+        );
+    }
+
+    fn collect_rs(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+}
