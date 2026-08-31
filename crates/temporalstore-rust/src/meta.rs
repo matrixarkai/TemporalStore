@@ -1194,20 +1194,58 @@ impl LocalMetaMutationLog {
         Ok(())
     }
 
+    /// Read the log back.
+    ///
+    /// A partial record at the END is what a crash partway through an append
+    /// leaves behind, and it is dropped rather than refused. That record was
+    /// never acknowledged: a writer only returns once a sync covering its bytes
+    /// has completed, so nothing was promised to anybody about it. Refusing the
+    /// whole file for it meant a metaserver whose metadata was entirely durable
+    /// except for a fraction of one record would not start.
+    ///
+    /// A line that does not parse with records AFTER it is a different thing.
+    /// Those later records WERE acknowledged, and stopping there would discard
+    /// them silently, so that is still an error. The distinction is the whole
+    /// point: the tail is expected, the middle is not.
     pub fn load(&self) -> io::Result<Vec<MetaMutationRecord>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
         let file = OpenOptions::new().read(true).open(&self.path)?;
         let mut mutations = Vec::new();
-        for line in BufReader::new(file).lines() {
+        // Held rather than returned: a line that does not parse is only a torn
+        // tail if nothing follows it. Anything following turns it into an error.
+        let mut unparsed: Option<(usize, String)> = None;
+        for (number, line) in BufReader::new(file).lines().enumerate() {
             let line = line?;
+            if let Some((bad_number, message)) = unparsed.take() {
+                return Err(io::Error::other(format!(
+                    "meta mutation log {}: line {} does not parse and {} more line(s) \
+                     follow it, so it is not a torn tail: {}",
+                    self.path.display(),
+                    bad_number + 1,
+                    1,
+                    message
+                )));
+            }
             if line.trim().is_empty() {
                 continue;
             }
-            let record =
-                serde_json::from_str::<MetaMutationRecord>(&line).map_err(io::Error::other)?;
-            mutations.push(record);
+            match serde_json::from_str::<MetaMutationRecord>(&line) {
+                Ok(record) => mutations.push(record),
+                Err(err) => unparsed = Some((number, err.to_string())),
+            }
+        }
+        if let Some((number, message)) = unparsed {
+            // Nothing followed it, so this is the record the crash interrupted.
+            tracing::warn!(
+                path = %self.path.display(),
+                line = number + 1,
+                recovered = mutations.len(),
+                error = %message,
+                "metadata log ends in a partial record; it was never acknowledged, so it is \
+                 dropped and everything before it is kept"
+            );
         }
         Ok(mutations)
     }
@@ -7680,6 +7718,107 @@ mod tests {
             scheduler_generation: None,
         });
         assert_eq!(frozen.status.code, "resource_frozen");
+    }
+
+    #[test]
+    fn a_log_cut_off_mid_record_still_brings_the_metaserver_back() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            for shard in 1..=3u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+
+        // What a process dying partway through an append leaves: a record that
+        // starts and stops, with no newline after it.
+        let mut file = OpenOptions::new().append(true).open(&log_path).unwrap();
+        file.write_all(b"{\"at_ms\":123,\"mutation\":{\"RegisterSha").unwrap();
+        drop(file);
+
+        // It comes back, with everything that was acknowledged.
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("a torn last record must not stop the metaserver starting");
+        let listed = recovered.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        assert!(listed.status.ok);
+        let ids = listed
+            .shards
+            .iter()
+            .map(|entry| entry.shard_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "every shard acknowledged before the crash must come back"
+        );
+        assert_eq!(
+            recovered.list_servers().servers.len(),
+            1,
+            "the server registration was acknowledged before the crash"
+        );
+    }
+
+    #[test]
+    fn a_log_damaged_in_the_middle_is_refused_rather_than_half_read() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            for shard in 1..=3u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+
+        // Damage a line that has records after it. Those later records were
+        // acknowledged, so stopping at the damage would lose them silently --
+        // which is the thing that must not happen quietly.
+        let text = fs::read_to_string(&log_path).unwrap();
+        let mut lines = text.lines().collect::<Vec<_>>();
+        assert!(lines.len() >= 3, "need a line with records after it");
+        lines[1] = "{ this is not a record";
+        fs::write(&log_path, lines.join("\n") + "\n").unwrap();
+
+        let refused = SingleNodeMeta::with_mutation_log(&log_path);
+        assert!(
+            refused.is_err(),
+            "damage with acknowledged records after it must be refused, not half-read"
+        );
+        let message = refused.err().unwrap().to_string();
+        assert!(
+            message.contains("not a torn tail"),
+            "the error should say why it is not simply a crash: {message}"
+        );
     }
 
     #[test]
