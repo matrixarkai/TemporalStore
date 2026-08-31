@@ -60,9 +60,11 @@ pub fn ingest_extract_context(
         }
     }
 
-    // Close the window BEFORE reconstructing: the reconstruct itself must not be deferred.
+    // No reconstruct: the writes above maintain the index themselves now, so the window has
+    // nothing to catch up on. It stays open across the ingest only to keep the per-record
+    // fallback rebuild from firing for a write maintenance does not cover -- and if one is not
+    // covered, the fallback runs at that write, not here.
     drop(reconstruct_window);
-    engine.reconstruct_bucket_index_now(request.shard_id);
 
     node_hashes.sort_unstable();
     node_hashes.dedup();

@@ -1025,6 +1025,136 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.context_compressions.is_empty()
 }
 
+/// Bring the bucket index up to date for ONE object key, across every context kind.
+///
+/// A context write does not register its page. The shard rebuilds the whole first-index afterwards
+/// instead -- `rebuild_bucket_first_index`, which walks every live page in the store -- and with
+/// several context writes per add that was the last term in an add that grows with the corpus.
+/// Measured before coalescing: 5 762 400 page visits across 600 adds, per-add cost doubling as the
+/// corpus doubled.
+///
+/// Feature and Sequence writes already maintain the index this way on the write path, and REPLAY
+/// already does it for these very kinds (`lifecycle.rs`, via the same `sync_bucket_index_object_pages`).
+/// The context write path was the one that did not.
+///
+/// The kinds and the maps below mirror `collect_model_live_page_entries` arm for arm, deliberately:
+/// maintenance and rebuild then derive from the same source and cannot disagree about which kind a
+/// page belongs to. `context_entity` composes its key from the collection key and the entity hash,
+/// which is exactly the sort of detail a hand-written command-to-kind mapping gets wrong.
+///
+/// Returns whether anything was synced, so the caller can fall back to a rebuild for a write this
+/// does not cover rather than silently leaving the index stale.
+/// Keys `sync_context_pages_for_object` found nothing for, recorded so they can be named.
+///
+/// One uncovered key forces a rebuild for the whole write, so what matters is WHICH keys are
+/// uncovered, not how many. Reading the command list to guess at them has already been wrong more
+/// than once in this area.
+#[cfg(test)]
+pub mod uncovered_maintenance {
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    pub(super) static UNCOVERED_MAINTENANCE_KEYS: Mutex<Option<BTreeSet<String>>> =
+        Mutex::new(None);
+
+    pub(super) fn note(object_key: &str) {
+        let mut guard = UNCOVERED_MAINTENANCE_KEYS.lock().expect("uncovered key tally poisoned");
+        guard.get_or_insert_with(BTreeSet::new).insert(object_key.to_string());
+    }
+
+    pub fn reset() {
+        *UNCOVERED_MAINTENANCE_KEYS.lock().expect("uncovered key tally poisoned") =
+            Some(BTreeSet::new());
+    }
+
+    pub fn snapshot() -> Vec<String> {
+        UNCOVERED_MAINTENANCE_KEYS
+            .lock()
+            .expect("uncovered key tally poisoned")
+            .as_ref()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+pub(super) fn sync_context_pages_for_object(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+) -> bool {
+    // Read every kind's live addresses first, so the shared borrow ends before the sync below
+    // takes a mutable one.
+    let mut groups: Vec<(&'static str, String, Vec<BlockAddress>)> = Vec::new();
+
+    if let Some(address) = shard.context_nodes.get(object_key) {
+        groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
+    }
+    for (kind, series) in [
+        ("context_event", &shard.context_events),
+        ("context_index", &shard.context_indexes),
+        ("context_audit", &shard.context_audits),
+        ("context_child", &shard.context_children),
+        ("context_summary", &shard.context_summaries),
+        ("context_compression", &shard.context_compressions),
+    ] {
+        if let Some(points) = series.get(object_key) {
+            let live = unique_timestamped_kv_page_addresses(points);
+            if !live.is_empty() {
+                groups.push((kind, object_key.to_string(), live));
+            }
+        }
+    }
+    // Entities live grouped by node but index one entry per entity, under the composed key.
+    if let Some(series) = shard.context_entities.get(object_key) {
+        for (entity_hash, address) in series.iter() {
+            groups.push((
+                "context_entity",
+                format!("{object_key}:{entity_hash}"),
+                vec![address.clone()],
+            ));
+        }
+    }
+
+    // A context node's page lives in `shard.hashes` under a single field, so the rebuild derives
+    // it as kind "hash" with that field as the component -- a different shape from the kinds
+    // above, which carry no component. It is filed here the same way the rebuild would file it.
+    let hash_fields: Vec<(String, BlockAddress)> = shard
+        .hashes
+        .get(object_key)
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|(field, address)| (field.clone(), address.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let had_hash_pages = !hash_fields.is_empty();
+    for (field, address) in hash_fields {
+        // `stage: false` -- the write staged its own outcome under its own kind already, and a
+        // second one would have replay install the same page twice.
+        upsert_bucket_index_page_with(
+            shard,
+            shard_id,
+            "hash",
+            object_key,
+            Some(field),
+            address,
+            true,
+            false,
+        );
+    }
+
+    if groups.is_empty() && !had_hash_pages {
+        #[cfg(test)]
+        uncovered_maintenance::note(object_key);
+        return false;
+    }
+    for (kind, key, live) in groups {
+        sync_bucket_index_object_pages(shard, shard_id, kind, &key, live, true);
+    }
+    true
+}
+
 pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     entries.extend(
@@ -1192,6 +1322,29 @@ pub(super) fn upsert_bucket_index_page(
     address: BlockAddress,
     dirty: bool,
 ) {
+    upsert_bucket_index_page_with(shard, shard_id, kind, object_key, component, address, dirty, true)
+}
+
+/// The same, with a say over whether an outcome is staged for the record.
+///
+/// A page write produces an outcome, and this is where that outcome is produced -- so a caller
+/// that WRITES a page wants `stage: true`, which is every existing caller.
+///
+/// Maintenance is different: the context write has already staged its own outcome, under its own
+/// kind. Registering the page it produced must not put a SECOND outcome in the log, because replay
+/// would then install the same page twice under two kinds. `stage: false` says "file this page in
+/// the index; the record already knows about it".
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_page_with(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: BlockAddress,
+    dirty: bool,
+    stage: bool,
+) {
     let routing_bucket = address
         .routing_bucket
         .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
@@ -1201,7 +1354,7 @@ pub(super) fn upsert_bucket_index_page(
     // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
-    if crate::wal::wal_outcome_items_enabled() {
+    if stage && crate::wal::wal_outcome_items_enabled() {
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: kind.to_string(),
             object_key: object_key.to_string(),

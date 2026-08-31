@@ -10079,3 +10079,157 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
          -- a partial match means an entry and its address disagree about which object it is"
     );
 }
+
+/// Does maintaining the index during a context ingest give the same index as rebuilding it?
+///
+/// A context write does not register its page; the shard rebuilds the whole first-index afterwards
+/// instead, which is the last O(corpus) term in an add. Replay already maintains these kinds
+/// incrementally (`sync_bucket_index_object_pages`, lifecycle.rs), and Feature and Sequence writes
+/// already do it on the write path — the context write path is the one that does not.
+///
+/// Before removing the rebuild, this establishes what "equal" means. It ingests with the
+/// reconstruct held off, so the index is whatever maintenance produced, then rebuilds from the
+/// model maps and compares the two page-for-page. Any divergence names the kind whose maintenance
+/// is missing, which is the thing to implement next rather than a reason to abandon the approach.
+#[test]
+fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..40 {
+        let ingest = crate::context_workflow::ingest_extract_context(
+            &engine,
+            crate::context_workflow::ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: 4242,
+                sources: vec![crate::context_workflow::ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 4242,
+                    source_kind: crate::context_workflow::ContextSourceKind::Incident,
+                    source_id: format!("EQ-{index:04}"),
+                    title: format!("equivalence {index}"),
+                    body: format!("body {index} ").repeat(20),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: crate::context_workflow::ContextModelProviderConfig::default(),
+                }],
+                provider: crate::context_workflow::ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(ingest.status.ok, "ingest {index} failed: {:?}", ingest.status);
+    }
+
+    // What the shard holds after the ingests.
+    let held: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(bucket, node)| {
+                node.page_index.iter().map(move |(ref_key, page)| {
+                    (
+                        (*bucket, ref_key.to_string()),
+                        (
+                            page.model_id.clone(),
+                            page.object_key.clone(),
+                            page.component.clone(),
+                        ),
+                    )
+                })
+            })
+            .collect()
+    };
+    assert!(
+        !held.is_empty(),
+        "the ingests must populate the index, or the comparison below compares nothing"
+    );
+    let uncovered = crate::engine::uncovered_maintenance::snapshot();
+    println!("
+  keys maintenance found nothing for ({}):", uncovered.len());
+    for key in uncovered.iter().take(10) {
+        println!("    {key}");
+    }
+
+    // And what a rebuild from the model maps would hold.
+    engine.reconstruct_bucket_index_now(1);
+    let rebuilt: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(bucket, node)| {
+                node.page_index.iter().map(move |(ref_key, page)| {
+                    (
+                        (*bucket, ref_key.to_string()),
+                        (
+                            page.model_id.clone(),
+                            page.object_key.clone(),
+                            page.component.clone(),
+                        ),
+                    )
+                })
+            })
+            .collect()
+    };
+
+    let mut missing_after_ingest: Vec<&(u32, String)> = rebuilt
+        .keys()
+        .filter(|key| !held.contains_key(*key))
+        .collect();
+    let mut extra_after_ingest: Vec<&(u32, String)> = held
+        .keys()
+        .filter(|key| !rebuilt.contains_key(*key))
+        .collect();
+    missing_after_ingest.sort();
+    extra_after_ingest.sort();
+
+    let kind_of = |keys: &[&(u32, String)],
+                   from: &std::collections::BTreeMap<(u32, String), (String, String, Option<String>)>| {
+        let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+        for key in keys {
+            if let Some((kind, _, _)) = from.get(*key) {
+                *kinds.entry(kind.clone()).or_insert(0) += 1;
+            }
+        }
+        kinds
+    };
+
+    println!(
+        "
+  pages held after the ingests   {}
+  pages a rebuild produces       {}
+  a rebuild has, the ingest did not: {} {:?}
+  the ingest has, a rebuild does not: {} {:?}
+",
+        held.len(),
+        rebuilt.len(),
+        missing_after_ingest.len(),
+        kind_of(&missing_after_ingest, &rebuilt),
+        extra_after_ingest.len(),
+        kind_of(&extra_after_ingest, &held),
+    );
+
+    // Today the rebuild runs after every context write, so the two agree by construction and this
+    // passes trivially. It earns its keep the moment the rebuild is skipped: then any kind whose
+    // maintenance is missing shows up on the first line, by name.
+    assert!(
+        missing_after_ingest.is_empty(),
+        "{} pages exist after a rebuild that the ingest did not put in the index -- those kinds \
+         are not being maintained: {:?}",
+        missing_after_ingest.len(),
+        kind_of(&missing_after_ingest, &rebuilt)
+    );
+}

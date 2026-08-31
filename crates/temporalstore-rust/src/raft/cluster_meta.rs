@@ -502,6 +502,20 @@ impl MetaRaftCluster {
         )
     }
 
+    pub fn metrics_report(&self) -> MetaMetricsReport {
+        self.read_meta().map_or_else(
+            |status| MetaMetricsReport {
+                status,
+                tables: StateTally::default(),
+                namespaces: StateTally::default(),
+                proxy_groups: StateTally::default(),
+                servers: Vec::new(),
+                proxies: Vec::new(),
+            },
+            |meta| meta.metrics_report(),
+        )
+    }
+
     pub fn list_namespaces(&self) -> ListNamespacesResponse {
         self.read_meta().map_or_else(
             |status| ListNamespacesResponse {

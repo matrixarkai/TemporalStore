@@ -4802,6 +4802,10 @@ mod tests {
                                     namespace: "ns".to_string(),
                                     table_name: "tbl".to_string(),
                                     latest_snapshot: None,
+                                    state: crate::meta::MetaEntityState::Normal,
+                                    // This stub does not model a datanode
+                                    // reporting what it holds.
+                                    owner_reports_loaded: None,
                                 })
                                 .collect(),
                             next_after_shard_id: None,
@@ -4887,6 +4891,10 @@ mod tests {
                                 namespace: "ns".to_string(),
                                 table_name: "tbl".to_string(),
                                 latest_snapshot: None,
+                                state: crate::meta::MetaEntityState::Normal,
+                                // This stub does not model a datanode reporting
+                                // what it holds.
+                                owner_reports_loaded: None,
                             })
                             .collect(),
                         next_after_shard_id: None,

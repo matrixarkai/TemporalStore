@@ -839,6 +839,46 @@ pub(super) fn load_context_summaries(
         .unwrap_or_default()
 }
 
+/// The NEWEST summary at or before `as_of_ms`, decoding one record in the ordinary case.
+///
+/// `load_context_summaries` with `Some(1)` returns the OLDEST match, not the newest: the series is
+/// keyed by `context_timeline_key`, which is `timestamp_ms * FANOUT + disambiguator` and therefore
+/// ascends with time, so `range(0..end).take(1)` takes the earliest entry in the window. Callers
+/// that want the current summary and reach for `take(1)` get the node's first-ever version, and
+/// because a stale vector is still the right width it still produces a plausible cosine -- there is
+/// nothing to notice.
+///
+/// `load_latest_context_summary` gets the answer right but decodes the node's whole window to do
+/// it. This walks the range backwards instead, so the common case decodes exactly one record; it
+/// keeps walking only if a decode fails or an entry does not satisfy `valid_from_ms <= as_of_ms`.
+pub(super) fn load_newest_context_summary(
+    cache: &MultiLayerCache,
+    page_store: &LocalBlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+    as_of_ms: u64,
+) -> Option<ContextSummary> {
+    shard
+        .context_summaries
+        .get(object_key)
+        .and_then(|series| {
+            series
+                .range(0..context_timeline_end(as_of_ms))
+                .rev()
+                .filter_map(|(timeline_key, address)| {
+                    read_context_value::<ContextSummary>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        *timeline_key,
+                        address,
+                    )
+                })
+                .find(|summary| summary.valid_from_ms <= as_of_ms)
+        })
+}
+
 pub(super) fn load_latest_context_summary(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
