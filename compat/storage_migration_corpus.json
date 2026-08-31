@@ -15,7 +15,10 @@
           "command": {
             "kind": "string_set",
             "key": "storage:string",
-            "value": [115, 49]
+            "value": [
+              115,
+              49
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -28,8 +31,20 @@
             "kind": "hash_multi_set",
             "key": "storage:hash",
             "entries": [
-              ["field_a", [104, 97]],
-              ["field_b", [104, 98]]
+              [
+                "field_a",
+                [
+                  104,
+                  97
+                ]
+              ],
+              [
+                "field_b",
+                [
+                  104,
+                  98
+                ]
+              ]
             ]
           },
           "expect": {
@@ -42,7 +57,10 @@
           "command": {
             "kind": "set_add",
             "key": "storage:set",
-            "member": [109, 97]
+            "member": [
+              109,
+              97
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -54,7 +72,10 @@
           "command": {
             "kind": "set_add",
             "key": "storage:set",
-            "member": [109, 98]
+            "member": [
+              109,
+              98
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -69,15 +90,24 @@
             "points": [
               {
                 "timestamp_ms": 1000,
-                "value": [102, 49]
+                "value": [
+                  102,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 1010,
-                "value": [102, 50]
+                "value": [
+                  102,
+                  50
+                ]
               },
               {
                 "timestamp_ms": 1020,
-                "value": [102, 51]
+                "value": [
+                  102,
+                  51
+                ]
               }
             ]
           },
@@ -116,7 +146,7 @@
           "name": "risk_increment",
           "storage_mutation": true,
           "command": {
-            "kind": "risk_increment",
+            "kind": "control_state_increment",
             "key": "storage:risk",
             "timestamp_ms": 4000,
             "amount": 4
@@ -129,10 +159,14 @@
           "name": "risk_change_add",
           "storage_mutation": true,
           "command": {
-            "kind": "risk_change_add",
+            "kind": "control_state_change_add",
             "key": "storage:risk-change",
             "timestamp_ms": 4010,
-            "value": [114, 99, 49]
+            "value": [
+              114,
+              99,
+              49
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -142,9 +176,13 @@
           "name": "risk_fol_set",
           "storage_mutation": true,
           "command": {
-            "kind": "risk_fol_set",
+            "kind": "control_state_fol_set",
             "key": "storage:risk-fol",
-            "value": [102, 111, 108],
+            "value": [
+              102,
+              111,
+              108
+            ],
             "occur_time_ms": 4020,
             "ttl_ms": 60000,
             "fol_type": "last"
@@ -250,12 +288,10 @@
           "command": {
             "kind": "context_mark_summary_dirty",
             "tenant_hash": 77,
-            "marker": {
-              "node_hash": 700,
-              "event_time_ms": 5300,
-              "reason": 5,
-              "propagate_depth": 2
-            }
+            "node_hash": 700,
+            "event_time_ms": 5300,
+            "reason": 5,
+            "propagate_depth": 2
           },
           "expect": {
             "kind": "context_object_key",
@@ -272,7 +308,10 @@
           },
           "expect": {
             "kind": "bytes",
-            "value": [115, 49]
+            "value": [
+              115,
+              49
+            ]
           }
         },
         {
@@ -280,11 +319,25 @@
           "command": {
             "kind": "hash_multi_get",
             "key": "storage:hash",
-            "fields": ["field_a", "field_missing", "field_b"]
+            "fields": [
+              "field_a",
+              "field_missing",
+              "field_b"
+            ]
           },
           "expect": {
             "kind": "values",
-            "values": [[104, 97], null, [104, 98]]
+            "values": [
+              [
+                104,
+                97
+              ],
+              null,
+              [
+                104,
+                98
+              ]
+            ]
           }
         },
         {
@@ -295,7 +348,16 @@
           },
           "expect": {
             "kind": "members",
-            "members": [[109, 97], [109, 98]]
+            "members": [
+              [
+                109,
+                97
+              ],
+              [
+                109,
+                98
+              ]
+            ]
           }
         },
         {
@@ -312,15 +374,24 @@
             "points": [
               {
                 "timestamp_ms": 1000,
-                "value": [102, 49]
+                "value": [
+                  102,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 1010,
-                "value": [102, 50]
+                "value": [
+                  102,
+                  50
+                ]
               },
               {
                 "timestamp_ms": 1020,
-                "value": [102, 51]
+                "value": [
+                  102,
+                  51
+                ]
               }
             ]
           }
@@ -358,7 +429,7 @@
         {
           "name": "read_risk_count",
           "command": {
-            "kind": "risk_count",
+            "kind": "control_state_count",
             "key": "storage:risk",
             "start_ms": 3990,
             "end_ms": 4010

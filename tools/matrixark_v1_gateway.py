@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -171,6 +172,9 @@ _DATA_ROUTES: dict[str, Tuple[str, str]] = {
     "/v1/resource/content": ("matrixark_get_resource_content", "retrieve"),
     # update = supersede (ingest an amended version + tombstone the old id): gates on context:ingest.
     "/v1/update": ("matrixark_update_memory", "ingest"),
+    # mem0 feedback(): rate an existing memory. A write about a memory, so it gates like one; the
+    # rating is read back through GET /v1/memory/<id>/history, not as a memory of its own.
+    "/v1/memory/feedback": ("matrixark_memory_feedback", "ingest"),
     # get (GET /v1/memory/<id>) and history (GET /v1/memory/<id>/history) are handled by dedicated
     # GET branches below (data routes are POST-only), gated on context:retrieve.
 }
@@ -181,6 +185,8 @@ _BACKPRESSURE_ERRORS = {"MatrixArkBackpressureError"}
 # The addressed thing does not exist -- the caller's own state to fix, not a server fault. Matched
 # by class name, like the sets above, so a message that merely contains "not found" is unaffected.
 _NOT_FOUND_ERRORS = {"MatrixArkNotFoundError"}
+# The request is malformed -- the caller's to fix, and not worth a retry.
+_INVALID_REQUEST_ERRORS = {"MatrixArkInvalidRequestError"}
 _STORAGE_QUOTA_ERRORS = {
     "MatrixArkStorageQuotaError",
     "StorageQuotaExceeded",
@@ -972,6 +978,20 @@ async def _json(send: Callable, status: int, payload: Json,
     await send({"type": "http.response.body", "body": data})
 
 
+async def _text(send: Callable, status: int, body: str,
+                content_type: str = "text/plain; charset=utf-8",
+                extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
+    """A plain-text response. Used for the Prometheus exposition format, which needs its own
+    content type rather than JSON or HTML."""
+    data = body.encode("utf-8")
+    headers = [(b"content-type", content_type.encode()),
+               (b"content-length", str(len(data)).encode())]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": data})
+
+
 async def _html(send: Callable, status: int, body: bytes,
                 extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
     headers = [(b"content-type", b"text/html; charset=utf-8"),
@@ -1000,6 +1020,30 @@ _PORTAL_FALLBACK_HTML = (
 )
 
 
+_INGESTION_PORTAL_CACHE: dict[str, Optional[bytes]] = {"bytes": None}
+
+
+def _ingestion_portal_html_bytes() -> bytes:
+    """The ingestion portal page (cached), read from the committed file next to this module."""
+    cached = _INGESTION_PORTAL_CACHE.get("bytes")
+    if cached is not None:
+        return cached
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portal", "ingestion_portal.html")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except Exception:  # pragma: no cover - deployments without the file bundled
+        data = (
+            "<!doctype html><meta charset='utf-8'><title>MatrixArk Ingestion</title>"
+            "<h1>MatrixArk Ingestion</h1><p>The bundled page "
+            "(<code>tools/portal/ingestion_portal.html</code>) was not found. The JSON endpoints "
+            "still work: <code>POST /v1/admin/ingestion/jobs</code>, "
+            "<code>GET /v1/admin/ingestion/jobs</code>, and <code>GET /v1/metrics</code>.</p>"
+        ).encode("utf-8")
+    _INGESTION_PORTAL_CACHE["bytes"] = data
+    return data
+
+
 def _portal_html_bytes() -> bytes:
     """The portal HTML (cached). Reads the committed file next to this module; falls back to a small
     inline notice page so the route always returns valid HTML."""
@@ -1014,6 +1058,259 @@ def _portal_html_bytes() -> bytes:
         data = _PORTAL_FALLBACK_HTML.encode("utf-8")
     _PORTAL_HTML_CACHE["bytes"] = data
     return data
+
+
+_STORE_SENTINELS = {"", "local", "none", "standalone", "off"}
+
+
+# Encoders this deployment can be pointed at, with what they measured on a 298-pair retrieval
+# benchmark built from real documentation. The numbers are here so an operator choosing a model sees
+# the trade rather than guessing from parameter counts, which do not predict the ranking: the 560M
+# model wins by about a point and a half at six times the cost, the 278M model wins nothing, and the
+# widest-window model scores worst of all. Dimension truncation matters as much as model size --
+# e5-large scores HIGHER truncated to 512 than at its native 1024.
+#
+# These are measurements on ONE corpus of technical documentation with English and Chinese queries.
+# They rank these models on that corpus; they do not promise the same ranking on a different one,
+# which is why the portal presents them as evidence rather than as a recommendation to apply blindly.
+_ENCODER_CATALOG = [
+    {
+        "id": "intfloat/multilingual-e5-large",
+        "label": "multilingual-e5-large @512 dims",
+        "params_m": 560, "dims": 512, "window": 512,
+        "hit_at_1": 76.2, "hit_at_5": 92.3, "texts_per_s": 1.7,
+        "vectors_mb_per_doc": 10.70, "needs_prefix": True, "recommended": True,
+        "note": "Best measured retrieval of the set. Truncating its 1024 values to 512 scores "
+                "HIGHER than leaving them full (76.2 against 74.2 hit@1) while halving vector "
+                "memory. It encodes six times slower than e5-small, which matters far less when "
+                "embedding is deferred and backfilled behind the import.",
+    },
+    {
+        "id": "intfloat/multilingual-e5-small",
+        "label": "multilingual-e5-small",
+        "params_m": 118, "dims": 384, "window": 512,
+        "hit_at_1": 74.8, "hit_at_5": 90.6, "texts_per_s": 10.7,
+        "vectors_mb_per_doc": 8.02, "needs_prefix": True, "recommended": True,
+        "note": "Best quality per unit of cost, and within about a point and a half of e5-large on "
+                "both metrics -- roughly the measurement's own error bar -- at six times the "
+                "throughput and a quarter less vector memory. The right default when the import "
+                "window is the constraint.",
+    },
+    {
+        "id": "intfloat/multilingual-e5-base",
+        "label": "multilingual-e5-base",
+        "params_m": 278, "dims": 768, "window": 512,
+        "hit_at_1": 74.8, "hit_at_5": 91.3, "texts_per_s": 4.8,
+        "vectors_mb_per_doc": 16.05, "needs_prefix": True, "recommended": False,
+        "note": "Sits between the two on quality and cost without winning either. Its edge over "
+                "e5-small comes from the wider vector, not the parameter count: truncated to 384 "
+                "it drops to 71.5%.",
+    },
+    {
+        "id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "label": "MiniLM-L12 (current default)",
+        "params_m": 118, "dims": 384, "window": 512,
+        "hit_at_1": 59.4, "hit_at_5": 82.2, "texts_per_s": 31.7,
+        "vectors_mb_per_doc": 8.02, "needs_prefix": False, "recommended": False,
+        "note": "Fastest of the set and the weakest by a wide margin -- fifteen points of hit@1 "
+                "below e5-small at identical size and memory. It remains the default only because "
+                "existing stores were embedded with it and switching requires a backfill.",
+    },
+    {
+        "id": "BAAI/bge-m3",
+        "label": "bge-m3 (long context)",
+        "params_m": 568, "dims": 1024, "window": 8192,
+        "hit_at_1": 49.7, "hit_at_5": 70.8, "texts_per_s": 0.2,
+        "vectors_mb_per_doc": 2.42, "needs_prefix": False, "recommended": False,
+        "note": "An 8192-token window needs far fewer vectors -- 2.42 MB per document against 8.02 "
+                "-- but it scored worst on retrieval and encodes over a hundred times slower than "
+                "e5-small. Consider it only when vector storage is the binding constraint.",
+    },
+]
+
+
+def encoder_catalog() -> list:
+    """The catalog, with the active model marked, for the portal's model picker."""
+    active = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
+    out = []
+    for entry in _ENCODER_CATALOG:
+        item = dict(entry)
+        item["active"] = bool(active) and active == entry["id"]
+        out.append(item)
+    return out
+
+
+def _model_config_snapshot() -> Json:
+    """The effective extraction/embedding/skill-budget configuration, redacted for display.
+
+    Operators need to see which model endpoints a deployment is actually talking to without shell
+    access to the process environment. API keys are NEVER included: a key is configured by naming
+    the environment variable that holds it (`MATRIXARK_EXTRACTION_API_KEY_ENV`), so this reports the
+    variable's NAME and whether it currently resolves to a non-empty value -- never the value.
+
+    `warnings` calls out the silent-degradation cases. Both extraction and embedding fall back to a
+    deterministic local path when no provider is configured; that path answers 200 with hash vectors
+    and rule-extracted memories, which is indistinguishable from a healthy system at the API
+    surface. Surfacing it is the difference between a misconfigured deployment that looks fine and
+    one an operator can see is misconfigured.
+    """
+
+    def _env(name: str, default: str = "") -> str:
+        return os.environ.get(name, default).strip()
+
+    def _key_state(env_name: str) -> Json:
+        return {
+            "api_key_env": env_name,
+            "api_key_configured": bool(os.environ.get(env_name, "").strip()),
+        }
+
+    extraction_provider = _env(
+        "MATRIXARK_UNDERSTANDING_PROVIDER", _env("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")
+    )
+    extraction_key_env = _env("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
+    embedding_provider = _env("MATRIXARK_EMBEDDING_PROVIDER", "deterministic")
+    embedding_key_env = _env("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
+    require_model_embeddings = _env("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS") in {"1", "true", "yes", "on"}
+
+    extraction: Json = {
+        "provider": extraction_provider,
+        "base_url": _env("MATRIXARK_EXTRACTION_BASE_URL"),
+        "model": _env("MATRIXARK_EXTRACTION_MODEL"),
+        "timeout_sec": _env("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"),
+        "max_tokens": _env("MATRIXARK_EXTRACTION_MAX_TOKENS"),
+        **_key_state(extraction_key_env),
+    }
+    embedding: Json = {
+        "provider": embedding_provider,
+        "api_base": _env("MATRIXARK_EMBEDDING_API_BASE") or _env("MATRIXARK_EMBED_BASE_URL"),
+        "model": _env("MATRIXARK_EMBEDDING_MODEL"),
+        "model_path": _env("MATRIXARK_EMBEDDING_MODEL_PATH"),
+        "text_max_tokens": _env("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"),
+        "require_model_embeddings": require_model_embeddings,
+        **_key_state(embedding_key_env),
+    }
+    skills: Json = {
+        "shared_skill_budget_ratio": _env("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"),
+        "max_budget_tokens": _env("MATRIXARK_MAX_BUDGET_TOKENS", "8192"),
+        "skill_chunks_per_skill": _env("MATRIXARK_SKILL_CHUNKS_PER_SKILL", "3"),
+        "skill_reserved_refs": _env("MATRIXARK_SKILL_RESERVED_REFS", "3"),
+    }
+
+    warnings: List[str] = []
+    deterministic = {"", "deterministic", "rules", "local"}
+    if extraction_provider in deterministic:
+        warnings.append(
+            "extraction_provider is deterministic: no LLM is called, so ingest stores only what the "
+            "local rules extract. Set MATRIXARK_EXTRACTION_PROVIDER=openai_compatible with "
+            "MATRIXARK_EXTRACTION_BASE_URL/_MODEL/_API_KEY_ENV to enable model extraction."
+        )
+    elif not extraction["api_key_configured"]:
+        warnings.append(
+            "extraction_provider is " + repr(extraction_provider) + " but " + extraction_key_env
+            + " is empty: extraction calls will fail and fall back to the deterministic path."
+        )
+    if embedding_provider in deterministic:
+        warnings.append(
+            "embedding_provider is deterministic: retrieval uses hash vectors, not semantic "
+            "embeddings. Set MATRIXARK_EMBEDDING_PROVIDER and MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1."
+        )
+    else:
+        if not require_model_embeddings:
+            warnings.append(
+                "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is not set: if the encoder becomes unreachable "
+                "the gateway falls back to hash vectors instead of failing the request."
+            )
+        # Two configuration mistakes silently degrade an OpenAI-compatible encoder to hash vectors,
+        # and neither is visible from the outside: the request 200s and retrieval still returns
+        # plausible results. Both are cheap to check here.
+        api_base = embedding["api_base"]
+        if api_base and not api_base.rstrip("/").endswith("/v1"):
+            warnings.append(
+                "MATRIXARK_EMBEDDING_API_BASE (" + api_base + ") does not end in /v1: the endpoint "
+                "is built as <base>/embeddings, so an OpenAI-compatible encoder serving "
+                "/v1/embeddings is never reached and every vector is a hash fallback."
+            )
+        if not embedding["api_key_configured"]:
+            warnings.append(
+                "embedding key env " + embedding_key_env + " is empty: the embedding call is skipped "
+                "before it is attempted, even for a local encoder that needs no auth. Set it to any "
+                "non-empty placeholder for a local endpoint."
+            )
+
+    return {
+        "status": "ok",
+        "extraction": extraction,
+        "embedding": embedding,
+        "skills": skills,
+        "warnings": warnings,
+        "encoders": encoder_catalog(),
+    }
+
+
+def _single_writer_warning(
+    argv: Optional[list] = None, env: Optional[dict] = None
+) -> Optional[str]:
+    """Warn when the worker count would silently split a tenant's memory across separate stores.
+
+    With the spawning MCP backend each uvicorn worker starts its OWN `--serve` proxy child over a
+    pipe (see matrixark_mcp_rust_proxy_process.ensure_lane_process -- there is no code path that
+    dials an existing proxy), and that child owns an embedded store. So `--workers 4` is four
+    independent stores: a memory written through one worker is invisible to the other three, with no
+    error at any layer.
+
+    A worker count above one is only safe when the workers share a store: a real TS_META_ADDR
+    (distributed routing) or an explicit TS_STORAGE_BACKEND. Returns the warning text, or None when
+    the configuration is safe -- returning it rather than printing keeps this unit-testable.
+    """
+    argv = list(sys.argv if argv is None else argv)
+    env = dict(os.environ if env is None else env)
+
+    workers = 0
+    for index, token in enumerate(argv):
+        if token == "--workers" and index + 1 < len(argv):
+            try:
+                workers = int(argv[index + 1])
+            except ValueError:
+                workers = 0
+        elif token.startswith("--workers="):
+            try:
+                workers = int(token.split("=", 1)[1])
+            except ValueError:
+                workers = 0
+    if workers <= 0:
+        try:
+            workers = int(str(env.get("WEB_CONCURRENCY", "")).strip() or "0")
+        except ValueError:
+            workers = 0
+    if workers <= 1:
+        return None
+
+    # A shared store makes multiple workers safe.
+    if str(env.get("TS_META_ADDR", "")).strip().lower() not in _STORE_SENTINELS:
+        return None
+    if str(env.get("TS_STORAGE_BACKEND", "")).strip():
+        return None
+    if str(env.get("TS_SHARED_STORE_DIR", "")).strip():
+        return None
+
+    return (
+        "MATRIXARK GATEWAY: --workers " + str(workers) + " with the spawning backend gives each "
+        "worker its own embedded store, so memories written through one worker are INVISIBLE to the "
+        "others. Run --workers 1, or point the workers at one shared store (TS_META_ADDR, or "
+        "TS_STORAGE_BACKEND with TS_SHARED_STORE_DIR). Set MATRIXARK_STRICT_SINGLE_WRITER=1 to make "
+        "this fatal."
+    )
+
+
+def _enforce_single_writer(argv: Optional[list] = None, env: Optional[dict] = None) -> None:
+    """Emit the split-store warning; raise instead when MATRIXARK_STRICT_SINGLE_WRITER is set."""
+    warning = _single_writer_warning(argv, env)
+    if warning is None:
+        return
+    env = dict(os.environ if env is None else env)
+    if str(env.get("MATRIXARK_STRICT_SINGLE_WRITER", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        raise RuntimeError(warning)
+    print(warning, file=sys.stderr, flush=True)
 
 
 async def _read_body_capped(receive: Callable, cap: int) -> Tuple[Optional[bytes], bool]:
@@ -1053,6 +1350,8 @@ def _classify_backend_error(exc: Exception) -> int:
         return 429
     if name in _NOT_FOUND_ERRORS:
         return 404
+    if name in _INVALID_REQUEST_ERRORS:
+        return 400
     return 500
 
 
@@ -1597,6 +1896,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
     executor_lock = threading.Lock()
     # Direct network path (B): one shared pooled client per worker when enabled.
     direct_client = _build_direct_client(cfg) if cfg.direct_backend else None
+    # A multi-worker deployment on the spawning backend silently splits the store; say so
+    # loudly here rather than letting writes scatter across per-worker embedded stores.
+    _enforce_single_writer()
 
     async def app(scope: Json, receive: Callable, send: Callable) -> None:
         # ASGI lifespan: start the background stream-materializer on startup (so a non-finalized
@@ -1667,6 +1969,127 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 403, denied)
             usage = meter.snapshot()
             return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+
+        # ---- effective model configuration (auth + admin scope) ------------------------------
+        # Which extraction/embedding endpoints this deployment actually talks to, plus the skill
+        # budget knobs, so an operator can confirm a deployment from the portal instead of needing
+        # shell access. Redacted: reports the NAME of the env var holding each key and whether it
+        # resolves, never the key. `warnings` names the silent-fallback cases (see
+        # _model_config_snapshot) that otherwise look healthy at the API surface.
+        if method == "GET" and path == "/v1/admin/config":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            return await _json(send, 200, _model_config_snapshot())
+
+        # ---- Prometheus scrape (no auth: counters only, no tenant data) ----------------------
+        # The gateway had no /metrics, so the customer-facing API surface was invisible to the
+        # dashboards while the engine below it was fully instrumented. These are aggregate
+        # ingestion counters -- no keys, no tenant identifiers, nothing per-user -- so the endpoint
+        # is safe to scrape without credentials, the way an exporter normally is.
+        if method == "GET" and path == "/v1/metrics":
+            try:
+                import matrixark_ingestion_jobs as _jobs
+                body = _jobs.prometheus_text()
+            except Exception:
+                body = "# ingestion job registry unavailable" + chr(10)
+            return await _text(send, 200, body, content_type="text/plain; version=0.0.4")
+
+        # ---- ingestion portal page (static HTML, no auth to FETCH) ---------------------------
+        # Same posture as the key portal: fetching the page needs nothing, every action on it calls
+        # an admin-gated endpoint, so the page is inert without a valid admin key.
+        if method == "GET" and path == "/v1/admin/ingestion":
+            return await _html(send, 200, _ingestion_portal_html_bytes())
+
+        # ---- ingestion jobs: list (auth + admin scope) ---------------------------------------
+        if method == "GET" and path == "/v1/admin/ingestion/jobs":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            import matrixark_ingestion_jobs as _jobs
+            return await _json(send, 200, {
+                "status": "ok",
+                "jobs": _jobs.REGISTRY.list(),
+                "ingestion_root": _jobs.ingestion_root(),
+            })
+
+        # ---- ingestion jobs: submit (auth + admin scope) -------------------------------------
+        # Starts a background import over documents the caller names. Every path is resolved inside
+        # MATRIXARK_INGESTION_ROOT (see matrixark_ingestion_jobs) so this cannot be turned into a
+        # file-disclosure endpoint; with no root configured, submission is refused rather than
+        # defaulting to the whole filesystem.
+        if method == "POST" and path == "/v1/admin/ingestion/jobs":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 20)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            import matrixark_ingestion_jobs as _jobs
+            try:
+                documents = _jobs.resolve_request_paths(
+                    paths=payload.get("paths"),
+                    directory=payload.get("directory"),
+                    globs=payload.get("globs"),
+                )
+            except _jobs.IngestionRootNotConfigured as exc:
+                return await _json(send, 400, {"error": "ingestion_root_not_configured",
+                                               "detail": str(exc)})
+            except _jobs.PathOutsideRoot as exc:
+                return await _json(send, 403, {"error": "path_outside_ingestion_root",
+                                               "detail": str(exc)})
+            if not documents:
+                return await _json(send, 400, {"error": "no_documents_matched"})
+            # A preview resolves and counts the documents without importing them, so a customer can
+            # confirm the selection is what they meant before committing to a long run.
+            if payload.get("preview"):
+                return await _json(send, 200, {
+                    "status": "preview",
+                    "total": len(documents),
+                    "bytes": sum((os.path.getsize(p) if os.path.exists(p) else 0)
+                                 for p in documents[:5000]),
+                    "sample": documents[:25],
+                    "truncated": len(documents) > 25,
+                })
+            job = _jobs.REGISTRY.submit(documents, {
+                "base_url": payload.get("base_url") or ("http://127.0.0.1:%d" % cfg.port
+                                                        if getattr(cfg, "port", None) else None),
+                "user_id": payload.get("user_id") or "default",
+                "api_key_env": payload.get("api_key_env") or "MATRIXARK_API_KEY",
+                "timeout_s": payload.get("timeout_s") or 1800.0,
+            })
+            return await _json(send, 202, job.snapshot())
+
+        # ---- cancel a running ingestion job (auth + admin scope) -----------------------------
+        # Stops the job before its next document; documents already imported stay imported, which
+        # is safe because ingest is a keyed upsert and a later re-run replaces rather than duplicates.
+        if method == "POST" and path.startswith("/v1/admin/ingestion/jobs/") and path.endswith("/cancel"):
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            import matrixark_ingestion_jobs as _jobs
+            job_id = path[len("/v1/admin/ingestion/jobs/"):-len("/cancel")]
+            job = _jobs.REGISTRY.get(job_id)
+            if job is None:
+                return await _json(send, 404, {"error": "unknown_job", "job_id": job_id})
+            job.cancel()
+            return await _json(send, 202, job.snapshot())
 
         # ---- get_all via GET /v1/memories (auth + context:retrieve) -------------------------
         # Convenience read: list a scope's active memories. Scope identity comes from the query

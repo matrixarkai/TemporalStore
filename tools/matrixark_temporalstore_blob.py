@@ -284,3 +284,86 @@ def ts_blob_storage_resolution(
         "content_hash": ch, "raw_bytes": len(data), "content_type": content_type,
         "metadata": metadata,
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# Engine command tier -- the embedded/proxy counterpart of the HTTP /blob endpoint above.
+#
+# Deployments that run NO datanode HTTP server (the embedded engine behind the rust proxy)
+# store attachments through the engine's own blob commands instead. Both tiers publish
+# temporalstore:// URIs; they are told apart by KEY SHAPE, never by configuration:
+#   HTTP tier   : resources/<sha2>/<sha256>            (64-hex content digest)
+#   engine tier : resources/<tenant:016x>/<hash:016x>  (two 16-hex segments)
+# The helpers below ride any client exposing the resource_blob_* ops (both rust proxy client
+# classes do); everything degrades to None/False when handed a client without them.
+# ---------------------------------------------------------------------------------------------
+
+_ENGINE_BLOB_URI_RE = None
+
+
+def parse_engine_blob_uri(uri: str) -> Optional[tuple[int, int]]:
+    """(tenant_hash, content_hash) for an ENGINE-tier URI, else None.
+
+    Strict: exactly two 16-digit lowercase-hex segments under resources/. The HTTP tier's
+    sha256 shape (64 hex digits) and every caller-supplied opaque key fall through to None,
+    so the two tiers can never capture each other's fetches.
+    """
+    global _ENGINE_BLOB_URI_RE
+    if _ENGINE_BLOB_URI_RE is None:
+        import re
+        _ENGINE_BLOB_URI_RE = re.compile(
+            r"^temporalstore://resources/([0-9a-f]{16})/([0-9a-f]{16})$"
+        )
+    match = _ENGINE_BLOB_URI_RE.match(str(uri or ""))
+    if not match:
+        return None
+    return int(match.group(1), 16), int(match.group(2), 16)
+
+
+def engine_blob_supported(client: Any) -> bool:
+    return client is not None and callable(getattr(client, "resource_blob_fetch", None))
+
+
+def engine_blob_put(client: Any, tenant_hash: int, data: bytes) -> Json:
+    """Store bytes in the engine tier; returns {stored_raw_uri, content_hash, raw_bytes, ...}
+    shaped like ts_blob_storage_resolution so the resolver treats both tiers alike."""
+    import base64
+    response = client.resource_blob_put(int(tenant_hash), base64.b64encode(data).decode("ascii"))
+    uri = str(response.get("matrixark_blob_uri") or "")
+    if not uri:
+        raise MatrixArkBlobError(f"engine blob put returned no uri: {response}")
+    return {
+        "storage_mode": "temporalstore", "backend": "temporalstore_engine_blob",
+        "stored_raw_uri": uri, "raw_storage_policy": "temporalstore_engine_blob",
+        "raw_bytes_stored": True, "upload_status": "uploaded",
+        "cloud_bucket": "", "cloud_key": uri.split("://", 1)[-1],
+        "content_hash": str(response.get("matrixark_blob_content_hash") or ""),
+        "raw_bytes": int(response.get("matrixark_blob_size_bytes") or len(data)),
+    }
+
+
+def engine_blob_get(client: Any, uri: str, *, chunk_bytes: int = 4 * 1024 * 1024) -> bytes:
+    """Fetch an engine-tier blob whole, in bounded range reads until eof."""
+    import base64
+    parts: list[bytes] = []
+    offset = 0
+    while True:
+        response = client.resource_blob_fetch(uri, offset=offset, length=chunk_bytes)
+        payload = base64.b64decode(str(response.get("value") or ""))
+        parts.append(payload)
+        offset += len(payload)
+        if bool(response.get("matrixark_blob_eof")) or not payload:
+            break
+    return b"".join(parts)
+
+
+def engine_blob_sweep(client: Any, tenant_hash: int, referenced_hex: list[str], min_age_ms: int) -> Json:
+    response = client.resource_blob_sweep(int(tenant_hash), list(referenced_hex), int(min_age_ms))
+    return {
+        "scanned": int(response.get("matrixark_blob_scanned") or 0),
+        "deleted": int(response.get("matrixark_blob_deleted") or 0),
+    }
+
+
+class MatrixArkBlobError(RuntimeError):
+    pass

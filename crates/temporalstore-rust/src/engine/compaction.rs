@@ -81,6 +81,10 @@ pub(super) fn model_compaction_policy_reports(
             "hash"
         } else if shard.sets.contains_key(key) {
             "set"
+        } else if shard.lists.contains_key(key) {
+            "list"
+        } else if shard.zsets.contains_key(key) {
+            "zset"
         } else if shard.features.contains_key(key) {
             "feature"
         } else if shard.control_state_pages.contains_key(key) {
@@ -97,16 +101,6 @@ pub(super) fn model_compaction_policy_reports(
             .unwrap_or(false)
         {
             "context_entity"
-        } else if split_context_embedding_key(key)
-            .map(|(collection_key, ref_hash)| {
-                shard
-                    .context_embeddings
-                    .get(&collection_key)
-                    .is_some_and(|series| series.contains_key(&ref_hash))
-            })
-            .unwrap_or(false)
-        {
-            "context_embedding"
         } else {
             "string"
         };
@@ -310,6 +304,26 @@ pub(super) fn compaction_model_layout_reports(
         None,
     ));
     reports.push(compaction_layout_from_addresses(
+        "zset",
+        shard.zsets.len(),
+        shard
+            .zsets
+            .values()
+            .flat_map(|members| members.values().map(|(_, address)| address.clone())),
+        &slab_page_counts,
+        None,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "list",
+        shard.lists.len(),
+        shard
+            .lists
+            .values()
+            .flat_map(|elements| elements.values().cloned()),
+        &slab_page_counts,
+        None,
+    ));
+    reports.push(compaction_layout_from_addresses(
         "set",
         shard.sets.len(),
         shard
@@ -360,16 +374,6 @@ pub(super) fn compaction_model_layout_reports(
         "context_child",
         &shard.context_children,
         &slab_page_counts,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "context_embedding",
-        shard.context_embeddings.values().map(BTreeMap::len).sum(),
-        shard
-            .context_embeddings
-            .values()
-            .flat_map(|series| series.values().cloned()),
-        &slab_page_counts,
-        None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_summary",

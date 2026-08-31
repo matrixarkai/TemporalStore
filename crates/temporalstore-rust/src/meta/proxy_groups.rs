@@ -54,7 +54,24 @@ pub struct ProxyGroupInfo {
     /// can tell from its heartbeat that it must re-read.
     #[serde(default)]
     pub config_version: u64,
+    /// What percentage of traffic attached proxies should shed, 0 to 100.
+    ///
+    /// The proxy has always implemented this -- it reads the figure from its
+    /// heartbeat, applies it, and exports it as a metric -- but the metaserver
+    /// sent a hard-coded zero in every response, so the lever could only be
+    /// pulled by restarting each proxy with different configuration, during
+    /// exactly the incident where restarting proxies is least welcome.
+    #[serde(default)]
+    pub drop_percent: u8,
     pub state: MetaEntityState,
+}
+
+/// What an attached proxy should be serving, as resolved from its group.
+pub(super) struct ProxyServedConfig {
+    pub changed: bool,
+    pub namespace: String,
+    pub config_version: u64,
+    pub drop_percent: u8,
 }
 
 /// Create a group, or update the target and placement of an existing one.
@@ -65,6 +82,10 @@ pub struct PutProxyGroupRequest {
     #[serde(default)]
     pub location: String,
     pub instance_num: u64,
+    /// Percentage of traffic attached proxies should shed. Omitted means none,
+    /// which is what every existing group means.
+    #[serde(default)]
+    pub drop_percent: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,10 +307,12 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        if request.group.is_empty() || request.namespace.is_empty() {
-            return AckResponse {
-                status: Status::error("bad_request", "group and namespace are required"),
-            };
+        // Through the same judgement the propose path uses, so the two
+        // cannot drift apart again.
+        if let Some(status) =
+            self.admission_refusal(&MetaMutation::PutProxyGroup(request.clone()))
+        {
+            return AckResponse { status };
         }
         self.record_mutation(MetaMutation::PutProxyGroup(request.clone()));
         self.apply_put_proxy_group(request)
@@ -304,6 +327,7 @@ impl SingleNodeMeta {
             Some(previous)
                 if previous.namespace == request.namespace
                     && previous.location == request.location
+                    && previous.drop_percent == request.drop_percent
                     && previous.state == MetaEntityState::Normal =>
             {
                 previous.config_version
@@ -312,6 +336,7 @@ impl SingleNodeMeta {
             None => 1,
         };
         let info = ProxyGroupInfo {
+            drop_percent: request.drop_percent.min(100),
             group: request.group.clone(),
             namespace: request.namespace,
             location: request.location,
@@ -324,7 +349,10 @@ impl SingleNodeMeta {
             &mut state,
             "put_proxy_group",
             format!("proxy_group:{}", request.group),
-            format!("instance_num={},config_version={config_version}", request.instance_num),
+            format!(
+                "instance_num={},drop_percent={},config_version={config_version}",
+                request.instance_num, request.drop_percent
+            ),
         );
         AckResponse {
             status: Status::ok(),
@@ -484,7 +512,7 @@ impl SingleNodeMeta {
         proxy_addr: &str,
         reported_namespace: &str,
         reported_config_version: u64,
-    ) -> (bool, String, u64) {
+    ) -> ProxyServedConfig {
         let attached = state
             .proxies
             .get(proxy_addr)
@@ -502,10 +530,21 @@ impl SingleNodeMeta {
             Some(group) => {
                 let changed = group.namespace != reported_namespace
                     || group.config_version > reported_config_version;
-                (changed, group.namespace.clone(), group.config_version)
+                ProxyServedConfig {
+                    changed,
+                    namespace: group.namespace.clone(),
+                    config_version: group.config_version,
+                    drop_percent: group.drop_percent,
+                }
             }
-            // Unattached: it must stop serving whatever it thinks it serves.
-            None => (!reported_namespace.is_empty(), String::new(), 0),
+            // Unattached: it must stop serving whatever it thinks it serves,
+            // and shedding a share of nothing is meaningless.
+            None => ProxyServedConfig {
+                changed: !reported_namespace.is_empty(),
+                namespace: String::new(),
+                config_version: 0,
+                drop_percent: 0,
+            },
         }
     }
 }
@@ -516,6 +555,7 @@ mod tests {
 
     fn group(name: &str, ns: &str, location: &str, want: u64) -> ProxyGroupInfo {
         ProxyGroupInfo {
+            drop_percent: 0,
             group: name.to_string(),
             namespace: ns.to_string(),
             location: location.to_string(),
@@ -754,6 +794,7 @@ mod tests {
             .ok);
         assert!(meta
             .put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
                 group: "orders".to_string(),
                 namespace: "ns".to_string(),
                 location: "us-east/dc1".to_string(),
@@ -808,6 +849,7 @@ mod tests {
             boot_time_ms: 1,
         });
         meta.put_proxy_group(PutProxyGroupRequest {
+            drop_percent: 0,
             group: "orders".to_string(),
             namespace: "ns".to_string(),
             location: String::new(),
@@ -842,6 +884,7 @@ mod tests {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             assert!(meta
                 .put_proxy_group(PutProxyGroupRequest {
+                    drop_percent: 0,
                     group: "orders".to_string(),
                     namespace: "ns".to_string(),
                     location: "us-east/dc1".to_string(),
@@ -869,6 +912,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let put = || {
             meta.put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
                 group: "orders".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -883,6 +927,7 @@ mod tests {
         // Changing what it serves does bump it.
         assert!(meta
             .put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
                 group: "orders".to_string(),
                 namespace: "other".to_string(),
                 location: "rack-1".to_string(),

@@ -192,7 +192,7 @@ def ingest_resource_or_skill_if_needed(
         resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
         try:
             storage_resolution = resolve_raw_resource_for_ingest(
-                args,
+                {**args, "_engine_blob_client": getattr(self, "_client", None)},
                 envelope,
                 requested_raw_uri,
                 resource_type,

@@ -450,12 +450,33 @@ message WalEntryDelta {
   uint64 log_last_index = 3;
 }
 
+message WalStateImageSlab {
+  uint64 page_slab_id = 1;
+  bytes slab = 2;
+}
+
+// An engine state image: what a snapshot carries instead of the entry history, so installing it
+// is O(state) and the log behind it can actually be dropped.
+message WalStateImage {
+  bytes index = 1;
+  uint64 next_page_id = 2;
+  repeated WalStateImageSlab slabs = 3;
+}
+
+// An installed snapshot, split so the image's bytes stay bytes: everything else about the
+// snapshot travels in its existing encoding in `snapshot_sans_image`.
+message WalInstalledSnapshot {
+  bytes snapshot_sans_image = 1;
+  WalStateImage state_image = 2;
+}
+
 message WalRecord {
   WalHardState hard_state = 1;
   WalMembership membership = 2;
   WalApplySnapshotFence apply_snapshot_fence = 3;
   WalStorageApplyFence storage_apply_fence = 4;
   repeated WalLogEntry entries = 5;
+  WalInstalledSnapshot installed_snapshot = 7;
   // The record's remaining fields -- replica role, joint membership, snapshot refs and
   // runtime telemetry -- which sit at their default on almost every record and are omitted
   // entirely when they do. Carried in their existing encoding so none of them can be lost.
@@ -481,6 +502,10 @@ message EngineWalRecord {
   WalCommand command = 3;
   // Absent on a record written outside a batch.
   EngineWalMetadata metadata = 4;
+  // What this write DID. Once every accepted write fills this, `command` is what comes out.
+  repeated EngineWalItem items = 5;
+  // Blocks this write produced, carried in the record that records the write.
+  repeated WalStagedBlock staged_blocks = 6;
 }
 
 // What a record did to storage, flat enough that the whole thing costs a handful of bytes.
@@ -508,6 +533,36 @@ enum WalItemModel {
   WAL_ITEM_MODEL_UNKNOWN = 10;
 }
 
+// Where a block landed.
+//
+// The checksum stays a field rather than being dropped as redundant: the block read path verifies
+// it whenever it is present, so an index entry rebuilt from a record without one is never
+// integrity-checked again. The record's own frame protects the record, not the block bytes.
+message WalBlockAddress {
+  uint64 block_slab_id = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+  optional uint64 block_id = 4;
+  optional uint64 object_id = 5;
+  optional uint32 routing_bucket = 6;
+  optional uint64 generation = 7;
+  optional uint64 band_id = 8;
+  // Field 9 is the hex form, kept readable for records written before field 10 existed. New
+  // records write the digest itself: thirty-two bytes rather than sixty-four characters.
+  optional string checksum = 9;
+  optional bytes checksum_raw = 10;
+}
+
+// WHAT A WRITE DID, which is what lets a log carry data instead of operations.
+//
+// Fields 1-10 described a write and were derived FROM the command beside them, so nothing ever
+// read them back and writing them was pure amplification. Fields 11-14 are the difference: the
+// block a write produced, the bytes for state no block backs, and which component of an object
+// they belong to. With those, a shard can be rebuilt from items alone and the command becomes
+// removable rather than merely redundant.
+//
+// One item type serves all three logs. The engine writes it durably, the shared log publishes it
+// to a successor, and the node log wraps it in consensus metadata -- none of them needs its own.
 message EngineWalItem {
   WalItemKind item_kind = 1;
   WalItemModel model = 2;
@@ -519,6 +574,46 @@ message EngineWalItem {
   bool deleted = 8;
   bool meta_log = 9;
   bool block_log = 10;
+
+  // Which component of the object this is: a hash field, a set member, a timestamp, a score and
+  // member packed together. Absent for an object with exactly one value.
+  optional string component = 11;
+  // Where the block for this component went. Absent for state no block backs -- a seen-set
+  // member, a token bucket -- which carries its bytes in `value` instead.
+  WalBlockAddress block = 12;
+  // The bytes themselves, for state that has no block behind it.
+  optional bytes value = 13;
+  // The kind as the engine names it. Repeated on every item, so the common ones travel as
+  // `kind_code` below and this is left empty; a kind the code does not cover still travels
+  // whole, because the engine names more of them than any list here should try to freeze.
+  optional string kind_name = 14;
+  // A small code for a kind this schema knows. Zero means "read kind_name instead".
+  optional uint32 kind_code = 19;
+  // The bucket this object routes to. On the item rather than only inside `block`, because state
+  // with no block behind it still routes somewhere.
+  optional uint32 routing_bucket = 15;
+  // The stored key of a timestamped entry, as a number.
+  //
+  // It used to travel inside `component` as a decimal string: thirteen characters for something a
+  // varint says in seven, and a context event packed two of them as thirty-two hex characters
+  // where two varints cost about twelve. `component` keeps its job of naming a hash field or a
+  // set member, and stops doubling as a number.
+  optional uint64 timestamp_ms = 16;
+  // A second key for an entry the index keys by something other than its timestamp -- a context
+  // event, whose page packs by time and whose index keys by event id.
+  optional uint64 entry_id = 17;
+  // The whole object is gone, not one component of it.
+  //
+  // Previously implied by `deleted` with no component. A reader had to know the convention to
+  // tell the two apart, and a reader that did not silently removed the wrong amount.
+  bool object_deleted = 18;
+}
+
+// A block carried inside the record that produced it, so a read can serve it back out of the log.
+message WalStagedBlock {
+  uint64 object_id = 1;
+  bytes block = 2;
+  optional uint32 routing_bucket = 3;
 }
 
 message EngineWalMetadata {

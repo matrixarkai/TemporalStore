@@ -79,6 +79,22 @@ enum UnifiedExpected {
     Bool { value: bool },
     Static(Value),
     Response(CommandResponse),
+    NodesProbe(UnifiedNodesProbe),
+    EventsProbe { min_count: usize },
+    CompressionProbe { min_count: usize, source_event_count: usize },
+}
+
+/// The corpus's `context_nodes` expects assert node MEMBERSHIP, not the full records: which
+/// node hashes must come back, which must not, and a count floor. Comparing whole ContextNode
+/// values would chain every field of the node schema to the corpus file.
+#[derive(Debug, Deserialize)]
+struct UnifiedNodesProbe {
+    #[serde(default)]
+    node_hashes: Vec<u64>,
+    #[serde(default)]
+    missing_node_hashes: Vec<u64>,
+    #[serde(default)]
+    min_node_count: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -124,6 +140,29 @@ impl<'de> Deserialize<'de> for UnifiedExpected {
                 serde_json::from_value(value)
                     .map(UnifiedExpected::Response)
                     .map_err(serde::de::Error::custom)
+            }
+            "context_nodes" => serde_json::from_value(value)
+                .map(UnifiedExpected::NodesProbe)
+                .map_err(serde::de::Error::custom),
+            // Probe-style expects: a count floor rather than the full record list, so the
+            // corpus does not chain every field of the record schema to itself.
+            "context_events" if value.get("events").is_none() => Ok(UnifiedExpected::EventsProbe {
+                min_count: value
+                    .get("min_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+            }),
+            "context_compression_events" if value.get("events").is_none() => {
+                Ok(UnifiedExpected::CompressionProbe {
+                    min_count: value
+                        .get("min_count")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize,
+                    source_event_count: value
+                        .get("source_event_count")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0) as usize,
+                })
             }
             "members" => {
                 normalize_string_array_field_to_bytes(&mut value, "members");
@@ -337,6 +376,9 @@ fn expected_kind(expected: &UnifiedExpected) -> String {
             .unwrap_or("static")
             .to_string(),
         UnifiedExpected::Response(response) => response_kind(response).to_string(),
+        UnifiedExpected::NodesProbe(_) => "context_nodes".to_string(),
+        UnifiedExpected::EventsProbe { .. } => "context_events".to_string(),
+        UnifiedExpected::CompressionProbe { .. } => "context_compression_events".to_string(),
     }
 }
 
@@ -360,16 +402,20 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextIndexRefs { .. } => "context_index_refs",
         CommandResponse::ContextIndexIntersection { .. } => "context_index_intersection",
         CommandResponse::ContextPackAudits { .. } => "context_pack_audits",
-        CommandResponse::ContextSummaryDirtyNodes { .. } => "context_summary_dirty_markers",
+        CommandResponse::ContextSummaryDirtyNodes { .. } => "context_summary_dirty_nodes",
         CommandResponse::ContextEntity { .. } => "context_entity",
         CommandResponse::ContextEntities { .. } => "context_entities",
         CommandResponse::ContextChildRefs { .. } => "context_child_refs",
-        CommandResponse::ContextEmbeddings { .. } => "context_embeddings",
         CommandResponse::ContextNodeEmbeddings { .. } => "context_node_embeddings",
         CommandResponse::ContextEmbeddingDirtyNodes { .. } => "context_embedding_dirty_markers",
         CommandResponse::ContextTraversedNodes { .. } => "context_traversed_nodes",
         CommandResponse::ContextSummaries { .. } => "context_summaries",
+        CommandResponse::ContextSummaryVectors { .. } => "context_summary_vectors",
         CommandResponse::ContextCompressionEvents { .. } => "context_compression_events",
+        CommandResponse::ContextResourceBlobUpload { .. } => "context_resource_blob_upload",
+        CommandResponse::ContextResourceBlobCommitted { .. } => "context_resource_blob_committed",
+        CommandResponse::ContextResourceBlobChunk { .. } => "context_resource_blob_chunk",
+        CommandResponse::ContextResourceBlobSwept { .. } => "context_resource_blob_swept",
         CommandResponse::ContextNodeContext { .. } => "context_node_context",
         CommandResponse::ContextNodes { .. } => "context_nodes",
     }
@@ -395,7 +441,15 @@ fn run_engine_case(case: &UnifiedCase) {
         if maybe_run_shared_harness_command(case, step) {
             continue;
         }
-        if command_kind(&step.command) == "existing_test" {
+        if command_kind(&step.command) == "existing_test"
+            || step
+                .command
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| mode == "rust_executable_native_static")
+        {
+            // Pointer steps name a lib test as their runner; the mode field is what marks
+            // them, whatever kind string the case chose.
             continue;
         }
 
@@ -475,7 +529,15 @@ fn run_client_case(case: &UnifiedCase) {
             *engine.lock().expect("engine lock poisoned") =
                 new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
         }
-        if command_kind(&step.command) == "existing_test" {
+        if command_kind(&step.command) == "existing_test"
+            || step
+                .command
+                .get("mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| mode == "rust_executable_native_static")
+        {
+            // Pointer steps name a lib test as their runner; the mode field is what marks
+            // them, whatever kind string the case chose.
             continue;
         }
 
@@ -948,6 +1010,16 @@ fn is_storage_parity_command(command: &Value) -> bool {
 }
 
 fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> bool {
+    // Pointer steps name a lib test as their runner and carry arbitrary kind strings; the mode
+    // field is what marks them, and they are not executable here.
+    if step
+        .command
+        .get("mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode == "rust_executable_native_static")
+    {
+        return true;
+    }
     let kind = command_kind(&step.command);
     match kind {
         "ops_readiness_service_summary" => {
@@ -1771,7 +1843,7 @@ fn verify_proxy_operational_surface_aliases() {
     }
 
     let migration = proxy.native_migration_contract();
-    assert!(!migration.legacy_cplusplus_wire_in_scope);
+    assert!(!migration.legacy_wire_in_scope);
     assert!(migration.http_json_aliases_ready);
     assert!(migration.resp_migration_ready);
     assert!(migration.tonic_streaming_ready);
@@ -2646,6 +2718,7 @@ fn verify_client_deployment_placement_routing() {
                                 continuous_failed_time_ms: 100,
                                 io_timeout_ms: 1_000,
                                 connect_timeout_ms: 1_000,
+                                set_fields: Default::default(),
                             },
                         }),
                         shards: vec![TableShard {
@@ -3282,6 +3355,15 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
     let kind = command_kind(&step.command);
     if !kind.starts_with("storage_") {
         return false;
+    }
+    // Pointer steps (mode marks them) name a lib test as their runner, whatever their kind.
+    if step
+        .command
+        .get("mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode == "rust_executable_native_static")
+    {
+        return true;
     }
     let command: StorageUnifiedCommand = serde_json::from_value(step.command.clone())
         .unwrap_or_else(|error| {
@@ -4470,7 +4552,10 @@ fn assert_clean_storage_recovery(engine: &TemporalEngine, shard_id: u64, case_na
             .feature_page_layout
             .missing_indexed_timestamps
             .len(),
-        0
+        0,
+        "case={} missing indexed timestamps: {:?}",
+        case_name,
+        recovery.feature_page_layout.missing_indexed_timestamps
     );
     assert_eq!(
         recovery.feature_page_layout.orphan_packed_timestamps.len(),
@@ -4586,6 +4671,90 @@ fn assert_step_expect(
             case.name,
             step.name
         ),
+        Some(UnifiedExpected::NodesProbe(probe)) => {
+            let CommandResponse::ContextNodes { nodes } = actual_response else {
+                panic!(
+                    "case={} step={} expected ContextNodes, got {:?}",
+                    case.name, step.name, actual_response
+                );
+            };
+            let returned: std::collections::BTreeSet<u64> =
+                nodes.iter().map(|node| node.node_hash).collect();
+            for node_hash in &probe.node_hashes {
+                assert!(
+                    returned.contains(node_hash),
+                    "case={} step={} node {node_hash} missing from ContextNodes",
+                    case.name,
+                    step.name
+                );
+            }
+            for node_hash in &probe.missing_node_hashes {
+                assert!(
+                    !returned.contains(node_hash),
+                    "case={} step={} node {node_hash} must NOT be returned",
+                    case.name,
+                    step.name
+                );
+            }
+            assert!(
+                nodes.len() >= probe.min_node_count,
+                "case={} step={} expected at least {} nodes, got {}",
+                case.name,
+                step.name,
+                probe.min_node_count,
+                nodes.len()
+            );
+        }
+        Some(UnifiedExpected::EventsProbe { min_count }) => {
+            let CommandResponse::ContextEvents { events, .. } = actual_response else {
+                panic!(
+                    "case={} step={} expected ContextEvents, got {:?}",
+                    case.name, step.name, actual_response
+                );
+            };
+            assert!(
+                events.len() >= *min_count,
+                "case={} step={} expected at least {min_count} events, got {}",
+                case.name,
+                step.name,
+                events.len()
+            );
+        }
+        Some(UnifiedExpected::CompressionProbe {
+            min_count,
+            source_event_count,
+        }) => {
+            let CommandResponse::ContextCompressionEvents { events, .. } = actual_response else {
+                panic!(
+                    "case={} step={} expected ContextCompressionEvents, got {:?}",
+                    case.name, step.name, actual_response
+                );
+            };
+            assert!(
+                events.len() >= *min_count,
+                "case={} step={} expected at least {min_count} compression events, got {}",
+                case.name,
+                step.name,
+                events.len()
+            );
+            // The record does not carry a source count; what proves sources were consumed is
+            // the summary extending past its bare window prefix -- each selected event appends
+            // its snippet there.
+            if *source_event_count > 0 {
+                assert!(
+                    events.iter().any(|event| {
+                        let prefix = format!(
+                            "Temporal compression window {}-{}:",
+                            event.source_start_ms, event.source_end_ms
+                        );
+                        event.summary.len() > prefix.len()
+                    }),
+                    "case={} step={} no compression event carries source snippets",
+                    case.name,
+                    step.name
+                );
+            }
+        }
         Some(UnifiedExpected::Static(_)) => {}
         None => {}
     }
@@ -4597,7 +4766,10 @@ fn expected_status_code(expected: &UnifiedExpected) -> Option<&str> {
         UnifiedExpected::Status(_)
         | UnifiedExpected::Bool { .. }
         | UnifiedExpected::Static(_)
-        | UnifiedExpected::Response(_) => None,
+        | UnifiedExpected::Response(_)
+        | UnifiedExpected::NodesProbe(_)
+        | UnifiedExpected::EventsProbe { .. }
+        | UnifiedExpected::CompressionProbe { .. } => None,
     }
 }
 

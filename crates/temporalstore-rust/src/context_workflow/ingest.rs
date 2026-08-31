@@ -8,6 +8,10 @@ pub fn ingest_extract_context(
     engine: &TemporalEngine,
     request: ContextIngestExtractRequest,
 ) -> ContextIngestExtractReport {
+    // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
+    // Context* write would otherwise rebuild the first-index over every live page in the shard --
+    // eight walks of the store for one add.
+    let reconstruct_window = crate::engine::IngestReconstructWindow::open();
     let policy = ContextWorkflowPolicy::default();
     let mut extracts = Vec::new();
     let mut failed_sources = Vec::new();
@@ -55,6 +59,10 @@ pub fn ingest_extract_context(
             });
         }
     }
+
+    // Close the window BEFORE reconstructing: the reconstruct itself must not be deferred.
+    drop(reconstruct_window);
+    engine.reconstruct_bucket_index_now(request.shard_id);
 
     node_hashes.sort_unstable();
     node_hashes.dedup();
@@ -147,7 +155,26 @@ pub fn ingest_resource_skill_context(
     let mut timestamp_ms = request.start_time_ms.max(1);
 
     for resource_request in request.resources {
-        let resource = parse_context_resource(resource_request);
+        // An oversized payload gets stored WHOLE in the engine-owned blob store before
+        // parsing, so the synthesized external URI on the report is real and fetchable --
+        // chunks stay searchable in records while the original attachment lives beside the
+        // engine, one TemporalStore holding everything.
+        let oversized_payload = if resource_request.text.as_bytes().len()
+            > default_context_resource_max_inline_bytes()
+        {
+            Some(resource_request.text.clone())
+        } else {
+            None
+        };
+        let mut resource = parse_context_resource(resource_request);
+        if let Some(payload) = oversized_payload {
+            match engine.resource_blob_put(request.tenant_hash, payload.as_bytes()) {
+                Ok((uri, _size, _hash)) => resource.external_object_uri = uri,
+                Err(err) => resource
+                    .parser_warnings
+                    .push(format!("resource blob store put failed: {err}")),
+            }
+        }
         for chunk in &resource.chunks {
             resource_ref_by_source.insert(chunk.source_ref.clone(), resource.raw_uri.clone());
             sources.push(ContextExtractRequest {
@@ -227,7 +254,6 @@ pub fn ingest_resource_skill_context(
         ..ContextResourceSkillModelFanoutReport::default()
     };
     let mut secondary_indexes = ContextResourceSkillSecondaryIndexReport::default();
-    let mut embedding_refs = Vec::new();
 
     for extract in &ingest.extracts {
         let entity_ref = format!("entity:{}", extract.node.canonical_name);
@@ -301,6 +327,19 @@ pub fn ingest_resource_skill_context(
         fanout.compression_count += 1;
 
         for (index_name, index_ref_value) in index_writes {
+            if !crate::context_workflow::context_secondary_index_enabled() {
+                // The refs are still REPORTED (callers read the report to know what would be
+                // indexed); only the durable writes and their query-back are skipped.
+                match index_name.as_str() {
+                    "resource_ref" => secondary_indexes.resource_refs.push(index_ref_value),
+                    "skill_ref" => secondary_indexes.skill_refs.push(index_ref_value),
+                    "entity_ref" => secondary_indexes.entity_refs.push(index_ref_value),
+                    "source_ref" => secondary_indexes.source_refs.push(index_ref_value),
+                    "summary_ref" => secondary_indexes.summary_refs.push(index_ref_value),
+                    _ => {}
+                }
+                continue;
+            }
             let response = engine.execute_durable(ExecuteRequest {
                 shard_id: request.shard_id,
                 command: Command::ContextWriteIndexRef {
@@ -329,15 +368,6 @@ pub fn ingest_resource_skill_context(
             }
         }
 
-        embedding_refs.extend([
-            context_embedding_ref_hash(request.tenant_hash, extract.node.node_hash, "node_l0"),
-            context_embedding_ref_hash(request.tenant_hash, extract.node.node_hash, "node_l1"),
-            context_embedding_ref_hash(
-                request.tenant_hash,
-                extract.event.event_id_hash,
-                "event_text",
-            ),
-        ]);
     }
     secondary_indexes.resource_refs.sort();
     secondary_indexes.resource_refs.dedup();
@@ -349,8 +379,6 @@ pub fn ingest_resource_skill_context(
     secondary_indexes.source_refs.dedup();
     secondary_indexes.summary_refs.sort();
     secondary_indexes.summary_refs.dedup();
-    embedding_refs.sort_unstable();
-    embedding_refs.dedup();
     let embedding_evidence = context_resource_skill_embedding_evidence(&ingest.extracts);
 
     verify_resource_skill_fanout(
@@ -358,7 +386,6 @@ pub fn ingest_resource_skill_context(
         request.shard_id,
         request.tenant_hash,
         &ingest.extracts,
-        &embedding_refs,
         request.start_time_ms,
         request.end_time_ms,
         &mut secondary_indexes,
@@ -399,7 +426,6 @@ pub fn ingest_resource_skill_context(
         skill_registry,
         skill_selection,
         ingest,
-        embedding_refs,
         embedding_evidence,
         fanout,
         secondary_indexes,
@@ -477,7 +503,6 @@ pub(crate) fn verify_resource_skill_fanout(
     shard_id: ShardId,
     tenant_hash: u64,
     extracts: &[ContextExtractReport],
-    embedding_refs: &[u64],
     start_time_ms: u64,
     end_time_ms: u64,
     secondary_indexes: &mut ContextResourceSkillSecondaryIndexReport,
@@ -609,20 +634,28 @@ pub(crate) fn verify_resource_skill_fanout(
         missing.push("ContextChildModel".to_string());
     }
 
-    let embeddings = engine.execute(ExecuteRequest {
-        shard_id,
-        command: Command::ContextQueryEmbeddings {
-            tenant_hash,
-            ref_hashes: embedding_refs.to_vec(),
-            limit: Some(embedding_refs.len().max(1)),
-        },
-    });
-    if !matches!(
-        embeddings.response,
-        CommandResponse::ContextEmbeddings { ref embeddings }
-            if embeddings.len() >= embedding_refs.len()
-    ) {
-        missing.push("ContextEmbeddingModel".to_string());
+    // Embedding evidence is owner-side now: the vector lives on the node (and the summaries),
+    // so the query-back asks the owners rather than a separate keyspace that no longer exists.
+    let node_hashes: Vec<u64> = extracts
+        .iter()
+        .map(|extract| extract.node.node_hash)
+        .collect();
+    if !node_hashes.is_empty() {
+        let nodes = engine.execute(ExecuteRequest {
+            shard_id,
+            command: Command::ContextGetNodes {
+                tenant_hash,
+                node_hashes: node_hashes.clone(),
+            },
+        });
+        if !matches!(
+            nodes.response,
+            CommandResponse::ContextNodes { ref nodes }
+                if nodes.len() == node_hashes.len()
+                    && nodes.iter().all(|node| !node.vector.is_empty())
+        ) {
+            missing.push("ContextEmbeddingModel".to_string());
+        }
     }
 
     let resource_refs = secondary_indexes.resource_refs.clone();
@@ -749,6 +782,11 @@ pub(crate) fn verify_secondary_index_refs(
     end_time_ms: u64,
     report: &mut ContextResourceSkillSecondaryIndexReport,
 ) {
+    // Nothing was written when index building is off, so there is nothing to query back --
+    // reporting every ref as missing would fail the ingest for skipping work on purpose.
+    if !crate::context_workflow::context_secondary_index_enabled() {
+        return;
+    }
     report
         .missing_refs
         .extend(query_missing_secondary_index_refs(

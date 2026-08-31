@@ -18,6 +18,18 @@ pub(super) fn proxy_policy_rejection(
         return Some(status);
     }
     let drop_percent = options.drop_percent.min(100);
+    // A full drain has to mean every request. The check below can only judge commands that
+    // HAVE a routing key and `filter_map` silently discards the ones that do not -- the
+    // resource-blob upload path, sequence batch queries, node-embedding reads. A proxy an
+    // operator had drained to zero served those in full while its readiness probe reported
+    // it as rejecting everything.
+    //
+    // Below 100 the leak stands on purpose: shedding is per key by construction, and a
+    // command with nothing to hash has no share to shed. That is the same boundary the
+    // readiness probe draws between a drain and load management.
+    if drop_percent >= 100 {
+        return Some(proxy_dropped_status());
+    }
     if drop_percent > 0
         && commands
             .iter()
@@ -68,8 +80,29 @@ fn proxy_dropped_status() -> Status {
     // dropped" -- invited exactly that retry loop.
     Status::error(
         "proxy_traffic_dropped",
-        "request refused for this key by proxy drop_percent; the same key is refused on every          attempt while drop_percent stands, so retrying it will not succeed",
+        "request refused for this key by proxy drop_percent; the same key is refused on \
+         every attempt while drop_percent stands, so retrying it will not succeed",
     )
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+
+    #[test]
+    fn the_refusal_a_caller_sees_reads_as_one_sentence() {
+        // This goes back over the wire to whoever made the request. A literal
+        // wrapped across source lines keeps the indentation of the continuation
+        // unless it is escaped, and this one was arriving with ten spaces in
+        // the middle of the sentence.
+        let status = proxy_dropped_status();
+        assert_eq!(status.code, "proxy_traffic_dropped");
+        assert!(
+            !status.message.contains("  "),
+            "the refusal reads with a run of spaces in it: {:?}",
+            status.message
+        );
+    }
 }
 
 pub(super) fn proxy_serving_mode_from_meta(value: &str) -> Option<ProxyServingMode> {

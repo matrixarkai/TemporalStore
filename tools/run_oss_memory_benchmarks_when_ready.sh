@@ -8,7 +8,7 @@ READER_PROVIDER_NAME="${TEMPORALSTORE_READER_PROVIDER_NAME:-qwen25-7b-ollama}"
 REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
 LOC_INPUT="${TEMPORALSTORE_LOCOMO_INPUT:-/tmp/locomo10.json}"
 LONGMEM_INPUT="${TEMPORALSTORE_LONGMEMEVAL_INPUT:-/tmp/longmemeval_s.json}"
-OPENVIKING_ARCHIVE="${OPENVIKING_LOCOMO_ARCHIVE:-/tmp/openviking_matrixark_oss/data/messages.jsonl}"
+EXTERNAL_BASELINE_ARCHIVE="${EXTERNAL_BASELINE_LOCOMO_ARCHIVE:-/tmp/external_baseline_matrixark_oss/data/messages.jsonl}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 ARCHIVE_DIR="${REPORT_DIR}/oss_memory_ready_${TIMESTAMP}"
 
@@ -36,7 +36,7 @@ write_manifest() {
   "reader_provider_name": "${READER_PROVIDER_NAME}",
   "locomo_input": "${LOC_INPUT}",
   "longmemeval_input": "${LONGMEM_INPUT}",
-  "openviking_archive": "${OPENVIKING_ARCHIVE}",
+  "external_baseline_archive": "${EXTERNAL_BASELINE_ARCHIVE}",
   "created_at_utc": "${TIMESTAMP}",
   "claim_level": "live_oss_reader_required_fail_closed"
 }
@@ -80,21 +80,21 @@ export TEMPORALSTORE_LONGMEMEVAL_INPUT="${LONGMEM_INPUT}"
 
 bash "${ROOT}/tools/run_context_benchmarks_oss_reader_endpoint.sh"
 
-if [[ -f "${LOC_INPUT}" && -f "${OPENVIKING_ARCHIVE}" ]]; then
-  python3 "${ROOT}/tools/run_openviking_direct_retrieval_baseline.py" \
+if [[ -f "${LOC_INPUT}" && -f "${EXTERNAL_BASELINE_ARCHIVE}" ]]; then
+  python3 "${ROOT}/tools/run_external_baseline_direct_retrieval.py" \
     --input "${LOC_INPUT}" \
-    --archive "${OPENVIKING_ARCHIVE}" \
+    --archive "${EXTERNAL_BASELINE_ARCHIVE}" \
     --reader-base-url "${READER_BASE_URL}" \
     --reader-model "${READER_MODEL}" \
-    --report "${ARCHIVE_DIR}/openviking_direct_locomo.json"
+    --report "${ARCHIVE_DIR}/external_baseline_direct_locomo.json"
 fi
 
 if [[ -f "${LONGMEM_INPUT}" ]]; then
-  python3 "${ROOT}/tools/run_openviking_longmem_source_retrieval_baseline.py" \
+  python3 "${ROOT}/tools/run_external_baseline_longmem_source_retrieval.py" \
     --input "${LONGMEM_INPUT}" \
     --reader-base-url "${READER_BASE_URL}" \
     --reader-model "${READER_MODEL}" \
-    --report "${ARCHIVE_DIR}/openviking_direct_longmemeval_s.json"
+    --report "${ARCHIVE_DIR}/external_baseline_direct_longmemeval_s.json"
 fi
 
 write_manifest "complete" "complete"

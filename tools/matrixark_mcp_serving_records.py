@@ -382,6 +382,15 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
         summary_hash = record.get("summary_hash") or record.get("node_hash")
         if summary_type and summary_hash is not None:
             return ("context_summary", summary_type, summary_hash)
+    # `matrixark_async_pipeline_task` deliberately has NO latest-state identity, though it is
+    # the obvious candidate: the drain folds tasks by task_hash, so collapsing each to one row
+    # looks free. It is not. The latest-state hash is read WHOLESALE by
+    # `_load_latest_context_state_records()` on every idle-commit check and folded by other
+    # readers besides, so it is only cheap while its identity count stays small. Tasks are per
+    # event, so their count grows with the corpus. Measured both ways on a 600-add store: giving
+    # them an identity cut the per-call task count 545.8 -> 310.8 and made an add 143.2 -> 265.6
+    # ms, against two control arms 7% apart. The append log is the right home for a record type
+    # with unbounded distinct identities.
     if record_type == "context_model_registry":
         model_kind = str(record.get("model_kind") or "embedding")
         model_ref = str(record.get("model_ref") or "")

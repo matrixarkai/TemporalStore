@@ -328,11 +328,36 @@ pub(super) fn binary_replication_enabled() -> bool {
 /// Encode one envelope as a binary message.
 pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
     let record = &envelope.record;
+    // The snapshot gets first-class fields: its state image is slab and index BYTES, and in
+    // the side blob those become text again -- re-inflating exactly what compaction bounds.
+    let installed_snapshot = match &record.installed_snapshot {
+        None => None,
+        Some(snapshot) => {
+            let mut sans_image = snapshot.clone();
+            let image = sans_image.state_image.take();
+            Some(v1::WalInstalledSnapshot {
+                snapshot_sans_image: serde_json::to_vec(&sans_image)
+                    .map_err(io::Error::other)?,
+                state_image: image.map(|image| v1::WalStateImage {
+                    index: image.index_bytes,
+                    next_page_id: image.next_page_id,
+                    slabs: image
+                        .slabs
+                        .into_iter()
+                        .map(|slab| v1::WalStateImageSlab {
+                            page_slab_id: slab.page_slab_id,
+                            slab: slab.bytes,
+                        })
+                        .collect(),
+                }),
+            })
+        }
+    };
     let rest = RaftWalRecordRest {
         replica_role: record.replica_role,
         joint_membership: record.joint_membership.clone(),
         latest_external_snapshot_ref: record.latest_external_snapshot_ref.clone(),
-        installed_snapshot: record.installed_snapshot.clone(),
+        installed_snapshot: None,
         pipeline_state: record.pipeline_state.clone(),
         read_safety_state: record.read_safety_state.clone(),
         membership_evidence: record.membership_evidence.clone(),
@@ -384,6 +409,7 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
                 .iter()
                 .map(entry_to_proto)
                 .collect::<io::Result<Vec<_>>>()?,
+            installed_snapshot,
             rest: rest_bytes,
         }),
         delta: envelope.delta.as_ref().map(|delta| v1::WalEntryDelta {
@@ -411,6 +437,27 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
         serde_json::from_slice(&record.rest).map_err(io::Error::other)?
     };
 
+    let installed_snapshot = match record.installed_snapshot {
+        Some(snapshot) => {
+            let mut decoded: RaftSnapshot =
+                serde_json::from_slice(&snapshot.snapshot_sans_image).map_err(io::Error::other)?;
+            decoded.state_image = snapshot.state_image.map(|image| RaftSnapshotStateImage {
+                index_bytes: image.index,
+                next_page_id: image.next_page_id,
+                slabs: image
+                    .slabs
+                    .into_iter()
+                    .map(|slab| RaftSnapshotStateImageSlab {
+                        page_slab_id: slab.page_slab_id,
+                        bytes: slab.slab,
+                    })
+                    .collect(),
+            });
+            Some(decoded)
+        }
+        // Records written before the native field carried the snapshot in the side blob.
+        None => rest.installed_snapshot,
+    };
     Ok(RaftWalEnvelope {
         sequence: message.sequence,
         checksum: checksum_from_bytes(&message.checksum, message.checksum_is_text),
@@ -428,7 +475,7 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
             replica_role: rest.replica_role,
             joint_membership: rest.joint_membership,
             latest_external_snapshot_ref: rest.latest_external_snapshot_ref,
-            installed_snapshot: rest.installed_snapshot,
+            installed_snapshot,
             apply_snapshot_fence: RaftApplySnapshotFence {
                 applied_index: apply_snapshot_fence.applied_index,
                 commit_index: apply_snapshot_fence.commit_index,

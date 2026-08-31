@@ -390,6 +390,7 @@ impl ProductionRaftRuntime {
             let mut quorum_misses = 0u32;
             let mut election_timeout_ticks = randomized_election_timeout_ticks(local_node_id);
             let mut last_snapshot_check = InstantCompat::now();
+            let mut last_stall_report = InstantCompat::now();
             while !stop_thread.load(Ordering::SeqCst) {
                 if snapshot_check_interval > 0
                     && last_snapshot_check.elapsed()
@@ -413,6 +414,22 @@ impl ProductionRaftRuntime {
                 // Nothing else advances the raft clock in a live process, so without this
                 // every lease / offline / snapshot-send / leader-transfer timeout is
                 // unreachable and the failure detectors that depend on them never fire.
+                // Report a node that is behind and not catching up. Rate-limited, and it does
+                // not act: a node that is behind must keep trying, so this makes the condition
+                // visible rather than changing what the node does about it.
+                if last_stall_report.elapsed() >= Duration::from_millis(RAFT_STALL_REPORT_INTERVAL_MS)
+                {
+                    let stalled_ms = cluster.replication_stall_ms(local_node_id);
+                    if stalled_ms >= RAFT_STALL_WARN_MS {
+                        tracing::warn!(
+                            kind = "data",
+                            node_id = local_node_id,
+                            stalled_ms,
+                            "raft: this node is behind the leader and has accepted nothing for a while; still trying"
+                        );
+                    }
+                    last_stall_report = InstantCompat::now();
+                }
                 let elapsed_ms = last_tick.elapsed().as_millis() as u64;
                 last_tick = InstantCompat::now();
                 if elapsed_ms > 0 {
@@ -424,6 +441,45 @@ impl ProductionRaftRuntime {
                     last_contact_epoch = cluster.leader_contact_epoch();
                     if force_heartbeat || last_heartbeat.elapsed() >= heartbeat_interval {
                         force_heartbeat = false;
+                        if super::follower_pipeline::follower_pipeline_enabled() {
+                            // Heartbeats, catch-up batches and liveness all ride the per-follower
+                            // senders: a second sender here is exactly the interleaving the
+                            // pipeline exists to end. Check-quorum reads what the senders saw.
+                            let transport = RaftRpcRuntime::with_auth_token(
+                                AuthenticatedRaftTransport::new(
+                                    HttpRaftTransport::with_options(
+                                        peer_map.clone(),
+                                        http_options,
+                                    ),
+                                    auth_token.clone(),
+                                ),
+                                rpc_options,
+                                Some(auth_token.clone()),
+                            );
+                            cluster.ensure_follower_pipeline(&transport);
+                            cluster.ring_heartbeats();
+                            let window_ms = heartbeat_interval.as_millis() as u64
+                                * u64::from(peer_failure_threshold).max(1)
+                                + 250;
+                            let reached = 1 + cluster.pipeline_reached_within(window_ms);
+                            if reached < majority_size {
+                                quorum_misses = quorum_misses.saturating_add(1);
+                                if quorum_misses >= peer_failure_threshold {
+                                    quorum_misses = 0;
+                                    let _ = cluster.step_down_local(local_node_id);
+                                }
+                            } else {
+                                quorum_misses = 0;
+                                // Quorum contact within the window is exactly what the lease
+                                // certifies; without this an idle leader's lease decays and
+                                // the next propose stalls on it (see the method's comment).
+                                cluster.renew_leader_lease_after_quorum_contact();
+                            }
+                            last_heartbeat = InstantCompat::now();
+                            let _ = cluster.tick_election();
+                            thread::sleep(election_tick);
+                            continue;
+                        }
                         let transport = RaftRpcRuntime::with_auth_token(
                             AuthenticatedRaftTransport::new(
                                 HttpRaftTransport::with_options(peer_map.clone(), http_options),
@@ -667,6 +723,12 @@ pub struct ProductionMetaRaftRuntimeOptions {
     /// config already said to compact at a threshold, but no loop ever called
     /// it -- so the log grew for the life of the process.
     pub snapshot_check_interval_ms: u64,
+    /// Refuse to let a resource the metaserver convicted register its way back
+    /// into service; only an explicit unfreeze returns it.
+    ///
+    /// Carried here because a raft node's metadata is built inside the cluster,
+    /// so the process cannot configure it through the usual builder.
+    pub forbid_self_clearing_conviction: bool,
 }
 
 impl ProductionMetaRaftRuntimeOptions {
@@ -715,6 +777,7 @@ impl ProductionMetaRaftRuntime {
         options.validate()?;
         let cluster =
             MetaRaftCluster::new_with_config(options.voter_ids(), options.config.clone())?;
+        cluster.set_conviction_lock(options.forbid_self_clearing_conviction);
         Ok(Self { options, cluster })
     }
 

@@ -1091,16 +1091,12 @@ class _CodexPipelinePart2:
                 if record.get("record_type") == "context_event"
                 and record.get("extraction_phase") == "pending_async"
             ]
-            pending_embeddings = [
-                record
-                for record in records
-                if record.get("record_type") == "context_embedding"
-                and record.get("embedding_type") == "event_text"
-                and record.get("ref_hash") == pending_events[0]["event_id_hash"]
-            ]
             self.assertEqual(1, len(raw_messages))
             self.assertEqual(1, len(pending_events))
-            self.assertEqual(1, len(pending_embeddings))
+            # Folded: the pending event carries its vector; no separate record exists.
+            self.assertTrue(pending_events[0].get("vector"),
+                            "the pending event must carry its vector inline")
+            pending_embeddings = [pending_events[0].get("embedding_meta") or {}]
             self.assertNotIn("hook_type", raw_messages[0])
             self.assertNotIn("hook_type", raw_messages[0].get("metadata", {}))
             self.assertNotIn("hook_type", raw_messages[0].get("agent_hook", {}))
@@ -1116,7 +1112,6 @@ class _CodexPipelinePart2:
             self.assertIn("selected_user_profile_fact", raw_selection["policies"])
             self.assertEqual(raw_selection["policies"], pending_events[0]["source_memory_selection_policies"])
             self.assertIn("selected_user_profile_fact", pending_events[0]["source_memory_selection_policies"])
-            self.assertEqual(pending_events[0]["event_id_hash"], pending_embeddings[0]["ref_hash"])
             self.assertEqual("pending_async_event", pending_embeddings[0]["memory_layer"])
             self.assertEqual("user_prompt", pending_embeddings[0]["event_type"])
             self.assertNotIn("source_memory_selection_policies", pending_embeddings[0])
@@ -1726,7 +1721,6 @@ class _CodexPipelinePart2:
                 record_types = {record.get("record_type") for record in records}
                 for record_type in {
                     "context_event",
-                    "context_embedding",
                     "context_segment",
                     "context_entity",
                     "context_index",
@@ -1761,17 +1755,23 @@ class _CodexPipelinePart2:
                     and record.get("event_id_hash") in committed_event_hashes
                 ]
                 self.assertEqual(2, len(committed_events))
-                committed_event_embeddings = [
-                    record
-                    for record in records
-                    if record.get("record_type") == "context_embedding"
-                    and record.get("embedding_type") == "event_text"
-                    and record.get("ref_hash") in committed_event_hashes
-                    and record.get("projection_phase") != "fast_hook_pending_async"
+                # Folded: each committed event carries its own vector, and the retired
+                # record's compact metadata rides along under embedding_meta.
+                committed_with_vectors = [
+                    record for record in committed_events if record.get("vector")
                 ]
-                self.assertEqual(2, len(committed_event_embeddings))
-                self.assertTrue(all(record.get("memory_scope") == "session" for record in committed_event_embeddings))
-                self.assertTrue(all(record.get("session_continuity") == "same_session" for record in committed_event_embeddings))
+                self.assertEqual(2, len(committed_with_vectors))
+                committed_event_embeddings = [
+                    record.get("embedding_meta") or {} for record in committed_with_vectors
+                ]
+                self.assertTrue(all(
+                    (meta.get("memory_scope") or record.get("memory_scope")) == "session"
+                    for meta, record in zip(committed_event_embeddings, committed_with_vectors)
+                ))
+                self.assertTrue(all(
+                    (meta.get("session_continuity") or record.get("session_continuity")) == "same_session"
+                    for meta, record in zip(committed_event_embeddings, committed_with_vectors)
+                ))
                 for embedding in committed_event_embeddings:
                     self.assertNotIn("source_roles", embedding)
                     self.assertNotIn("source_role_counts", embedding)
@@ -1795,17 +1795,18 @@ class _CodexPipelinePart2:
                 ]
                 self.assertTrue(batch_summaries)
                 self.assertTrue(all(record.get("source_event_ids") for record in batch_summaries))
-                batch_summary_embeddings = [
-                    record
-                    for record in records
-                    if record.get("record_type") == "context_embedding"
-                    and record.get("embedding_type") == "batch_l0"
-                    and record.get("ref_hash") in batch_summary_hashes
+                # Folded: the batch summaries carry their vectors; the compact metadata of
+                # the retired records rides along under embedding_meta.
+                summaries_with_vectors = [
+                    record for record in batch_summaries if record.get("vector")
                 ]
-                self.assertTrue(batch_summary_embeddings)
-                for embedding in batch_summary_embeddings:
-                    self.assertEqual("session", embedding["memory_scope"])
-                    self.assertEqual("same_session", embedding["session_continuity"])
+                self.assertTrue(summaries_with_vectors)
+                batch_summary_embeddings = [
+                    record.get("embedding_meta") or {} for record in summaries_with_vectors
+                ]
+                for embedding, owner in zip(batch_summary_embeddings, summaries_with_vectors):
+                    self.assertEqual("session", embedding.get("memory_scope") or owner.get("memory_scope"))
+                    self.assertEqual("same_session", embedding.get("session_continuity") or owner.get("session_continuity"))
                     for field in [
                         "source_event_ids",
                         "source_entity_hashes",

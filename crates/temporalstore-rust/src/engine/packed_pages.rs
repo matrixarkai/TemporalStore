@@ -53,6 +53,123 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
         .unwrap_or_default()
 }
 
+/// State that a timestamped point now lives at an address.
+///
+/// Emitted from the producer rather than from its callers: eleven handlers append timestamped
+/// pages -- feature series, sequences, control state, context events -- and each one having to
+/// remember to record the outcome is exactly how a kind ends up silently missing. The series is
+/// keyed by timestamp, so that is the component.
+/// How a recorded item names the entry a write created.
+///
+/// Most timestamped series are keyed by the stored timestamp, so the timestamp alone names the
+/// entry. A context event is not: its page is timestamp-keyed but its index entry is keyed by the
+/// event id, so the timestamp alone names nothing and the identity has to travel with it. Packing
+/// both is what list and zset already do with their own keys.
+pub(super) fn timestamped_component(stored_key: u64, identity: Option<u64>) -> String {
+    match identity {
+        Some(identity) => format!("{stored_key:016x}{identity:016x}"),
+        None => stored_key.to_string(),
+    }
+}
+
+fn stage_timestamped_outcomes(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    refs: &[(u64, BlockAddress)],
+    identity: Option<u64>,
+) {
+    if refs.is_empty() || !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    for (timestamp_ms, address) in refs {
+        let component = timestamped_component(*timestamp_ms, identity);
+        super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            kind: kind.to_string(),
+            object_key: key.to_string(),
+            component: Some(component.clone()),
+            object_id: stable_page_object_id(shard_id, kind, key, Some(&component)),
+            routing_bucket,
+            address: Some(address.clone()),
+            value: None,
+            ttl: None,
+            deleted: false,
+            meta: false,
+        });
+    }
+}
+
+/// Record that a timestamped point is gone.
+///
+/// The insert above records where a point landed; without this its removal is invisible, and a
+/// shard rebuilt from records alone would keep points the shard itself has dropped.
+fn stage_timestamped_removal(shard_id: ShardId, kind: &str, key: &str, routing_bucket: u32, timestamp_ms: u64) {
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
+    let component = timestamp_ms.to_string();
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: key.to_string(),
+        component: Some(component.clone()),
+        object_id: stable_page_object_id(shard_id, kind, key, Some(&component)),
+        routing_bucket,
+        address: None,
+        value: None,
+        ttl: None,
+        deleted: true,
+        meta: false,
+    });
+}
+
+/// Drop the named points from a series, recording each one.
+///
+/// Returns whether the series changed, so a caller can mark the shard dirty without repeating
+/// the test.
+pub(super) fn drop_timestamped_points(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut BTreeMap<u64, BlockAddress>,
+    timestamps: &[u64],
+) -> bool {
+    let mut dropped = false;
+    for timestamp_ms in timestamps {
+        if series.remove(timestamp_ms).is_some() {
+            stage_timestamped_removal(shard_id, kind, key, routing_bucket, *timestamp_ms);
+            dropped = true;
+        }
+    }
+    dropped
+}
+
+/// Trim a series to its configured bound, oldest first, recording every point that went.
+///
+/// The bound lives in config rather than in the command, which is why replaying a command
+/// reproduces this trim only if the config effective at the time is reproduced with it. Recording
+/// the trimmed point instead states the result, and needs no config at all.
+pub(super) fn trim_timestamped_series(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    series: &mut BTreeMap<u64, BlockAddress>,
+    max_size: usize,
+) -> bool {
+    let mut trimmed = false;
+    while series.len() > max_size {
+        let Some(oldest) = series.keys().next().copied() else {
+            break;
+        };
+        series.remove(&oldest);
+        stage_timestamped_removal(shard_id, kind, key, routing_bucket, oldest);
+        trimmed = true;
+    }
+    trimmed
+}
+
 pub(super) fn append_timestamped_kv_pages(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,
@@ -62,6 +179,60 @@ pub(super) fn append_timestamped_kv_pages(
     points: Vec<FeaturePoint>,
     routing_bucket: u32,
     async_storage: bool,
+) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+    append_timestamped_kv_pages_inner(
+        cache,
+        block_store,
+        shard_id,
+        kind,
+        key,
+        points,
+        routing_bucket,
+        async_storage,
+        None,
+    )
+}
+
+/// Same, for a series whose index entry is keyed by something other than the stored timestamp.
+///
+/// The caller passes the key its map will actually use, so the recorded item can name the entry
+/// the write created. Without it a record states where a page landed and not what it became.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_timestamped_kv_pages_keyed(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    points: Vec<FeaturePoint>,
+    routing_bucket: u32,
+    async_storage: bool,
+    identity: u64,
+) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
+    append_timestamped_kv_pages_inner(
+        cache,
+        block_store,
+        shard_id,
+        kind,
+        key,
+        points,
+        routing_bucket,
+        async_storage,
+        Some(identity),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_timestamped_kv_pages_inner(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    points: Vec<FeaturePoint>,
+    routing_bucket: u32,
+    async_storage: bool,
+    identity: Option<u64>,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
     let mut refs = Vec::new();
@@ -91,6 +262,7 @@ pub(super) fn append_timestamped_kv_pages(
                     .map(|point| (point.timestamp_ms, address.clone())),
             );
         }
+        stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs, identity);
         return Ok(refs);
     }
 
@@ -111,6 +283,7 @@ pub(super) fn append_timestamped_kv_pages(
                 .map(|point| (point.timestamp_ms, address.clone())),
         );
     }
+    stage_timestamped_outcomes(shard_id, kind, key, routing_bucket, &refs, identity);
     Ok(refs)
 }
 

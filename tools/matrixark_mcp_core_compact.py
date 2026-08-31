@@ -532,27 +532,24 @@ def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
     return compact_context_index_postings(materialized)
 
 def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
-    """Return the logical latest-state key for versionless context records."""
-    record_type = str(record.get("record_type") or "")
-    if record_type == "context_summary":
-        summary_type = str(record.get("summary_type") or "")
-        summary_hash = record.get("summary_hash") or record.get("node_hash")
-        if summary_type and summary_hash is not None:
-            return ("context_summary", summary_type, summary_hash)
-    if record_type == "context_model_registry":
-        model_kind = str(record.get("model_kind") or "embedding")
-        model_ref = str(record.get("model_ref") or "")
-        model_hash = record.get("model_hash")
-        if model_ref or model_hash is not None:
-            return ("context_model_registry", model_kind, model_ref or model_hash)
-    if record_type == "context_embedding":
-        embedding_type = str(record.get("embedding_type") or "")
-        ref_type = str(record.get("ref_type") or "")
-        if embedding_type in {"session_l0", "node_l0", "node_l1", "resource_l0", "skill_l0", "skill_summary"} and ref_type in {"summary", "node"}:
-            ref_hash = record.get("ref_hash") or record.get("node_hash")
-            if ref_hash is not None:
-                return ("context_embedding", embedding_type, ref_type, ref_hash)
-    return None
+    """Return the logical latest-state key for versionless context records.
+
+    Delegates deliberately: the single definition lives in matrixark_mcp_serving_records. This
+    module used to carry its own copy, and the two drifted -- the other one learned to give
+    `matrixark_async_pipeline_task` an identity and this one did not. Because the write path
+    resolves THIS module (it does `import *`, and this module re-exports the name), tasks kept
+    their append-log rows and every status transition accumulated, which is the cost that
+    identity exists to remove.
+    """
+    try:
+        from tools.matrixark_mcp_serving_records import (
+            latest_context_state_key as _serving_latest_context_state_key,
+        )
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_serving_records import (
+            latest_context_state_key as _serving_latest_context_state_key,
+        )
+    return _serving_latest_context_state_key(record)
 
 
 def compact_latest_context_state_records(records: list[Json]) -> list[Json]:

@@ -66,6 +66,72 @@ fn control_api_reads_page_and_index_streams() {
 }
 
 #[test]
+fn a_scan_cut_short_by_its_budget_does_not_claim_the_stream_ended() {
+    // scan_stream stops walking for two unrelated reasons -- the window ended, or max_bytes ran
+    // out -- and it answered end_of_stream: true for both. So a caller reading a range larger
+    // than its budget was handed a prefix and told it had the whole thing, with nothing in the
+    // response to suggest otherwise.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..8 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{i}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let all = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_slab_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: u64::MAX,
+    });
+    assert!(all.status.ok);
+    assert!(
+        all.records.len() >= 4,
+        "premise: there are several records to walk, got {}",
+        all.records.len()
+    );
+    assert!(
+        all.end_of_stream,
+        "a scan with no budget to run out of did reach the end of the window"
+    );
+
+    // A budget that fits the first record and not the second.
+    let budget = all.records[0].data.len() as u64 + 1;
+    let cut = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_slab_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: budget,
+    });
+    assert!(cut.status.ok);
+    assert!(
+        cut.records.len() < all.records.len(),
+        "premise: the budget cut this scan short, got {} of {}",
+        cut.records.len(),
+        all.records.len()
+    );
+    assert!(
+        !cut.end_of_stream,
+        "the budget stopped this scan with records still in the window, so it must not report          the stream as ended"
+    );
+}
+
+#[test]
 fn control_api_reads_and_scans_wal_stream() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -100,16 +166,26 @@ fn control_api_reads_and_scans_wal_stream() {
     assert!(stream.status.ok);
     // Decode the records rather than matching on how a field is spelled: the endpoint returns
     // the log's records, and that is what should be asserted.
-    let sequences: Vec<u64> = stream
-        .data
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            crate::wal::decode_wal_line(line)
-                .expect("the stream should carry decodable records")
-                .sequence
-        })
-        .collect();
+    // Walk the frames the stream carries rather than splitting it on newlines: a record ends
+    // where its frame says it does, and a length-framed payload contains 0x0A of its own.
+    let mut sequences: Vec<u64> = Vec::new();
+    let mut at = 0usize;
+    while at < stream.data.len() {
+        if stream.data[at] == 0 {
+            break;
+        }
+        match crate::log_framing::next_frame(&stream.data[at..]) {
+            Ok(Some((consumed, _))) if consumed > 0 => {
+                sequences.push(
+                    crate::wal::decode_wal_line(&stream.data[at..at + consumed])
+                        .expect("the stream should carry decodable records")
+                        .sequence,
+                );
+                at += consumed;
+            }
+            _ => break,
+        }
+    }
     assert_eq!(
         sequences,
         vec![1, 2],
@@ -191,8 +267,14 @@ fn control_api_reads_and_scans_index_log_stream() {
     // which is the complete, current ShardState in both the whole-index (base-file) and the
     // delta (live-in-memory) paths -- the index-log itself is a per-write log, not the
     // authoritative complete image.
-    let served: serde_json::Value =
-        serde_json::from_slice(&engine.export_index_bytes(1).unwrap()).unwrap();
+    // The served index is written in whichever format the container gate selects, so decode it
+    // through the funnel a reader uses and assert over the STATE. Reading the bytes as JSON was an
+    // assumption about the encoding, not about the thing being tested.
+    let served: serde_json::Value = serde_json::to_value(
+        crate::engine::decode_index_bytes(&engine.export_index_bytes(1).unwrap())
+            .expect("served index decodes"),
+    )
+    .expect("shard state re-serializes for assertion");
     // `hashes` is deliberately NOT serialized (`skip_serializing`): it is rebuildable from
     // the durable bucket index on load, and duplicating those page references in every
     // checkpoint is what made large context backfills tens of MB heavier. Assert the hash
@@ -2161,11 +2243,15 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     );
     engine.unload_shard(1);
 
+    // Empty the string map and put it back through the same encoder that wrote it. Injecting the
+    // fault as JSON text quietly required the index to BE JSON, which is not what this test is
+    // about -- it is about recovery rebuilding the strings from the bucket index.
     let index_path = index_dir.join("shard-1.index.json");
-    let mut json: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&index_path).expect("index file")).unwrap();
-    json["strings"] = serde_json::json!({});
-    std::fs::write(&index_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+    let mut damaged =
+        crate::engine::decode_index_bytes(&std::fs::read(&index_path).expect("index file"))
+            .expect("served index decodes");
+    damaged.strings.clear();
+    std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
     let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
     recovered.load_shard(1);
@@ -2300,6 +2386,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 },
             )]
             .into_iter()
+            .map(|(key, page): (String, PageIndex)| (std::sync::Arc::from(key), page))
             .collect(),
             ..BucketNode::default()
         },
@@ -2362,6 +2449,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
+            .map(|(key, page): (String, PageIndex)| (std::sync::Arc::from(key), page))
             .collect(),
             ..BucketNode::default()
         },
@@ -2423,6 +2511,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
+            .map(|(key, page): (String, PageIndex)| (std::sync::Arc::from(key), page))
             .collect(),
             ..BucketNode::default()
         },

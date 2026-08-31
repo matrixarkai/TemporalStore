@@ -12,7 +12,7 @@ The repo also includes a Hugging Face Transformers endpoint for the exact
 is packaged by `docker/Dockerfile.context-oss-reader`.
 
 Claim level: packaged open-model benchmark path. This page does not present production conformance or
-VikingMem paper-comparable evidence by itself. Those labels require a mounted real dataset, a
+the external baseline paper-comparable evidence by itself. Those labels require a mounted real dataset, a
 successful real reader call, no deterministic fallback, full Rust TemporalStore replay, and passing
 threshold output in the archived report.
 
@@ -48,10 +48,10 @@ TEMPORALSTORE_READER_MODEL=llama3.2:1b \
 bash tools/run_context_benchmarks_docker_open_model.sh
 ```
 
-## Exact/OpenViking OSS Reader Endpoint
+## External OSS Reader Endpoint
 
 The Docker/Ollama path above is useful when the chosen model is available in
-Ollama. The/MatrixArk/OpenViking benchmark path uses the
+Ollama. The MatrixArk / external-baseline benchmark path uses the
 `matrixark-native-oss-context` profile with `google/flan-t5-small`. Run that exact
 reader/model through the packaged Hugging Face endpoint with:
 
@@ -136,12 +136,12 @@ The runner writes:
 - `docker_start.log` or `model_pull.log` when infrastructure setup fails before scoring
 
 The `*_paper_comparable_report.json` files use
-`matrixark_vikingmem_paper_comparable_report_v1` and include the dataset SHA-256,
+`matrixark_external_paper_comparable_report_v1` and include the dataset SHA-256,
 input bytes, model/provider, reader mode, exact reader prompt templates, Rust
 TemporalStore backend evidence, thresholds, p50/p95 latencies, token reduction,
 quality-gate state, and category breakdown. They are diagnostic archives unless
 `quality_gate.paper_comparable_claim_ready=true`; only then should they be used as
-VikingMem/OpenViking paper-comparable evidence or compared as paper-comparable benchmark
+the external OSS baseline paper-comparable evidence or compared as paper-comparable benchmark
 outputs.
 
 The local endpoint runner always requires the Rust TemporalStore backend. The lower-level
@@ -204,7 +204,7 @@ the model was still unavailable locally:
 docs/benchmark_archives/oss_reader_required_failed_latest.json
 ```
 
-That archive is the current honest VikingMem/OpenViking live-reader status:
+That archive is the current honest the external OSS baseline live-reader status:
 endpoint packaging is proven far enough to answer model discovery, Rust
 TemporalStore bounded proofs execute, but `reader_open_source_calls = 0` and no
 paper-comparable score is claimed.
@@ -320,5 +320,5 @@ No live text-reader score is claimed from this attempt.
 The Context workflow state and harness outputs now carry separate proof fields:
 `open_model_provider_packaged=true`, `open_model_local_run_proven=false`,
 `vlm_provider_configured=true`, and `vlm_benchmark_proven=false` for this evidence set. This keeps
-OpenViking-style provider configuration distinct from a successful local OSS reader or VLM
+the external OSS system-style provider configuration distinct from a successful local OSS reader or VLM
 benchmark run.

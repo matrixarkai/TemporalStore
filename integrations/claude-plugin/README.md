@@ -19,7 +19,7 @@ The plugin is the packaging layer; it drives a **TemporalStore checkout** on you
 Clone and build it once:
 
 ```bash
-git clone https://github.com/bjmeetsfo/TemporalStore
+git clone https://github.com/matrixarkai/TemporalStore
 # note the absolute path — you'll set it as matrixark_home below
 ```
 
@@ -63,4 +63,4 @@ integrations/claude-plugin/
 └── README.md
 ```
 
-Apache-2.0 · part of [TemporalStore](https://github.com/bjmeetsfo/TemporalStore).
+Apache-2.0 · part of [TemporalStore](https://github.com/matrixarkai/TemporalStore).

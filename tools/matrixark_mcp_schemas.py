@@ -1251,6 +1251,26 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_memory_feedback",
+        "description": "Rate an existing memory (mem0 feedback). The rating is stored against the memory, not as a memory of its own -- it does not appear in get_all or search. Read it back with matrixark_memory_history.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["memory_id", "feedback"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "memory_id": {"type": "string", "description": "The memory id (event_id_hash) to rate."},
+                "feedback": {
+                    "type": "string",
+                    "enum": ["POSITIVE", "NEGATIVE", "VERY_NEGATIVE"],
+                    "description": "The rating. An unrecognised value is refused rather than stored.",
+                },
+                "feedback_reason": {"type": "string", "description": "Optional free-text reason for the rating."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_memory_history",
         "description": "Return the ordered change history for a memory id (mem0 history): ingest -> update/supersede -> delete, with timestamps.",
         "inputSchema": {

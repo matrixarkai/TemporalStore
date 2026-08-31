@@ -36,6 +36,61 @@ fn table_owns_shard(table: &TableMetaInfo, shard_id: ShardId) -> bool {
     shard_id >= first && shard_id < first.saturating_add(table.shard_count)
 }
 
+/// Which table owns each registered shard.
+///
+/// Built once per round. The obvious way -- asking [`table_for_shard`] for every
+/// registered shard -- costs shards times tables, because that answers by
+/// scanning every table, and the rounds that want this run on an interval
+/// holding the read lock that heartbeats wait on.
+///
+/// A table's shards are a contiguous range, so the ranges sorted by their start
+/// answer each shard with a binary search. Ranges are disjoint in any cluster
+/// that assigns them the way `add_table` does; when two really do overlap the
+/// per-shard scan still decides, because it resolves them by table map order and
+/// that is the behaviour to keep.
+pub(super) fn shard_owning_tables(state: &MetaState) -> BTreeMap<ShardId, &TableRecord> {
+    // Learning the ranges costs a pass over the tables and a sort; the scan
+    // costs a pass over the tables per shard. So the index only pays once there
+    // are more shards than the log of the table count -- with a handful of
+    // shards registered and a large table map, which is what a metaserver looks
+    // like just after a restart, building it would be the more expensive way to
+    // answer.
+    let table_count = state.tables.len();
+    let log_tables = (usize::BITS - table_count.leading_zeros()) as usize;
+    if state.shards.len() <= log_tables {
+        return state
+            .shards
+            .keys()
+            .filter_map(|shard_id| Some((*shard_id, table_for_shard(state, *shard_id)?)))
+            .collect();
+    }
+    let tables_in_order = state.tables.values().collect::<Vec<_>>();
+    let mut ranges = tables_in_order
+        .iter()
+        .enumerate()
+        .map(|(order, table)| {
+            let first = table.info.first_shard_id;
+            (first, first.saturating_add(table.info.shard_count), order)
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_unstable_by_key(|(first, _, _)| *first);
+    let disjoint = ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0);
+    state
+        .shards
+        .keys()
+        .filter_map(|shard_id| {
+            let table = if disjoint {
+                let above = ranges.partition_point(|(first, _, _)| first <= shard_id);
+                let (first, end, order) = *ranges.get(above.checked_sub(1)?)?;
+                (*shard_id >= first && *shard_id < end).then(|| tables_in_order[order])?
+            } else {
+                table_for_shard(state, *shard_id)?
+            };
+            Some((*shard_id, table))
+        })
+        .collect()
+}
+
 pub(super) fn table_for_shard<'a>(state: &'a MetaState, shard_id: ShardId) -> Option<&'a TableRecord> {
     // Still the first match in map order, so two tables claiming overlapping
     // ranges resolve exactly as they did before.
@@ -49,17 +104,11 @@ pub(super) fn push_replica(
     state: &MetaState,
     replicas: &mut Vec<String>,
     seen_replicas: &mut BTreeSet<String>,
-    used_locations: &mut BTreeSet<String>,
     used_hosts: &mut BTreeSet<String>,
     server_addr: &str,
 ) {
     if !seen_replicas.insert(server_addr.to_string()) {
         return;
-    }
-    if let Some(server) = state.servers.get(server_addr) {
-        if !server.location.is_empty() {
-            used_locations.insert(server.location.clone());
-        }
     }
     let host = server_host(server_addr);
     if !host.is_empty() {
@@ -114,6 +163,8 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
         .entry(server_addr.to_string())
         .or_insert_with(|| ServerMetaInfo {
             registered_at_ms: 0,
+            reported_record_count: 0,
+            reported_storage_bytes: 0,
             numa_nodes: Vec::new(),
             load_key_count: 0,
             load_memory_bytes: 0,
@@ -156,6 +207,11 @@ pub(super) fn stats_from_state(state: &MetaState, counters: &MetaCounters) -> Me
         namespace_count: state.namespaces.len(),
         table_count: state.tables.len(),
         shard_count: state.shards.len(),
+        frozen_shard_count: state
+            .shards
+            .values()
+            .filter(|location| location.state != MetaEntityState::Normal)
+            .count(),
     }
 }
 

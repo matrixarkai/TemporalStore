@@ -88,7 +88,6 @@
     "test_prometheus_renderer_covers_single_backend",
     "test_prompt_tokens_are_trimmed_from_the_decoded_output",
     "test_query_candidate_index_terms_match_core_source_lineage_terms",
-    "test_retrieval_audit_is_off_by_default",
     "test_retrieval_idle_preflush_reports_committed_memory_layers_and_selection_budget",
     "test_retrieval_prefilter_recovers_summary_from_compact_embedding_metadata",
     "test_retrieval_recovers_profile_layer_from_compact_embedding_metadata",

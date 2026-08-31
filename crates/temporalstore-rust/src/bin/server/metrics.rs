@@ -438,12 +438,20 @@ fn start_heartbeat_loop(
     server_addr: String,
     binary_version: String,
     interval_ms: u64,
+    boot_time_ms: u64,
 ) {
     if interval_ms == 0 {
         return;
     }
     std::thread::spawn(move || loop {
-        let _ = send_heartbeat(&engine, &runtime, &meta_addr, &server_addr, &binary_version);
+        let _ = send_heartbeat(
+            &engine,
+            &runtime,
+            &meta_addr,
+            &server_addr,
+            &binary_version,
+            boot_time_ms,
+        );
         std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     });
 }

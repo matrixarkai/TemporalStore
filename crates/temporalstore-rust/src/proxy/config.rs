@@ -26,7 +26,8 @@ pub(super) fn default_context_first_shard_id() -> crate::types::ShardId {
 }
 
 pub(super) fn default_context_shard_count() -> u64 {
-    1
+    // 0 = follow the cluster. See `ProxyOptions::context_shard_count`.
+    0
 }
 
 pub(super) fn default_heartbeat_timeout_ms() -> u64 {
@@ -81,54 +82,29 @@ pub(super) fn proxy_config_version(options: &ProxyOptions) -> u64 {
     if options.config_version != 0 {
         return options.config_version;
     }
+    // Derived from the WHOLE options document, not from a hand-listed subset of it.
+    //
+    // Whether a pushed config is applied at all is decided by comparing this version to
+    // the running one. The list this used to hash left five fields out -- among them
+    // `context_shard_count` and `context_first_shard_id`, which decide where every
+    // tenant's context is routed -- so a push that changed only one of those hashed to
+    // the same number, and `update_options_report` answered "unchanged" and dropped it.
+    // The operator was told, in the report, that their change was a no-op.
+    //
+    // Hashing the document covers every field, including ones added after this was
+    // written, which a list cannot do: the list was already five fields behind when this
+    // was found, and nothing said so.
+    //
+    // `config_version` is removed first -- it is this function's answer, not an input.
+    let mut document = serde_json::to_value(options).unwrap_or(serde_json::Value::Null);
+    if let serde_json::Value::Object(fields) = &mut document {
+        fields.remove("config_version");
+    }
     let mut version = 1469598103934665603u64;
-    let view = ProxyConfigHashView {
-        meta_addr: &options.meta_addr,
-        proxy_addr: &options.proxy_addr,
-        namespace: &options.namespace,
-        location: &options.location,
-        binary_version: &options.binary_version,
-        route_cache_ttl_ms: options.route_cache_ttl_ms,
-        connect_timeout_ms: options.connect_timeout_ms,
-        io_timeout_ms: options.io_timeout_ms,
-        max_retries: options.max_retries,
-        refresh_route_on_backend_error: options.refresh_route_on_backend_error,
-        backend_continuous_failed_time_ms: options.backend_continuous_failed_time_ms,
-        ingestion_account: &options.ingestion_account,
-        enforce_ingestion_account: options.enforce_ingestion_account,
-        max_inflight_requests: options.max_inflight_requests,
-        max_inflight_write_requests: options.max_inflight_write_requests,
-        pin_primary_reads: options.pin_primary_reads,
-        heartbeat_timeout_ms: options.heartbeat_timeout_ms,
-        topology_check_interval_ms: options.topology_check_interval_ms,
-        auto_register_min_interval_ms: options.auto_register_min_interval_ms,
-    };
-    for byte in serde_json::to_vec(&view).unwrap_or_default() {
+    for byte in serde_json::to_vec(&document).unwrap_or_default() {
         version ^= byte as u64;
         version = version.wrapping_mul(1099511628211);
     }
     version
 }
 
-#[derive(Serialize)]
-struct ProxyConfigHashView<'a> {
-    meta_addr: &'a str,
-    proxy_addr: &'a str,
-    namespace: &'a str,
-    location: &'a str,
-    binary_version: &'a str,
-    route_cache_ttl_ms: u64,
-    connect_timeout_ms: u64,
-    io_timeout_ms: u64,
-    max_retries: usize,
-    refresh_route_on_backend_error: bool,
-    backend_continuous_failed_time_ms: u64,
-    ingestion_account: &'a str,
-    enforce_ingestion_account: bool,
-    max_inflight_requests: u64,
-    max_inflight_write_requests: u64,
-    pin_primary_reads: bool,
-    heartbeat_timeout_ms: u64,
-    topology_check_interval_ms: u64,
-    auto_register_min_interval_ms: u64,
-}

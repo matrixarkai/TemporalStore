@@ -164,6 +164,22 @@ pub(super) fn redis_type_response(
         Ok(_) => return RespValue::Error("ERR invalid type hash response".to_string()),
         Err(err) => return RespValue::Error(format!("ERR {err}")),
     }
+    match execute(Command::ZSetCard { key: key.clone() }) {
+        Ok(CommandResponse::Integer { value }) if value > 0 => {
+            return RespValue::SimpleString("zset".to_string());
+        }
+        Ok(CommandResponse::Integer { .. }) => {}
+        Ok(_) => return RespValue::Error("ERR invalid type zset response".to_string()),
+        Err(err) => return RespValue::Error(format!("ERR {err}")),
+    }
+    match execute(Command::ListLen { key: key.clone() }) {
+        Ok(CommandResponse::Integer { value }) if value > 0 => {
+            return RespValue::SimpleString("list".to_string());
+        }
+        Ok(CommandResponse::Integer { .. }) => {}
+        Ok(_) => return RespValue::Error("ERR invalid type list response".to_string()),
+        Err(err) => return RespValue::Error(format!("ERR {err}")),
+    }
     match execute(Command::SetMembers { key }) {
         Ok(CommandResponse::Members { members }) if !members.is_empty() => {
             RespValue::SimpleString("set".to_string())

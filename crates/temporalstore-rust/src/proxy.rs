@@ -39,7 +39,10 @@ use crate::client::{
     ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
-use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
+use crate::http::{
+    get_json_with_options_and_headers, post_json_with_options_and_headers, HttpRequest,
+    HttpRequestOptions,
+};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -116,6 +119,18 @@ pub struct ProxyOptions {
     pub context_first_shard_id: ShardId,
     /// Number of shards the context corpus is spread across. `1` keeps every
     /// tenant on `context_first_shard_id` (single-shard deploys).
+    /// How many shards the context routes spread tenants over. **0 means follow the cluster**,
+    /// which is the default.
+    ///
+    /// This used to default to 1, so a proxy in front of an eight-shard cluster put every
+    /// tenant's context on shard one and said nothing about it -- one shard doing all the work
+    /// while seven sat idle, and no error to notice.
+    ///
+    /// A tenant's shard comes from hashing its id across this range, so CHANGING the count
+    /// moves tenants. Context already written under a different count stays where it was
+    /// written and is not found under the new one. That is why the effective value and where
+    /// it came from are both reported: a deployment that has been running on the old default
+    /// with more than one shard is doing a data move, not a config change.
     #[serde(default = "default_context_shard_count")]
     pub context_shard_count: u64,
     /// I/O timeout (ms) for control-plane calls to the metaserver: heartbeat,
@@ -175,12 +190,30 @@ pub struct ProxyOptions {
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// What a proxy will accept.
+///
+/// Five names, three behaviours. Two pairs mean exactly the same thing to admission, and
+/// nothing said so until now -- an operator picking between them was picking between synonyms
+/// while believing the choice mattered.
 pub enum ProxyServingMode {
+    /// Reads and writes both accepted.
     #[default]
     Serving,
+    /// Writes refused with `proxy_write_disabled`; reads accepted.
+    ///
+    /// Identical to `WriteDisabled` in effect. The two exist because both spellings arrive
+    /// over the wire from the metaserver, not because they differ.
     Readonly,
+    /// Writes refused with `proxy_write_disabled`; reads accepted. Identical to `Readonly`.
     WriteDisabled,
+    /// **Reads and writes both accepted -- identical to `Serving` for admission.**
+    ///
+    /// This is a label, not a control. It changes what the status surfaces and the serving-mode
+    /// gauge report, so a fleet can be marked unhealthy without changing what it serves; it
+    /// does not shed, restrict, or refuse anything. Setting it expecting protection gets none,
+    /// which is the reason it is spelled out here.
     Degraded,
+    /// Everything refused with `proxy_not_serving`. This is the drain state.
     NotServing,
 }
 
@@ -437,6 +470,25 @@ pub struct ProxyPreflightReport {
     pub degraded_reasons: Vec<String>,
 }
 
+/// What `GET /readiness` answers for a proxy.
+///
+/// The build-wide capability report is still here, flattened, so anything already reading
+/// those fields keeps working. What is new is the state of THIS proxy, because the endpoint
+/// was answering a question nobody asked: the capability report is a description of what the
+/// code supports and is identical on every process, so a drained proxy reported ready and an
+/// orchestrator kept sending it traffic it refuses.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyReadinessResponse {
+    /// Whether this proxy will accept anything at all. False only while drained.
+    pub serving: bool,
+    pub serving_mode: ProxyServingMode,
+    /// Reads and writes separately, since refusing writes is not the same as refusing traffic.
+    pub serving_reads: bool,
+    pub serving_writes: bool,
+    #[serde(flatten)]
+    pub production: crate::ProductionReadinessReport,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyPolicyReport {
     pub serving_mode: ProxyServingMode,
@@ -463,6 +515,13 @@ pub struct ProxyPolicyReport {
     pub inflight_write_requests: u64,
     #[serde(default)]
     pub pin_primary_reads: bool,
+    /// Shards the context routes actually spread tenants over, and where that number came
+    /// from -- "configured", "cluster", or "fallback_until_cluster_known". Reported because
+    /// this used to be a silent 1: nothing said every tenant was landing on one shard.
+    #[serde(default)]
+    pub context_shard_count: u64,
+    #[serde(default)]
+    pub context_shard_count_source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -518,7 +577,7 @@ impl Default for ProxyTonicStreamingContract {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyMigrationContract {
     pub compatibility_decision: String,
-    pub legacy_cplusplus_wire_in_scope: bool,
+    pub legacy_wire_in_scope: bool,
     pub native_wire_proxy_transport_ready: bool,
     pub production_protocols: Vec<String>,
     pub http_json_aliases_ready: bool,
@@ -548,7 +607,7 @@ impl Default for ProxyMigrationContract {
             compatibility_decision:
                 "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
                     .to_string(),
-            legacy_cplusplus_wire_in_scope: false,
+            legacy_wire_in_scope: false,
             native_wire_proxy_transport_ready: false,
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
@@ -867,6 +926,16 @@ struct ProxyInner {
     /// so cloning it per request meant six allocations to look at a handful of scalars.
     /// Writers swap in a whole new `Arc`, so a reader never observes a half-updated config.
     options: RwLock<Arc<ProxyOptions>>,
+    /// Bumped whenever `options` is replaced, so the request path can tell whether the
+    /// snapshot it already holds is current with a LOAD instead of a lock. A line nobody
+    /// writes stays shared in every core's cache; the read-modify-writes a lock and a
+    /// refcount perform each take it exclusive.
+    options_version: std::sync::atomic::AtomicU64,
+    /// Distinguishes this proxy from any other in the process. The snapshot cache is
+    /// thread-local and therefore shared by every proxy a thread touches, and without this
+    /// two proxies that happen to be on the same version would read each other's config.
+    /// Tests build many proxies on one thread.
+    instance_id: u64,
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
     stats: RwLock<ProxyStats>,
@@ -878,14 +947,71 @@ struct ProxyInner {
     last_topology_check_ms: std::sync::atomic::AtomicU64,
     /// Wall-clock ms of the last auto-registration attempt, 0 for "never".
     last_auto_register_ms: std::sync::atomic::AtomicU64,
+    /// Shard count last read from the metaserver, 0 for "not asked yet". Only consulted when
+    /// `context_shard_count` is 0.
+    /// The counters every request touches.
+    ///
+    /// These were fields of `ProxyStats` behind an RwLock, so each one cost an EXCLUSIVE
+    /// lock on the request path -- taken to record that a request happened, and in the
+    /// topology check's case to record that nothing happened. Eight threads doing that
+    /// deliver less aggregate throughput than one, because they serialize on the writer.
+    /// They are folded back into `ProxyStats` in `sync_client_stats`, which runs where the
+    /// stats are read, so readers see the same numbers.
+    ///
+    /// Counters NOT here are deliberate: the error and heartbeat paths are not per request,
+    /// so a lock there costs nothing worth removing.
+    execute_requests: std::sync::atomic::AtomicU64,
+    batch_execute_requests: std::sync::atomic::AtomicU64,
+    /// `topology_check_interval_ms`, mirrored so the request path can read it without
+    /// taking the options lock.
+    ///
+    /// After the counters became atomics this was the last lock left on the common path:
+    /// every request took a read lock and cloned an Arc to fetch one u64 that changes only
+    /// when an operator pushes a config. Kept in step by `update_options_report`, which is
+    /// the single place the running options are replaced.
+    topology_check_interval_ms: std::sync::atomic::AtomicU64,
+    topology_checks_skipped: std::sync::atomic::AtomicU64,
+    bad_requests: std::sync::atomic::AtomicU64,
+    /// Distinguishes one context ingest from another within the same millisecond.
+    ///
+    /// Raw events are stored in a hash whose FIELD carries their order, and the field used
+    /// to be `{timestamp}:{index within this call}`. The index restarts at zero every call
+    /// and the timestamp falls back to a single `now` for the whole call, so two ingests
+    /// for one session in the same millisecond produced the same field names -- and the
+    /// write is an upsert keyed by field, so the second silently replaced the first's
+    /// messages. Extraction then replayed fewer messages than were ingested, with nothing
+    /// reporting a loss.
+    context_ingest_sequence: std::sync::atomic::AtomicU64,
+    context_ingest_requests: std::sync::atomic::AtomicU64,
+    context_extract_requests: std::sync::atomic::AtomicU64,
+    context_retrieve_requests: std::sync::atomic::AtomicU64,
+    cluster_shard_count: std::sync::atomic::AtomicU64,
+    /// Whether the metaserver has been asked for the shard list yet. Distinguishes "we have
+    /// not looked" from "we looked and the ids cannot be addressed as a range" -- reporting
+    /// the second when the first is true would be a claim we have not earned.
+    cluster_shards_checked: std::sync::atomic::AtomicBool,
+    /// Whether the shard ids the metaserver listed form a contiguous run from
+    /// `context_first_shard_id`. Only meaningful once `cluster_shards_checked` is true.
+    cluster_shards_contiguous: std::sync::atomic::AtomicBool,
+}
+
+/// A process-unique number for each proxy, so a thread-local options snapshot can tell whose
+/// config it is holding.
+fn next_proxy_instance_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl ProxyService {
     pub fn new(options: ProxyOptions) -> Self {
+        // Read before the options move into the Arc below.
+        let topology_check_interval_ms = options.topology_check_interval_ms;
         Self {
             inner: Arc::new(ProxyInner {
                 client: RwLock::new(proxy_client_from_options(&options)),
                 options: RwLock::new(Arc::new(options)),
+                options_version: std::sync::atomic::AtomicU64::new(1),
+                instance_id: next_proxy_instance_id(),
                 last_client_stats: RwLock::default(),
                 stats: RwLock::default(),
                 service_discovery: RwLock::default(),
@@ -893,16 +1019,28 @@ impl ProxyService {
                 boot_time_ms: now_ms(),
                 last_topology_check_ms: std::sync::atomic::AtomicU64::new(0),
                 last_auto_register_ms: std::sync::atomic::AtomicU64::new(0),
+                execute_requests: std::sync::atomic::AtomicU64::new(0),
+                batch_execute_requests: std::sync::atomic::AtomicU64::new(0),
+                topology_check_interval_ms: std::sync::atomic::AtomicU64::new(
+                    topology_check_interval_ms,
+                ),
+                topology_checks_skipped: std::sync::atomic::AtomicU64::new(0),
+                bad_requests: std::sync::atomic::AtomicU64::new(0),
+                context_ingest_sequence: std::sync::atomic::AtomicU64::new(0),
+                context_ingest_requests: std::sync::atomic::AtomicU64::new(0),
+                context_extract_requests: std::sync::atomic::AtomicU64::new(0),
+                context_retrieve_requests: std::sync::atomic::AtomicU64::new(0),
+                cluster_shard_count: std::sync::atomic::AtomicU64::new(0),
+                cluster_shards_checked: std::sync::atomic::AtomicBool::new(false),
+                cluster_shards_contiguous: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(None, std::slice::from_ref(&request.command)) {
             Ok(guard) => guard,
             Err(status) => return execute_error(status.code, status.message),
@@ -912,16 +1050,13 @@ impl ProxyService {
             .client()
             .execute_with_options(request, RequestOptions::default())
             .unwrap_or_else(|err| execute_error(proxy_client_error_code(&err), err.to_string()));
-        self.sync_client_stats();
         response
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(None, &request.commands) {
             Ok(guard) => guard,
             Err(status) => {
@@ -939,7 +1074,6 @@ impl ProxyService {
                 status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats();
         response
     }
 
@@ -978,22 +1112,19 @@ impl ProxyService {
                         table.table_name().to_string(),
                         options.clone(),
                     );
-                    self.sync_client_stats();
-                    return ProxyOpenTableResponse {
+                                return ProxyOpenTableResponse {
                         status: Status::ok(),
                         options: Some(table.options().into()),
                     };
                 }
                 let options = table.options();
-                self.sync_client_stats();
-                ProxyOpenTableResponse {
+                        ProxyOpenTableResponse {
                     status: Status::ok(),
                     options: Some(options.into()),
                 }
             }
             Err(err) => {
-                self.sync_client_stats();
-                ProxyOpenTableResponse {
+                        ProxyOpenTableResponse {
                     status: Status::error("metaserver_error", err.to_string()),
                     options: None,
                 }
@@ -1003,10 +1134,8 @@ impl ProxyService {
 
     pub fn table_execute(&self, request: ProxyTableExecuteRequest) -> ExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(
             Some(&request.namespace),
             std::slice::from_ref(&request.command),
@@ -1019,7 +1148,6 @@ impl ProxyService {
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.execute(request.command))
             .unwrap_or_else(|err| execute_error(proxy_client_error_code(&err), err.to_string()));
-        self.sync_client_stats();
         response
     }
 
@@ -1028,10 +1156,8 @@ impl ProxyService {
         request: ProxyTableBatchExecuteRequest,
     ) -> BatchExecuteResponse {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _admitted = match self.admit(Some(&request.namespace), &request.commands) {
             Ok(guard) => guard,
             Err(status) => {
@@ -1049,7 +1175,6 @@ impl ProxyService {
                 status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats();
         response
     }
 
@@ -1156,11 +1281,24 @@ impl ProxyService {
             .last_client_stats
             .write()
             .expect("proxy client stats lock poisoned") = ClientStats::default();
+        // Before the options move into the Arc: the request path reads this without a
+        // lock, so it has to be updated wherever the running options are replaced. This is
+        // that one place.
+        self.inner.topology_check_interval_ms.store(
+            options.topology_check_interval_ms,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         *self
             .inner
             .options
             .write()
             .expect("proxy options lock poisoned") = Arc::new(options);
+        // After the new document is installed, so a reader that sees this version is
+        // guaranteed to see the options it names. Release pairs with the Acquire load in
+        // `with_options`.
+        self.inner
+            .options_version
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         report.applied = true;
         report.reason = "config_changed".to_string();
         report
@@ -1168,9 +1306,10 @@ impl ProxyService {
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
-        get_json_with_options::<GetShardResponse>(
+        get_json_with_options_and_headers::<GetShardResponse>(
             &options.meta_addr,
             &format!("/shards/{shard_id}"),
+            &crate::meta::admin_auth_header(),
             options.http_options(),
         )
         .map_err(|err| {
@@ -1200,6 +1339,15 @@ impl ProxyService {
             .clone()
     }
 
+    /// Fold the client's counters into this proxy's, from the READ side.
+    ///
+    /// This used to run on every request. It only ever computes deltas against monotonic
+    /// client counters, so running it when the numbers are read gives the same answer for
+    /// three locks and a `ClientStats` clone less per request -- and it is strictly fresher,
+    /// because three of the five readers (`info`, `heartbeat_report`, `policy_report`) did
+    /// not sync at all and so reported whatever the last data request happened to leave
+    /// behind. On a proxy whose counters moved through background meta-sync alone, they were
+    /// simply stale.
     fn sync_client_stats(&self) {
         let current = self.client().stats();
         let mut last = self
@@ -1222,11 +1370,90 @@ impl ProxyService {
         stats.writes_of_unknown_outcome += current
             .writes_of_unknown_outcome
             .saturating_sub(last.writes_of_unknown_outcome);
+        // The request-path counters live outside the lock; picked up here, where the stats
+        // are being written anyway, so every reader still sees a current number.
+        stats.execute_requests = self
+            .inner
+            .execute_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.batch_execute_requests = self
+            .inner
+            .batch_execute_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.topology_checks_skipped = self
+            .inner
+            .topology_checks_skipped
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.bad_requests = self
+            .inner
+            .bad_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.context_ingest_requests = self
+            .inner
+            .context_ingest_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.context_extract_requests = self
+            .inner
+            .context_extract_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.context_retrieve_requests = self
+            .inner
+            .context_retrieve_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
         *last = current;
     }
 
     /// The live options. Cheap: clones an `Arc`, not the six strings inside it. Callers that
     /// need to MUTATE take an owned copy explicitly via `options_owned`.
+    /// Run `f` against the live options without taking a lock or touching a refcount.
+    ///
+    /// `options()` costs an `RwLock` read AND an `Arc` clone, and both are atomic
+    /// read-modify-writes on cache lines every thread shares. Measured on eight threads:
+    /// 83 ns for that pair, against 15 ns for the whole of admission on ONE thread -- which
+    /// is why two threads admitted less in total than one did.
+    ///
+    /// The asymmetry this exploits: the config document changes when an operator pushes one
+    /// and is read on every single request. So the read side is version-gated. A relaxed
+    /// load (0.6 ns, because a line nobody writes stays shared in every cache) says whether
+    /// the snapshot this thread already holds is current, and only a version change pays for
+    /// the lock and the clone.
+    fn with_options<R>(&self, f: impl FnOnce(&ProxyOptions) -> R) -> R {
+        use std::sync::atomic::Ordering;
+        thread_local! {
+            static SNAPSHOT: std::cell::RefCell<Option<(u64, u64, Arc<ProxyOptions>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let instance = self.inner.instance_id;
+        let version = self.inner.options_version.load(Ordering::Acquire);
+        SNAPSHOT.with(|cell| {
+            // A nested call cannot refresh the slot it is already borrowing. That does not
+            // happen today, and if it ever does this is simply the old path rather than a
+            // panic. `f` is consumed once on whichever branch runs.
+            let Ok(mut slot) = cell.try_borrow_mut() else {
+                let options = Arc::clone(
+                    &self
+                        .inner
+                        .options
+                        .read()
+                        .expect("proxy options lock poisoned"),
+                );
+                return f(&options);
+            };
+            if !matches!(&*slot, Some((id, seen, _)) if *id == instance && *seen == version) {
+                let fresh = Arc::clone(
+                    &self
+                        .inner
+                        .options
+                        .read()
+                        .expect("proxy options lock poisoned"),
+                );
+                *slot = Some((instance, version, fresh));
+            }
+            let (_, _, options) = slot.as_ref().expect("just filled");
+            f(options)
+        })
+    }
+
     fn options(&self) -> Arc<ProxyOptions> {
         Arc::clone(
             &self
@@ -1270,22 +1497,44 @@ impl ProxyService {
         namespace: Option<&str>,
         commands: &[Command],
     ) -> Result<ProxyInflightGuard<'_>, Status> {
-        let options = self.options();
-        if let Some(namespace) = namespace {
-            if let Some(status) = proxy_account_rejection(&options, namespace) {
-                return Err(self.reject(status, ProxyRejectionKind::Account));
-            }
+        // One snapshot read, and only the two decisions that need the whole document happen
+        // inside it. Running the REST of admission inside the closure as well measured
+        // slower on a single thread -- the borrow spans the in-flight acquire and the guard
+        // it returns, which is more than the read needs to cover.
+        let (rejection, max_inflight_requests, max_inflight_write_requests) =
+            self.with_options(|options| {
+                let rejection = namespace
+                    .and_then(|namespace| proxy_account_rejection(options, namespace))
+                    .map(|status| (status, ProxyRejectionKind::Account))
+                    .or_else(|| {
+                        proxy_policy_rejection(options, commands)
+                            .map(|status| (status, ProxyRejectionKind::Policy))
+                    });
+                (
+                    rejection,
+                    options.max_inflight_requests,
+                    options.max_inflight_write_requests,
+                )
+            });
+        if let Some((status, kind)) = rejection {
+            return Err(self.reject(status, kind));
         }
-        if let Some(status) = proxy_policy_rejection(&options, commands) {
-            return Err(self.reject(status, ProxyRejectionKind::Policy));
-        }
+        // Yes, this walks the batch a second time -- `proxy_policy_rejection` above asks the
+        // same question for the write-disable decision. Computing it once here and passing it
+        // in is the obvious tidy-up and it was measured, interleaved, on two separately built
+        // binaries: FASTER for large batches (about 5% at 16 commands, 10% at 128) and SLOWER
+        // for a single command, which is the shape of nearly every request -- 9 of 10 pairs,
+        // about 6%. Classification is roughly a quarter of a nanosecond per command, so the
+        // second walk is not what this path spends its time on; moving the work earlier just
+        // costs more than it saves where it matters. Left as it is on purpose.
+        // See `bench_proxy_admission_path`.
         let is_write = commands.iter().any(proxy_command_is_write);
         self.inner
             .inflight
             .try_acquire(
                 is_write,
-                options.max_inflight_requests,
-                options.max_inflight_write_requests,
+                max_inflight_requests,
+                max_inflight_write_requests,
             )
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
@@ -1418,19 +1667,177 @@ impl ProxyService {
     }
 
     fn invalidate_cached_routes_if_meta_changed(&self) {
-        if self.client().route_cache_size() == 0 {
-            return;
-        }
-        if !self.topology_check_is_due() {
+        // The cheap question first, but only as a question. Nearly every request arrives
+        // inside the interval and leaves here, and asking for the client is a read lock and
+        // an Arc clone while counting the route cache takes the cache's own lock -- both
+        // were paid by every request on its way to finding out there was nothing to do.
+        //
+        // The slot is claimed below, not here, and that ordering is load-bearing. Claiming
+        // it before the empty-cache check means a proxy with no routes yet burns the slot,
+        // no check is then due for a whole interval after its routes appear, and under
+        // topology churn it keeps serving routes it should have dropped -- reads come back
+        // empty. That is measured, not theoretical: it is what
+        // `proxy_multi_proxy_converges_under_topology_churn_stale_cache_and_recovery`
+        // reports when the claim happens too early.
+        if !self.topology_check_due_now() {
             self.inner
-                .stats
-                .write()
-                .expect("proxy stats lock poisoned")
-                .topology_checks_skipped += 1;
+                .topology_checks_skipped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let _ = self.client().invalidate_routes_from_meta_topology();
-        self.sync_client_stats();
+        let client = self.client();
+        if client.route_cache_size() == 0 {
+            // Nothing to invalidate, and deliberately no slot consumed: the first request
+            // that does have routes must still find a check due.
+            return;
+        }
+        if !self.claim_topology_check() {
+            self.inner
+                .topology_checks_skipped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        let _ = client.invalidate_routes_from_meta_topology();
+    }
+
+    /// How many shards the context routes actually spread tenants over.
+    ///
+    /// A configured non-zero value wins. Otherwise the cluster's shard count is used, which is
+    /// read from the metaserver on the heartbeat rather than per request -- a lookup on the
+    /// request path is what the route cache and the topology interval exist to avoid.
+    ///
+    /// Falls back to 1 only while the count is still unknown (before the first heartbeat, or
+    /// if the metaserver cannot be reached). That is the old behaviour, so a proxy that cannot
+    /// ask degrades to what it did before rather than to nothing.
+    pub(super) fn effective_context_shard_count(&self) -> u64 {
+        let configured = self.options().context_shard_count;
+        if configured != 0 {
+            return configured;
+        }
+        match self
+            .inner
+            .cluster_shard_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            0 => 1,
+            known => known,
+        }
+    }
+
+    /// Where `effective_context_shard_count` got its answer, for the status surfaces.
+    pub(super) fn context_shard_count_source(&self) -> &'static str {
+        if self.options().context_shard_count != 0 {
+            "configured"
+        } else if self
+            .inner
+            .cluster_shard_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != 0
+        {
+            "cluster"
+        } else if !self
+            .inner
+            .cluster_shards_checked
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            "fallback_until_cluster_known"
+        } else {
+            "fallback_cluster_shards_not_contiguous"
+        }
+    }
+
+    /// Learn how many shards the context routes may span, from the metaserver.
+    ///
+    /// Called from the heartbeat, which already talks to the metaserver on a fixed cadence, so
+    /// this adds no new schedule and nothing to the request path.
+    ///
+    /// It asks for the shard LIST rather than a count, because a count is not enough to be
+    /// safe. A tenant's shard is `context_first_shard_id + hash % count`, which addresses a
+    /// CONTIGUOUS run of ids. A cluster whose shards are 1-4 and 100-103 has a count of eight
+    /// and no shards 5-8, so adopting the count alone would send those tenants to ids that do
+    /// not exist -- worse than the single-shard default it replaces, because the default at
+    /// least addressed a shard that was there.
+    ///
+    /// So the count is adopted only when the ids actually form a contiguous run starting at
+    /// `context_first_shard_id`. Otherwise the range stays unknown, the fallback of 1 applies,
+    /// and the reason is reported rather than left to be inferred from failures.
+    pub(super) fn refresh_cluster_shard_count(&self) {
+        let options = self.options();
+        if options.context_shard_count != 0 {
+            return;
+        }
+        let Ok(listed) = get_json_with_options_and_headers::<crate::meta::ListShardsResponse>(
+            &options.meta_addr,
+            "/shards",
+            &crate::meta::admin_auth_header(),
+            options.control_http_options(),
+        ) else {
+            return;
+        };
+        if !listed.status.ok || listed.shards.is_empty() {
+            return;
+        }
+        let mut ids: Vec<crate::types::ShardId> =
+            listed.shards.iter().map(|shard| shard.shard_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let contiguous_from_first = ids
+            .iter()
+            .enumerate()
+            .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
+        // A short page means there are more shards than were listed; a partial view could look
+        // contiguous when the whole set is not, so do not conclude anything from it.
+        let complete = listed.next_after_shard_id.is_none();
+        let usable = complete && contiguous_from_first;
+        self.inner.cluster_shard_count.store(
+            if usable { ids.len() as u64 } else { 0 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner.cluster_shards_contiguous.store(
+            usable,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        self.inner
+            .cluster_shards_checked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// This proxy's answer to a readiness probe, and the HTTP status that goes with it.
+    ///
+    /// A drained proxy answers 503. That is the whole point of a readiness probe: drain exists
+    /// to stop traffic arriving, and answering 200 while refusing every request with
+    /// `proxy_not_serving` defeats the control it is supposed to serve.
+    ///
+    /// Read-only and write-disabled still answer 200 -- they serve reads, and a probe that
+    /// failed for them would take a proxy out of rotation that is doing useful work. The two
+    /// flags say which is which for anyone who needs the distinction.
+    pub fn readiness_response(&self) -> (u16, ProxyReadinessResponse) {
+        let options = self.options();
+        // Draining has TWO knobs and the probe has to answer for both. `serving_mode` is
+        // the obvious one; `drop_percent` at 100 is the other, and it refuses every
+        // request with `traffic_dropped` while the mode still reads as Serving. A probe
+        // that answers 200 in that state puts a proxy back in rotation that will shed
+        // everything sent to it -- the same failure this probe was changed to stop, just
+        // reached through the other control.
+        //
+        // Only 100 counts. Shedding a fraction is deliberate load management and the proxy
+        // is still serving the rest, so it stays ready.
+        let sheds_everything = options.drop_percent >= 100;
+        let serving_reads =
+            !matches!(options.serving_mode, ProxyServingMode::NotServing) && !sheds_everything;
+        let serving_writes = matches!(
+            options.serving_mode,
+            ProxyServingMode::Serving | ProxyServingMode::Degraded
+        ) && !sheds_everything;
+        let response = ProxyReadinessResponse {
+            serving: serving_reads,
+            serving_mode: options.serving_mode,
+            serving_reads,
+            serving_writes,
+            production: crate::production_readiness_report(),
+        };
+        let status = if serving_reads { 200 } else { 503 };
+        (status, response)
     }
 
     /// Whether enough time has passed to try registering with the metaserver again.
@@ -1465,8 +1872,17 @@ impl ProxyService {
     /// Claims the slot as a side effect, so concurrent requests do not all decide they are
     /// due and issue the same round-trip. Losing that race means skipping a check that
     /// another thread is making right now, which is the correct outcome.
-    fn topology_check_is_due(&self) -> bool {
-        let interval = self.options().topology_check_interval_ms;
+    /// Whether a topology check is due, without claiming it.
+    ///
+    /// Split from the claim so the request path can ask the cheap question -- a load --
+    /// before paying for a client handle or the route-cache lock, and still leave the slot
+    /// for whoever actually does the work. Answering yes here does not entitle the caller
+    /// to the check; `claim_topology_check` does.
+    fn topology_check_due_now(&self) -> bool {
+        let interval = self
+            .inner
+            .topology_check_interval_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
         if interval == 0 {
             return true;
         }
@@ -1477,6 +1893,23 @@ impl ProxyService {
             .load(std::sync::atomic::Ordering::Relaxed);
         // `now < last` only if the wall clock went backwards; treat that as due rather than
         // locking the check out until the clock catches up.
+        !(last != 0 && now >= last && now.saturating_sub(last) < interval)
+    }
+
+    /// Take the check slot if it is still there. One caller wins per interval.
+    fn claim_topology_check(&self) -> bool {
+        let interval = self
+            .inner
+            .topology_check_interval_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if interval == 0 {
+            return true;
+        }
+        let now = now_ms();
+        let last = self
+            .inner
+            .last_topology_check_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
         if last != 0 && now >= last && now.saturating_sub(last) < interval {
             return false;
         }
@@ -1493,10 +1926,8 @@ impl ProxyService {
 
     fn inc_bad_request(&self) {
         self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .bad_requests += 1;
+            .bad_requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn bad_execute_request(&self, err: impl std::fmt::Display) -> (u16, Vec<u8>) {
@@ -1573,10 +2004,30 @@ pub(super) fn proxy_metric_families_from(rendered: &str) -> Vec<String> {
     families
 }
 
+/// The mapping table, answered against the metrics a render actually produced.
+///
+/// `covered` is set where each mapping is built, and it was set to `true` there, so it said
+/// the same thing whether or not the proxy still published the family the mapping names. Both
+/// things that read it -- the JSON report and the `metric_family_parity` gauge -- therefore
+/// could not fall to 0 whatever happened to the metrics they claim to track. The sibling list
+/// on this report was already fixed the same way, for the same reason.
+pub(super) fn proxy_metric_mappings_against(rendered: &str) -> Vec<ProxyMetricFamilyMapping> {
+    let families = proxy_metric_families_from(rendered);
+    proxy_metrics_parity_mappings()
+        .into_iter()
+        .map(|mut mapping| {
+            mapping.covered = families
+                .iter()
+                .any(|family| *family == mapping.rust_prometheus_family);
+            mapping
+        })
+        .collect()
+}
+
 fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
     vec![
         proxy_metric_mapping(
-            "common::metrics::CounterHolder proxy command/admission counters",
+            "proxy command/admission counters",
             "temporalstore_proxy_requests_total",
             vec!["kind"],
             "Proxy Requests And Admission",
@@ -1637,7 +2088,9 @@ fn proxy_metric_mapping(
         rust_prometheus_family: rust_prometheus_family.to_string(),
         rust_labels: rust_labels.into_iter().map(str::to_string).collect(),
         grafana_panel: grafana_panel.to_string(),
-        covered: true,
+        // Unproven here on purpose; `proxy_metric_mappings_against` answers it from the
+        // metrics that were actually rendered.
+        covered: false,
     }
 }
 
@@ -1655,6 +2108,917 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_push_reaches_a_thread_that_already_cached_the_options() {
+        // The request path reads the options from a thread-local snapshot and only refreshes
+        // it when a version counter moves. If the counter is not bumped wherever the running
+        // options are replaced, a thread that has already served one request keeps its old
+        // copy for the life of the process: an operator would drain the proxy, watch the
+        // config report agree, and see traffic keep flowing on that thread.
+        let proxy = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            ..ProxyOptions::default()
+        });
+
+        // Populate this thread's snapshot.
+        let before = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_ne!(
+            before.status.code, "proxy_not_serving",
+            "premise: this proxy serves before the push"
+        );
+
+        let mut drained = ProxyOptions::default();
+        drained.serving_mode = ProxyServingMode::NotServing;
+        proxy.update_options(drained);
+
+        // Same thread, so it still holds the snapshot taken above.
+        let after = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_eq!(
+            after.status.code, "proxy_not_serving",
+            "the push must reach a thread that had already cached the options"
+        );
+
+        // And back again, so the gate is not a one-way latch.
+        let mut serving = ProxyOptions::default();
+        serving.serving_mode = ProxyServingMode::Serving;
+        proxy.update_options(serving);
+        let restored = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_ne!(
+            restored.status.code, "proxy_not_serving",
+            "lifting the drain must reach that thread too"
+        );
+    }
+
+    #[test]
+    fn one_proxy_snapshot_is_never_served_to_another() {
+        // The snapshot cache is thread-local, so every proxy this thread touches shares it.
+        // Keyed only by version, two proxies on the same version -- which is every pair of
+        // freshly built ones -- would read each other's configuration.
+        let serving = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            ..ProxyOptions::default()
+        });
+        let stopped = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+
+        for _ in 0..3 {
+            assert_ne!(
+                serving
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: read_command(),
+                    })
+                    .status
+                    .code,
+                "proxy_not_serving",
+                "the serving proxy must not pick up the stopped one's config"
+            );
+            assert_eq!(
+                stopped
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: read_command(),
+                    })
+                    .status
+                    .code,
+                "proxy_not_serving",
+                "the stopped proxy must not pick up the serving one's config"
+            );
+        }
+    }
+
+    /// What admission actually spends under contention, primitive by primitive.
+    ///
+    /// Admission costs ~15 ns on one thread and ~100 ns on several, so most of it is the cost
+    /// of sharing rather than the cost of working. This attributes that to the primitives the
+    /// path uses, measured the same way, so a fix aims at the one that dominates instead of
+    /// the one that looks expensive.
+    #[test]
+    #[ignore]
+    fn bench_proxy_admission_primitives() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Barrier, RwLock};
+
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let iters: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200_000);
+
+        fn run<F>(label: &str, threads: usize, iters: usize, body: F)
+        where
+            F: Fn() + Send + Sync + 'static,
+        {
+            let body = Arc::new(body);
+            let gate = Arc::new(Barrier::new(threads + 1));
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let body = body.clone();
+                let gate = gate.clone();
+                handles.push(std::thread::spawn(move || {
+                    gate.wait();
+                    for _ in 0..iters {
+                        body();
+                    }
+                }));
+            }
+            gate.wait();
+            let started = std::time::Instant::now();
+            for handle in handles {
+                handle.join().expect("bench thread");
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "  {label:<44} {:>7.1} ns/op",
+                elapsed.as_nanos() as f64 / (threads * iters) as f64
+            );
+        }
+
+        println!("primitives at {threads} threads:");
+
+        let lock: Arc<RwLock<Arc<ProxyOptions>>> =
+            Arc::new(RwLock::new(Arc::new(ProxyOptions::default())));
+        let l = lock.clone();
+        run("RwLock read + Arc::clone + drop", threads, iters, move || {
+            let snapshot = Arc::clone(&l.read().expect("lock"));
+            std::hint::black_box(&snapshot);
+        });
+
+        let l = lock.clone();
+        run("RwLock read only (no Arc clone)", threads, iters, move || {
+            let guard = l.read().expect("lock");
+            std::hint::black_box(&*guard);
+        });
+
+        let shared: Arc<ProxyOptions> = Arc::new(ProxyOptions::default());
+        let a = shared.clone();
+        run("Arc::clone + drop only", threads, iters, move || {
+            let cloned = Arc::clone(&a);
+            std::hint::black_box(&cloned);
+        });
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = counter.clone();
+        run("AtomicU64 fetch_add + fetch_sub", threads, iters, move || {
+            c.fetch_add(1, Ordering::Acquire);
+            c.fetch_sub(1, Ordering::Release);
+        });
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = counter.clone();
+        run("AtomicU64 compare_exchange loop", threads, iters, move || {
+            let mut cur = c.load(Ordering::Relaxed);
+            loop {
+                match c.compare_exchange_weak(cur, cur + 1, Ordering::Acquire, Ordering::Relaxed) {
+                    Ok(_) => break,
+                    Err(seen) => cur = seen,
+                }
+            }
+            c.fetch_sub(1, Ordering::Release);
+        });
+
+        let counter = Arc::new(AtomicU64::new(0));
+        let c = counter.clone();
+        run("AtomicU64 relaxed fetch_add (no release)", threads, iters, move || {
+            c.fetch_add(1, Ordering::Relaxed);
+        });
+
+        // What a version-gated snapshot would cost instead. A line nobody WRITES stays shared
+        // in every core's cache, so a relaxed load is not a coherence event at all -- unlike
+        // the read-modify-writes above, every one of which takes the line exclusive.
+        let version = Arc::new(AtomicU64::new(7));
+        let v = version.clone();
+        run("AtomicU64 relaxed LOAD only (version check)", threads, iters, move || {
+            std::hint::black_box(v.load(Ordering::Relaxed));
+        });
+
+        thread_local! {
+            static CACHED: std::cell::RefCell<Option<(u64, Arc<ProxyOptions>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let v = version.clone();
+        run("version load + thread-local hit (no clone)", threads, iters, move || {
+            let current = v.load(Ordering::Relaxed);
+            CACHED.with(|cell| {
+                let mut cell = cell.borrow_mut();
+                let fresh = matches!(&*cell, Some((seen, _)) if *seen == current);
+                if !fresh {
+                    *cell = Some((current, Arc::new(ProxyOptions::default())));
+                }
+                let (_, options) = cell.as_ref().expect("just filled");
+                std::hint::black_box(options.drop_percent);
+            });
+        });
+    }
+
+    /// Admission cost for a batch, under contention. `cargo test --lib bench_proxy_admission
+    /// -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_proxy_admission_path() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20_000);
+        let batch: usize = std::env::var("BENCH_BATCH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(16);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions {
+            namespace: "bench".to_string(),
+            ..ProxyOptions::default()
+        }));
+        let commands: std::sync::Arc<Vec<Command>> = std::sync::Arc::new(
+            (0..batch)
+                .map(|i| Command::StringGet {
+                    key: format!("key-{i}"),
+                })
+                .collect(),
+        );
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = proxy.clone();
+            let commands = commands.clone();
+            let gate = gate.clone();
+            handles.push(std::thread::spawn(move || {
+                gate.wait();
+                for _ in 0..per_thread {
+                    let admitted = proxy.admit(None, &commands);
+                    std::hint::black_box(&admitted);
+                }
+            }));
+        }
+        gate.wait();
+        let started = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread");
+        }
+        let elapsed = started.elapsed();
+        let total = threads * per_thread;
+        println!(
+            "admission: {threads} threads x {per_thread} x batch {batch} = {total} admits in              {elapsed:?} -> {:.1} ns/admit ({:.1} ns per command)",
+            elapsed.as_nanos() as f64 / total as f64,
+            elapsed.as_nanos() as f64 / (total * batch) as f64
+        );
+    }
+
+    #[test]
+    fn every_route_the_surface_report_advertises_answers() {
+        // The report lists the routes this proxy serves and marks each one covered. That flag
+        // is set where the entry is built, so it reads covered whether or not the route is
+        // still there: rename or drop one and the report goes on advertising it to whoever is
+        // wiring up against it.
+        //
+        // The dispatcher is a match on (method, path), so the served set cannot be read out at
+        // runtime. Asking it is the next best thing, and it is the question a reader of this
+        // report actually has.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let report = proxy.operational_surface_report();
+        assert!(
+            !report.entries.is_empty(),
+            "premise: the report advertises some routes"
+        );
+
+        let answers = |path: &str| {
+            ["GET", "POST"].iter().any(|method| {
+                let (code, _) = proxy.handle(HttpRequest {
+                    method: (*method).to_string(),
+                    path: path.to_string(),
+                    body: b"{}".to_vec(),
+                });
+                code != 404
+            })
+        };
+
+        // The unknown-route answer is what this test reads as "not served", so pin it.
+        assert!(
+            !answers("/proxy/a-route-that-does-not-exist"),
+            "premise: an unserved route is refused, or this test cannot tell the difference"
+        );
+
+        for entry in &report.entries {
+            assert!(
+                answers(&entry.rust_native_route),
+                "the report advertises {} and marks it covered, but the proxy does not serve it",
+                entry.rust_native_route
+            );
+            assert!(
+                answers(&entry.rust_alias),
+                "the report advertises alias {} and marks it covered, but the proxy does not                  serve it",
+                entry.rust_alias
+            );
+        }
+    }
+
+    #[test]
+    fn a_mapping_claims_coverage_only_while_the_family_is_published() {
+        // `covered` is set where each mapping is built, and it was built as true, so the
+        // JSON report and the metric_family_parity gauge said "covered" whether or not the
+        // proxy still published the family named. A check that cannot fail is not a check:
+        // if a family were renamed or dropped, the gauge would have gone on reading 1 and
+        // the dashboard built on it would have gone quiet with nothing to say so.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let rendered = proxy.prometheus_metrics();
+
+        let live = proxy_metric_mappings_against(&rendered);
+        assert!(!live.is_empty(), "premise: there are mappings to check");
+        assert!(
+            live.iter().all(|mapping| mapping.covered),
+            "every mapped family is published today, so all of them must read covered"
+        );
+
+        // Take one family out of the rendered metrics. The mapping that names it has to stop
+        // claiming coverage, and no other mapping may be disturbed.
+        let dropped = live[0].rust_prometheus_family.clone();
+        let without = rendered.replace(
+            &format!("# TYPE {dropped} "),
+            "# TYPE temporalstore_proxy_family_that_is_not_published ",
+        );
+        assert_ne!(without, rendered, "premise: the family was in the render");
+
+        let checked = proxy_metric_mappings_against(&without);
+        let entry = checked
+            .iter()
+            .find(|mapping| mapping.rust_prometheus_family == dropped)
+            .expect("the mapping still exists, it just is not covered");
+        assert!(
+            !entry.covered,
+            "{dropped} is no longer published, so its mapping must not claim coverage"
+        );
+        assert!(
+            checked
+                .iter()
+                .filter(|mapping| mapping.rust_prometheus_family != dropped)
+                .all(|mapping| mapping.covered),
+            "removing one family must not unsettle the others"
+        );
+    }
+
+    #[test]
+    fn a_heartbeat_that_says_nothing_about_shedding_does_not_lift_a_drain() {
+        // An operator drains a proxy through its own config endpoint, which is the only way
+        // drop_percent is ever set: the metaserver has no proxy-level drop_percent to hold an
+        // opinion about -- the one in the meta model is a TABLE serving option. So every
+        // heartbeat response carries a hardcoded 0, and the proxy applied it. The drain lasted
+        // until the next heartbeat, which is seconds.
+        //
+        // The three neighbouring fields are all guarded against "the metaserver did not say":
+        // namespace only applies when non-empty, config_version when non-zero, serving_mode
+        // when it parses. This one had a guard too -- `<= 100` -- which reads as though a
+        // value above 100 meant "unspecified", except nothing ever sends one and an absent
+        // field deserializes to 0.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        assert_eq!(
+            proxy.readiness_response().0,
+            503,
+            "premise: this proxy is drained and out of rotation"
+        );
+
+        proxy.apply_heartbeat_config(&ProxyHeartbeatResponse {
+            status: Status::ok(),
+            config_changed: false,
+            namespace: String::new(),
+            config_version: 0,
+            serving_mode: String::new(),
+            drop_percent: None,
+        });
+
+        assert_eq!(
+            proxy.options().drop_percent,
+            100,
+            "the metaserver never spoke for drop_percent, so a heartbeat must not reset it"
+        );
+        assert_eq!(
+            proxy.readiness_response().0,
+            503,
+            "a drain has to survive the heartbeat loop, or draining a proxy does nothing"
+        );
+    }
+
+    #[test]
+    fn the_proxy_sheds_exactly_the_keys_the_client_would() {
+        // The proxy used to keep its own routing-key extractor, so the two layers of one drain
+        // hashed different strings and shed two unrelated subsets of the same traffic -- and
+        // the copy had already fallen a command behind, which is how a shed node came to be
+        // refused when read and accepted when its embedding was written. One extractor now
+        // answers for both, so this pins them together rather than trusting them to agree.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 50,
+            ..ProxyOptions::default()
+        });
+        let mut shed = 0;
+        for node_hash in 0..60u64 {
+            let command = Command::ContextGetNode {
+                tenant_hash: 7,
+                node_hash,
+            };
+            let key = crate::client::command_routing_key(&command)
+                .expect("a command naming a context node has a routing key");
+            let expected = crate::client::key_is_dropped_by_percent(&key, 50);
+            let refused = proxy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                })
+                .status
+                .code
+                == "proxy_traffic_dropped";
+            assert_eq!(
+                refused, expected,
+                "node {node_hash}: the proxy and the client must make the same call on the                  same key"
+            );
+            if expected {
+                shed += 1;
+            }
+        }
+        // Both branches have to have been exercised, or agreement proves nothing.
+        assert!(
+            shed > 0 && shed < 60,
+            "at 50 percent the sample must be split, got {shed}/60"
+        );
+    }
+
+    #[test]
+    fn a_write_disabled_proxy_refuses_everything_the_engine_calls_a_write() {
+        // The proxy kept its own hand-maintained list of what counts as a write and it had
+        // fallen fourteen commands behind the engine's -- every list and sorted-set mutation
+        // among them. So a proxy an operator had put in WriteDisabled took a ZSetAdd and a
+        // ListPush and forwarded them, and the write inflight quota never counted them either.
+        //
+        // The client and the data node both delegate to the engine's classifier, each after
+        // this same drift did damage. This was the third copy.
+        let proxy = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::WriteDisabled,
+            ..ProxyOptions::default()
+        });
+        let writes = [
+            Command::ZSetAdd {
+                key: "k".to_string(),
+                member: b"m".to_vec(),
+                score: 1.0,
+            },
+            Command::ListPush {
+                key: "k".to_string(),
+                member: b"m".to_vec(),
+                left: true,
+            },
+            Command::CommonPersist {
+                key: "k".to_string(),
+            },
+        ];
+        for command in writes {
+            assert!(
+                crate::engine::is_write_command(&command),
+                "premise: the engine calls this a write: {command:?}"
+            );
+            let response = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: command.clone(),
+            });
+            assert_eq!(
+                response.status.code, "proxy_write_disabled",
+                "a write-disabled proxy must refuse what the engine calls a write, not                  forward it because its own list is short: {command:?}"
+            );
+        }
+
+        // A read is still served -- the fix must not turn the whole proxy off.
+        let read = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_ne!(
+            read.status.code, "proxy_write_disabled",
+            "reads are still served while writes are disabled"
+        );
+    }
+
+    #[test]
+    fn a_full_drain_refuses_commands_that_carry_no_routing_key() {
+        // The drop decision hashes a routing key, and the `filter_map` that collects those
+        // keys silently discarded every command that has none -- the whole resource-blob
+        // upload path, sequence batch queries, node-embedding reads. A proxy an operator had
+        // drained to zero went on serving them in full, while the readiness probe reported it
+        // as rejecting everything.
+        //
+        // Only a FULL drain closes this. Partial shedding is per key by construction, so a
+        // command with nothing to hash stays served below 100 -- the same boundary the
+        // readiness probe draws.
+        let drained = scoped_proxy(ProxyOptions {
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        let keyless = [
+            Command::ContextResourceBlobPut {
+                tenant_hash: 7,
+                payload_base64: String::new(),
+            },
+            Command::ContextResourceBlobBegin { tenant_hash: 7 },
+            Command::SequenceBatchQuery {
+                queries: Vec::new(),
+            },
+        ];
+        for command in keyless {
+            let response = drained.execute(ExecuteRequest {
+                shard_id: 1,
+                command: command.clone(),
+            });
+            assert_eq!(
+                response.status.code, "proxy_traffic_dropped",
+                "a fully drained proxy must refuse this, not serve it because the command                  carries no key to hash: {command:?}"
+            );
+        }
+
+        // The boundary stays where the readiness probe puts it: 99 is load management.
+        let shedding = scoped_proxy(ProxyOptions {
+            drop_percent: 99,
+            ..ProxyOptions::default()
+        });
+        let response = shedding.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextResourceBlobBegin { tenant_hash: 7 },
+        });
+        assert_ne!(
+            response.status.code, "proxy_traffic_dropped",
+            "below a full drain there is no key to shed on, so it is still served"
+        );
+    }
+
+    #[test]
+    fn the_same_context_node_is_shed_whatever_command_names_it() {
+        // The proxy keeps its own copy of the routing-key logic and the copies had drifted:
+        // the client keys ContextSetNodeEmbedding by (tenant, node) like every other command
+        // naming a node, the proxy keyed it not at all. A shed tenant's node was therefore
+        // refused when read and accepted when its embedding was written -- one record, two
+        // answers, from a drain that is supposed to be per key.
+        let proxy = scoped_proxy(ProxyOptions {
+            drop_percent: 50,
+            ..ProxyOptions::default()
+        });
+        let refused_node = (0..200u64)
+            .find(|node_hash| {
+                proxy
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::ContextGetNode {
+                            tenant_hash: 7,
+                            node_hash: *node_hash,
+                        },
+                    })
+                    .status
+                    .code
+                    == "proxy_traffic_dropped"
+            })
+            .expect("at 50 percent some node is refused");
+
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextSetNodeEmbedding {
+                tenant_hash: 7,
+                node_hash: refused_node,
+                model_hash: 1,
+                vector: vec![0.0],
+                updated_at_ms: 1,
+            },
+        });
+        assert_eq!(
+            response.status.code, "proxy_traffic_dropped",
+            "node {refused_node} is refused when read; writing its embedding names the same              node and has to be refused too"
+        );
+    }
+
+    #[test]
+    fn a_proxy_shedding_everything_fails_its_readiness_probe() {
+        // Draining has two knobs. `serving_mode: NotServing` is the obvious one and the
+        // probe already answered for it. `drop_percent: 100` is the other: every request
+        // is refused with `traffic_dropped` while the mode still reads Serving, so the
+        // probe answered 200 and the proxy went back into rotation to shed everything sent
+        // to it -- the same failure the probe was changed to stop, reached the other way.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+
+        // It really does refuse everything -- this is the behaviour the probe has to match.
+        let refused = drained.table_execute(ProxyTableExecuteRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_eq!(
+            refused.status.code, "proxy_traffic_dropped",
+            "drop_percent 100 must refuse every request: {:?}",
+            refused.status
+        );
+
+        let (code, response) = drained.readiness_response();
+        assert_eq!(
+            code, 503,
+            "a proxy refusing every request must fail its probe, not report ready"
+        );
+        assert!(!response.serving);
+        assert!(!response.serving_reads);
+        assert!(!response.serving_writes);
+        assert!(
+            drained.policy_report().rejecting_all,
+            "the field that means 'this proxy rejects everything' has to say so"
+        );
+
+        // The boundary, so this cannot quietly become "any shedding means unready".
+        // Shedding a fraction is deliberate load management and the rest is still served.
+        let shedding = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            drop_percent: 99,
+            ..ProxyOptions::default()
+        });
+        let (code, response) = shedding.readiness_response();
+        assert_eq!(
+            code, 200,
+            "99% shedding still serves the remainder, so the proxy stays ready"
+        );
+        assert!(response.serving_reads);
+        assert!(!shedding.policy_report().rejecting_all);
+
+        // And the mode knob still works on its own, with nothing dropped.
+        let stopped = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            drop_percent: 0,
+            ..ProxyOptions::default()
+        });
+        assert_eq!(stopped.readiness_response().0, 503);
+        assert!(stopped.policy_report().rejecting_all);
+    }
+
+    /// What resolving an already-cached route costs, per request, under contention.
+    ///
+    /// Every routed request asks the client for the shard's address. The cache is a mutex
+    /// over a map, and the lookup takes it EXCLUSIVELY -- not because the common path
+    /// writes anything, but because one policy (round-robin replica reads) advances a
+    /// cursor on the cached entry, so the whole lookup is behind `get_mut`. Under the
+    /// default pin-primary policy nothing is mutated at all and the lock is pure
+    /// serialization.
+    ///
+    /// Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_cached_route_lookup() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+        assert!(
+            proxy.client().route_cache_size() > 0,
+            "the route cache must be warm or this measures the miss path"
+        );
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = std::sync::Arc::clone(&proxy);
+            let gate = std::sync::Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                gate.wait();
+                for _ in 0..per_thread {
+                    let addr = proxy.client().shard_primary_addr(1, false);
+                    std::hint::black_box(&addr);
+                }
+            }));
+        }
+        gate.wait();
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread panicked");
+        }
+        let elapsed = start.elapsed();
+        let ops = (threads * per_thread) as u128;
+        println!(
+            "BENCH cached_route_lookup threads={threads} ops={ops} ns_per_op={} ops_per_sec={}",
+            elapsed.as_nanos() / ops,
+            ops * 1_000_000_000 / elapsed.as_nanos().max(1)
+        );
+    }
+
+    /// What looking up an already-cached table costs, per request, under contention.
+    ///
+    /// The proxy resolves a table on every table-scoped request. On the cache-HIT path --
+    /// which is the normal one -- it clones the namespace and table name so the miss path
+    /// can still own them, `cached_table` builds a third string for the map key, and
+    /// cloning the stored options allocates a fourth for the preferred location. Four
+    /// allocations, a mutex, and an Arc clone, to answer a question the cache already knows.
+    ///
+    /// Measured under threads because the mutex is shared; run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_cached_table_lookup() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        // Seed the cache directly; open_table inserts the options without needing a
+        // metaserver, which is what the hit path reads.
+        let _seeded = proxy
+            .client()
+            .open_table("ns", "tbl", crate::client::TableOptions::default());
+        assert!(
+            proxy.client().cached_table("ns", "tbl").is_some(),
+            "the cache must be warm or this measures the miss path"
+        );
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = std::sync::Arc::clone(&proxy);
+            let gate = std::sync::Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                gate.wait();
+                for _ in 0..per_thread {
+                    let table = proxy
+                        .table_for_request("ns".to_string(), "tbl".to_string())
+                        .expect("cached table");
+                    std::hint::black_box(&table);
+                }
+            }));
+        }
+        gate.wait();
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread panicked");
+        }
+        let elapsed = start.elapsed();
+        let ops = (threads * per_thread) as u128;
+        println!(
+            "BENCH cached_table_lookup threads={threads} ops={ops} ns_per_op={} ops_per_sec={}",
+            elapsed.as_nanos() / ops,
+            ops * 1_000_000_000 / elapsed.as_nanos().max(1)
+        );
+    }
+
+    #[test]
+    fn a_pushed_topology_check_interval_reaches_the_request_path() {
+        // The interval is mirrored outside the options lock so the request path can read
+        // it without taking one. A mirror that is not updated when the options are
+        // replaced is worse than the lock it saved: the proxy would go on checking at the
+        // old cadence, an operator's config push would appear to be accepted, and nothing
+        // anywhere would say the two disagreed.
+        let proxy = scoped_proxy(ProxyOptions {
+            topology_check_interval_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+
+        // Claim once so the interval is actually in play; after that a minute must pass.
+        assert!(proxy.claim_topology_check(), "the first check is due");
+        assert!(
+            !proxy.topology_check_due_now(),
+            "a minute has not passed, so no check is due"
+        );
+
+        // Turn the interval off. Every check is due at zero, which is the escape hatch
+        // operators use to restore per-request checking.
+        let mut pushed = (*proxy.options()).clone();
+        pushed.topology_check_interval_ms = 0;
+        let report = proxy.update_options_report(pushed);
+        assert!(report.applied, "the push must be applied: {report:?}");
+
+        assert!(
+            proxy.topology_check_due_now(),
+            "interval 0 means every check is due -- if this fails the mirror kept the old \
+             value and the proxy is still checking on a cadence the operator replaced"
+        );
+
+        // And back the other way, so this cannot pass by the mirror being stuck at zero.
+        let mut restored = (*proxy.options()).clone();
+        restored.topology_check_interval_ms = 60_000;
+        let report = proxy.update_options_report(restored);
+        assert!(report.applied, "the second push must be applied: {report:?}");
+        assert!(
+            !proxy.topology_check_due_now(),
+            "with the interval restored, the check claimed at the top of this test is still              inside it, so nothing is due -- a mirror stuck at the pushed zero would say due              here, which is what makes this the reverse-direction check"
+        );
+    }
+
+    /// Per-request bookkeeping under CONCURRENCY, measured per function.
+    ///
+    /// Single-threaded this work is ~110ns against a request whose real cost is a network
+    /// round trip, so it rounds to nothing. The cost of an exclusive lock is not its
+    /// latency, it is the serialization: threads taking `stats.write()` on every request
+    /// queue behind one writer, and eight of them then deliver LESS aggregate throughput
+    /// than one. Only a contended benchmark shows that.
+    ///
+    /// The proxy MUST have a cached route. `invalidate_cached_routes_if_meta_changed`
+    /// returns at its first guard when the route cache is empty, so without one this
+    /// measures that guard and never reaches the due-check or its counter -- which is
+    /// exactly the work being changed.
+    ///
+    /// Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_per_request_bookkeeping() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let run = |label: &str, sync: bool, topo: bool| {
+            let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions {
+                namespace: "bench".to_string(),
+                // long enough that every iteration takes the "not due" path, which is the
+                // one every request actually walks
+                topology_check_interval_ms: 3_600_000,
+                ..ProxyOptions::default()
+            }));
+            proxy
+                .client()
+                .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+            for _ in 0..1_000 {
+                proxy.sync_client_stats();
+                proxy.invalidate_cached_routes_if_meta_changed();
+            }
+            assert!(
+                proxy.client().route_cache_size() > 0,
+                "the route cache must be populated or the topology check returns early"
+            );
+
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let proxy = std::sync::Arc::clone(&proxy);
+                let gate = std::sync::Arc::clone(&gate);
+                handles.push(std::thread::spawn(move || {
+                    gate.wait();
+                    for _ in 0..per_thread {
+                        if sync {
+                            proxy.sync_client_stats();
+                        }
+                        if topo {
+                            proxy.invalidate_cached_routes_if_meta_changed();
+                        }
+                    }
+                }));
+            }
+            gate.wait();
+            let start = std::time::Instant::now();
+            for handle in handles {
+                handle.join().expect("bench thread panicked");
+            }
+            let elapsed = start.elapsed();
+            let ops = (threads * per_thread) as u128;
+            println!(
+                "BENCH {label} threads={threads} ops={ops} ns_per_op={} ops_per_sec={}",
+                elapsed.as_nanos() / ops,
+                ops * 1_000_000_000 / elapsed.as_nanos().max(1)
+            );
+        };
+
+        run("sync_plus_topology", true, true);
+        run("topology_only", false, true);
+        run("sync_only", true, false);
+    }
     use crate::engine::TemporalEngine;
     use crate::http::{json_response, parse_json, serve};
     use crate::meta::{
@@ -1718,7 +3082,7 @@ mod tests {
             migration.compatibility_decision,
             "legacy command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
         );
-        assert!(!migration.legacy_cplusplus_wire_in_scope);
+        assert!(!migration.legacy_wire_in_scope);
         assert!(!migration.native_wire_proxy_transport_ready);
         assert!(migration.http_json_aliases_ready);
         assert!(migration.resp_migration_ready);
@@ -2705,7 +4069,7 @@ mod tests {
                                 namespace: String::new(),
                                 config_version: 0,
                                 serving_mode: "serving".to_string(),
-                                drop_percent: 0,
+                                drop_percent: None,
                             },
                         )
                     }
@@ -3302,6 +4666,94 @@ mod tests {
         assert!(proxy_on.client_options_snapshot().refresh_route_on_backend_error);
         assert!(!proxy_off.client_options_snapshot().refresh_route_on_backend_error);
     }
+
+    #[test]
+    fn every_option_a_config_push_can_change_is_noticed() {
+        // Whether a pushed config is applied is decided by comparing its version to the
+        // running one. That version was hashed from a hand-listed subset of the options,
+        // and the list had fallen behind: `context_shard_count`, `context_first_shard_id`,
+        // `context_io_timeout_ms`, `service_registry_ttl_ms` and `listen_addr` were all
+        // missing, so a push that changed only one of them produced the same version and
+        // was answered "unchanged" -- telling the operator, in the report, that their
+        // change was a no-op.
+        //
+        // Rather than list the fields again here -- which is the mistake being fixed --
+        // this walks the serialized options and changes each one in turn, so a field
+        // added later is covered without anyone editing this test.
+        //
+        // The proxy is built from exactly this baseline. An earlier version of this test
+        // built it with a helper that overrode meta_addr, so every push differed in a
+        // field that IS hashed, every assertion passed, and the test proved nothing. The
+        // guard below is what catches that: if pushing the baseline back is treated as a
+        // change, the comparison is not being exercised at all.
+        let baseline = ProxyOptions {
+            config_version: 0,
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        };
+        let unchanged =
+            ProxyService::new(baseline.clone()).update_options_report(baseline.clone());
+        assert!(
+            !unchanged.applied,
+            "pushing an identical config must be a no-op, or the assertions below pass \
+             without testing anything (reason: {})",
+            unchanged.reason
+        );
+
+        let serde_json::Value::Object(fields) = serde_json::to_value(&baseline).unwrap() else {
+            panic!("options serialize as an object");
+        };
+
+        let mut checked = 0;
+        for (name, value) in fields {
+            // config_version IS the version, so changing it is not a content change.
+            if name == "config_version" {
+                continue;
+            }
+            let candidates: Vec<serde_json::Value> = match &value {
+                serde_json::Value::Bool(flag) => vec![serde_json::Value::Bool(!flag)],
+                serde_json::Value::Number(number) => {
+                    vec![serde_json::Value::from(number.as_u64().unwrap_or(0) + 1)]
+                }
+                serde_json::Value::String(text) => vec![
+                    serde_json::Value::from(format!("{text}-changed")),
+                    // enum-valued fields reject arbitrary text; offer real alternatives
+                    serde_json::Value::from("not_serving"),
+                    serde_json::Value::from("draining"),
+                ],
+                other => panic!("teach this test how to change {name} (it is {other})"),
+            };
+
+            let changed = candidates
+                .into_iter()
+                .filter_map(|candidate| {
+                    let serde_json::Value::Object(mut document) =
+                        serde_json::to_value(&baseline).unwrap()
+                    else {
+                        return None;
+                    };
+                    document.insert(name.clone(), candidate);
+                    serde_json::from_value::<ProxyOptions>(serde_json::Value::Object(document)).ok()
+                })
+                .find(|candidate| candidate != &baseline)
+                .unwrap_or_else(|| {
+                    panic!("could not produce a changed value for {name}; teach this test about it")
+                });
+
+            let proxy = ProxyService::new(baseline.clone());
+            let report = proxy.update_options_report(changed);
+            assert!(
+                report.applied,
+                "a config push changing {name} must be applied, not answered \"{}\"",
+                report.reason
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 20,
+            "expected to exercise every option; only walked {checked}"
+        );
+    }
     #[test]
     fn proxy_location_reaches_replica_selection() {
         // The proxy has always accepted a location, reported it to the metaserver and shown
@@ -3332,6 +4784,297 @@ mod tests {
         });
         assert_eq!(located.client_options_snapshot().local_location, "zone-b");
     }
+    #[test]
+    fn context_shards_follow_the_cluster_unless_told_otherwise() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The count used to default to 1, so a proxy in front of a multi-shard cluster put
+        // every tenant's context on one shard -- silently, with six or seven shards idle and
+        // no error to notice. It now follows the cluster unless a value is configured.
+        let stats_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let addr = test_addr(18_404);
+        let calls = stats_calls.clone();
+        let addr_for_thread = addr.clone();
+        std::thread::spawn(move || {
+            serve(&addr_for_thread, move |request| match request.path.as_str() {
+                "/shards" => {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    crate::http::json_response(
+                        200,
+                        &crate::meta::ListShardsResponse {
+                            status: Status::ok(),
+                            shards: (1..=8)
+                                .map(|shard_id| crate::meta::ShardListEntry {
+                                    shard_id,
+                                    server_addr: "127.0.0.1:1".to_string(),
+                                    namespace: "ns".to_string(),
+                                    table_name: "tbl".to_string(),
+                                    latest_snapshot: None,
+                                })
+                                .collect(),
+                            next_after_shard_id: None,
+                        },
+                    )
+                }
+                "/proxies/heartbeat" => crate::http::json_response(
+                    200,
+                    &ProxyHeartbeatResponse {
+                        status: Status::ok(),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                        serving_mode: "serving".to_string(),
+                        drop_percent: None,
+                    },
+                ),
+                _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+            })
+            .unwrap();
+        });
+        wait_for_http(&addr);
+
+        // Before the first heartbeat the cluster count is unknown, so it behaves as it always
+        // did rather than guessing. Degrading to the old answer beats degrading to none.
+        let following = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            ..ProxyOptions::default()
+        });
+        assert_eq!(following.effective_context_shard_count(), 1);
+        assert_eq!(
+            following.context_shard_count_source(),
+            "fallback_until_cluster_known"
+        );
+
+        // One heartbeat is enough to learn it.
+        let _ = following.heartbeat_to_meta();
+        assert_eq!(
+            following.effective_context_shard_count(),
+            8,
+            "a proxy in front of an eight-shard cluster should spread context over eight"
+        );
+        assert_eq!(following.context_shard_count_source(), "cluster");
+        assert_eq!(
+            following.policy_report().context_shard_count,
+            8,
+            "the effective value has to be visible, since it used to be a silent 1"
+        );
+
+        // Tenants actually land on more than one shard now.
+        let mut landed = std::collections::BTreeSet::new();
+        for i in 0..64 {
+            let scope = context::ProxyContextScope {
+                tenant_id: format!("tenant-{i}"),
+                account_id: "acct".to_string(),
+                ..Default::default()
+            };
+            landed.insert(following.context_shard_id(context::context_tenant_hash(&scope)));
+        }
+        assert!(
+            landed.len() > 1,
+            "64 tenants over 8 shards should not all land on one, saw {landed:?}"
+        );
+
+        // A cluster whose shard ids are NOT a contiguous run from the first id cannot be
+        // addressed by "first + hash % count" -- the arithmetic would name ids that do not
+        // exist. Adopting the count there would be worse than the single-shard default it
+        // replaces, so it is refused and the reason is reported.
+        let gapped = test_addr(18_406);
+        let gapped_for_thread = gapped.clone();
+        std::thread::spawn(move || {
+            serve(&gapped_for_thread, move |request| match request.path.as_str() {
+                "/shards" => crate::http::json_response(
+                    200,
+                    &crate::meta::ListShardsResponse {
+                        status: Status::ok(),
+                        // 1-4 and 100-103: eight shards, not eight consecutive ids.
+                        shards: (1..=4)
+                            .chain(100..=103)
+                            .map(|shard_id| crate::meta::ShardListEntry {
+                                shard_id,
+                                server_addr: "127.0.0.1:1".to_string(),
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                latest_snapshot: None,
+                            })
+                            .collect(),
+                        next_after_shard_id: None,
+                    },
+                ),
+                "/proxies/heartbeat" => crate::http::json_response(
+                    200,
+                    &ProxyHeartbeatResponse {
+                        status: Status::ok(),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                        serving_mode: "serving".to_string(),
+                        drop_percent: None,
+                    },
+                ),
+                _ => crate::http::json_response(404, &Status::error("not_found", "no route")),
+            })
+            .unwrap();
+        });
+        wait_for_http(&gapped);
+
+        let scattered = ProxyService::new(ProxyOptions {
+            meta_addr: gapped,
+            ..ProxyOptions::default()
+        });
+        let _ = scattered.heartbeat_to_meta();
+        assert_eq!(
+            scattered.effective_context_shard_count(),
+            1,
+            "a count that would address shards 5-8, which do not exist, must not be adopted"
+        );
+        assert_eq!(
+            scattered.context_shard_count_source(),
+            "fallback_cluster_shards_not_contiguous",
+            "and the reason has to be visible, not inferred from failures"
+        );
+
+        // A configured value still wins, and needs no cluster lookup at all.
+        let before = stats_calls.load(Ordering::SeqCst);
+        let configured = ProxyService::new(ProxyOptions {
+            meta_addr: addr.clone(),
+            context_shard_count: 4,
+            ..ProxyOptions::default()
+        });
+        let _ = configured.heartbeat_to_meta();
+        assert_eq!(configured.effective_context_shard_count(), 4);
+        assert_eq!(configured.context_shard_count_source(), "configured");
+        assert_eq!(
+            stats_calls.load(Ordering::SeqCst),
+            before,
+            "an explicitly configured count must not ask the cluster anything"
+        );
+    }
+
+    #[test]
+    fn a_drained_proxy_fails_its_readiness_probe() {
+        // The runbook points operators at GET /readiness for exactly this, and it used to
+        // answer with a build-wide capability report: the same bytes on every process, with a
+        // hardcoded 200. So a proxy that had been drained -- refusing every request with
+        // proxy_not_serving -- reported itself ready, and anything using the probe to decide
+        // where to send traffic kept sending it. The drain control was defeated by the probe
+        // meant to honour it.
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let (status, body) = drained.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/readiness".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(
+            status, 503,
+            "a drained proxy must fail its probe, or draining it does not take it \
+             out of rotation"
+        );
+        let parsed = parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+        assert!(!parsed.serving);
+        assert_eq!(parsed.serving_mode, ProxyServingMode::NotServing);
+
+        // Serving answers 200, and so does read-only: it still serves reads, and failing its
+        // probe would pull a proxy doing useful work out of rotation. The flags carry the
+        // distinction for anyone who needs it.
+        for (mode, expect_writes) in [
+            (ProxyServingMode::Serving, true),
+            (ProxyServingMode::Degraded, true),
+            (ProxyServingMode::Readonly, false),
+            (ProxyServingMode::WriteDisabled, false),
+        ] {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+            let (status, body) = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: "/readiness".to_string(),
+                body: Vec::new(),
+            });
+            assert_eq!(status, 200, "{mode:?} serves reads and must pass its probe");
+            let parsed =
+                parse_json::<ProxyReadinessResponse>(&body).expect("readiness body parses");
+            assert!(parsed.serving, "{mode:?} should report serving");
+            assert_eq!(
+                parsed.serving_writes, expect_writes,
+                "{mode:?} should report serving_writes as {expect_writes}"
+            );
+            // The capability report is still carried, so anything already reading those fields
+            // keeps working rather than being broken by this.
+            assert!(
+                !parsed.production.areas.is_empty(),
+                "the capability report must still be included"
+            );
+        }
+    }
+
+    #[test]
+    fn every_serving_mode_states_what_it_actually_refuses() {
+        // Five modes, three behaviours. The pairs that mean the same thing are not obvious from
+        // their names -- Degraded in particular reads like a restriction and is not one, it
+        // accepts exactly what Serving accepts. This pins the real matrix so the documentation
+        // beside the enum cannot drift away from it, and so that anyone narrowing one mode has
+        // to decide what happens to the mode it is currently a synonym for.
+        let cases = [
+            (ProxyServingMode::Serving, true, true),
+            (ProxyServingMode::Degraded, true, true),
+            (ProxyServingMode::Readonly, true, false),
+            (ProxyServingMode::WriteDisabled, true, false),
+            (ProxyServingMode::NotServing, false, false),
+        ];
+
+        for (mode, reads_allowed, writes_allowed) in cases {
+            let proxy = scoped_proxy(ProxyOptions {
+                serving_mode: mode,
+                ..ProxyOptions::default()
+            });
+
+            let read = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "k".to_string(),
+                },
+            });
+            let read_refused = read.status.code == "proxy_not_serving"
+                || read.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !read_refused, reads_allowed,
+                "{mode:?}: reads_allowed should be {reads_allowed}, got status {:?}",
+                read.status.code
+            );
+
+            let write = proxy.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+            });
+            let write_refused = write.status.code == "proxy_not_serving"
+                || write.status.code == "proxy_write_disabled";
+            assert_eq!(
+                !write_refused, writes_allowed,
+                "{mode:?}: writes_allowed should be {writes_allowed}, got status {:?}",
+                write.status.code
+            );
+
+            // The report has to agree with what admission actually did, or an operator reading
+            // the status surface is told one thing while traffic experiences another.
+            let policy = proxy.policy_report();
+            assert_eq!(
+                policy.serving_writes, writes_allowed,
+                "{mode:?}: the policy report disagrees with admission about writes"
+            );
+            assert_eq!(
+                policy.serving_reads, reads_allowed,
+                "{mode:?}: the policy report disagrees with admission about reads"
+            );
+        }
+    }
+
     #[test]
     fn drop_percent_refuses_the_same_keys_every_time_including_writes() {
         // drop_percent reads like a load-shedding knob and is not one. The decision comes from
@@ -3377,7 +5120,8 @@ mod tests {
             });
             assert_eq!(
                 response.status.code, "proxy_traffic_dropped",
-                "attempt {attempt} on a refused key must be refused again -- the decision is                  per key, not per request"
+                "attempt {attempt} on a refused key must be refused again -- the decision \
+                 is per key, not per request"
             );
             assert!(
                 response.status.message.contains("will not succeed"),
@@ -4808,7 +6552,8 @@ mod tests {
         assert_eq!(
             hits.load(Ordering::SeqCst),
             1,
-            "a write that timed out must not be sent again -- the timeout says the datanode              stopped answering, not that it never received the write"
+            "a write that timed out must not be sent again -- the timeout says the datanode \
+             stopped answering, not that it never received the write"
         );
 
         // A read is a different matter: repeating it cannot change anything, so the
@@ -5295,6 +7040,84 @@ mod tests {
             after.client.route_refreshes > before.client.route_refreshes,
             "the context path must re-resolve after the shard moves, refreshes stayed at {}",
             after.client.route_refreshes
+        );
+    }
+
+    #[test]
+    fn two_ingests_at_the_same_timestamp_keep_both_sets_of_messages() {
+        use crate::context_workflow::ContextIngestExtractReport;
+
+        // Raw events live in a hash whose FIELD carries their order, and the write is an
+        // upsert keyed by that field. The field used to be `{timestamp}:{index in call}`:
+        // the index restarts at zero every call, so two ingests carrying the same
+        // timestamp produced the same field names and the second silently replaced the
+        // first's messages. Extraction replays those records, so it saw two messages where
+        // four had been ingested, and nothing anywhere reported a loss.
+        //
+        // Both calls pin the SAME timestamp, which is what makes this deterministic rather
+        // than a race on whether two requests land inside one millisecond.
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_context_server(test_addr(18_408), engine.clone());
+        start_meta(test_addr(18_409), test_addr(18_408));
+        wait_for_http(&test_addr(18_409));
+        wait_for_http(&test_addr(18_408));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_409),
+            route_cache_ttl_ms: 60_000,
+            context_first_shard_id: 1,
+            context_shard_count: 1,
+            ..ProxyOptions::default()
+        });
+
+        let pinned = 1_723_456_789_000u64;
+        let ingest = |first: &str, second: &str| {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "scope": {"tenant_id": "team-beta", "account_id": "acct_7"},
+                "messages": [
+                    {"role": "user", "content": first, "timestamp_ms": pinned},
+                    {"role": "assistant", "content": second, "timestamp_ms": pinned}
+                ]
+            }))
+            .unwrap();
+            let (code, body) = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body,
+            });
+            assert_eq!(code, 200, "ingest must be accepted");
+            let response = parse_json::<crate::types::ExecuteResponse>(&body).unwrap();
+            assert!(response.status.ok, "ingest status: {:?}", response.status);
+        };
+
+        ingest("first call message one", "first call message two");
+        ingest("second call message one", "second call message two");
+
+        // Commit with no messages replays the buffer and extracts what it finds.
+        let commit = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "team-beta", "account_id": "acct_7"}
+        }))
+        .unwrap();
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/extract".to_string(),
+            body: commit,
+        });
+        assert_eq!(code, 200);
+        let report = parse_json::<ContextIngestExtractReport>(&body).unwrap();
+        assert!(report.status.ok, "extract status: {:?}", report.status);
+        assert_eq!(
+            report.accepted, 4,
+            "four messages were ingested across two calls at the same timestamp; seeing \
+             two means the second call's fields collided with the first's and overwrote \
+             them: {report:?}"
         );
     }
 
