@@ -684,19 +684,69 @@ impl TemporalEngine {
                 ));
             }
         }
-        let safe_to_reclaim = missing_bucket_generations.is_empty()
+        // Two different questions were being answered by one boolean.
+        //
+        // WHETHER the frontier can be trusted: every live generation needs a durable dump behind
+        // it, or the lowest manifest sequence does not describe what is actually on disk. These
+        // stay absolute -- there is no safe partial answer to a frontier that is wrong.
+        let generations_durable = missing_bucket_generations.is_empty()
             && covered_bucket_count == bucket_summaries.len()
             && durable_wal_frontier > 0
-            && durable_index_log_frontier > 0
-            && follower_cursor_block_count == 0
-            && raft_snapshot_block_count == 0;
+            && durable_index_log_frontier > 0;
+
+        // HOW FAR it may be followed: a retention cursor marks what some reader has still to
+        // consume. Everything at or below the SLOWEST cursor is behind every reader and can go
+        // whether or not that cursor ever advances. Refusing at the cursor instead of clamping to
+        // it meant one lagging follower pinned the entire log for as long as it lagged, and the
+        // log grew without bound underneath it.
+        //
+        // The floor is a minimum over followers AND snapshot refs together: they are separate
+        // lists but the same question, and taking them apart would let one advance past the other
+        // and drop a log the slower one still needs.
+        let cursor_wal_floor = follower_replay_cursors
+            .iter()
+            .filter(|cursor| cursor.shard_id == shard_id)
+            .map(|cursor| cursor.wal_sequence)
+            .chain(
+                raft_snapshot_refs
+                    .iter()
+                    .filter(|snapshot| snapshot.shard_id == shard_id)
+                    .map(|snapshot| snapshot.wal_sequence),
+            )
+            .min();
+        let cursor_index_log_floor = follower_replay_cursors
+            .iter()
+            .filter(|cursor| cursor.shard_id == shard_id)
+            .map(|cursor| cursor.index_log_sequence)
+            .chain(
+                raft_snapshot_refs
+                    .iter()
+                    .filter(|snapshot| snapshot.shard_id == shard_id)
+                    .map(|snapshot| snapshot.index_log_sequence),
+            )
+            .min();
+
+        // Never above the durable frontier, and never above the slowest cursor. With no cursors at
+        // all the frontier stands unchanged, which is what it did before.
+        let effective_wal_frontier = cursor_wal_floor
+            .map_or(durable_wal_frontier, |floor| durable_wal_frontier.min(floor));
+        let effective_index_log_frontier = cursor_index_log_floor.map_or(
+            durable_index_log_frontier,
+            |floor| durable_index_log_frontier.min(floor),
+        );
+
+        // A clamp to zero reclaims nothing, which is the right answer for a cursor that has never
+        // advanced -- the win here is exactly the span a reader has already consumed, and for a
+        // permanently stuck follower that span is empty.
+        let safe_to_reclaim =
+            generations_durable && effective_wal_frontier > 0 && effective_index_log_frontier > 0;
         let retain_from_wal_sequence = if safe_to_reclaim {
-            durable_wal_frontier.saturating_add(1)
+            effective_wal_frontier.saturating_add(1)
         } else {
             0
         };
         let retain_from_index_log_sequence = if safe_to_reclaim {
-            durable_index_log_frontier.saturating_add(1)
+            effective_index_log_frontier.saturating_add(1)
         } else {
             0
         };
@@ -734,6 +784,12 @@ impl TemporalEngine {
         // The plan reached `safe_to_reclaim` by finding a durable bucket-dump manifest for
         // every live generation and taking the LOWEST wal sequence among them, so the durable
         // index reflects everything at or below that frontier.
+        //
+        // This stays the DURABLE frontier, not the cursor-clamped one. The anchor is an upper
+        // bound on what may be dropped; `retain_from_wal_sequence` may sit below it because a
+        // retention cursor clamped it, and dropping less than the anchor permits is safe. Passing
+        // the clamped value here would prove less durability than has actually been established
+        // and would be the wrong number for a different reason.
         let durable_index = crate::wal::DurableIndexAnchor::proven_durable_through(
             plan.shard_id,
             plan.durable_bucket_generation_frontier_wal_sequence,

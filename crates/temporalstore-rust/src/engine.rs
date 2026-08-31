@@ -2979,17 +2979,13 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
-    if shard.bucket_index.object_component_lookup.is_empty() {
+    if shard.bucket_index.object_page_lookup.is_empty() {
         return shard.bucket_index.bucket_map.keys().copied().collect();
     }
     let mut buckets = BTreeSet::new();
     for kind in storage_model_kinds() {
-        if let Some(page_refs) = shard
-            .bucket_index
-            .object_component_lookup
-            .get(&object_component_lookup_key(kind, key))
-        {
-            buckets.extend(page_refs.iter().map(|page_ref| page_ref.routing_bucket));
+        if let Some(entry) = shard.bucket_index.object_page_refs(kind, key) {
+            buckets.extend(entry.all_refs().map(|page_ref| page_ref.routing_bucket));
         }
     }
     buckets
@@ -3030,8 +3026,7 @@ fn mark_bucket_index_page_deleted(
     } else {
         shard
             .bucket_index
-            .object_page_lookup
-            .get(&object_page_lookup_key(model_id, key, component))
+            .page_refs_for(model_id, key, component)
             .map(|page_refs| {
                 page_refs
                     .iter()
@@ -3272,7 +3267,7 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    let bucket_index_exists = if shard.bucket_index.object_component_lookup.is_empty() {
+    let bucket_index_exists = if shard.bucket_index.object_page_lookup.is_empty() {
         shard.bucket_index.bucket_map.values().any(|bucket| {
             bucket.page_index
                 .values()
@@ -3282,10 +3277,9 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         storage_model_kinds().iter().any(|kind| {
             shard
                 .bucket_index
-                .object_component_lookup
-                .get(&object_component_lookup_key(kind, key))
+                .object_page_refs(kind, key)
                 .map(|page_refs| {
-                    page_refs.iter().any(|page_ref| {
+                    page_refs.all_refs().any(|page_ref| {
                         shard
                             .bucket_index
                             .bucket_map
@@ -3442,18 +3436,21 @@ fn object_manager_stats(
 ) -> ObjectManagerStats {
     if !shard.bucket_index.bucket_map.is_empty() {
         let (bucket_object_count, bucket_page_ref_count, bucket_dirty_object_count) =
-            if !shard.bucket_index.object_component_lookup.is_empty() {
+            if !shard.bucket_index.object_page_lookup.is_empty() {
                 (
-                    shard.bucket_index.object_component_lookup.len(),
+                    // The map is keyed by OBJECT now, so its length is the object count directly.
+                    // It used to be the length of a second map kept alongside this one, which is
+                    // the question that stopped that map from simply being deleted.
+                    shard.bucket_index.object_page_lookup.len(),
                     // Maintained incrementally; the walk is the fallback for an index that has
                     // been deserialized but not yet rebuilt. This runs on the heartbeat timer
                     // under the shard read lock, so walking here shows up as write contention.
                     shard.bucket_index.object_component_page_refs.unwrap_or_else(|| {
                         shard
                             .bucket_index
-                            .object_component_lookup
+                            .object_page_lookup
                             .values()
-                            .map(BTreeSet::len)
+                            .map(crate::engine::state::ObjectPageRefs::total_refs)
                             .sum::<usize>()
                     }),
                     shard.dirty_objects.len(),
@@ -3551,7 +3548,7 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>();
-        let dirty_bucket_count = if !shard.bucket_index.object_component_lookup.is_empty() {
+        let dirty_bucket_count = if !shard.bucket_index.object_page_lookup.is_empty() {
             let mut dirty_buckets = shard
                 .bucket_index
                 .bucket_map
