@@ -2785,6 +2785,81 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
 }
 
 #[test]
+fn a_resummarised_node_scores_on_its_newest_vector_not_its_first() {
+    // The summary series is keyed by context_timeline_key, which ascends with time, so asking for
+    // one entry from the front of the range returns the node's FIRST summary. A node that has been
+    // re-summarised then scores on a superseded embedding -- and because the stale vector is still
+    // the right width it produces a perfectly plausible cosine, so nothing anywhere reports it.
+    //
+    // Two versions, deliberately opposite vectors, so picking the wrong one cannot look like a
+    // rounding difference.
+    let engine = test_engine();
+    const TENANT: u64 = 6021;
+    const NODE: u64 = 31;
+    let old_vector = vec![1.0_f32, 0.0, 0.0, 0.0];
+    let new_vector = vec![0.0_f32, 0.0, 0.0, 1.0];
+
+    for (valid_from_ms, text, vector) in [
+        (1_000_u64, "first summary", old_vector.clone()),
+        (2_000_u64, "revised summary", new_vector.clone()),
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertSummary {
+                tenant_hash: TENANT,
+                summary: ContextSummary {
+                    node_hash: NODE,
+                    level: 2,
+                    text: text.to_string(),
+                    valid_from_ms,
+                    vector,
+                },
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQuerySummaryVectors {
+            tenant_hash: TENANT,
+            node_hashes: vec![NODE],
+            level: 2,
+            as_of_ms: 10_000,
+        },
+    });
+    let CommandResponse::ContextSummaryVectors { vectors } = response.response else {
+        panic!("expected summary vectors");
+    };
+    assert_eq!(1, vectors.len(), "one node was asked for");
+    assert_eq!(
+        new_vector, vectors[0].vector,
+        "scoring must use the newest summary at or before as_of_ms; the first version's vector \
+         means every re-summarised node is scored on a superseded embedding"
+    );
+
+    // as_of_ms still bounds it: asking as of a time before the revision must give the first one,
+    // or "newest" would just mean "last written" and the time bound would be decorative.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQuerySummaryVectors {
+            tenant_hash: TENANT,
+            node_hashes: vec![NODE],
+            level: 2,
+            as_of_ms: 1_500,
+        },
+    });
+    let CommandResponse::ContextSummaryVectors { vectors } = response.response else {
+        panic!("expected summary vectors");
+    };
+    assert_eq!(1, vectors.len(), "the first version is in range at 1500ms");
+    assert_eq!(
+        old_vector, vectors[0].vector,
+        "as_of_ms must still exclude a summary that was not yet valid"
+    );
+}
+
+#[test]
 fn vectors_of_different_widths_are_never_comparable() {
     let short = vec![1.0_f32, 0.0, 0.0];
     let long = vec![1.0_f32, 0.0, 0.0, 0.0];
@@ -2902,10 +2977,7 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
             command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
                 node_hash,
-                // What a real writer stamps: the drainer derives it from the same provider
-                // field the retrieve path compares against. A placeholder reads as a foreign
-                // encoder and the vector is declined before width is ever considered.
-                model_hash: context_embedding_model_hash(&provider.embedding_model),
+                model_hash: 1,
                 vector,
                 updated_at_ms: at,
             },
@@ -3021,10 +3093,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
             command: Command::ContextSetNodeEmbedding {
                 tenant_hash: TENANT,
                 node_hash,
-                // What a real writer stamps: the drainer derives it from the same provider
-                // field the retrieve path compares against. A placeholder reads as a foreign
-                // encoder and the vector is declined before width is ever considered.
-                model_hash: context_embedding_model_hash(&provider.embedding_model),
+                model_hash: 1,
                 vector,
                 updated_at_ms: at,
             },
@@ -3123,6 +3192,301 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
 /// that distinguishes them; a single average would hide it.
 ///
 ///   cargo test -p temporalstore-rust --lib what_one_add_costs_end_to_end -- --ignored --nocapture
+/// How many allocations does one retrieve make, and how does that scale with the corpus?
+///
+/// Bytes decoded are not the interesting quantity on their own: with a production-width vector the
+/// record is mostly vector, so the strings a scoring pass discards shrink to a rounding error by
+/// share while still costing an allocation each. Allocation COUNT is what does not move with vector
+/// width, and it is what the resident-memory work has been pointing at.
+///
+/// Counted, not timed, and counted with a global allocator rather than inferred from RSS -- most of
+/// this process's resident memory is allocator retention, which no request-level change will move.
+///
+///   cargo test -p temporalstore-rust --lib what_a_retrieve_allocates -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_a_retrieve_allocates() {
+    // Without `--features alloc-probe` the counting allocator is not installed, every counter stays
+    // at zero, and this prints a tidy table of zeros that reads as "this path allocates nothing".
+    // Fail loudly on a known allocation instead.
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "the counting allocator is not installed -- rerun with `--features alloc-probe`, or every \
+         number this test prints is a zero that means nothing"
+    );
+    drop(sink);
+
+    fn run(adds: usize) -> (u64, u64, usize, u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let provider = ContextModelProviderConfig::default();
+        let mut node_hashes = Vec::new();
+        for index in 0..adds {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 4242,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 4242,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("ALLOC-{index:06}"),
+                        title: format!("alloc {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("alloc {index} deploy ingest service "),
+                            "context payload sentence. ".repeat(150)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: provider.clone(),
+                    }],
+                    provider: provider.clone(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "ingest {index} failed: {:?}", report.status);
+            node_hashes.extend(report.node_hashes.iter().copied());
+        }
+        node_hashes.sort_unstable();
+        node_hashes.dedup();
+
+        let request = || ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 4242,
+            node_hashes: node_hashes.clone(),
+            query: "how do we deploy the ingest service".to_string(),
+            start_time_ms: 0,
+            end_time_ms: u64::MAX,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 4,
+            max_event_nodes: 4,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:test".to_string(),
+            provider: provider.clone(),
+        };
+        // Warm first: the first call through any path allocates one-off structures that are not
+        // part of a steady-state retrieve, and counting those would flatter or damn the result
+        // depending only on how many calls the probe spans.
+        let warm = retrieve_context(&engine, request());
+        assert!(warm.status.ok, "{:?}", warm.status);
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..5 {
+            let out = retrieve_context(&engine, request());
+            assert!(out.status.ok, "{:?}", out.status);
+        }
+        let counts = probe.stop();
+
+        // Split out the one component big enough to be worth suspecting on its own: the node fetch
+        // the scoring pass makes over EVERY candidate. If that is most of the per-candidate cost,
+        // a narrower fetch is the fix; if it is a small share, the cost is elsewhere and a narrower
+        // fetch would be six files of change for nothing.
+        let fetch_probe = crate::alloc_probe::Probe::start();
+        for _ in 0..5 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextGetNodes {
+                    tenant_hash: 4242,
+                    node_hashes: node_hashes.clone(),
+                },
+            });
+            let CommandResponse::ContextNodes { nodes } = response.response else {
+                panic!("expected nodes");
+            };
+            assert_eq!(nodes.len(), node_hashes.len(), "every candidate must return");
+        }
+        let fetch = fetch_probe.stop();
+
+        // The scoring stage makes a SECOND per-candidate engine call, for the summary vectors, and
+        // it is over the same candidate list. Probe it too rather than attributing everything the
+        // node fetch does not explain to "the rest".
+        let summary_probe = crate::alloc_probe::Probe::start();
+        for _ in 0..5 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQuerySummaryVectors {
+                    tenant_hash: 4242,
+                    node_hashes: node_hashes.clone(),
+                    level: 2,
+                    as_of_ms: u64::MAX,
+                },
+            });
+            assert!(
+                matches!(response.response, CommandResponse::ContextSummaryVectors { .. }),
+                "expected summary vectors"
+            );
+        }
+        let summary = summary_probe.stop();
+
+        (
+            counts.allocs / 5,
+            counts.alloc_bytes / 5,
+            node_hashes.len(),
+            fetch.allocs / 5,
+            summary.allocs / 5,
+        )
+    }
+
+    println!(
+        "
+  cands   allocs/retr   bytes/retr   node-fetch   summary-vectors
+"
+    );
+    let mut rows = Vec::new();
+    for adds in [40usize, 80, 160] {
+        let (allocs, bytes, candidates, fetch_allocs, summary_allocs) = run(adds);
+        println!(
+            "  {candidates:>5}   {allocs:>11}   {bytes:>10}   {fetch_allocs:>10}   {summary_allocs:>15}",
+        );
+        rows.push((candidates, allocs, fetch_allocs, summary_allocs));
+    }
+    // The marginal cost is the honest per-candidate number: the "per candidate" ratio falls as the
+    // corpus grows purely because a fixed per-call overhead is being divided by more candidates,
+    // which reads as an improvement that is not there.
+    println!();
+    for pair in rows.windows(2) {
+        let (c0, a0, f0, s0) = pair[0];
+        let (c1, a1, f1, s1) = pair[1];
+        let dc = (c1 - c0).max(1) as f64;
+        let total = (a1 - a0) as f64 / dc;
+        let fetch = (f1 - f0) as f64 / dc;
+        let summary = (s1 - s0) as f64 / dc;
+        println!(
+            "  marginal {c0}->{c1}: {total:.1} per extra candidate = {fetch:.1} node fetch + {summary:.1} summary vectors + {:.1} everything else",
+            total - fetch - summary,
+        );
+    }
+}
+
+/// What does the retrieve path actually decode per candidate?
+///
+/// The node scoring pass fetches whole `ContextNode`s for EVERY candidate and uses two things from
+/// each: the node hash and the vector. Everything else it decodes is discarded -- the summary text
+/// especially, which is the largest field a node carries. Whether replacing that fetch with a
+/// vectors-only one is worth six files of change depends entirely on the split, so measure the
+/// split before building anything.
+///
+/// Reports bytes on real ingested nodes, not constructed ones, because the summary text is
+/// produced by the extract and its length is the whole question.
+///
+///   cargo test -p temporalstore-rust --lib what_a_retrieve_decodes_per_candidate -- --ignored --nocapture
+#[test]
+#[ignore]
+fn what_a_retrieve_decodes_per_candidate() {
+    // Scoped to this test: the encoded length is what a fetch actually pays to decode, and the
+    // wire codec lives behind a trait.
+    use crate::types::ContextWire;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let mut node_hashes = Vec::new();
+    for index in 0..40usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: 4242,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 4242,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("RET-{index:06}"),
+                    title: format!("retrieve {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("retrieve {index} body "),
+                        "context payload sentence. ".repeat(150)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "ingest {index} failed: {:?}", report.status);
+        node_hashes.extend(report.node_hashes.iter().copied());
+    }
+    node_hashes.sort_unstable();
+    node_hashes.dedup();
+    assert!(!node_hashes.is_empty(), "no nodes to measure");
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNodes {
+            tenant_hash: 4242,
+            node_hashes: node_hashes.clone(),
+        },
+    });
+    let CommandResponse::ContextNodes { nodes } = response.response else {
+        panic!("expected nodes");
+    };
+    assert!(!nodes.is_empty(), "no nodes returned");
+
+    let (mut name, mut l0, mut l1_ref, mut meta_ref, mut vector, mut total) = (0, 0, 0, 0, 0, 0);
+    let mut with_vector = 0usize;
+    for node in &nodes {
+        name += node.canonical_name.len();
+        l0 += node.l0.len();
+        l1_ref += node.l1_ref.len();
+        meta_ref += node.raw_metadata_ref.len();
+        vector += node.vector.len() * 4;
+        total += node.encode_context_proto_value().len();
+        if !node.vector.is_empty() {
+            with_vector += 1;
+        }
+    }
+    let n = nodes.len();
+    let per = |v: usize| v as f64 / n as f64;
+    println!(
+        "
+  {n} nodes, {with_vector} carrying a vector
+
+  per candidate           bytes     share of encoded record
+  canonical_name        {:8.1}   {:5.1}%
+  l0 (summary text)     {:8.1}   {:5.1}%
+  l1_ref                {:8.1}   {:5.1}%
+  raw_metadata_ref      {:8.1}   {:5.1}%
+  vector                {:8.1}   {:5.1}%   <- the only part scoring uses
+  encoded record        {:8.1}
+",
+        per(name),
+        100.0 * name as f64 / total as f64,
+        per(l0),
+        100.0 * l0 as f64 / total as f64,
+        per(l1_ref),
+        100.0 * l1_ref as f64 / total as f64,
+        per(meta_ref),
+        100.0 * meta_ref as f64 / total as f64,
+        per(vector),
+        100.0 * vector as f64 / total as f64,
+        per(total),
+    );
+}
+
 #[test]
 #[ignore]
 fn what_one_add_costs_end_to_end() {
@@ -3203,184 +3567,4 @@ fn what_one_add_costs_end_to_end() {
             (layout + clear_dirty + refresh) as f64 / adds as f64,
         );
     }
-}
-
-// --- an encoder swap at the SAME width ------------------------------------------------------
-//
-// Width conflicts are covered above. These cover the case width cannot see: two encoders that
-// produce vectors of identical length, which is routine once any model is truncated to a common
-// width. Nothing but the recorded hash separates them, and no error is raised either way.
-
-#[test]
-fn a_different_encoder_at_the_same_width_conflicts() {
-    let e5 = context_embedding_model_hash("intfloat/multilingual-e5-large");
-    let bge = context_embedding_model_hash("BAAI/bge-m3");
-    assert_ne!(e5, bge, "distinct encoders must hash differently");
-    assert!(context_embedding_model_conflicts(bge, e5));
-    assert!(!context_embedding_model_conflicts(e5, e5));
-}
-
-#[test]
-fn an_unknown_hash_never_conflicts_on_either_side() {
-    let e5 = context_embedding_model_hash("intfloat/multilingual-e5-large");
-    // A stored zero predates the hash being recorded. Refusing those would take every existing
-    // store dark on the first deploy of this guard.
-    assert!(!context_embedding_model_conflicts(0, e5));
-    // An active zero means the caller named no encoder. normalize_provider would have substituted
-    // a mock sentinel, whose hash conflicts with everything a real ingest wrote -- which is why
-    // the active hash is read from the raw request.
-    assert!(!context_embedding_model_conflicts(e5, 0));
-    assert!(!context_embedding_model_conflicts(0, 0));
-}
-
-#[test]
-fn the_mock_sentinel_would_have_conflicted_with_everything() {
-    // The bug this arrangement avoids: hashing the normalized provider.
-    let sentinel = context_embedding_model_hash("mock-context-embedding");
-    let real = context_embedding_model_hash("intfloat/multilingual-e5-large");
-    assert_ne!(0, sentinel, "the sentinel is a real name and hashes to a real value");
-    assert!(
-        context_embedding_model_conflicts(real, sentinel),
-        "hashing the normalized provider would skip every genuinely embedded vector"
-    );
-}
-
-#[test]
-fn ingest_and_the_drainer_identify_the_same_model() {
-    // Ingest used to hash provider.model -- the CHAT model -- while the drainer hashed
-    // provider.embedding_model, so the value stamped on a node did not identify its encoder.
-    let config = ContextModelProviderConfig {
-        model: "deepseek-chat".to_string(),
-        embedding_model: "intfloat/multilingual-e5-large".to_string(),
-        ..ContextModelProviderConfig::default()
-    };
-    assert_ne!(
-        context_embedding_model_hash(&config.model),
-        context_embedding_model_hash(&config.embedding_model),
-        "chat and embedding models must not hash alike, or this proves nothing"
-    );
-    assert_eq!(
-        context_embedding_model_hash(&config.embedding_model),
-        context_embedding_model_hash("intfloat/multilingual-e5-large")
-    );
-}
-
-#[test]
-fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
-    // The case width cannot see. Both vectors here are the SAME length as the query, so the
-    // width check passes them both; only the recorded model hash separates them. The impostor
-    // carries the query's own vector verbatim -- a perfect cosine -- and its text is chosen so it
-    // cannot win the lexical pass. If it takes the slot, it was scored across two vector spaces.
-    let engine = test_engine();
-    const TENANT: u64 = 6021;
-    const EVENT_TIME: u64 = 1_781_700_000_000;
-    let provider = ContextModelProviderConfig::default();
-    let query = "how do we deploy the ingest service";
-    let query_vector = query::context_query_embedding(&provider, query).unwrap();
-    let ours = context_embedding_model_hash(&provider.embedding_model);
-    let theirs = context_embedding_model_hash("some-other-encoder");
-    assert_ne!(ours, theirs);
-
-    let mut near = query_vector.clone();
-    near[0] += 0.35;
-    near[1] -= 0.15;
-
-    for (node_hash, name, summary, at, vector, model_hash) in [
-        (31u64, "matching", "release runbook notes".to_string(),
-         EVENT_TIME, near.clone(), ours),
-        (32u64, "impostor", "totally unrelated wording".to_string(),
-         EVENT_TIME + 500, query_vector.clone(), theirs),
-    ] {
-        assert_eq!(
-            query_vector.len(), vector.len(),
-            "both vectors must be the same width, or this tests the width check instead"
-        );
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertNode {
-                tenant_hash: TENANT,
-                node: ContextNode {
-                    node_hash,
-                    parent_hash: 0,
-                    kind: 1,
-                    canonical_name: name.to_string(),
-                    l0: summary.clone(),
-                    status: 0,
-                    last_event_time_ms: at,
-                    l1_ref: String::new(),
-                    raw_metadata_ref: String::new(),
-                    vector: Vec::new(),
-                    embedding_model_hash: 0,
-                    embedding_updated_at_ms: 0,
-                },
-            },
-        });
-        assert!(response.status.ok);
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertSummary {
-                tenant_hash: TENANT,
-                summary: ContextSummary {
-                    node_hash,
-                    level: 1,
-                    text: summary.clone(),
-                    valid_from_ms: at,
-                    vector: Vec::new(),
-                },
-            },
-        });
-        assert!(response.status.ok);
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextSetNodeEmbedding {
-                tenant_hash: TENANT,
-                node_hash,
-                model_hash,
-                vector,
-                updated_at_ms: at,
-            },
-        });
-        assert!(response.status.ok);
-    }
-
-    let retrieve = retrieve_context(
-        &engine,
-        ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash: TENANT,
-            node_hashes: vec![31, 32],
-            query: query.to_string(),
-            start_time_ms: 0,
-            end_time_ms: EVENT_TIME + 1_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: default_tiers(),
-            max_summary_nodes: 1,
-            max_event_nodes: 4,
-            prefer_current_agent: false,
-            current_agent_scope_key: "agent:test".to_string(),
-            provider,
-        },
-    );
-    assert!(retrieve.status.ok, "{:?}", retrieve.status);
-    let summary_nodes: Vec<u64> = retrieve
-        .blocks
-        .iter()
-        .filter(|block| block.tier == ContextTier::L0)
-        .map(|block| block.node_hash)
-        .collect();
-    assert_eq!(
-        vec![31u64],
-        summary_nodes,
-        "a vector from another encoder must not take the slot on a perfect but meaningless cosine"
-    );
-    assert_eq!(
-        1, retrieve.fanout_plan.embedding_model_conflict_nodes,
-        "the declined vector has to be COUNTED, and counted as a MODEL conflict"
-    );
-    assert_eq!(
-        0, retrieve.fanout_plan.embedding_width_conflict_nodes,
-        "these vectors are the same width -- charging this to the width counter would tell an          operator to look for a provider outage that did not happen"
-    );
 }
