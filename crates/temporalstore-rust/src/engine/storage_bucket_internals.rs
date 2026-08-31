@@ -1523,6 +1523,11 @@ pub mod layout_by_caller {
     }
 }
 
+// `Location::caller()` in a function that is not `#[track_caller]` returns the location of the
+// `caller()` call itself, so the by-caller breakdown below reported this one line for all ten
+// callers -- it looked like attribution and was not. Applied only under `cfg(test)`, because the
+// attribute adds a hidden location argument at every call site and this is a write path.
+#[cfg_attr(test, track_caller)]
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.page_index.len());
     // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
@@ -1569,6 +1574,7 @@ pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u3
 /// from page entries, where the set has NOT been maintained and must be derived. Those keep the
 /// scan. `bucket_object_index_already_matches_a_from_scratch_recompute` is the evidence for
 /// dropping it everywhere else.
+#[cfg_attr(test, track_caller)]
 fn refresh_one_bucket_runtime_flags(
     bucket: &mut BucketNode,
     now: u64,
@@ -1617,12 +1623,30 @@ fn refresh_one_bucket_runtime_flags(
 /// set of changed buckets is not known. On the per-write path use
 /// [`refresh_pending_bucket_runtime_flags`] instead -- this sweep on every write is what made
 /// ingestion quadratic in the corpus.
+#[cfg_attr(test, track_caller)]
 pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     refresh_all_bucket_runtime_flags(shard, true);
 }
 
+/// The sweep, for a caller that has just rebuilt the bucket index from the page entries.
+///
+/// [`rebuild_bucket_first_index`] recomputes every bucket's object index and layout by scanning
+/// that bucket's page index. Running the full sweep with the rebuild still switched on immediately
+/// afterwards scans exactly the same pages a second time, from the same source, with nothing in
+/// between that could change the answer. The two showed up in the per-add attribution as a pair of
+/// counters that were equal at every corpus size -- 45 300 each over 150 adds, 180 600 each over
+/// 300, 721 200 each over 600 -- which is what the same scan run twice looks like.
+///
+/// The flags themselves (dirty, deleted, in_memory, ttl) are still refreshed; only the redundant
+/// object-index rescan is skipped.
+#[cfg_attr(test, track_caller)]
+pub(super) fn refresh_bucket_runtime_flags_after_reconstruct(shard: &mut ShardState) {
+    refresh_all_bucket_runtime_flags(shard, false);
+}
+
 /// The sweep, with the object-index rebuild made optional. See
 /// [`refresh_one_bucket_runtime_flags`] for when it can be skipped.
+#[cfg_attr(test, track_caller)]
 fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index: bool) {
     let now = now_ms();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
@@ -1644,6 +1668,7 @@ fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index
 /// function of its own pages plus the two shard-wide maps, and both of those are noted against the
 /// buckets they affect. `bucket_runtime_flags_match_full_sweep` in the engine tests checks that
 /// equivalence against a real workload rather than leaving it as an argument.
+#[cfg_attr(test, track_caller)]
 pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     if shard.buckets_pending_flag_refresh.is_empty() {
         return;

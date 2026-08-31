@@ -392,7 +392,10 @@ impl TemporalEngine {
         }
         if mutated_any {
             if rebuilt_bucket_index {
-                refresh_bucket_runtime_flags(shard);
+                // The reconstruct on the line above already recomputed every bucket's object
+                // index from its page index, so the sweep's own rebuild would redo that identical
+                // scan. Flags still refresh; only the duplicate scan is dropped.
+                refresh_bucket_runtime_flags_after_reconstruct(shard);
             } else {
                 // Refresh only the buckets this batch disturbed. The full sweep is
                 // O(total pages), so running it per batch left bulk ingest quadratic in the
