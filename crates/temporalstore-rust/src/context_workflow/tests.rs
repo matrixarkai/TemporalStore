@@ -1226,6 +1226,64 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
 }
 
 #[test]
+fn text_with_nothing_to_redact_still_went_through_the_filter() {
+    // pii_filtering_applied answered "did redaction change the text", not "did this text go
+    // through the filter". With filtering on, most text has no personal data in it, so the flag
+    // read false in the ordinary healthy case: anyone auditing whether filtering ran got "no"
+    // for every clean record, which is the majority of them.
+    let policy = ContextWorkflowPolicy {
+        allowed_provider_kinds: vec![ContextProviderKind::OpenAiCompatible],
+        allowed_models: vec!["context-prod".to_string()],
+        max_extract_body_bytes: 256,
+        max_prompt_tokens: 64,
+        pii_filtering_enabled: true,
+        tenant_isolation_required: true,
+        rate_limit_per_minute: 100,
+        provider_failure_budget: 3,
+    };
+    let request = ContextExtractRequest {
+        shard_id: 1,
+        tenant_hash: 9,
+        source_kind: ContextSourceKind::Ticket,
+        source_id: "T-2".to_string(),
+        title: "Billing".to_string(),
+        body: "Customer asked when the next invoice run happens".to_string(),
+        timestamp_ms: 1,
+        provider: ContextModelProviderConfig {
+            provider_name: "openai-compatible".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            model: "context-prod".to_string(),
+            mock_mode: false,
+            ..ContextModelProviderConfig::default()
+        },
+    };
+
+    let report = validate_context_extract_policy(&policy, &request);
+    assert!(report.status.ok);
+    assert_eq!(
+        report.sanitized_text, request.body,
+        "premise: this text has nothing in it to redact"
+    );
+    assert!(
+        report.pii_filtering_applied,
+        "the text went through the filter -- it simply had nothing to remove, which is not          the same as the filter not running"
+    );
+
+    // And the other direction, so "applied" cannot quietly come to mean something else: with
+    // filtering switched off, nothing went through the filter and the report has to say so.
+    let unfiltered = ContextWorkflowPolicy {
+        pii_filtering_enabled: false,
+        ..policy
+    };
+    let report = validate_context_extract_policy(&unfiltered, &request);
+    assert!(report.status.ok);
+    assert!(
+        !report.pii_filtering_applied,
+        "filtering is switched off, so it was not applied to this text"
+    );
+}
+
+#[test]
 fn context_workflow_policy_controls_provider_model_and_pii() {
     let policy = ContextWorkflowPolicy {
         allowed_provider_kinds: vec![ContextProviderKind::OpenAiCompatible],
@@ -2876,4 +2934,101 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
         .insert("inline_payload".to_string(), serde_json::Value::Bool(false));
     let stated: ContextResourceLifecycleRecord = serde_json::from_value(external).unwrap();
     assert!(!stated.inline_payload);
+
+}
+
+/// End-to-end add latency, and whether it stays flat as the corpus grows.
+///
+/// The WAL numbers elsewhere are per-append: 69 us for a length-framed record. An add is not
+/// one append. It goes through `ingest_extract_context` -- the same entry the live hook uses,
+/// whose records the batch ingester documents as identical to live ingestion -- and that writes
+/// eight records and eight barriers per add. So the interesting quantity is not the per-record
+/// constant but what one add costs end to end, and whether it grows.
+///
+/// Growth is the whole point. A configuration that starts at 100ms and degrades 3.8x over a run
+/// is worse than one that starts higher and stays put, because the corpus only goes one way.
+/// This reports the first and last thirty adds separately and their ratio, which is the shape
+/// that distinguishes them; a single average would hide it.
+///
+///   cargo test -p temporalstore-rust --lib what_one_add_costs_end_to_end -- --ignored --nocapture
+#[test]
+#[ignore]
+fn what_one_add_costs_end_to_end() {
+    fn run(adds: usize) -> (f64, f64, f64, (u64, u64, u64, u64)) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Pages visited per site, which is where an O(corpus) add would show itself: a per-write
+        // rebuild that scans a bucket grows with the bucket, so its visit count grows with the
+        // square of the ingest while the call count stays linear. Counting the work beats timing
+        // it -- a duration on a loaded machine cannot tell those two apart.
+        crate::engine::bucket_visit_sites::reset();
+        crate::engine::layout_by_caller::reset();
+        let mut timings = Vec::with_capacity(adds);
+        for index in 0..adds {
+            let started = std::time::Instant::now();
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 4242,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 4242,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("ADD-{index:06}"),
+                        title: format!("add {index}"),
+                        // ~4KB, the size the earlier flag comparison used, so the two are
+                        // talking about the same unit of work.
+                        body: format!(
+                            "{}{}",
+                            format!("add {index} body "),
+                            "context payload sentence. ".repeat(150)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(
+                report.status.ok,
+                "add {index} failed, so the timings below measure a rejection: {:?}",
+                report.status
+            );
+            timings.push(started.elapsed().as_secs_f64() * 1e3);
+        }
+
+        let visits = crate::engine::bucket_visit_sites::snapshot();
+        for (site, pages) in crate::engine::layout_by_caller::snapshot().iter().take(4) {
+            println!("      {adds:>4} adds  {pages:>10} pages  {site}");
+        }
+        let window = 30.min(timings.len() / 3).max(1);
+        let mean = |slice: &[f64]| slice.iter().sum::<f64>() / slice.len() as f64;
+        let first = mean(&timings[..window]);
+        let last = mean(&timings[timings.len() - window..]);
+        (first, last, last / first.max(f64::MIN_POSITIVE), visits)
+    }
+
+    println!(
+        "
+  adds   first 30    last 30   degrade      layout   clear_dirty   refresh   per add
+"
+    );
+    for adds in [150usize, 300, 600] {
+        let (first, last, ratio, (layout, clear_dirty, refresh, _)) = run(adds);
+        println!(
+            "  {adds:>4}  {first:>7.1}ms  {last:>7.1}ms  {ratio:>7.2}x  {layout:>10}  {clear_dirty:>12}  {refresh:>8}  {:>8.0}",
+            (layout + clear_dirty + refresh) as f64 / adds as f64,
+        );
+    }
 }

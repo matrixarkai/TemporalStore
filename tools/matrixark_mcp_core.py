@@ -16,6 +16,7 @@ import select
 import shutil
 import socket
 import subprocess
+import functools
 import hashlib
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -1753,31 +1754,52 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     return dedupe_entities(entities)
 
 
+_PATCH_CORRECTION_RE = re.compile(
+    r"\b(?:correction|correct|wrong|updated|changed)[:\s]+([^.;!?]+?)\s+(?:instead\s+of|not)\s+([^.;!?]+)",
+    flags=re.IGNORECASE,
+)
+_PATCH_PREFERENCE_RE = re.compile(
+    r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]+?)\s+(?:now|instead\s+of|not)\s+([^.;!?]+)",
+    flags=re.IGNORECASE,
+)
+_PATCH_NEGATIVE_RE = re.compile(
+    r"\b(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]+)",
+    flags=re.IGNORECASE,
+)
+
+
+@functools.lru_cache(maxsize=4)
+def _whole_text_patch_scans(text: str):
+    """The three scans that read the WHOLE document, done once per document.
+
+    `infer_entity_field_patches` is called once per extracted entity, and each call used to run
+    these three searches across the entire text. The entity count grows with the document, so the
+    work grew as its square: a 256 KB markdown ingest spent ~33 seconds here, against ~1.2 s for a
+    JSON document of the same size that produced far fewer entities.
+
+    None of the three depend on the entity -- only on the text. Which patch is *kept* still depends
+    on `entity_type`, and that check is unchanged; this only stops recomputing the same three
+    answers. The cache is keyed on the text itself and holds four entries, which is enough for one
+    ingest to reuse its own document while never pinning more than a handful.
+    """
+    return (
+        _PATCH_CORRECTION_RE.search(text),
+        _PATCH_PREFERENCE_RE.search(text),
+        _PATCH_NEGATIVE_RE.search(text),
+    )
+
+
 def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[Json]:
     patches: list[Json] = []
-    correction = re.search(
-        r"\b(?:correction|correct|wrong|updated|changed)[:\s]+([^.;!?]+?)\s+(?:instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
+    correction, preference, negative_preference = _whole_text_patch_scans(text)
     if correction:
         replace = clean_patch_value(correction.group(1))
         search = clean_patch_value(correction.group(2))
         patches.append(entity_patch(search, replace))
-    preference = re.search(
-        r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]+?)\s+(?:now|instead\s+of|not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
     if entity_type == "preference" and preference:
         replace = clean_patch_value(preference.group(1))
         search = clean_patch_value(preference.group(2))
         patches.append(entity_patch(search, replace))
-    negative_preference = re.search(
-        r"\b(?:never|avoid(?:s)?|do(?:es)?\s+not|don't|doesn't|cannot|can't|should\s+not|must\s+not)\s+([^.;!?]+)",
-        text,
-        flags=re.IGNORECASE,
-    )
     if entity_type == "preference" and negative_preference and not patches:
         patches.append(entity_patch("", "avoid " + clean_patch_value(negative_preference.group(1))))
     evolving_entity_types = {
@@ -2103,9 +2125,31 @@ def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -
     return access
 
 
+# Characters an index term may keep beyond ASCII: CJK ideographs, kana and hangul.
+#
+# Without them `[^a-z0-9_.:/-]` turned every CJK character into "_", so a pure-Chinese value
+# normalized to "" and `context_index_name` returned "" -- no term at all. The resource parser
+# indexes Chinese as overlapping character bigrams precisely because Chinese has no spaces to
+# split on, and every one of those bigrams was being discarded here.
+#
+# It cost twice over. The Chinese half of a CN/EN corpus had NO keyword index, and because
+# `keywords_for_text` interleaves bigrams with Latin runs so English filler cannot exhaust the
+# quota, the discarded bigrams still consumed their slots: measured on a CN/EN corpus, only
+# 42.9-51.1% of emitted keywords survived to become terms, so a cap of 12 bought 6 usable terms
+# and a cap of 200 bought 86.
+_INDEX_VALUE_CJK = (
+    "㐀-䶿"  # CJK extension A
+    "一-鿿"  # CJK unified ideographs
+    "豈-﫿"  # compatibility ideographs
+    "぀-ヿ"  # hiragana + katakana
+    "가-힯"  # hangul syllables
+)
+_INDEX_VALUE_STRIP_RE = re.compile(r"[^a-z0-9_.:/-" + _INDEX_VALUE_CJK + r"]+")
+
+
 def normalized_index_value(value: Any) -> str:
     text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9_.:/-]+", "_", text)
+    text = _INDEX_VALUE_STRIP_RE.sub("_", text)
     return text.strip("_")
 
 
@@ -3068,98 +3112,102 @@ except ImportError:  # top-level path (direct tools/ execution)
     )
 
 
-def embedding_for_text(text: str) -> list[float]:
-    model = embedding_model_name()
-    cache_key = (model, text)
-    with _EMBEDDING_VECTOR_CACHE_LOCK:
-        cached = _EMBEDDING_VECTOR_CACHE.get(cache_key)
-        if cached is not None:
-            return list(cached)
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        vector = oss_embedding_for_text(text)
-        with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
-            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
+# These delegate rather than duplicate. This module used to carry its own copies of
+# embedding_for_text and embeddings_for_texts, with their own _EMBEDDING_VECTOR_CACHE, and because
+# the serving modules pull this module in with `import *`, the copies here were the ones that
+# actually ran. Improvements made to matrixark_mcp_embeddings therefore did nothing in production:
+# the LRU eviction that replaced a clear-the-whole-cache policy landed in the copy nobody called,
+# and adding the query/passage role there produced a TypeError at the call site, which is how the
+# duplication was found at all.
+#
+# One implementation, imported here, so a fix applies once.
+try:  # package path
+    from tools.matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_for_text,
+        embeddings_for_texts,
+    )
+except ImportError:  # top-level path (direct tools/ execution)
+    from matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_for_text,
+        embeddings_for_texts,
+    )
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer env var, treating empty or unparseable as unset.
+
+    These are read at import time, so a bare `FOO=` in a shell profile or a compose
+    file would otherwise raise ValueError and take the whole module down rather than
+    fall back to the default.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except (ValueError, AttributeError):
+        return default
+
+
+EMBEDDING_VECTOR_DECIMALS = _env_int("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", 6)
+EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 0)
+EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
+
+
+def compact_embedding_vector(vector: list[float]) -> list[float]:
+    """Drop float digits the encoder never produced.
+
+    Embedding records are the bulk of what an ingest writes - 85% of the bytes for a
+    markdown skill - and a 384-value vector serializes to about 8.2 KB at full float
+    repr. The models emit f32, which carries roughly seven decimal digits, so the rest
+    is noise being paid for.
+
+    Every consumer of a stored vector scores it with cosine, and cosine ignores a
+    uniform scale - cos(a, k*b) == cos(a, b) for k > 0 - so the values can be rescaled
+    freely as long as one vector is scaled by one factor. That is what lets both the
+    integer modes below store whole numbers and keep the score identical.
+
+    Measured on 40,000 embedding records, only the encoding differing:
+
+        round(6) floats   4,207 B/record   3,302 B resident   6,765 B disk
+        scale=100000      2,666 B/record   3,193 B resident   4,965 B disk
+        int8              1,861 B/record   3,126 B resident   3,688 B disk
+
+    Note what that says: shrinking a vector is a DISK win, not a memory one. Resident
+    memory is per-record bookkeeping and barely moves with payload size (-5% across a
+    56% smaller record). Reduce record COUNT to reduce memory.
+
+    A cosine number close to 1 is NOT sufficient evidence here. int8 scores 0.99992
+    against the original vector, which looks harmless, but the margins between competing
+    near-neighbours in a real corpus are smaller than that error. Measured over 500
+    candidate chunks from one document with six CN/EN queries, against the float
+    ranking:
+
+        scale=100000   top-1 correct 6/6   exact top-10 order 6/6   overlap 10.0/10
+        int8           top-1 correct 1/6   exact top-10 order 0/6   overlap  4.8/10
+
+    int8 loses half the top-10. An earlier six-vector probe showed ranking preserved
+    and was simply too small to reorder anything. Prefer scale=100000, which is
+    exact on this test and still 67.9% of the float size.
+
+    Modes, in precedence order:
+      MATRIXARK_EMBEDDING_VECTOR_INT8=1   each vector scaled by its own max magnitude
+                                          into [-127, 127]. Smallest, but it CHANGES
+                                          RANKING on a realistic candidate set and is
+                                          not recommended for retrieval - see below.
+      MATRIXARK_EMBEDDING_VECTOR_SCALE=N  integers scaled by N. At 1e5 the worst
+                                          cosine is 1.000000000.
+      MATRIXARK_EMBEDDING_VECTOR_DECIMALS rounded floats, default 6.
+    """
+    if EMBEDDING_VECTOR_INT8:
+        peak = max((abs(value) for value in vector), default=0.0)
+        if peak <= 0.0:
+            return [0 for _ in vector]
+        return [int(round(value / peak * 127)) for value in vector]
+    if EMBEDDING_VECTOR_SCALE > 0:
+        return [int(round(value * EMBEDDING_VECTOR_SCALE)) for value in vector]
+    if EMBEDDING_VECTOR_DECIMALS <= 0:
         return vector
-    if provider in _API_EMBEDDING_PROVIDERS:
-        vector = api_embedding_for_text(text, provider)
-        with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
-            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
-        return vector
-    vector = [0.0] * EMBEDDING_DIM
-    for token in tokens(text):
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        index = digest[0] % EMBEDDING_DIM
-        sign = 1.0 if digest[1] % 2 == 0 else -1.0
-        vector[index] += sign
-    norm = math.sqrt(sum(value * value for value in vector))
-    if norm == 0:
-        result = vector
-    else:
-        result = [round(value / norm, 6) for value in vector]
-    with _EMBEDDING_VECTOR_CACHE_LOCK:
-        if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
-            _EMBEDDING_VECTOR_CACHE.clear()
-        _EMBEDDING_VECTOR_CACHE[cache_key] = list(result)
-    return result
-
-
-def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
-    """Batch-friendly embedding helper with the same cache as embedding_for_text."""
-    if not texts:
-        return []
-    model = embedding_model_name()
-    results: list[list[float] | None] = []
-    missing: list[tuple[int, str]] = []
-    with _EMBEDDING_VECTOR_CACHE_LOCK:
-        for index, text in enumerate(texts):
-            cached = _EMBEDDING_VECTOR_CACHE.get((model, text))
-            if cached is None:
-                results.append(None)
-                missing.append((index, text))
-            else:
-                results.append(list(cached))
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if missing and provider in _API_EMBEDDING_PROVIDERS:
-        vectors = api_embedding_for_texts([text for _index, text in missing], provider)
-        with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
-            for (index, text), vector in zip(missing, vectors):
-                materialized = [round(float(value), 6) for value in vector]
-                _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
-                results[index] = materialized
-    elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-        try:
-            encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
-            if encoder is None:
-                from sentence_transformers import SentenceTransformer  # type: ignore
-
-                encoder = SentenceTransformer(model_ref)
-                _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
-            vectors = encoder.encode([text for _index, text in missing], normalize_embeddings=True, show_progress_bar=False)
-            with _EMBEDDING_VECTOR_CACHE_LOCK:
-                if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
-                    _EMBEDDING_VECTOR_CACHE.clear()
-                for (index, text), vector in zip(missing, vectors):
-                    materialized = [round(float(value), 6) for value in vector]
-                    _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
-                    results[index] = materialized
-        except Exception:
-            for index, text in missing:
-                results[index] = embedding_for_text(text)
-    else:
-        for index, text in missing:
-            results[index] = embedding_for_text(text)
-    return [list(item or []) for item in results]
+    return [round(value, EMBEDDING_VECTOR_DECIMALS) for value in vector]
 
 
 def embedding_model_name() -> str:

@@ -429,11 +429,13 @@ INTERN_BUNDLE_EMIT_KEY = "__bundle__"  # emitted-token namespace for bundle side
 # records (model_ref/model_name/model_hash/provider/execution_mode) re-emitted on every serving batch
 # that carries a context_embedding, yet only a handful of distinct models exist per store. The read
 # path already latest-state-compacts them (compact_latest_context_state_records), so the duplicates are
-# pure durable-log bloat. With MATRIXARK_DEDUP_MODEL_REGISTRY ON we append at most one registry record
-# per distinct semantic identity (timestamp excluded); a genuine change to any model field is a new
-# identity and is still recorded. Serving/retrieval that reads model info still resolves it (>=1 record
-# per model survives). Flag OFF re-emits every batch (prior behaviour).
-DEDUP_MODEL_REGISTRY = bool_env("MATRIXARK_DEDUP_MODEL_REGISTRY", True)
+# pure durable-log bloat. At most one registry record is appended per distinct semantic identity
+# (timestamp excluded); a genuine change to any model field is a new identity and is still recorded.
+# Serving/retrieval that reads model info still resolves it (>=1 record per model survives).
+#
+# This was gated behind MATRIXARK_DEDUP_MODEL_REGISTRY during its rollout. The gate is gone: its OFF
+# path was the superseded behavior -- re-emitting every batch -- and keeping a switch for it only
+# preserved the option of choosing the worse one.
 
 # Phase-2 -- coalesce transient summary-dirty markers. A context_summary_dirty (status="pending")
 # marker means "this node's summary needs regeneration". One is emitted per (node prefix) on EVERY
@@ -441,13 +443,16 @@ DEDUP_MODEL_REGISTRY = bool_env("MATRIXARK_DEDUP_MODEL_REGISTRY", True)
 # though the refresh reconciliation only ever acts on the LATEST uncompleted pending marker per node
 # (it regenerates the node summary from all current events regardless of which marker triggered it) and
 # resolves a marker by matching a status="completed" marker on the same dirty_hash. With
-# MATRIXARK_COALESCE_SUMMARY_DIRTY ON we keep at most ONE outstanding (uncompleted) pending marker per
+# coalescing ON we keep at most ONE outstanding (uncompleted) pending marker per
 # (scope, node): a new pending marker is skipped while an uncompleted one is already durable, so the
 # node stays flagged for regen. CRASH-SAFE -- the one outstanding marker is durable, so a crash before
 # regen still triggers the refresh on recovery; once the summary regenerates (completion marker with
 # that dirty_hash) the next event re-marks the node afresh. Completion/refreshed markers are never
-# dropped. Flag OFF emits a marker per event (prior behaviour).
-COALESCE_SUMMARY_DIRTY = bool_env("MATRIXARK_COALESCE_SUMMARY_DIRTY", True)
+# dropped.
+#
+# This was gated behind MATRIXARK_COALESCE_SUMMARY_DIRTY during its rollout. The gate is gone: its
+# OFF path was the superseded behavior -- a marker per event, measured at ~5% of on-disk memory --
+# and a switch whose only setting anyone would choose is ON is not a switch.
 
 
 def _canonical_scope_key_of(record: Json) -> str:
@@ -637,6 +642,44 @@ INLINE_VECTOR_OWNER_BY_REF_TYPE = {
 }
 
 
+
+# `embedding_meta` is the embedding record copied wholesale minus a few keys, so it inherits
+# whatever the record happened to carry. Two of those are a routing blob:
+# `canonical_storage_route(storage_options)` is a pure function of the options beside it, and the
+# options are themselves already on the owning record.
+#
+# Measured by walking the page segments over 300 ingests: `embedding_meta.storage_route` cost
+# 3.93 KB per add and `embedding_meta.storage_options` 2.55 KB -- together 63% of everything
+# `embedding_meta` cost, and 13x the `vector` the metadata exists to describe (0.78 KB).
+#
+# Nothing reads either one. Every consumer of `embedding_meta` takes the source aggregates that
+# budgeting and recovery need; a search for a read of the nested route or options finds none. The
+# record's own top-level `storage_route` is kept and already slimmed to its placement half by
+# `slim_persisted_storage_route`, which is where a reader that wants placement looks.
+_EMBEDDING_META_SKIP = (
+    "record_type",
+    "ref_type",
+    "ref_hash",
+    "vector",
+    "storage_route",
+    "storage_options",
+    # The placement/storage half of the same routing blob, inherited the same way and read by
+    # nobody. Measured over 400 memories: placement_key 182.9 KB, scope_key 125.1 KB,
+    # storage_record_kind 64.5 KB, placement_hash 56.3 KB, storage_part 50.8 KB -- 479.6 KB of
+    # embedding_meta's 1,703.4 KB (28.2%), every one of them a single distinct value across the
+    # whole store. Checked for readers rather than assumed: no read of any of them across 101
+    # `embedding_meta` sites, and the native layer never reads `embedding_meta` at all.
+    #
+    # `model` / `model_ref` are deliberately NOT here despite also scanning clean: a mis-set model
+    # path falls back to a different vector dimension, and the model identity on an embedding is
+    # what makes that detectable.
+    "placement_key",
+    "placement_hash",
+    "scope_key",
+    "storage_record_kind",
+    "storage_part",
+)
+
 def fold_embedding_records(
     records: list[Json],
     resolve_owner=None,
@@ -698,7 +741,7 @@ def fold_embedding_records(
         meta = {
             key: value
             for key, value in record.items()
-            if key not in ("record_type", "ref_type", "ref_hash", "vector")
+            if key not in _EMBEDDING_META_SKIP
             and value not in (None, "", [], {})
         }
         if meta:
@@ -3323,6 +3366,21 @@ def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
     A tombstone-free log short-circuits ``apply_memory_tombstones`` unchanged, so the middle step is a
     no-op for the overwhelmingly common no-tombstone case (and ``compact_latest_value`` then
     ``compact_latest_context_state`` is exactly the historical composition)."""
+    # Audit/pipeline-task footprint bounding runs FIRST. It was written as this pipeline's entry
+    # (`bound_pipeline_task_footprint`, "Lever A, lever B, audit-payload retention, then value
+    # sharing") and was reachable from nowhere -- while a comment in matrixark_mcp_summary_runtime
+    # states serving already applies it. Its knob is defaulted, not off: audit payloads are retained
+    # for the newest 20 rows per scope and aged out beyond that.
+    #
+    # Safe at this position: it touches only pipeline-task and audit rows, never context_index
+    # postings and never memory records, so neither load-bearing boundary above is disturbed. The
+    # audit ROW always survives (retrieval and session-commit look it up by record_type + scope);
+    # only the diagnostic payload ages out.
+    try:
+        from tools.matrixark_pipeline_task_slim import bound_pipeline_task_footprint
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_pipeline_task_slim import bound_pipeline_task_footprint
+    records = bound_pipeline_task_footprint(records)
     return compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
 
 
@@ -4172,10 +4230,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
 
     def _filter_duplicate_model_registry(self, records: list[Json]) -> list[Json]:
         """Drop context_model_registry records whose semantic identity is already durably present.
-        Keeps at least one record per distinct model; a changed field is a new identity. No-op when the
-        flag is OFF."""
-        if not DEDUP_MODEL_REGISTRY:
-            return records
+        Keeps at least one record per distinct model; a changed field is a new identity."""
         if not any(isinstance(r, dict) and r.get("record_type") == "context_model_registry" for r in records):
             return records
         if not getattr(self, "_model_registry_seeded", False):
@@ -4229,9 +4284,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _coalesce_summary_dirty(self, records: list[Json]) -> list[Json]:
         """Drop redundant pending summary-dirty markers for a (scope, node) that already has an
         outstanding uncompleted marker. Completion / non-pending markers pass through. No-op when the
-        flag is OFF or the batch carries no pending markers."""
-        if not COALESCE_SUMMARY_DIRTY:
-            return records
+        batch carries no pending markers."""
         pending_in_batch = [
             r for r in records
             if isinstance(r, dict) and str(r.get("record_type") or "") == "context_summary_dirty"
@@ -4433,6 +4486,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         if pending:
                             source_set = set(source_ids)
                             self._session_pending_event_ids_by_key[key] = [event_id for event_id in pending if event_id not in source_set]
+                        # A committed event's body is dead weight here. `_context_event_by_hash`
+                        # exists so the session buffer can hand back the events it is still
+                        # holding; every consumer of it looks up PENDING ids. Nothing was ever
+                        # removed, so the map kept one parsed record per event for the life of the
+                        # process: gateway RSS grew 31 -> 59 MB over 800 ingests, about 35 KB a
+                        # memory, and it did not stop.
+                        #
+                        # Dropping a committed body is safe because it is a cache, not a store:
+                        # the read path that populates it re-reads and re-populates on a miss.
+                        # The committed ID set stays -- it is what marks an event done, and it is
+                        # eight bytes rather than a record.
+                        for event_id in source_ids:
+                            self._context_event_by_hash.pop(event_id, None)
                 continue
             if record_type == "context_node":
                 try:

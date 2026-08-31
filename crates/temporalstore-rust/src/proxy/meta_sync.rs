@@ -99,7 +99,7 @@ impl ProxyService {
                         namespace: String::new(),
                         config_version: 0,
                         serving_mode: "not_serving".to_string(),
-                        drop_percent: 0,
+                        drop_percent: None,
                     });
                     if response.status.ok {
                         self.record_service_discovery_heartbeat(&response.status);
@@ -137,7 +137,7 @@ impl ProxyService {
                     namespace: String::new(),
                     config_version: 0,
                     serving_mode: "not_serving".to_string(),
-                    drop_percent: 0,
+                    drop_percent: None,
                 }
             }
         }
@@ -204,7 +204,9 @@ impl ProxyService {
         let policy_changed = {
             let options = self.options();
             serving_mode.is_some_and(|mode| mode != options.serving_mode)
-                || response.drop_percent <= 100 && response.drop_percent != options.drop_percent
+                || response
+                    .drop_percent
+                    .is_some_and(|percent| percent <= 100 && percent != options.drop_percent)
         };
         if !response.config_changed && !policy_changed {
             return;
@@ -219,8 +221,14 @@ impl ProxyService {
         if let Some(serving_mode) = serving_mode {
             options.serving_mode = serving_mode;
         }
-        if response.drop_percent <= 100 {
-            options.drop_percent = response.drop_percent;
+        // Only when the metaserver actually spoke for it. The three fields above are each
+        // guarded the same way -- namespace when non-empty, config_version when non-zero,
+        // serving_mode when it parses -- and this one was not, so every heartbeat carried a
+        // hardcoded 0 into the field an operator sets to drain the proxy.
+        if let Some(percent) = response.drop_percent {
+            if percent <= 100 {
+                options.drop_percent = percent;
+            }
         }
         let _ = self.update_options_report(options);
     }

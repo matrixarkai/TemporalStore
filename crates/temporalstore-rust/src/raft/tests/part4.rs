@@ -3888,3 +3888,161 @@ fn a_rejected_append_still_proves_the_leader_is_alive() {
         "being spoken to by the leader is proof it is alive, even when we refuse what it sent"
     );
 }
+
+/// RAFT, on the format that now ships: every node durable, restored, and serving.
+///
+/// Consensus replicates operations -- that is what agreement means, and it does not change. What
+/// changed is what each node's own log records once it has applied one, and the question a
+/// distributed test has to answer is whether a node that RESTARTS from that log comes back with
+/// the same shard the cluster agreed on.
+///
+/// Three nodes, a spread of kinds, one node taken out and caught up, then the whole cluster
+/// restored from its logs and every node read back. A single node passing proves the codec; every
+/// node passing after a restore proves the cluster.
+#[test]
+fn a_raft_cluster_restores_every_node_from_its_own_log_on_the_live_format() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig::default();
+    let writes: Vec<(String, Vec<u8>)> = (0..12)
+        .map(|index| {
+            (
+                format!("dr-{index:02}"),
+                format!("value-{index:02}").into_bytes(),
+            )
+        })
+        .collect();
+
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config.clone())
+                .unwrap();
+
+        // A node misses the middle of the run and has to catch up -- the case where a follower's
+        // log and the leader's diverge in length before they converge in content.
+        for (key, value) in writes.iter().take(4) {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+        cluster.set_alive(3, false).unwrap();
+        for (key, value) in writes.iter().skip(4).take(4) {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+        cluster.set_alive(3, true).unwrap();
+        cluster.catch_up(3).unwrap();
+        for (key, value) in writes.iter().skip(8) {
+            cluster
+                .propose(Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .unwrap();
+        }
+
+        // Every node agrees BEFORE anything restarts, so a later failure is about recovery rather
+        // than about replication.
+        for node_id in [1, 2, 3] {
+            for (key, value) in &writes {
+                assert_eq!(
+                    cluster
+                        .read_local(
+                            node_id,
+                            Command::StringGet {
+                                key: key.to_string()
+                            }
+                        )
+                        .unwrap(),
+                    CommandResponse::Bytes {
+                        value: Some(value.clone())
+                    },
+                    "node {node_id} did not have {key} before the restore"
+                );
+            }
+        }
+    }
+
+    // Every node comes back from what its own log recorded.
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    for node_id in [1, 2, 3] {
+        for (key, value) in &writes {
+            assert_eq!(
+                restored
+                    .read_local(
+                        node_id,
+                        Command::StringGet {
+                            key: key.to_string()
+                        }
+                    )
+                    .unwrap(),
+                CommandResponse::Bytes {
+                    value: Some(value.clone())
+                },
+                "node {node_id} lost {key} across the restore"
+            );
+        }
+    }
+    println!(
+        "[raft] 3 nodes, {} writes, one outage and catch-up, all restored and serving",
+        writes.len()
+    );
+}
+
+/// The same cluster, with the log written in the LEGACY encoding.
+///
+/// The defaults moved; the old path has to keep working, and it is now the one that can rot
+/// unnoticed. This is the same scenario with all three flags off, so a difference between them is
+/// a difference in the encoding rather than in the test.
+#[test]
+fn a_raft_cluster_restores_on_the_legacy_encoding_too() {
+    std::env::set_var("TS_WAL_BINARY_RECORDS", "0");
+    std::env::set_var("TS_WAL_OUTCOME_ITEMS", "0");
+    std::env::set_var("TS_WAL_DATA_ONLY", "0");
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig::default();
+    {
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config.clone())
+                .unwrap();
+        for index in 0..8 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("lg-{index:02}"),
+                    value: format!("legacy-{index:02}").into_bytes(),
+                })
+                .unwrap();
+        }
+    }
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    for node_id in [1, 2, 3] {
+        for index in 0..8 {
+            assert_eq!(
+                restored
+                    .read_local(
+                        node_id,
+                        Command::StringGet {
+                            key: format!("lg-{index:02}")
+                        }
+                    )
+                    .unwrap(),
+                CommandResponse::Bytes {
+                    value: Some(format!("legacy-{index:02}").into_bytes())
+                },
+                "node {node_id} lost lg-{index:02} on the legacy encoding"
+            );
+        }
+    }
+    std::env::remove_var("TS_WAL_BINARY_RECORDS");
+    std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
+    std::env::remove_var("TS_WAL_DATA_ONLY");
+    println!("[raft] legacy encoding: 3 nodes restored and serving");
+}

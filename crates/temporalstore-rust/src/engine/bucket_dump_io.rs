@@ -208,6 +208,13 @@ pub(super) fn retained_bucket_dump_manifest_ids(manifests: &[BucketDumpManifest]
         .collect()
 }
 
+/// A cursor older than every manifest we kept: nothing retained can serve it. Named because the
+/// prune plan produces it and the index-GC gate reads it, and a typo between the two would read as
+/// "safe" rather than as a mistake.
+pub(super) const FOLLOWER_PRECEDES_EVERY_MANIFEST: &str = "follower_cursor_precedes_every_manifest";
+/// The same for a raft snapshot reference.
+pub(super) const RAFT_SNAPSHOT_PRECEDES_EVERY_MANIFEST: &str = "raft_snapshot_precedes_every_manifest";
+
 pub(super) fn bucket_dump_manifest_prune_plan_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
@@ -242,22 +249,32 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
                     manifest_index_log_sequence: oldest.index_log_sequence,
                     cursor_wal_sequence: cursor.wal_sequence,
                     cursor_index_log_sequence: cursor.index_log_sequence,
-                    reason: "follower_cursor_precedes_every_manifest".to_string(),
+                    reason: FOLLOWER_PRECEDES_EVERY_MANIFEST.to_string(),
                 });
             }
             continue;
         };
-        if retained.insert(anchor.manifest_id.clone()) {
-            follower_blocks.push(BucketDumpFollowerRetentionBlock {
-                follower_id: cursor.follower_id.clone(),
-                manifest_id: anchor.manifest_id.clone(),
-                manifest_wal_sequence: anchor.wal_sequence,
-                manifest_index_log_sequence: anchor.index_log_sequence,
-                cursor_wal_sequence: cursor.wal_sequence,
-                cursor_index_log_sequence: cursor.index_log_sequence,
-                reason: "follower_cursor_anchor".to_string(),
-            });
-        }
+        // Record the dependency whether or not the manifest was already being kept. Gating this
+        // push on `insert` answered "did this cursor keep something extra?" while every reader
+        // takes it for "which cursors depend on a retained dump". The second cursor to anchor one
+        // manifest got `false` and vanished -- and so did EVERY cursor anchored on the newest
+        // manifest, which is retained unconditionally, which is the ordinary case. Worse, the two
+        // loops share `retained`, so a follower and a snapshot anchoring the same manifest had
+        // whichever ran first swallow the other, making the record depend on iteration order.
+        //
+        // `follower_cursor_retention_floor` is the MINIMUM cursor sequence across these blocks. An
+        // omitted cursor reports a floor above the truth, and omitting them all reports 0. A floor
+        // that forgets the follower furthest behind is worse than no floor at all.
+        retained.insert(anchor.manifest_id.clone());
+        follower_blocks.push(BucketDumpFollowerRetentionBlock {
+            follower_id: cursor.follower_id.clone(),
+            manifest_id: anchor.manifest_id.clone(),
+            manifest_wal_sequence: anchor.wal_sequence,
+            manifest_index_log_sequence: anchor.index_log_sequence,
+            cursor_wal_sequence: cursor.wal_sequence,
+            cursor_index_log_sequence: cursor.index_log_sequence,
+            reason: "follower_cursor_anchor".to_string(),
+        });
     }
     for snapshot in raft_snapshot_refs
         .iter()
@@ -283,24 +300,25 @@ pub(super) fn bucket_dump_manifest_prune_plan_at(
                     snapshot_index_log_sequence: snapshot.index_log_sequence,
                     last_included_index: snapshot.last_included_index,
                     last_included_term: snapshot.last_included_term,
-                    reason: "raft_snapshot_precedes_every_manifest".to_string(),
+                    reason: RAFT_SNAPSHOT_PRECEDES_EVERY_MANIFEST.to_string(),
                 });
             }
             continue;
         };
-        if retained.insert(anchor.manifest_id.clone()) {
-            raft_snapshot_blocks.push(BucketDumpRaftSnapshotRetentionBlock {
-                snapshot_id: snapshot.snapshot_id.clone(),
-                manifest_id: anchor.manifest_id.clone(),
-                manifest_wal_sequence: anchor.wal_sequence,
-                manifest_index_log_sequence: anchor.index_log_sequence,
-                snapshot_wal_sequence: snapshot.wal_sequence,
-                snapshot_index_log_sequence: snapshot.index_log_sequence,
-                last_included_index: snapshot.last_included_index,
-                last_included_term: snapshot.last_included_term,
-                reason: "raft_snapshot_anchor".to_string(),
-            });
-        }
+        // As above: the record is of which snapshot references depend on a retained dump, not
+        // of which ones kept an extra one.
+        retained.insert(anchor.manifest_id.clone());
+        raft_snapshot_blocks.push(BucketDumpRaftSnapshotRetentionBlock {
+            snapshot_id: snapshot.snapshot_id.clone(),
+            manifest_id: anchor.manifest_id.clone(),
+            manifest_wal_sequence: anchor.wal_sequence,
+            manifest_index_log_sequence: anchor.index_log_sequence,
+            snapshot_wal_sequence: snapshot.wal_sequence,
+            snapshot_index_log_sequence: snapshot.index_log_sequence,
+            last_included_index: snapshot.last_included_index,
+            last_included_term: snapshot.last_included_term,
+            reason: "raft_snapshot_anchor".to_string(),
+        });
     }
     let interrupted = interrupted_bucket_dump_installs_at(index_dir, shard_id)?
         .into_iter()

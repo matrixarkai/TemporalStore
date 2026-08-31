@@ -10,6 +10,9 @@ except ImportError:
 
 try:  # names owned by the parent module
     from tools.matrixark_mcp_local_adapter import (
+    MEMORY_TOMBSTONE_RECORD_TYPE,
+    compact_and_apply_tombstones,
+    filter_live_memory_records,
     session_event_message_count,
     session_events_by_message_limit,
     source_event_lineage_summary,
@@ -17,6 +20,9 @@ try:  # names owned by the parent module
 )
 except ImportError:
     from matrixark_mcp_local_adapter import (
+    MEMORY_TOMBSTONE_RECORD_TYPE,
+    compact_and_apply_tombstones,
+    filter_live_memory_records,
     session_event_message_count,
     session_events_by_message_limit,
     source_event_lineage_summary,
@@ -73,6 +79,33 @@ class _LocalAdapterSessionCommitMixin:
             )
         except Exception as exc:  # discovery must never break a commit
             return {"discovered": 0, "captured": 0, "error": f"{type(exc).__name__}: {exc}"}
+
+    def _commit_records_of_types(self, wanted: list[str]) -> list[Json]:
+        """Records of exactly these types, tombstones applied.
+
+        The commit path used `read_all()` -- a full store scan -- and then kept two record types
+        out of it. Sampling a commit on a 250-memory store put 13 of 20 active samples inside that
+        read and its compaction, at 893 ms per call, with the proxy idle: the cost was reading
+        everything in order to look at almost nothing, and it grows with the store.
+
+        The type index answers the same question directly. Tombstones are the catch and are why
+        this is not a one-line swap: `_scan_records_of_types` returns the raw rows, so a commit
+        belonging to a forgotten session would come back from the dead. The scan therefore asks
+        for the tombstones too and applies them, which is what `read_all()` was doing for us.
+
+        Falls back to the full read when the scan cannot answer -- `None` means "could not ask",
+        which is not the same as "nothing of these types".
+        """
+        # The scan belongs to the TemporalStore-backed adapter; the plain local adapter commits
+        # sessions too and does not have it. A missing scanner is the same answer as a scanner
+        # that cannot answer -- do the full read -- so ask for it rather than assuming the mixin.
+        scanner = getattr(self, "_scan_records_of_types", None)
+        if not callable(scanner):
+            return self.read_all()
+        subset = scanner(list(wanted) + [MEMORY_TOMBSTONE_RECORD_TYPE])
+        if subset is None:
+            return self.read_all()
+        return filter_live_memory_records(compact_and_apply_tombstones(list(subset)))
 
     def session_commit(self, args: Json, *, hook: Json | None = None) -> Json:
         scope = optional_object(args, "scope")
@@ -229,7 +262,9 @@ class _LocalAdapterSessionCommitMixin:
         if not messages:
             if force and final_session_boundary:
                 session_key = session_buffer_key_from_scope(scope)
-                records = self.read_all()
+                records = self._commit_records_of_types(
+                    ["context_batch_commit", "context_session_boundary"]
+                )
                 prior_commits = [
                     record
                     for record in records
@@ -450,7 +485,11 @@ class _LocalAdapterSessionCommitMixin:
         current_source_event_ids = {int(event_id) for event_id in source_event_ids}
         committed_event_ids: set[int] = set()
         session_key = session_buffer_key_from_scope(scope)
-        records_for_overlap = self.read_all() if overlap_limit else []
+        records_for_overlap = (
+            self._commit_records_of_types(["context_batch_commit", "context_event"])
+            if overlap_limit
+            else []
+        )
         for record in records_for_overlap:
             if record.get("record_type") != "context_batch_commit" or session_buffer_key_from_scope(record.get("scope", {})) != session_key:
                 continue

@@ -298,12 +298,12 @@ impl TemporalStoreClient {
     ) -> Result<String, ClientError> {
         let ttl = Duration::from_millis(self.inner.options.route_cache_ttl_ms);
         if !force_refresh {
-            let mut route_cache = self
+            let route_cache = self
                 .inner
                 .routes
-                .lock()
+                .read()
                 .expect("client route cache lock poisoned");
-            if let Some(route) = route_cache.get_mut(&shard_id) {
+            if let Some(route) = route_cache.get(&shard_id) {
                 if route.fetched_at.elapsed() <= ttl {
                     let server_addr =
                         choose_cached_route(route, replica_read_policy, preferred_location);
@@ -362,7 +362,7 @@ impl TemporalStoreClient {
             .load(std::sync::atomic::Ordering::Relaxed);
         self.inner
             .routes
-            .lock()
+            .write()
             .expect("client route cache lock poisoned")
             .insert(shard_id, cached);
         self.inner

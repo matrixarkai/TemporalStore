@@ -209,6 +209,49 @@ fn client_does_not_retry_write_status_without_write_retry_budget() {
 }
 
 #[test]
+fn a_write_refused_while_its_shard_is_loading_is_worth_asking_again() {
+    // The data node refuses a foreground write while its shard is loading, reloading or
+    // unloading and answers lifecycle_write_blocked. Each of those states ends on its own --
+    // the shard finishes and serves -- and the write is refused BEFORE it executes, so asking
+    // again cannot duplicate anything. The client treated it as fatal, so a rebalance, a
+    // restart or a dump/load cycle surfaced to the caller as failed writes, while the sibling
+    // conditions it already retries (partition_loading, shard_not_loaded) say the same thing.
+    let blocked = classify_retry_decision(
+        &Status::error("lifecycle_write_blocked", "shard 1 is reloading for dump"),
+        true,
+        0,
+        2,
+        false,
+    );
+    assert!(
+        blocked.retryable,
+        "a shard that is loading will finish loading"
+    );
+    assert!(
+        blocked.would_retry,
+        "with retry budget in hand the client should ask again"
+    );
+    assert!(
+        !blocked.topology_retry,
+        "the shard has not moved, so re-resolving the route would name the same node"
+    );
+
+    // Budget still governs it. The budget-free retry is only for rejections that prove the
+    // write never reached the shard, and this one is not routed through that path.
+    let no_budget = classify_retry_decision(
+        &Status::error("lifecycle_write_blocked", "shard 1 is reloading for dump"),
+        true,
+        0,
+        1,
+        false,
+    );
+    assert!(
+        !no_budget.would_retry,
+        "a write with no budget left must not repeat itself"
+    );
+}
+
+#[test]
 fn client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry() {
     let unsafe_write_retry = classify_retry_decision(
         &Status::error("retry_later", "possibly applied"),

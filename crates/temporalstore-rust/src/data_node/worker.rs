@@ -63,17 +63,49 @@ pub(super) fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
             submitted_at_ms: task.submitted_at_ms,
             finished_at_ms: Some(now_ms()),
         };
-        inner
-            .jobs
-            .lock()
-            .expect("data node jobs lock poisoned")
-            .insert(task.job_id, finished);
+        {
+            let mut jobs = inner
+                .jobs
+                .lock()
+                .expect("data node jobs lock poisoned");
+            jobs.insert(task.job_id, finished);
+            // A finished status carries its whole output, and a dump output carries the
+            // serialized index: 2.4 MB for 20k records, 7.3 MB for 60k, growing with the
+            // store. Nothing removed these, so every dump a node ever ran stayed resident.
+            // Unfinished jobs are always kept - the queue holds far more than the retention
+            // bound, and a queued job must stay observable until it reports.
+            let keep = max_retained_finished_jobs();
+            let finished_count = jobs.values().filter(|job| job.finished_at_ms.is_some()).count();
+            if finished_count > keep {
+                let mut finished_ids: Vec<u64> = jobs
+                    .values()
+                    .filter(|job| job.finished_at_ms.is_some())
+                    .map(|job| job.job_id)
+                    .collect();
+                finished_ids.sort_unstable();
+                for job_id in finished_ids.into_iter().take(finished_count - keep) {
+                    jobs.remove(&job_id);
+                }
+            }
+        }
         inner
             .stats
             .lock()
             .expect("runtime stats lock poisoned")
             .completed_total += 1;
     }
+}
+
+/// TS_MAX_RETAINED_FINISHED_JOBS: how many completed job statuses stay queryable.
+///
+/// Each carries its full output, and a dump output carries the serialized index, so an
+/// unbounded map meant a node retained one index copy per dump for its whole life.
+fn max_retained_finished_jobs() -> usize {
+    std::env::var("TS_MAX_RETAINED_FINISHED_JOBS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64)
 }
 
 pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTaskOutput {
@@ -158,11 +190,6 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node dump canceled before index export");
             }
-            let index_bytes = inner
-                .engine
-                .export_index_bytes(request.shard_id)
-                .map(|bytes| bytes.len())
-                .unwrap_or_default();
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node dump canceled before dirty flush");
             }
@@ -199,6 +226,18 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
             // engine dirty + the reclaim frontier unadvanced (apply_storage_lifecycle skips its
             // dirty-clear on None); clearing the worker set here would stop re-scheduling these
             // still-undumped buckets on a persistently failing disk.
+            // The manifest already carries the serialized index, and the response only wants
+            // its length. Exporting the index a second time just to measure it serialized the
+            // whole thing twice per dump - 403 KB per 4k records here, and it grows with the
+            // store. Fall back to the export only when there is no manifest to measure.
+            let index_bytes = match bucket_dump_manifest.as_ref() {
+                Some(manifest) => manifest.index_bytes.len(),
+                None => inner
+                    .engine
+                    .export_index_bytes(request.shard_id)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or_default(),
+            };
             let dirty_objects_flushed = if bucket_dump_manifest.is_some() {
                 clear_dirty_shard_buckets(
                     &inner.dirty,

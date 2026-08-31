@@ -64,7 +64,7 @@ impl TemporalEngine {
             let records = match request.stream_kind {
                 StreamKind::Wal => self
                     .wal_store
-                    .scan(
+                    .scan_bounded(
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
@@ -73,7 +73,7 @@ impl TemporalEngine {
                     .map_err(|err| err.to_string()),
                 StreamKind::IndexLog => self
                     .index_log_store
-                    .scan(
+                    .scan_bounded(
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
@@ -83,13 +83,17 @@ impl TemporalEngine {
                 StreamKind::Index | StreamKind::Block | StreamKind::Page => unreachable!(),
             };
             return match records {
-                Ok(records) => ScanStreamResponse {
+                // `truncated` is the whole point of asking: the walk stops both when the window
+                // ends and when max_bytes runs out, and this used to answer "end of stream" for
+                // either. A caller reading a range larger than its budget was handed a prefix
+                // and told it had the lot.
+                Ok((records, truncated)) => ScanStreamResponse {
                     status: Status::ok(),
                     records: records
                         .into_iter()
                         .map(|(offset, data)| StreamRecord { offset, data })
                         .collect(),
-                    end_of_stream: true,
+                    end_of_stream: !truncated,
                 },
                 Err(err) => ScanStreamResponse {
                     status: Status::error("stream_scan_failed", err.to_string()),
@@ -105,6 +109,13 @@ impl TemporalEngine {
             offset: request.start_offset,
             size,
         });
+        // A byte-addressed read is capped the same way -- `size` above is the window clamped to
+        // max_bytes -- so it ends the stream only when it reached the offset that was asked for.
+        let end_of_stream = !read.status.ok
+            || request
+                .start_offset
+                .saturating_add(read.data.len() as u64)
+                >= request.end_offset;
         ScanStreamResponse {
             status: read.status.clone(),
             records: if read.status.ok && !read.data.is_empty() {
@@ -115,11 +126,28 @@ impl TemporalEngine {
             } else {
                 Vec::new()
             },
-            end_of_stream: true,
+            end_of_stream,
         }
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
+        // and the records this path appends are built from the commands -- so nothing ever took
+        // what was staged. Those items stayed in the thread's buffer, and the next write on that
+        // thread appended them as its own doing. Threads are reused across requests, so "the next
+        // write" is routinely a different request entirely.
+        //
+        // A guard rather than a drain at the end, because this function returns early on a
+        // missing shard and on a failed durable commit, and those exits leaked too. Discarding is
+        // correct while batch records carry their commands: replay re-executes them, so the items
+        // describe work that is already accounted for.
+        struct DrainStagedOnExit;
+        impl Drop for DrainStagedOnExit {
+            fn drop(&mut self) {
+                let _ = super::block_in_wal::take_outcomes();
+            }
+        }
+        let _drain_staged = DrainStagedOnExit;
         let command_count = request.commands.len();
         let mut responses = Vec::with_capacity(command_count);
         if command_count == 0 {
@@ -226,6 +254,9 @@ impl TemporalEngine {
             }
         }
         let mut mutated_any = false;
+        // Set if any command in this batch rebuilt the bucket index, which invalidates the
+        // per-batch record of touched buckets and forces the full sweep below.
+        let mut rebuilt_bucket_index = false;
         let mut wal_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
@@ -346,6 +377,9 @@ impl TemporalEngine {
                         start_routing_bucket,
                         end_routing_bucket,
                     );
+                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                    // this batch touched no longer describes it.
+                    rebuilt_bucket_index = true;
                 }
                 if write_command {
                     wal_commands.push(command_for_post_write);
@@ -357,7 +391,14 @@ impl TemporalEngine {
             });
         }
         if mutated_any {
-            refresh_bucket_runtime_flags(shard);
+            if rebuilt_bucket_index {
+                refresh_bucket_runtime_flags(shard);
+            } else {
+                // Refresh only the buckets this batch disturbed. The full sweep is
+                // O(total pages), so running it per batch left bulk ingest quadratic in the
+                // corpus -- with a smaller constant than the per-write sweep, but the same shape.
+                refresh_pending_bucket_runtime_flags(shard);
+            }
             // Every write records a WAL entry before any page is written. async_storage only
             // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
             // buffered, no fsync (a fire-and-forget commit).
@@ -369,10 +410,34 @@ impl TemporalEngine {
             // which for a non-idempotent / time-unspecified command (FeatureAppend occur_time=0 ->
             // a fresh now on each apply) would otherwise duplicate points.
             let sync = !config.async_storage && !bulk_ingest_mode();
-            if let Err(err) =
+            // Use what the batch staged rather than discarding it. Every command here recorded
+            // what it DID; writing the commands instead left those items in the thread's buffer
+            // and put this whole path outside data-only, which is why a batch measured larger
+            // than the same writes made separately.
+            //
+            // one record carrying every item, when the items can be found again after a crash --
+            // the same rule a single write follows. Otherwise the commands go, as before.
+            let staged_outcomes = super::block_in_wal::take_outcomes();
+            let staged_blocks = super::block_in_wal::take_staged();
+            let recoverable = sync || !staged_blocks.is_empty();
+            let batch_result = if crate::wal::wal_data_only_enabled()
+                && !staged_outcomes.is_empty()
+                && recoverable
+            {
+                self.wal_store
+                    .append_batch_as_one_record(
+                        request.shard_id,
+                        staged_outcomes,
+                        staged_blocks,
+                        sync,
+                    )
+                    .map(|_| ())
+            } else {
                 self.wal_store
                     .append_batch_atomic(request.shard_id, wal_commands, sync)
-            {
+                    .map(|_| ())
+            };
+            if let Err(err) = batch_result {
                 if sync {
                     // A durable batch commit that failed is not durable; surface it rather than
                     // acking undurable writes (mirrors the single-command execute path).
@@ -535,7 +600,7 @@ impl TemporalEngine {
                 let mut publish_targets = shard
                     .strings
                     .iter()
-                    .filter(|(_, address)| address.page_slab_id == HOT_PAGE_SLAB_ID)
+                    .filter(|(_, address)| crate::wal_record::is_wal_resident(address.page_slab_id))
                     .map(|(key, address)| {
                         (PublishTarget::String { key: key.clone() }, address.clone())
                     })
@@ -546,7 +611,7 @@ impl TemporalEngine {
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
-                                (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
+                                crate::wal_record::is_wal_resident(address.page_slab_id).then(|| {
                                     (
                                         PublishTarget::Hash {
                                             key: key.clone(),
@@ -564,7 +629,7 @@ impl TemporalEngine {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
                     if let Some(address) = shard.strings.get(key) {
-                        if address.page_slab_id == HOT_PAGE_SLAB_ID {
+                        if crate::wal_record::is_wal_resident(address.page_slab_id) {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
                                 address.clone(),
@@ -573,7 +638,7 @@ impl TemporalEngine {
                     }
                     if let Some(fields) = shard.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
-                            (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
+                            crate::wal_record::is_wal_resident(address.page_slab_id).then(|| {
                                 (
                                     PublishTarget::Hash {
                                         key: key.clone(),

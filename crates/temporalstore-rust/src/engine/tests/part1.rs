@@ -2482,6 +2482,95 @@ fn string_setex_sets_value_and_ttl() {
     assert!(value > 0);
 }
 
+/// A sink that just remembers what it was told, so a test can ask whether a write reached it.
+#[derive(Debug, Default)]
+struct RecordingWalSink {
+    seen: std::sync::Mutex<Vec<(ShardId, Command)>>,
+}
+
+impl crate::data_node::SharedWalSink for RecordingWalSink {
+    fn record_write(&self, shard_id: ShardId, command: &Command) {
+        self.seen
+            .lock()
+            .expect("recording sink lock poisoned")
+            .push((shard_id, command.clone()));
+    }
+}
+
+/// An expiry deletion has to reach the mirror, not only this node's log.
+///
+/// Expiry appends its tombstone straight to the WAL, outside the request path, so nothing at
+/// the data-node layer ever sees it. In shared mode that meant the deletion reached the local
+/// log and no other: a successor replaying the shared log never observed it, reapplied the
+/// earlier write, and the key came back -- which is the very failure the tombstone was added
+/// to prevent, reappearing one level up.
+#[test]
+fn an_expiry_deletion_reaches_the_maintenance_mirror() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    let sink = std::sync::Arc::new(RecordingWalSink::default());
+    engine.set_maintenance_wal_mirror(sink.clone());
+
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: "expire-me".to_string(),
+                    value: b"gone".to_vec(),
+                    ttl_ms: 1,
+                },
+            })
+            .status
+            .ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+
+    let seen = sink
+        .seen
+        .lock()
+        .expect("recording sink lock poisoned")
+        .clone();
+    assert_eq!(
+        seen,
+        vec![(
+            1u64,
+            Command::CommonDelete {
+                key: "expire-me".to_string()
+            }
+        )],
+        "the expiry tombstone must reach the mirror, not just the local log"
+    );
+}
+
+/// With no mirror attached the sweep behaves exactly as it did before one existed.
+#[test]
+fn an_expiry_sweep_without_a_mirror_is_unchanged() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSetEx {
+                    key: "expire-me".to_string(),
+                    value: b"gone".to_vec(),
+                    ttl_ms: 1,
+                },
+            })
+            .status
+            .ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.sweep_expired_records(1).unwrap();
+    assert_eq!(report.expired_records_removed, 1);
+}
+
 #[test]
 fn expiry_sweep_removes_expired_records_without_lazy_read() {
     let engine = TemporalEngine::default();
@@ -3087,7 +3176,9 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     );
 
     // Container OFF: raw JSON, and JSON is what an older binary would have written.
-    std::env::remove_var("TS_INDEX_BINARY");
+    // Say "0" rather than unsetting: unsetting selects the DEFAULT, which is the container,
+    // so an unset variable stopped meaning "off" the moment the default changed.
+    std::env::set_var("TS_INDEX_BINARY", "0");
     let plain = encode_index_bytes(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
     let decoded = decode_index_bytes(&plain).expect("json index decodes");
@@ -3113,4 +3204,101 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     future[6] = 0xEE;
     let refused = decode_index_bytes(&future).expect_err("unknown codec must refuse");
     assert!(refused.contains("cannot read"), "unhelpful refusal: {refused}");
+}
+
+#[test]
+fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
+    use crate::engine::{decode_index_bytes, encode_index_bytes};
+
+    let mut shard = ShardState::default();
+    shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+    for i in 0..64u64 {
+        shard.strings.insert(
+            format!("object-{i}"),
+            BlockAddress {
+                page_slab_id: i,
+                offset: i * 7,
+                length: i + 1,
+                page_id: Some(i),
+                object_id: Some(i * 3),
+                routing_bucket: Some((i % 8) as u32),
+                band_id: None,
+                generation: Some(i),
+                sha256: None,
+            },
+        );
+    }
+    shard.hashes.entry("hash-object".to_string()).or_default().insert(
+        "component".to_string(),
+        BlockAddress {
+            page_slab_id: 9,
+            offset: 1,
+            length: 2,
+            page_id: None,
+            object_id: None,
+            routing_bucket: None,
+            band_id: None,
+            generation: None,
+            sha256: None,
+        },
+    );
+    shard.applied_wal_sequence = Some(4242);
+
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    std::env::set_var("TS_INDEX_CODEC", "msgpack");
+    let binary = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    std::env::remove_var("TS_INDEX_CODEC");
+
+    assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
+    assert_eq!(binary[6], 2, "payload codec id");
+
+    // Exact round-trip: the durable image has to come back as the same state, not merely a
+    // plausible one -- so compare the maps, not just that it decoded.
+    let decoded = decode_index_bytes(&binary).expect("binary index decodes");
+    assert_eq!(decoded.strings.len(), shard.strings.len());
+    for (key, address) in &shard.strings {
+        assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
+    }
+    assert_eq!(decoded.hashes, shard.hashes);
+    assert_eq!(decoded.applied_wal_sequence, shard.applied_wal_sequence);
+    assert_eq!(decoded.index_format_version, shard.index_format_version);
+
+    // The payload is addressed by field ORDER, so a struct of a different shape must be refused
+    // rather than decoded into something plausible and wrong. The version stamp sits outside the
+    // payload precisely so it can be checked before any of it is parsed.
+    let mut wrong_version = binary.clone();
+    wrong_version[7..11].copy_from_slice(&99u32.to_be_bytes());
+    let refused = decode_index_bytes(&wrong_version).expect_err("a foreign struct version refuses");
+    assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
+
+    // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
+    // "0" rather than unset -- unset now selects the container, which is not what is under
+    // test here.
+    std::env::set_var("TS_INDEX_BINARY", "0");
+    let plain = encode_index_bytes(&shard);
+    assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
+    assert_eq!(
+        decode_index_bytes(&plain).expect("json decodes").strings.len(),
+        shard.strings.len()
+    );
+
+    std::env::set_var("TS_INDEX_BINARY", "1");
+    std::env::set_var("TS_INDEX_CODEC", "zstd-json");
+    let compressed_json = encode_index_bytes(&shard);
+    std::env::remove_var("TS_INDEX_BINARY");
+    std::env::remove_var("TS_INDEX_CODEC");
+    assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
+    assert_eq!(
+        decode_index_bytes(&compressed_json).expect("zstd-json decodes").strings.len(),
+        shard.strings.len()
+    );
+
+    // The binary payload is the smaller one -- that is the whole point of adding it.
+    assert!(
+        binary.len() < plain.len(),
+        "binary {} not smaller than json {}",
+        binary.len(),
+        plain.len()
+    );
 }

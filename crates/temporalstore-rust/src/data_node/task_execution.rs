@@ -82,6 +82,9 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     let mut cache_entries_removed = 0;
     let mut cache_disk_bytes_removed = 0;
     let mut wal_records_removed = 0;
+    let mut gc_durable_index_backed = false;
+    let mut wal_gc_clamped_by_durable_index = false;
+    let mut index_log_gc_clamped_by_durable_index = false;
     let mut index_log_records_removed = 0;
     let mut page_slabs_removed = 0;
     let mut page_slabs_removed_physical_bytes = 0;
@@ -97,14 +100,46 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             status = Status::error("cache_gc_failed", &err.to_string());
         }
     }
+    // Both reclaims below delete durable log records on an operator's say-so, and until now
+    // neither checked that anything durable could replace what it was about to drop. The
+    // served index is rewritten per write but its barrier is deferred, so a crash shortly after
+    // a generous /gc could lose the index update while the records backing it were already
+    // gone. One plan answers both -- resolved once, and only when something is actually asked
+    // for, since it deserializes every retained manifest.
+    let reclaim_plan = (request.retain_wal_from_sequence.is_some()
+        || request.retain_index_log_from_sequence.is_some())
+    .then(|| {
+        inner
+            .engine
+            .storage_wal_reclaim_plan(request.shard_id, Vec::new(), Vec::new())
+    });
+    if let Some(plan) = reclaim_plan.as_ref() {
+        gc_durable_index_backed = plan.safe_to_reclaim;
+    }
     if let Some(retain_from_sequence) = request.retain_wal_from_sequence {
         if status.ok {
-            match inner
-                .engine
-                .write_ahead_log_store()
-                .gc_before_sequence(request.shard_id, retain_from_sequence)
-            {
-                Ok(report) => wal_records_removed = report.records_removed,
+            // Anchor the ask to what the bucket-dump manifests actually prove. A shard that has
+            // never dumped proves nothing, and narrowing to a frontier of zero would quietly
+            // turn this endpoint into a no-op -- so that case reclaims as it always has, and
+            // the response says the reclaim was trusted rather than proven.
+            let durable_index = match reclaim_plan.as_ref() {
+                Some(plan) if plan.safe_to_reclaim => {
+                    crate::wal::DurableIndexAnchor::proven_durable_through(
+                        request.shard_id,
+                        plan.durable_bucket_generation_frontier_wal_sequence,
+                    )
+                }
+                _ => crate::wal::DurableIndexAnchor::unproven(request.shard_id),
+            };
+            match inner.engine.write_ahead_log_store().gc_before_sequence(
+                request.shard_id,
+                retain_from_sequence,
+                &durable_index,
+            ) {
+                Ok(report) => {
+                    wal_records_removed = report.records_removed;
+                    wal_gc_clamped_by_durable_index = report.clamped_by_durable_index;
+                }
                 Err(err) => {
                     status = Status::error("wal_gc_failed", &err.to_string());
                 }
@@ -113,10 +148,20 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     }
     if status.ok {
         if let Some(retain_from_sequence) = request.retain_index_log_from_sequence {
+            // The same exposure as the WAL half, on the log that holds the ADDRESSES. An
+            // index-log record names where a block's bytes live; dropping one the durable state
+            // does not yet reflect loses the LOCATION of data that is still sitting on disk,
+            // which reads as missing rather than as corruption. Bound it by the plan's
+            // index-log frontier where the plan proves one, on the same terms as above.
+            let ceiling = match reclaim_plan.as_ref() {
+                Some(plan) if plan.safe_to_reclaim => plan.retain_from_index_log_sequence,
+                _ => u64::MAX,
+            };
+            index_log_gc_clamped_by_durable_index = retain_from_sequence > ceiling;
             match inner
                 .engine
                 .index_log_store()
-                .gc_before_sequence(request.shard_id, retain_from_sequence)
+                .gc_before_sequence(request.shard_id, retain_from_sequence.min(ceiling))
             {
                 Ok(report) => index_log_records_removed = report.records_removed,
                 Err(err) => {
@@ -205,6 +250,9 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         page_slabs_retained_physical_bytes,
         page_slabs_retained_live,
         page_slabs_retained_live_physical_bytes,
+        gc_durable_index_backed,
+        wal_gc_clamped_by_durable_index,
+        index_log_gc_clamped_by_durable_index,
         lifecycle_plan,
     }
 }

@@ -739,10 +739,65 @@ mod tests {
         assert_eq!("0", third[0], "the drained bucket must deny");
         assert!(third[2].parse::<u64>().expect("retry ms") > 0, "denied answers a retry-after");
 
-        // PEEK reports without consuming: two identical peeks.
+        // PEEK reports without consuming. The retry-after may drift by the milliseconds the
+        // wall clock moved between calls, so equality holds for the outcome and the level,
+        // and the retry-after only within a tolerance.
         let peek_one = fields(run(&mut state, vec!["BUCKETPEEK", "q", "1", "2", "0.001"]));
         let peek_two = fields(run(&mut state, vec!["BUCKETPEEK", "q", "1", "2", "0.001"]));
-        assert_eq!(peek_one, peek_two, "peek must not consume");
+        assert_eq!(peek_one[0], peek_two[0], "peek must not change the outcome");
+        assert_eq!(peek_one[1], peek_two[1], "peek must not consume");
+        let retry_one = peek_one[2].parse::<i64>().expect("retry ms");
+        let retry_two = peek_two[2].parse::<i64>().expect("retry ms");
+        assert!((retry_one - retry_two).abs() <= 50, "retry-after moved {retry_one} -> {retry_two}");
+    }
+
+    /// The windowed seen-set: first sight answers 0 and marks, a repeat inside the window
+    /// answers 1 without re-marking, the window expires entries, SEENCARD counts, and DEL
+    /// clears the whole set.
+    #[test]
+    fn seen_set_marks_dedupes_expires_and_clears() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let mut run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter().map(|arg| arg.as_bytes().to_vec()).collect(),
+                1,
+                state,
+                &mut |command| {
+                    let response = engine.execute(crate::ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "a", "60000"]), RespValue::Integer(0),
+            "first sight is not a duplicate");
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "a", "60000"]), RespValue::Integer(1),
+            "a repeat inside the window is");
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "b", "60000"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["SEENCARD", "idem"]), RespValue::Integer(2));
+
+        // A 1ms window expires across a 25ms sleep: the member reads as new again, and the
+        // bounded front-sweep has removed the stale entries from the count.
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "gone", "x", "1"]), RespValue::Integer(0));
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "gone", "x", "1"]), RespValue::Integer(0),
+            "an expired member is new again");
+        assert_eq!(run(&mut state, vec!["SEENCARD", "gone"]), RespValue::Integer(1),
+            "the sweep dropped the expired entry, keeping only the fresh mark");
+
+        assert_eq!(run(&mut state, vec!["DEL", "idem"]), RespValue::Integer(1));
+        assert_eq!(run(&mut state, vec!["SEENCARD", "idem"]), RespValue::Integer(0));
+        assert_eq!(run(&mut state, vec!["SEENCHECK", "idem", "a", "60000"]), RespValue::Integer(0),
+            "a cleared set forgets");
     }
 
     #[test]
@@ -1161,6 +1216,8 @@ mod tests {
             "RENAME" => vec!["RENAME", "advertised:missing", "advertised:renamed"],
             "RENAMENX" => vec!["RENAMENX", "advertised:missing", "advertised:renamed"],
             "SADD" => vec!["SADD", "advertised:set", "a"],
+            "SEENCARD" => vec!["SEENCARD", "advertised:seen"],
+            "SEENCHECK" => vec!["SEENCHECK", "advertised:seen", "m", "60000"],
             "SCARD" => vec!["SCARD", "advertised:set"],
             "SDIFF" => vec!["SDIFF", "advertised:set", "advertised:other"],
             "SCAN" => vec!["SCAN", "0"],
