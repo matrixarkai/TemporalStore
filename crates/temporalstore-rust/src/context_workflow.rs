@@ -1116,6 +1116,11 @@ pub struct ContextFanoutPlanReport {
     // across embedding spaces raises no error on its own.
     #[serde(default)]
     pub embedding_width_conflict_nodes: usize,
+    /// Nodes declined because their vector was written by a DIFFERENT ENCODER at the same
+    /// width. Separate from the width count on purpose: two widths means a provider outage
+    /// seeded fallback vectors, while two encoders at one width means a model swap. Same
+    /// symptom, different cause, different fix.
+    pub embedding_model_conflict_nodes: usize,
     #[serde(default)]
     pub event_query_budget: usize,
     #[serde(default)]
@@ -1713,7 +1718,7 @@ pub(crate) fn extract_context_gated(
             // fresh ingest -- only the drainer's deferred path would ever fill it, so the
             // fallback to the separate record could never be retired.
             node.vector = vector.clone();
-            node.embedding_model_hash = context_embedding_model_hash(&provider.model);
+            node.embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
             node.embedding_updated_at_ms = timestamp_ms;
         }
         if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
@@ -1910,6 +1915,13 @@ pub fn retrieve_context(
         }
     };
     trace_stage("query_embedding");
+    // The encoder that produced the query vector, read from the RAW request rather than the
+    // normalized provider: normalisation substitutes a mock sentinel for an absent
+    // embedding_model, and hashing that would conflict with everything a real ingest wrote,
+    // skipping every stored vector for any caller that carries no provider config. An unnamed
+    // encoder is unknown, and unknown never conflicts.
+    let active_embedding_model_hash =
+        context_embedding_model_hash(request.provider.embedding_model.trim());
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
@@ -1919,6 +1931,7 @@ pub fn retrieve_context(
     // node silently collapses to the lexical/recency fallback.
     let mut l0_row_fallback: Vec<u64> = Vec::new();
     let mut width_conflict_nodes = 0usize;
+    let mut model_conflict_nodes = 0usize;
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
@@ -1937,12 +1950,21 @@ pub fn retrieve_context(
                 if node.vector.is_empty() {
                     l0_row_fallback.push(node.node_hash);
                 } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
-                    // Written in a different embedding space. Hand it to the hybrid lexical pass
-                    // exactly as an un-embedded node is handed over -- which means NOT recording
-                    // a score here, because that pass selects on the score COUNT being zero, not
-                    // on the score value. Recording a zero would mark the node as scored and
-                    // strand it at the bottom of the ranking with no second chance.
                     width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    l0_row_fallback.push(node.node_hash);
+                } else if context_embedding_model_conflicts(
+                    node.embedding_model_hash,
+                    active_embedding_model_hash,
+                ) {
+                    // Same width, different encoder: no length mismatch and no error, so this
+                    // branch is the only thing standing between a model swap and a plausible
+                    // cosine computed across two vector spaces. Hand it to the lexical pass.
+                    //
+                    // Handed over exactly as an un-embedded node is, which means NOT recording a
+                    // score: the lexical pass selects on the score COUNT being zero, not on the
+                    // score value, so a zero would mark the node scored and strand it at the
+                    // bottom of the ranking with no second chance.
+                    model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback.push(node.node_hash);
                 } else {
                     let score =
@@ -1997,6 +2019,7 @@ pub fn retrieve_context(
     // Set after BOTH vector passes -- the node pass and the summary pass each contribute, and the
     // node pass alone would under-report.
     fanout_plan.embedding_width_conflict_nodes = width_conflict_nodes;
+    fanout_plan.embedding_model_conflict_nodes = model_conflict_nodes;
     trace_stage("summary_embedding_lookup");
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
