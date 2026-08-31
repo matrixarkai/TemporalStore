@@ -11,6 +11,7 @@ where a passage vector was asked for, silently, with no dimension change to noti
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import unittest
@@ -54,6 +55,56 @@ class PrefixSelectionTest(unittest.TestCase):
         """Document text is the overwhelmingly common case, so it is the safe default."""
         self._model("intfloat/multilingual-e5-small")
         self.assertEqual(emb.embedding_input_prefix("something-else"), "passage: ")
+
+
+class TruncationTest(unittest.TestCase):
+    """Storing fewer dimensions than the model emits.
+
+    This is not only a memory setting: e5-large measured HIGHER truncated to 512 than at its native
+    1024 (76.2% against 74.2% hit@1) while halving the bytes per vector. The re-normalisation is the
+    part that has to be right -- a truncated vector has lost part of its magnitude, and cosine
+    against vectors stored whole would drift without it.
+    """
+
+    def setUp(self) -> None:
+        self._saved = dict(os.environ)
+
+    def tearDown(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._saved)
+
+    def test_the_default_width_is_512(self) -> None:
+        os.environ.pop("MATRIXARK_EMBEDDING_DIMS", None)
+        self.assertEqual(emb.embedding_target_dims(), 512)
+
+    def test_truncation_keeps_the_leading_dimensions(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_DIMS"] = "4"
+        out = emb.truncate_embedding([3.0, 4.0, 0.0, 0.0, 99.0, 99.0])
+        self.assertEqual(len(out), 4)
+        self.assertAlmostEqual(out[0] / out[1], 3.0 / 4.0, places=4)
+
+    def test_the_result_is_re_normalised(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_DIMS"] = "2"
+        out = emb.truncate_embedding([3.0, 4.0, 12.0])
+        self.assertAlmostEqual(math.sqrt(sum(v * v for v in out)), 1.0, places=5)
+
+    def test_a_vector_already_at_or_below_the_target_is_untouched(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_DIMS"] = "8"
+        original = [0.5, 0.5, 0.5, 0.5]
+        self.assertEqual(emb.truncate_embedding(original), original)
+
+    def test_zero_disables_truncation(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_DIMS"] = "0"
+        original = [1.0] * 100
+        self.assertEqual(emb.truncate_embedding(original), original)
+
+    def test_a_malformed_width_disables_truncation_rather_than_raising(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_DIMS"] = "wide"
+        self.assertEqual(emb.embedding_target_dims(), 0)
+
+    def test_an_all_zero_vector_does_not_divide_by_zero(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_DIMS"] = "2"
+        self.assertEqual(emb.truncate_embedding([0.0, 0.0, 0.0]), [0.0, 0.0])
 
 
 class CacheIdentityTest(unittest.TestCase):
