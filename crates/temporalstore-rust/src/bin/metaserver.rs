@@ -20,7 +20,8 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason, ShardStateRequest, TopologyEventsRequest,
+    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardPinRequest,
+    ShardReassignment, ShardReassignmentReason, ShardStateRequest, TopologyEventsRequest,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };

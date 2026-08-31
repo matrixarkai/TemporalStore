@@ -176,12 +176,33 @@ pub struct ShardLocation {
     pub state: MetaEntityState,
     #[serde(default)]
     pub latest_snapshot: Option<ShardSnapshotRef>,
+    /// Where this shard in particular should live.
+    ///
+    /// A table can express a preferred location, and every shard in it inherits
+    /// that. There was no way to say anything about one shard: a single hot
+    /// shard that wants its own hardware, or one shard whose data has to stay
+    /// somewhere its siblings need not, had to be expressed by pinning the
+    /// whole table or not at all.
+    ///
+    /// Empty means "whatever the table says", which is what every existing
+    /// shard means.
+    #[serde(default)]
+    pub preferred_location: String,
 }
 
 /// Take one shard out of service, or return it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardStateRequest {
     pub shard_id: ShardId,
+}
+
+/// Where a single shard should live. An empty location releases the pin and
+/// returns the shard to whatever its table prefers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardPinRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub location: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1259,6 +1280,8 @@ pub enum MetaMutation {
     SetNamespaceState(AddNamespaceRequest, MetaEntityState),
     /// Replace the set of names held back from creation.
     SetReservedNames(ReservedNames),
+    /// Pin one shard to a location, or release it with an empty one.
+    SetShardPreferredLocation(ShardPinRequest),
     /// Mute or resume metadata change. Recorded like any other mutation so it
     /// replays in order and reaches raft peers; the guard is deliberately not
     /// applied during replay, because the log only ever contains mutations that
@@ -1722,6 +1745,7 @@ impl SingleNodeMeta {
         state.shards.insert(
             request.shard_id,
             ShardLocation {
+                preferred_location: String::new(),
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: request.server_addr.clone(),
@@ -2008,6 +2032,46 @@ impl SingleNodeMeta {
             .then(|| Status::error("name_reserved", format!("table name {table} is reserved")))
     }
 
+    /// Pin one shard to a location, overriding what its table prefers. An
+    /// empty location releases the pin.
+    pub fn pin_shard(&self, request: ShardPinRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
+        self.record_mutation(MetaMutation::SetShardPreferredLocation(request.clone()));
+        self.apply_pin_shard(request)
+    }
+
+    pub(crate) fn apply_pin_shard(&self, request: ShardPinRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(shard) = state.shards.get_mut(&request.shard_id) else {
+            return AckResponse {
+                status: Status::error("shard_not_found", "shard is not registered"),
+            };
+        };
+        if shard.preferred_location == request.location {
+            return AckResponse {
+                status: Status::error("not_modified", "shard location preference is unchanged"),
+            };
+        }
+        shard.preferred_location = request.location.clone();
+        // Placement is derived on read, so the version bump is what makes the
+        // planners reconsider where this shard belongs.
+        record_topology_event(
+            &mut state,
+            "shard_preferred_location",
+            format!("shard:{}", request.shard_id),
+            if request.location.is_empty() {
+                "released".to_string()
+            } else {
+                format!("location={}", request.location)
+            },
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     /// The recorded change history, oldest first.
     ///
     /// Every metadata change records one of these, and the only way to see them
@@ -2119,6 +2183,9 @@ impl SingleNodeMeta {
             }
             MetaMutation::SetReservedNames(reserved) => {
                 self.apply_set_reserved_names(reserved).status
+            }
+            MetaMutation::SetShardPreferredLocation(request) => {
+                self.apply_pin_shard(request).status
             }
             MetaMutation::SetMetaChangeMuted(muted) => {
                 self.apply_set_meta_change_muted(muted).status
@@ -6629,6 +6696,154 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         }
     }
 
+    /// A two-shard table, its shards registered, with servers in two zones.
+    fn pinnable(table_preference: &str) -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        for (index, (addr, location)) in [("node-a", "east/zone-a"), ("node-b", "west/zone-b")]
+            .into_iter()
+            .enumerate()
+        {
+            meta.register_server(RegisterServerRequest {
+                server_addr: addr.to_string(),
+                node_id: index as u64 + 1,
+                location: location.to_string(),
+                binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions {
+                preferred_location: table_preference.to_string(),
+                ..TableServingOptions::default()
+            },
+        });
+        for shard_id in [1, 2] {
+            meta.register(RegisterShardRequest {
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        meta
+    }
+
+    fn pin(meta: &SingleNodeMeta, shard_id: ShardId, location: &str) -> Status {
+        meta.pin_shard(ShardPinRequest {
+            shard_id,
+            location: location.to_string(),
+        })
+        .status
+    }
+
+    fn wanted(meta: &SingleNodeMeta, shard_id: ShardId) -> String {
+        meta.shard_placements()
+            .get(&shard_id)
+            .map(|placement| placement.preferred_location.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn one_shard_can_be_pinned_without_moving_its_siblings() {
+        // The whole point: a table could be pinned, a shard could not, so a
+        // single hot shard wanting its own hardware meant pinning everything.
+        let meta = pinnable("");
+        assert!(pin(&meta, 1, "west/zone-b").ok);
+        assert_eq!(wanted(&meta, 1), "west/zone-b");
+        assert_eq!(wanted(&meta, 2), "", "the sibling was pinned too");
+    }
+
+    #[test]
+    fn a_shards_own_pin_overrides_what_its_table_prefers() {
+        let meta = pinnable("east/zone-a");
+        assert_eq!(wanted(&meta, 1), "east/zone-a");
+        assert!(pin(&meta, 1, "west/zone-b").ok);
+        assert_eq!(wanted(&meta, 1), "west/zone-b");
+        assert_eq!(wanted(&meta, 2), "east/zone-a", "the sibling stopped following the table");
+    }
+
+    #[test]
+    fn releasing_a_pin_returns_the_shard_to_its_table() {
+        // An empty location is the release, not a pin to nowhere.
+        let meta = pinnable("east/zone-a");
+        assert!(pin(&meta, 1, "west/zone-b").ok);
+        assert!(pin(&meta, 1, "").ok);
+        assert_eq!(wanted(&meta, 1), "east/zone-a");
+    }
+
+    #[test]
+    fn pinning_is_rejected_when_unknown_or_unchanged() {
+        let meta = pinnable("");
+        assert_eq!(pin(&meta, 99, "east/zone-a").code, "shard_not_found");
+        assert!(pin(&meta, 1, "east/zone-a").ok);
+        assert_eq!(pin(&meta, 1, "east/zone-a").code, "not_modified");
+    }
+
+    #[test]
+    fn a_muted_metaserver_will_not_pin_a_shard() {
+        let meta = pinnable("");
+        assert!(meta.set_meta_change_muted(true).status.ok);
+        assert_eq!(pin(&meta, 1, "east/zone-a").code, "meta_change_muted");
+    }
+
+    #[test]
+    fn a_pin_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("pin-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.register(RegisterShardRequest {
+                shard_id: 7,
+                server_addr: "node-a".to_string(),
+            });
+            assert!(pin(&meta, 7, "east/zone-a").ok);
+
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+            assert_eq!(
+                peer.get(7).location.expect("registered").preferred_location,
+                "east/zone-a"
+            );
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.get(7).location.expect("registered").preferred_location,
+            "east/zone-a"
+        );
+    }
+
+    #[test]
+    fn a_pin_to_a_location_with_no_live_server_does_not_strand_the_shard() {
+        // The existing rule for table preferences, which a per-shard pin has to
+        // inherit: a preference must not be able to take a shard out of service.
+        let meta = pinnable("");
+        assert!(pin(&meta, 1, "nowhere/at-all").ok);
+        let placements = meta.shard_placements();
+        assert!(placements.contains_key(&1), "the shard fell out of placement");
+        let plans = meta.plan_placement_aware_rebalance(AutoRebalanceOptions::default());
+        // Every planned owner is a live server, so a pin naming a place with
+        // none cannot pull the shard anywhere.
+        let live = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .map(|server| server.server_addr)
+            .collect::<std::collections::BTreeSet<_>>();
+        for plan in &plans {
+            assert!(
+                live.contains(&plan.to_server),
+                "planned a move to a server that is not live: {plan:?}"
+            );
+        }
+    }
+
     /// One shard registered to a server that has not said anything yet.
     fn drainable() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
@@ -9009,6 +9224,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(
             recovered.get(10).location.unwrap(),
             ShardLocation {
+                preferred_location: String::new(),
                 state: MetaEntityState::Normal,
                 shard_id: 10,
                 server_addr: "server-a".to_string(),
