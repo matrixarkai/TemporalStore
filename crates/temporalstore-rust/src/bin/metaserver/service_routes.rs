@@ -410,15 +410,12 @@ fn handle_master_service_route(
         }
         ("POST", "/MasterService/OpenTable") => {
             parse_or(&request.body, |req: MasterTableRequest| {
+                // Only the version is read out of this, so it does not ask
+                // for the shard list.
                 let topology = backend_call!(
                     meta,
                     get_table_topology,
-                    GetTableTopologyRequest {
-                        client_location: String::new(),
-                        namespace: req.namespace,
-                        table_name: req.table_name,
-                        old_topology_version: 0,
-                    }
+                    GetTableTopologyRequest::status_only(req.namespace, req.table_name)
                 );
                 MasterOpenTableResponse {
                     open_version: topology
@@ -432,15 +429,12 @@ fn handle_master_service_route(
         }
         ("POST", "/MasterService/CloseTable") => {
             parse_or(&request.body, |req: MasterTableRequest| {
+                // Only the status is read out of this, so it does not ask
+                // for the shard list.
                 let topology = backend_call!(
                     meta,
                     get_table_topology,
-                    GetTableTopologyRequest {
-                        client_location: String::new(),
-                        namespace: req.namespace,
-                        table_name: req.table_name,
-                        old_topology_version: 0,
-                    }
+                    GetTableTopologyRequest::status_only(req.namespace, req.table_name)
                 );
                 AckResponse {
                     status: topology.status,
