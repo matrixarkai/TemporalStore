@@ -1427,6 +1427,16 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Administration", "method": "POST", "path": "/v1/admin/config/test", "scope": "admin",
      "summary": "Call the configured extraction and embedding endpoints and report what came back.",
      "body": {}},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/monitoring/{asset}",
+     "scope": "admin",
+     "summary": "A monitoring asset as this build defines it: gateway or ingestion for a Grafana "
+                "dashboard, alerts for the Prometheus rules. Served from the process so the panels "
+                "match the metrics it emits."},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/events", "scope": "admin",
+     "summary": "Server-sent events carrying this deployment's live state: traffic, imports in "
+                "progress, encoding backlog and the configuration-warning count. One stream in "
+                "place of polling; the browser reconnects by itself.",
+     "stream": True},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/embeddings", "scope": "admin",
      "summary": "How much of the store is encoded and how much is still waiting, plus the models "
                 "and vector widths in use. Query: user_id, agent_id, session_id.",
@@ -1473,6 +1483,168 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Portal pages", "method": "GET", "path": "/v1/admin/routes", "scope": None,
      "summary": "This list as JSON."},
 ]
+
+
+# How often a live frame is sent. Two seconds is a compromise: an import moving at tens of
+# documents a second visibly advances, and a forgotten tab costs one small frame every two seconds
+# rather than three HTTP requests.
+EVENT_TICK_S = 2.0
+# The embedding count walks the record log, so it rides the stream at its own much slower cadence
+# rather than every tick. Everything else in a frame is read from memory.
+EVENT_EMBEDDING_REFRESH_S = 30.0
+# A stream is closed after this long and the browser reconnects. Bounded on purpose: an abandoned
+# tab should not hold a connection for the life of the worker, and a reconnect is one request.
+EVENT_STREAM_MAX_S = 600.0
+
+
+async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
+                       tenant: Optional[str], account: Optional[str],
+                       embedding: Optional[Json]) -> Json:
+    """One frame of live state. Everything here is read from memory except `embedding`."""
+    try:
+        traffic = _gwmetrics.METRICS.snapshot()
+    except Exception:
+        traffic = {}
+    try:
+        imports = _import_progress()
+    except Exception:
+        imports = {}
+    try:
+        warnings = len(_model_config_snapshot().get("warnings") or [])
+    except Exception:
+        warnings = 0
+    return {
+        "ts": time.time(),
+        "traffic": {
+            "total_requests": traffic.get("total_requests", 0),
+            "total_errors": traffic.get("total_errors", 0),
+            "in_flight": traffic.get("in_flight", 0),
+            "routes": traffic.get("routes", {}),
+        },
+        "imports": imports,
+        "warnings": warnings,
+        "embedding": embedding,
+    }
+
+
+async def _read_embedding(server: Any, cfg: GatewayConfig, key: Optional[str],
+                          tenant: Optional[str], account: Optional[str]) -> Optional[Json]:
+    args: Json = {"scope": {}}
+    _apply_identity(args, key, tenant, account)
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(server.call_tool, "matrixark_embedding_status", args),
+            cfg.backend_timeout)
+    except Exception:
+        # A backend that cannot answer must leave the field absent rather than reporting an empty
+        # backlog: "nothing pending" and "I could not find out" are different answers.
+        return None
+    if not isinstance(result, dict):
+        return None
+    slim = {field: result.get(field) for field in
+            ("total", "encoded", "pending", "percent_encoded", "mixed_dimensions",
+             "deferred_tasks")}
+    slim["encoder"] = _encoder_summary()
+    return slim
+
+
+async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: Callable,
+                        send: Callable, key: Optional[str], tenant: Optional[str],
+                        account: Optional[str]) -> None:
+    """Server-sent events: the live state of this deployment, pushed.
+
+    Three pages were each polling three endpoints on their own timers. One stream carries the same
+    state, the server builds it once, and the page stops guessing an interval -- an import that
+    finishes between two polls used to leave a stale bar on screen until the next one.
+
+    Server-sent events rather than a websocket because the traffic is one-way and EventSource
+    reconnects by itself; there is no protocol here to get wrong.
+    """
+    await send({"type": "http.response.start", "status": 200, "headers": [
+        (b"content-type", b"text/event-stream; charset=utf-8"),
+        (b"cache-control", b"no-cache, no-store"),
+        (b"connection", b"keep-alive"),
+        # Nginx buffers a proxied response by default, which turns a live stream into a single
+        # delivery when it finishes -- the one deployment detail that silently defeats SSE.
+        (b"x-accel-buffering", b"no"),
+    ]})
+
+    disconnected = asyncio.Event()
+
+    async def watch_for_disconnect() -> None:
+        while True:
+            message = await receive()
+            if message.get("type") == "http.disconnect":
+                disconnected.set()
+                return
+
+    watcher = asyncio.ensure_future(watch_for_disconnect())
+    started = time.time()
+    embedding: Optional[Json] = None
+    embedding_at = 0.0
+
+    async def emit(payload: bytes) -> None:
+        await send({"type": "http.response.body", "body": payload, "more_body": True})
+
+    try:
+        # Tell the browser how long to wait before reconnecting, so a closed stream comes back on
+        # our cadence rather than its default.
+        await emit(b"retry: 3000\n\n")
+        while not disconnected.is_set():
+            now = time.time()
+            if embedding is None or (now - embedding_at) >= EVENT_EMBEDDING_REFRESH_S:
+                embedding = await _read_embedding(server, cfg, key, tenant, account)
+                embedding_at = now
+            frame = await _event_frame(server, cfg, key, tenant, account, embedding)
+            body = json.dumps(frame, default=str).encode("utf-8")
+            await emit(b"event: status\ndata: " + body + b"\n\n")
+
+            if (time.time() - started) >= EVENT_STREAM_MAX_S:
+                # Say why before going, so a reconnect is not mistaken for a fault.
+                await emit(b"event: bye\ndata: {\"reason\": \"stream_max_age\"}\n\n")
+                break
+            try:
+                await asyncio.wait_for(disconnected.wait(), timeout=EVENT_TICK_S)
+            except asyncio.TimeoutError:
+                pass
+    except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError, OSError):
+        # The client went away mid-write. Nothing to report: this is how a stream normally ends.
+        pass
+    finally:
+        watcher.cancel()
+        try:
+            await send({"type": "http.response.body", "body": b"", "more_body": False})
+        except Exception:
+            pass
+
+
+# The monitoring assets, by the name a caller asks for. Read from the repo layout relative to this
+# module, cached per process like the portal pages.
+_GRAFANA_ASSETS = {
+    "gateway": ("../docs/ops/matrixark-gateway-dashboard.json", "application/json"),
+    "ingestion": ("../docs/ops/matrixark-ingestion-dashboard.json", "application/json"),
+    "alerts": ("temporalstore-prometheus/matrixark-gateway-alerts.yml", "text/yaml; charset=utf-8"),
+}
+_GRAFANA_CACHE: dict[str, Optional[bytes]] = {}
+
+
+def _grafana_asset(name: str) -> Tuple[Optional[bytes], str]:
+    """One monitoring asset, or (None, "") when this deployment does not bundle it."""
+    entry = _GRAFANA_ASSETS.get(name)
+    if entry is None:
+        return None, ""
+    relative, content_type = entry
+    if name in _GRAFANA_CACHE:
+        return _GRAFANA_CACHE[name], content_type
+    path = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), relative))
+    try:
+        with open(path, "rb") as handle:
+            data: Optional[bytes] = handle.read()
+    except Exception:  # pragma: no cover - deployments that do not ship the docs tree
+        data = None
+    _GRAFANA_CACHE[name] = data
+    return data, content_type
 
 
 def _encoder_summary() -> Json:
@@ -2690,6 +2862,40 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "imports": imports,
                 "config": config_snapshot,
             })
+
+        # ---- monitoring assets (auth + admin scope) -------------------------------------------
+        # The portal used to name a repo path. A customer running this as a managed service has no
+        # checkout, and even with one the file on their disk is whatever their copy is rather than
+        # what this build emits -- which is the whole failure the dashboard test exists to prevent.
+        if method == "GET" and path.startswith("/v1/admin/monitoring/"):
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            name = path[len("/v1/admin/monitoring/"):]
+            data, content_type = _grafana_asset(name)
+            if data is None:
+                return await _json(send, 404, {
+                    "error": "unknown_asset",
+                    "detail": "known assets: " + ", ".join(sorted(_GRAFANA_ASSETS))
+                              + ". A deployment that does not ship the docs tree serves none.",
+                })
+            return await _text(send, 200, data.decode("utf-8"), content_type=content_type)
+
+        # ---- live state (auth + admin scope) --------------------------------------------------
+        # One stream in place of three polls per page. Kept before the data routes so it never
+        # touches rate limiting or metering -- it is one long request, and counting it as one
+        # request against a quota would be as wrong as counting it as thousands.
+        if method == "GET" and path == "/v1/admin/events":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            return await _event_stream(server, cfg, scope, receive, send, key, tenant, account)
 
         # ---- encoding state (auth + admin scope) ---------------------------------------------
         # Ingest can defer encoding: chunking is synchronous and the vector is filled in behind it.

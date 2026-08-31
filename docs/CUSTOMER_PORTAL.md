@@ -365,6 +365,35 @@ could resend them. A bulk import from a server directory is the retryable-after-
 
 ---
 
+## Live updates
+
+`GET /v1/admin/events` (admin scope) is a server-sent event stream carrying this deployment's live
+state: traffic counters, imports in progress, the encoding backlog and the configuration-warning
+count. The overview and setup pages read it and show **live** in the corner.
+
+It replaces polling. Three pages were each running their own timers against three endpoints, so an
+import that finished between two polls left a stale bar on screen until the next one, and a page
+left open cost three requests every few seconds whether or not anything had changed.
+
+Design notes worth keeping:
+
+* **Read over `fetch`, not `EventSource`.** `EventSource` cannot set an `Authorization` header, and
+  the alternative is the key in a query string — where it lands in every access log and proxy trace
+  between the browser and the gateway. Same wire format; only the reconnect is ours to write, with
+  exponential backoff so a gateway that is down is not hammered.
+* **`X-Accel-Buffering: no`.** Nginx buffers a proxied response by default, which turns a live
+  stream into a single delivery when it finishes. This one header is the difference between live
+  and not.
+* **The expensive part rides slower.** Everything in a frame is read from memory except the
+  encoding count, which walks the record log — that refreshes every 30 seconds, not every tick.
+* **A stream is not a latency.** `/v1/admin/events` is excluded from the request-duration
+  histogram: a subscription lasting ten minutes left in there gives a p99 of ten minutes,
+  describing nothing anyone waited for. The request and its bytes are still counted.
+* **Bounded.** A stream closes after ten minutes and the browser reconnects, so an abandoned tab
+  does not hold a connection for the life of the worker.
+
+---
+
 ## Encoding progress
 
 Ingest can defer encoding: chunking is synchronous and the vector is filled in behind it. Between
@@ -443,14 +472,31 @@ would let any client create unbounded series in the operator's Prometheus.
 
 ### Grafana
 
+The dashboards and alert rules are **served by the gateway** at
+`GET /v1/admin/monitoring/{gateway|ingestion|alerts}`, and the setup page offers them as downloads.
+The portal used to name a repo path, which a customer running this as a managed service cannot
+reach — and even with a checkout, the file on their disk is whatever their copy is rather than what
+this build emits, which is exactly the drift the dashboard test exists to prevent.
+
+
 * `docs/ops/matrixark-gateway-dashboard.json` — config health, request rate, errors by status,
-  p50/p95/p99 latency, byte throughput, ranked routes.
+  p50/p95/p99 latency, byte throughput, ranked routes, plus when the configuration last changed,
+  how many settings are away from stock, and worker uptime.
 * `docs/ops/matrixark-ingestion-dashboard.json` — bulk import progress and backlog.
 * `tools/temporalstore-prometheus/matrixark-gateway-alerts.yml` — alert rules.
 
 Half of "it started behaving differently on Tuesday" is answered by knowing whether anyone changed
 the configuration on Tuesday. The change timestamp puts that on the same dashboard as the effect;
 it carries the fact and the time, never a value.
+
+**The dashboards and the metrics are held together by a test.** Both directions fail silently
+and neither fails loudly: a panel querying a series nobody emits is a **blank panel**, which on a
+monitoring dashboard reads as "no traffic" — the most misleading thing it can say. And a metric
+emitted and charted nowhere is work nobody sees. `test_matrixark_dashboards` compares the two,
+requires every panel to carry a description, and checks no panels overlap. It caught six emitted
+metrics shown nowhere, including the two added precisely because the state they describe is
+invisible otherwise: documents waiting for a retry, and when somebody last changed the
+configuration.
 
 The two gauges to alert on are `matrixark_gateway_embedding_semantic == 0` and
 `matrixark_gateway_extraction_model_active == 0`. They are the only signals that catch a silently

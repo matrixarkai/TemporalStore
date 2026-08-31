@@ -41,6 +41,7 @@ _BUCKETS: Tuple[float, ...] = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.
 # /v1/memory/ prefix. Anything unmatched is reported as "other" -- one series, never the raw path.
 _PREFIX_ROUTES: Tuple[Tuple[str, str], ...] = (
     ("/v1/admin/ingestion/jobs/", "/v1/admin/ingestion/jobs/{id}"),
+    ("/v1/admin/monitoring/", "/v1/admin/monitoring/{asset}"),
     ("/v1/memory/by-key", "/v1/memory/by-key"),
     ("/v1/memory/", "/v1/memory/{id}"),
     ("/v1/blob/", "/v1/blob/{key}"),
@@ -55,10 +56,15 @@ _EXACT_ROUTES = frozenset({
     "/v1/admin/explore", "/v1/admin/ingestion", "/v1/admin/overview",
     "/v1/admin/config", "/v1/admin/config/test", "/v1/admin/config/preset",
     "/v1/admin/scopes", "/v1/admin/embeddings",
+    "/v1/admin/events",
     "/v1/admin/config/export",
     "/v1/admin/api", "/v1/admin/routes",
     "/v1/admin/api_key_usage", "/v1/admin/ingestion/jobs",
 })
+
+
+# Routes that stream. Their wall-clock duration is the length of a subscription, not a latency.
+STREAMING_ROUTES = frozenset({"/v1/admin/events"})
 
 
 def route_label(path: str) -> str:
@@ -102,6 +108,12 @@ class GatewayMetrics:
     def record(self, path: str, method: str, status: int, duration_s: float,
                request_bytes: int = 0, response_bytes: int = 0) -> None:
         route = route_label(path)
+        # A long-lived stream is one request that lasts minutes. Its duration is not a latency and
+        # putting it in the histogram poisons every quantile drawn across routes -- a p99 of ten
+        # minutes, describing nothing anyone waited for. Count the request and the bytes; skip the
+        # clock.
+        if route in STREAMING_ROUTES:
+            duration_s = 0.0
         method = (method or "GET").upper()[:8]
         try:
             status = int(status)

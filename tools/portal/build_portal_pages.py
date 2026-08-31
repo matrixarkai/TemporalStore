@@ -343,10 +343,18 @@ SETUP_BODY = """
     <h2>Grafana <span class="aux"><button class="link" id="copyScrape" type="button">copy scrape config</button></span></h2>
     <p class="hint" style="margin-top:0">Everything on this page is also exported at
       <span class="mono">/v1/metrics</span> in Prometheus text format — aggregate counters only, no
-      keys and no tenant identifiers, so it is safe to scrape without credentials. Import
-      <span class="mono">docs/ops/matrixark-gateway-dashboard.json</span> for the request/latency
-      panels and <span class="mono">docs/ops/matrixark-ingestion-dashboard.json</span> for import
-      backlog.</p>
+      keys and no tenant identifiers, so it is safe to scrape without credentials.</p>
+    <p class="hint">Three steps: point Prometheus at the scrape config below, import the dashboards
+      into Grafana, and load the alert rules. The dashboards are served by this gateway rather than
+      named as a file path, so the panels match the metrics this build actually emits — a panel
+      querying a series nobody emits is a blank one, and a blank panel reads as “no traffic”.</p>
+    <div class="actions">
+      <button class="ghost" id="dlGateway" type="button">Gateway dashboard</button>
+      <button class="ghost" id="dlIngestion" type="button">Ingestion dashboard</button>
+      <button class="ghost" id="dlAlerts" type="button">Alert rules</button>
+      <span class="hint" style="margin:0">Grafana → Dashboards → New → Import → Upload JSON.</span>
+    </div>
+    <div id="grafanaMsg" role="status" aria-live="polite"></div>
     <table>
       <tr><td class="mono">matrixark_gateway_embedding_semantic</td><td>0 means retrieval is running on hash
         vectors. Alert on it — nothing else distinguishes that deployment from a healthy one.</td></tr>
@@ -356,6 +364,12 @@ SETUP_BODY = """
         right now. Steady state is 0.</td></tr>
       <tr><td class="mono">matrixark_gateway_request_duration_seconds</td><td>Edge latency histogram, by route.</td></tr>
       <tr><td class="mono">matrixark_gateway_requests_total</td><td>Edge requests by route, method and status.</td></tr>
+      <tr><td class="mono">matrixark_ingestion_documents_retryable</td><td>Documents that failed an
+        import for a reason worth retrying. Non-zero means work is sitting there until somebody
+        presses retry — nothing else raises its hand.</td></tr>
+      <tr><td class="mono">matrixark_gateway_config_changed_timestamp_seconds</td><td>When the
+        configuration was last written from the portal. Half of “it started behaving differently on
+        Tuesday” is answered by knowing whether anyone changed it on Tuesday.</td></tr>
     </table>
     <pre id="scrape"></pre>
   </section>
@@ -366,6 +380,81 @@ SETUP_JS = r"""
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+
+/* ---------- the live stream ---------- */
+/* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
+   the alternative is the key in a query string, and a credential in a URL ends up in every access
+   log and proxy trace between here and the gateway. Same wire format either way; only the
+   reconnect is ours to write. */
+function liveStream(options) {
+  var onFrame = options.onFrame || function () {};
+  var onState = options.onState || function () {};
+  var headers = options.headers || function () { return {}; };
+  var controller = null, stopped = false, backoff = 1000, buffer = "";
+
+  function schedule() {
+    if (stopped) { return; }
+    onState("retrying", Math.round(backoff / 1000));
+    setTimeout(open, backoff);
+    backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down should not be hammered */
+  }
+
+  function handle(block) {
+    var payload = null;
+    block.split("\n").forEach(function (line) {
+      if (line.indexOf("data: ") === 0) { payload = line.slice(6); }
+    });
+    if (!payload) { return; }
+    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
+  }
+
+  function open() {
+    if (stopped) { return; }
+    controller = new AbortController();
+    onState("connecting");
+    fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
+      .then(function (response) {
+        if (!response.ok) { return Promise.reject(response.status); }
+        if (!response.body) { return Promise.reject("nostream"); }
+        onState("live");
+        backoff = 1000;
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) { schedule(); return; }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var blocks = buffer.split("\n\n");
+            buffer = blocks.pop();
+            blocks.forEach(handle);
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(function (err) {
+        if (stopped) { return; }
+        if (err === 401 || err === 403) { onState("denied"); return; }
+        schedule();
+      });
+  }
+
+  open();
+  window.addEventListener("pagehide", function () {
+    stopped = true;
+    if (controller) { controller.abort(); }
+  });
+  return {
+    restart: function () {
+      if (controller) { controller.abort(); }
+      backoff = 1000;
+      stopped = false;
+      open();
+    },
+    stop: function () { stopped = true; if (controller) { controller.abort(); } }
+  };
+}
+
   var loaded = null;      /* last GET /v1/admin/config payload */
   var fields = {};        /* setting key -> field descriptor from the server */
   var edits = {};         /* setting key -> value typed/reset since the last load */
@@ -703,6 +792,7 @@ SETUP_JS = r"""
         renderHistory(d.settings);
         renderInventory(d.settings);
         loadEncoding();
+        startLive();
       })
       .catch(function (e) {
         if (e === 401 || e === 403) {
@@ -1005,16 +1095,92 @@ SETUP_JS = r"""
     if ($("onlyEssential").checked) { $("showAdvanced").checked = true; }
     applyFilter();
   });
+  /* Served from the process, so what a customer imports is what this build emits. */
+  function downloadAsset(name, filename) {
+    fetch("/v1/admin/monitoring/" + name, { headers: auth() })
+      .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+      .then(function (text) {
+        var url = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+        say($("grafanaMsg"), filename + " downloaded.", "ok");
+      })
+      .catch(function (e) {
+        say($("grafanaMsg"), e === 404
+          ? "This deployment does not bundle the monitoring assets."
+          : (typeof e === "number" ? failure(e) : "Could not reach the gateway."), "err");
+      });
+  }
+
+  $("dlGateway").addEventListener("click", function () {
+    downloadAsset("gateway", "matrixark-gateway-dashboard.json");
+  });
+  $("dlIngestion").addEventListener("click", function () {
+    downloadAsset("ingestion", "matrixark-ingestion-dashboard.json");
+  });
+  $("dlAlerts").addEventListener("click", function () {
+    downloadAsset("alerts", "matrixark-gateway-alerts.yml");
+  });
+
   $("copyScrape").addEventListener("click", function () {
     var text = scrapeConfig();
     if (navigator.clipboard) { navigator.clipboard.writeText(text); }
     $("copyScrape").textContent = "copied";
     setTimeout(function () { $("copyScrape").textContent = "copy scrape config"; }, 1400);
   });
+  /* Traffic and encoding arrive on the stream; the checkbox now pauses the stream rather than a
+     timer, which is the same promise to the reader and one connection instead of two pollers. */
   $("auto").addEventListener("change", function () {
-    if (timer) { clearInterval(timer); timer = null; }
-    if ($("auto").checked) { timer = setInterval(loadTraffic, 5000); }
+    if (!$("auto").checked) {
+      if (live) { live.stop(); live = null; }
+      conn("live", "paused");
+    } else {
+      startLive();
+    }
   });
+
+  var live = null;
+
+  function startLive() {
+    if (!$("key").value.trim() || !$("auto").checked) { return; }
+    if (live) { live.restart(); return; }
+    live = liveStream({
+      headers: auth,
+      onState: function (state, seconds) {
+        if (state === "live") { conn("live", "live"); }
+        else if (state === "denied") { conn("live", "connected"); }
+        else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+      },
+      onFrame: function (frame) {
+        renderLiveTraffic(frame.traffic);
+        if (frame.embedding) { renderEncoding(frame.embedding); }
+      }
+    });
+  }
+
+  /* The same table the scrape used to draw, from the frame instead of a /v1/metrics parse. */
+  function renderLiveTraffic(traffic) {
+    var routes = (traffic || {}).routes || {};
+    var names = Object.keys(routes).sort(function (a, b) {
+      return routes[b].requests - routes[a].requests;
+    });
+    if (!names.length) {
+      $("traffic").innerHTML = '<div class="empty">No requests recorded yet on this worker.</div>';
+      return;
+    }
+    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Errors</th>" +
+      "<th>Mean latency</th></tr></thead><tbody>" + names.map(function (name) {
+        var row = routes[name];
+        return "<tr><td><span class='mono'>" + esc(name) + "</span></td><td class='num'>" +
+          row.requests + "</td><td class='num'>" + (row.errors || 0) + "</td><td class='num'>" +
+          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
   /* Leaving with unsaved edits loses them silently otherwise; on a form this long that is a
      genuine loss of work, not a nuisance. */
   window.addEventListener("beforeunload", function (ev) {
@@ -1028,8 +1194,7 @@ SETUP_JS = r"""
   $("scrape").textContent = scrapeConfig();
   markDirty();
   load();
-  loadTraffic();
-  timer = setInterval(loadTraffic, 5000);
+  loadTraffic();  /* one read so the table is populated before the first frame arrives */
 }());
 </script>
 """
@@ -1394,6 +1559,81 @@ OVERVIEW_JS = r"""
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+
+/* ---------- the live stream ---------- */
+/* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
+   the alternative is the key in a query string, and a credential in a URL ends up in every access
+   log and proxy trace between here and the gateway. Same wire format either way; only the
+   reconnect is ours to write. */
+function liveStream(options) {
+  var onFrame = options.onFrame || function () {};
+  var onState = options.onState || function () {};
+  var headers = options.headers || function () { return {}; };
+  var controller = null, stopped = false, backoff = 1000, buffer = "";
+
+  function schedule() {
+    if (stopped) { return; }
+    onState("retrying", Math.round(backoff / 1000));
+    setTimeout(open, backoff);
+    backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down should not be hammered */
+  }
+
+  function handle(block) {
+    var payload = null;
+    block.split("\n").forEach(function (line) {
+      if (line.indexOf("data: ") === 0) { payload = line.slice(6); }
+    });
+    if (!payload) { return; }
+    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
+  }
+
+  function open() {
+    if (stopped) { return; }
+    controller = new AbortController();
+    onState("connecting");
+    fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
+      .then(function (response) {
+        if (!response.ok) { return Promise.reject(response.status); }
+        if (!response.body) { return Promise.reject("nostream"); }
+        onState("live");
+        backoff = 1000;
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) { schedule(); return; }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var blocks = buffer.split("\n\n");
+            buffer = blocks.pop();
+            blocks.forEach(handle);
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(function (err) {
+        if (stopped) { return; }
+        if (err === 401 || err === 403) { onState("denied"); return; }
+        schedule();
+      });
+  }
+
+  open();
+  window.addEventListener("pagehide", function () {
+    stopped = true;
+    if (controller) { controller.abort(); }
+  });
+  return {
+    restart: function () {
+      if (controller) { controller.abort(); }
+      backoff = 1000;
+      stopped = false;
+      open();
+    },
+    stop: function () { stopped = true; if (controller) { controller.abort(); } }
+  };
+}
+
   function auth() {
     var k = $("key").value.trim();
     return k ? { Authorization: "Bearer " + k } : {};
@@ -1498,6 +1738,10 @@ OVERVIEW_JS = r"""
     /* Keep up with an import while one is running, and go back to idle pacing when it ends. */
     pace(!!((d.imports || {}).active || []).length);
 
+    renderCounts(d);
+  }
+
+  function renderCounts(d) {
     var counts = d.counts || {}, traffic = d.traffic || {};
     var cards = [
       { n: counts.skills == null ? "—" : counts.skills, l: "skills" },
@@ -1576,10 +1820,9 @@ OVERVIEW_JS = r"""
     fetch("/v1/admin/overview", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (d) {
-        conn("live", "connected");
         lastReport = d;
         render(d);
-        loadEncoding();
+        startLive();
       })
       .catch(function (e) {
         if (e === 401 || e === 403) {
@@ -1597,19 +1840,39 @@ OVERVIEW_JS = r"""
      without this they fix a thing and the list keeps telling them it is broken. Each refresh costs
      three listings on the backend, so it does not run for a tab nobody is looking at -- an idle
      background tab was otherwise a standing load on the store. */
-  var IDLE_MS = 30000, ACTIVE_MS = 4000, overviewMs = 0, overviewTimer = null;
+  /* The strips come from the stream, so the checklist only has to be re-read occasionally: it
+     changes when somebody changes a setting, not several times a second. */
+  var CHECKLIST_MS = 60000;
+  var overviewTimer = setInterval(function () {
+    if (document.hidden) { return; }
+    if ($("autoOverview").checked && $("key").value.trim()) { load(); }
+  }, CHECKLIST_MS);
 
-  function pace(active) {
-    var want = active ? ACTIVE_MS : IDLE_MS;
-    if (want === overviewMs && overviewTimer) { return; }
-    if (overviewTimer) { clearInterval(overviewTimer); }
-    overviewMs = want;
-    overviewTimer = setInterval(function () {
-      if (document.hidden) { return; }
-      if ($("autoOverview").checked && $("key").value.trim()) { load(); }
-    }, want);
+  function pace(_active) { /* the stream sets the pace now */ }
+
+  var live = null;
+
+  function startLive() {
+    if (!$("key").value.trim()) { return; }
+    if (live) { live.restart(); return; }
+    live = liveStream({
+      headers: auth,
+      onState: function (state, seconds) {
+        if (state === "live") { conn("live", "live"); }
+        else if (state === "denied") { conn("live", "connected"); }
+        else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+      },
+      onFrame: function (frame) {
+        renderImports(frame.imports);
+        if (frame.embedding) { renderEncoding(frame.embedding); }
+        if (lastReport) {
+          lastReport.imports = frame.imports;
+          lastReport.traffic = frame.traffic;
+          renderCounts(lastReport);
+        }
+      }
+    });
   }
-  pace(false);
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && $("autoOverview").checked && $("key").value.trim()) { load(); }
   });

@@ -40,6 +40,7 @@ PREFIX_SHAPES = {
     "/v1/blob/*": {"/v1/blob/{key}"},
     "/v1/admin/ingestion/jobs/*": {"/v1/admin/ingestion/jobs/{id}/cancel",
                                    "/v1/admin/ingestion/jobs/{id}/retry"},
+    "/v1/admin/monitoring/*": {"/v1/admin/monitoring/{asset}"},
 }
 
 
@@ -93,7 +94,7 @@ class RouteDocsTest(unittest.TestCase):
                 self.assertTrue(entry["group"].strip())
                 groups.add(entry["group"])
                 if entry["method"] == "POST" and not entry.get("raw_body") \
-                        and "{id}" not in entry["path"]:
+                        and not entry.get("stream") and "{id}" not in entry["path"]:
                     # A POST a customer is told about should come with a body that works, not a
                     # schema to translate.
                     self.assertIn("body", entry,
@@ -125,17 +126,20 @@ class RouteDocsTest(unittest.TestCase):
         """Run each example the API page offers and require a 2xx.
 
         A published example that 400s is worse than no example: it is copied first and read second,
-        and the reader concludes the route is broken rather than the sample. The two shapes that
-        cannot be exercised here are excluded for stated reasons -- a raw-body upload needs a blob
-        tier, and a path with an {id} needs one that exists -- and a route that says it `needs` a
-        setting this deployment has not got is allowed to refuse.
+        and the reader concludes the route is broken rather than the sample. Three shapes cannot be
+        exercised here and are excluded for stated reasons: a raw-body upload needs a blob tier, a
+        path with an {id} needs one that exists, and a STREAM has no response to wait for -- it
+        stays open by design, so driving it here simply hangs, which is exactly what happened the
+        first time one was documented. Streams are covered by their own test, which reads a frame
+        and disconnects. A route that says it `needs` a setting this deployment has not got is
+        allowed to refuse.
         """
         server = _FakeServer()
         app = gw.make_v1_app(server, _cfg())
         headers = {"Authorization": "Bearer k-acme"}
         checked = 0
         for entry in gw.ROUTE_DOCS:
-            if entry.get("raw_body") or "{" in entry["path"]:
+            if entry.get("raw_body") or entry.get("stream") or "{" in entry["path"]:
                 continue
             path = entry["path"]
             if entry.get("query"):
@@ -150,6 +154,16 @@ class RouteDocsTest(unittest.TestCase):
                                 "%s %s answered %d: %s"
                                 % (entry["method"], path, status, body[:200]))
         self.assertGreater(checked, 25, "the sweep did not actually exercise the surface")
+
+    def test_a_streaming_route_says_so(self) -> None:
+        # The flag is what keeps the sweep above from hanging on it, so it is worth asserting
+        # rather than leaving as a convention someone can forget.
+        streaming = [entry for entry in gw.ROUTE_DOCS if entry.get("stream")]
+        self.assertTrue(streaming, "no route is marked as a stream")
+        for entry in streaming:
+            with self.subTest(route=entry["path"]):
+                self.assertNotIn("body", entry)
+                self.assertIn("stream", entry["summary"].lower())
 
     def test_a_get_example_that_needs_a_query_parameter_carries_one(self) -> None:
         # /v1/memory/by-key without identity_key is a 400 by design; an example missing it teaches

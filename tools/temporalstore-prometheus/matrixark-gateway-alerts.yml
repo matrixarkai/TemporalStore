@@ -45,6 +45,20 @@ groups:
             The gateway can see problems in its own configuration. The text of each is on
             /v1/admin/setup and in GET /v1/admin/config.
 
+  - name: matrixark-ingestion
+    rules:
+      - alert: MatrixArkImportFailuresWaiting
+        expr: matrixark_ingestion_documents_retryable > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} imported documents are waiting for a retry ({{ $labels.instance }})"
+          description: >-
+            An import finished with failures worth retrying -- a timeout or an exhausted 5xx, not a
+            rejected request. They stay unimported until somebody opens the portal and presses
+            retry, and nothing else raises its hand. Ingestion -> the job -> Retry.
+
   - name: matrixark-gateway-serving
     rules:
       - alert: MatrixArkGatewayServerErrors
