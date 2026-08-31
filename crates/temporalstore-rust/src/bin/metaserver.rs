@@ -1708,9 +1708,12 @@ fn handle(
         }),
         ("GET", "/tables") => json_response(200, &backend_call!(meta, list_tables)),
         ("POST", "/tables/topology") | ("POST", "/table_topology") => {
-            parse_or(&request.body, |req: GetTableTopologyRequest| {
+            let (code, body) = parse_or(&request.body, |req: GetTableTopologyRequest| {
                 backend_call!(meta, get_table_topology, req)
-            })
+            });
+            // Measured here because here is where the answer has a size.
+            meta.record_topology_bytes(body.len());
+            (code, body)
         }
         _ => json_response(
             404,
@@ -2486,6 +2489,88 @@ mod tests {
             std::env::remove_var(key);
         }
         out
+    }
+
+    #[test]
+    fn the_metaserver_says_how_much_topology_went_out() {
+        // A topology answer grows with the table, and every client and proxy
+        // fetches it whenever the version moves. Nothing measured how much was
+        // going out, so a table whose answers had grown large enough to matter
+        // was not visible as bandwidth anywhere.
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let MetaBackend::Single(meta) = &backend else {
+            unreachable!()
+        };
+        let scheduler = MetaTaskScheduler::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                first_shard_id: 900,
+                shard_count: 4,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: temporalstore_rust::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok);
+
+        let ask = || {
+            handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "POST".to_string(),
+                    path: "/table_topology".to_string(),
+                    body: serde_json::to_vec(&GetTableTopologyRequest {
+                        namespace: "ns".to_string(),
+                        table_name: "t".to_string(),
+                        old_topology_version: 0,
+                        client_location: String::new(),
+                    })
+                    .unwrap(),
+                },
+            )
+        };
+
+        let (code, body) = ask();
+        assert_eq!(code, 200);
+        let first = body.len() as u64;
+        assert!(first > 0);
+
+        let exported = meta.subsystem_metrics().prometheus();
+        let line = format!("temporalstore_meta_topology_query_bytes_total {first}");
+        assert!(
+            exported.contains(&line),
+            "the size of the answer was not counted, wanted {line}"
+        );
+
+        // A second answer adds its own size rather than replacing it.
+        let (_, body) = ask();
+        let total = first + body.len() as u64;
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains(&format!(
+                "temporalstore_meta_topology_query_bytes_total {total}"
+            )),
+            "the second answer did not add to the total"
+        );
     }
 
     #[test]

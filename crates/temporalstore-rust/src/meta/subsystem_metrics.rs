@@ -48,6 +48,8 @@ struct SubsystemMetricsState {
     held_total: BTreeMap<(String, String), u64>,
     reboots_detected_total: u64,
     divergences_total: u64,
+    /// Bytes of topology handed out, as encoded on the wire.
+    topology_query_bytes_total: u64,
     reassigned_total: BTreeMap<String, u64>,
     purged_total: BTreeMap<String, u64>,
     aged_total: BTreeMap<String, u64>,
@@ -107,6 +109,11 @@ impl SubsystemMetrics {
     }
 
     /// Record one shard-divergence reconciliation round.
+    /// Record the encoded size of one topology answer.
+    pub fn record_topology_bytes(&self, bytes: usize) {
+        self.with(|state| state.topology_query_bytes_total += bytes as u64);
+    }
+
     pub fn record_divergence(&self, report: &ShardCheckReport) {
         self.with(|state| {
             *state
@@ -333,6 +340,17 @@ fn render(state: &SubsystemMetricsState) -> String {
             u64::from(*paused),
         );
     }
+
+    out.push_str(
+        "# HELP temporalstore_meta_topology_query_bytes_total Bytes of topology handed out.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_topology_query_bytes_total counter\n");
+    push(
+        &mut out,
+        "temporalstore_meta_topology_query_bytes_total",
+        &[],
+        state.topology_query_bytes_total,
+    );
 
     out.push_str("# HELP temporalstore_meta_shard_divergence_total Shards found routed to a server not serving them.\n");
     out.push_str("# TYPE temporalstore_meta_shard_divergence_total counter\n");
