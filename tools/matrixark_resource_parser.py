@@ -66,20 +66,29 @@ def encoder_window_tokens(model: str | None = None) -> int:
     return _DEFAULT_ENCODER_WINDOW
 
 
-# The text handed to the encoder fills its window. This was 128 while chunks were 240 tokens,
-# so half of every chunk never reached a vector and could only be found lexically -- through an
-# index whose terms the retrieve path cannot consult.
+# How much text one vector should stand for. This is a RETRIEVAL decision, not an encoder
+# capability: measured over 298 query pairs, moving from 128 to 512 tokens gave 4.01x fewer
+# vectors and cost 25.2 points of hit@1 (77.2% -> 52.0%) and 15.1 of hit@5. One vector cannot
+# represent three times as much text without blurring what it points at.
+#
+# The encoder's window bounds this from ABOVE -- never embed more than the model will read -- but
+# it is a ceiling, not a target.
 DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
-    os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", str(encoder_window_tokens()))
+    os.environ.get(
+        "MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS",
+        str(min(128, encoder_window_tokens())),
+    )
 )
 # Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
 # 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
 # 204 records and 8.9 MB. It had no knob, so no deployment could reach it.
-# Chunk size follows the encoder's window, so a chunk is never larger than what will be
-# embedded. Measured on a 1 MB skill: 128-token chunks are 3,302 vectors, 256 are 1,519 and
-# 512 are 744 -- and vectors are 61% of what an ingest stores, so this is the dominant lever.
+# Chunk size matches the embedding window, so a chunk is never larger than the part of it that
+# reaches a vector. These disagreed -- chunks were 240 tokens and only 128 were embedded, so
+# roughly half of every chunk was findable only through a lexical index whose terms the retrieve
+# path cannot consult. Raising BOTH to the encoder's maximum was measured and rejected: it costs
+# 25.2 points of hit@1 for 4x fewer vectors.
 DEFAULT_MAX_CHUNK_TOKENS = int(
-    os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", str(encoder_window_tokens()))
+    os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240")
 )
 DEFAULT_OVERLAP_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_TOKENS", "24"))
 # Both caps bind, whichever is hit first. Deriving the character cap from the
