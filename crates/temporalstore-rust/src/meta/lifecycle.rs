@@ -602,12 +602,8 @@ impl SingleNodeMeta {
         state.shards.insert(
             request.shard_id,
             ShardLocation {
-<<<<<<< HEAD
                 registered_at_ms: 0,
-||||||| a7277311
-=======
                 preferred_location: String::new(),
->>>>>>> matrixark/main
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: server_addr.clone(),

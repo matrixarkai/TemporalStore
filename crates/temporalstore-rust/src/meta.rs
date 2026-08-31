@@ -176,7 +176,6 @@ pub struct ShardLocation {
     pub state: MetaEntityState,
     #[serde(default)]
     pub latest_snapshot: Option<ShardSnapshotRef>,
-<<<<<<< HEAD
     /// When this shard was first registered.
     ///
     /// `last_heartbeat_ms` is reset every time it registers again, and
@@ -185,8 +184,6 @@ pub struct ShardLocation {
     /// a node that restarted has not newly joined.
     #[serde(default)]
     pub registered_at_ms: u64,
-||||||| a7277311
-=======
     /// Where this shard in particular should live.
     ///
     /// A table can express a preferred location, and every shard in it inherits
@@ -199,7 +196,6 @@ pub struct ShardLocation {
     /// shard means.
     #[serde(default)]
     pub preferred_location: String,
->>>>>>> matrixark/main
 }
 
 /// Take one shard out of service, or return it.
@@ -1802,12 +1798,8 @@ impl SingleNodeMeta {
         state.shards.insert(
             request.shard_id,
             ShardLocation {
-<<<<<<< HEAD
                 registered_at_ms,
-||||||| a7277311
-=======
                 preferred_location: String::new(),
->>>>>>> matrixark/main
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: request.server_addr.clone(),
@@ -6823,7 +6815,6 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         }
     }
 
-<<<<<<< HEAD
     fn join_server(meta: &SingleNodeMeta, addr: &str) -> Status {
         meta.register_server(RegisterServerRequest {
             registered_at_ms: 0,
@@ -6931,8 +6922,6 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(server_joined_at(&recovered, "node-a"), first);
     }
 
-||||||| a7277311
-=======
     /// A two-shard table, its shards registered, with servers in two zones.
     fn pinnable(table_preference: &str) -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
@@ -6941,6 +6930,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
                 location: location.to_string(),
@@ -6965,6 +6955,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         });
         for shard_id in [1, 2] {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });
@@ -7037,6 +7028,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 7,
                 server_addr: "node-a".to_string(),
             });
@@ -7081,7 +7073,6 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         }
     }
 
->>>>>>> matrixark/main
     /// One shard registered to a server that has not said anything yet.
     fn drainable() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
@@ -9499,16 +9490,22 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
 
         let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert_eq!(
-<<<<<<< HEAD
             recovered.get(10).location.as_ref().map(|location| {
                 (
                     location.shard_id,
                     location.server_addr.clone(),
                     location.state,
                     location.latest_snapshot.clone(),
+                    location.preferred_location.clone(),
                 )
             }),
-            Some((10, "server-a".to_string(), MetaEntityState::Normal, None))
+            Some((
+                10,
+                "server-a".to_string(),
+                MetaEntityState::Normal,
+                None,
+                String::new()
+            ))
         );
         // The join time is carried through replay rather than restamped, so it
         // cannot be written into the expected value above -- only checked for
@@ -9516,24 +9513,6 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert!(
             recovered.get(10).location.expect("registered").registered_at_ms > 0,
             "the shard's join time was lost in replay"
-||||||| a7277311
-            recovered.get(10).location.unwrap(),
-            ShardLocation {
-                state: MetaEntityState::Normal,
-                shard_id: 10,
-                server_addr: "server-a".to_string(),
-                latest_snapshot: None,
-            }
-=======
-            recovered.get(10).location.unwrap(),
-            ShardLocation {
-                preferred_location: String::new(),
-                state: MetaEntityState::Normal,
-                shard_id: 10,
-                server_addr: "server-a".to_string(),
-                latest_snapshot: None,
-            }
->>>>>>> matrixark/main
         );
         let recovered_tables = recovered.list_tables().tables;
         assert_eq!(recovered_tables.len(), 2);
