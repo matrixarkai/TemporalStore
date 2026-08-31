@@ -4,6 +4,15 @@
 //! Storage lifecycle / WAL-reclaim / eviction methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// How many dirty-object keys the dump drain has looked at, across every call.
+///
+/// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
+/// deriving it as |dirty objects| x |buckets| is arithmetic about the code rather than a
+/// measurement of it. This counts what actually happens, which is the only version that keeps
+/// being true after someone changes the loop.
+pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
@@ -424,6 +433,19 @@ impl TemporalEngine {
                 .into_iter()
                 .map(|summary| (summary.routing_bucket, summary.dirty_generation))
                 .collect();
+        // Buckets this dump actually clears. Collected first so the dirty set is walked ONCE.
+        //
+        // The retain used to sit inside this loop, so every qualifying bucket walked every dirty
+        // object and re-hashed its key to recompute a routing bucket -- a bucket the caller
+        // already knew, and one that `mark_async_dirty_object` had computed on the line above the
+        // insert and thrown away. The work was |dirty objects| x |buckets|, to remove at most
+        // |dirty objects| entries: measured at 4 040 000 closure calls to clear 4 000 objects
+        // across 1 010 buckets, a 1010x amplification.
+        //
+        // Nothing in the per-bucket body depends on the dirty set having been cleared, and
+        // `current` was captured before any mutation, so hoisting the walk out is the same answer
+        // in one pass.
+        let mut cleared_buckets: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for bucket_id in manifest.bucket_ids.iter().copied() {
             let Some(&captured_generation) = captured.get(&bucket_id) else {
                 continue;
@@ -431,9 +453,7 @@ impl TemporalEngine {
             if current.get(&bucket_id).copied().unwrap_or_default() != captured_generation {
                 continue;
             }
-            shard.dirty_objects.retain(|key| {
-                page_routing_bucket(key, start_routing_bucket, end_routing_bucket) != bucket_id
-            });
+            cleared_buckets.insert(bucket_id);
             if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
@@ -445,6 +465,16 @@ impl TemporalEngine {
                     page.dirty = false;
                 }
             }
+        }
+        if !cleared_buckets.is_empty() {
+            shard.dirty_objects.retain(|key| {
+                DIRTY_DRAIN_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                !cleared_buckets.contains(&page_routing_bucket(
+                    key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                ))
+            });
         }
     }
 
@@ -611,7 +641,7 @@ impl TemporalEngine {
         for summary in &bucket_summaries {
             let matching_manifest = manifests.iter().rev().find(|manifest| {
                 let Ok(manifest_state) =
-                    serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+                    crate::engine::decode_index_bytes(&manifest.index_bytes)
                 else {
                     return false;
                 };
@@ -684,19 +714,69 @@ impl TemporalEngine {
                 ));
             }
         }
-        let safe_to_reclaim = missing_bucket_generations.is_empty()
+        // Two different questions were being answered by one boolean.
+        //
+        // WHETHER the frontier can be trusted: every live generation needs a durable dump behind
+        // it, or the lowest manifest sequence does not describe what is actually on disk. These
+        // stay absolute -- there is no safe partial answer to a frontier that is wrong.
+        let generations_durable = missing_bucket_generations.is_empty()
             && covered_bucket_count == bucket_summaries.len()
             && durable_wal_frontier > 0
-            && durable_index_log_frontier > 0
-            && follower_cursor_block_count == 0
-            && raft_snapshot_block_count == 0;
+            && durable_index_log_frontier > 0;
+
+        // HOW FAR it may be followed: a retention cursor marks what some reader has still to
+        // consume. Everything at or below the SLOWEST cursor is behind every reader and can go
+        // whether or not that cursor ever advances. Refusing at the cursor instead of clamping to
+        // it meant one lagging follower pinned the entire log for as long as it lagged, and the
+        // log grew without bound underneath it.
+        //
+        // The floor is a minimum over followers AND snapshot refs together: they are separate
+        // lists but the same question, and taking them apart would let one advance past the other
+        // and drop a log the slower one still needs.
+        let cursor_wal_floor = follower_replay_cursors
+            .iter()
+            .filter(|cursor| cursor.shard_id == shard_id)
+            .map(|cursor| cursor.wal_sequence)
+            .chain(
+                raft_snapshot_refs
+                    .iter()
+                    .filter(|snapshot| snapshot.shard_id == shard_id)
+                    .map(|snapshot| snapshot.wal_sequence),
+            )
+            .min();
+        let cursor_index_log_floor = follower_replay_cursors
+            .iter()
+            .filter(|cursor| cursor.shard_id == shard_id)
+            .map(|cursor| cursor.index_log_sequence)
+            .chain(
+                raft_snapshot_refs
+                    .iter()
+                    .filter(|snapshot| snapshot.shard_id == shard_id)
+                    .map(|snapshot| snapshot.index_log_sequence),
+            )
+            .min();
+
+        // Never above the durable frontier, and never above the slowest cursor. With no cursors at
+        // all the frontier stands unchanged, which is what it did before.
+        let effective_wal_frontier = cursor_wal_floor
+            .map_or(durable_wal_frontier, |floor| durable_wal_frontier.min(floor));
+        let effective_index_log_frontier = cursor_index_log_floor.map_or(
+            durable_index_log_frontier,
+            |floor| durable_index_log_frontier.min(floor),
+        );
+
+        // A clamp to zero reclaims nothing, which is the right answer for a cursor that has never
+        // advanced -- the win here is exactly the span a reader has already consumed, and for a
+        // permanently stuck follower that span is empty.
+        let safe_to_reclaim =
+            generations_durable && effective_wal_frontier > 0 && effective_index_log_frontier > 0;
         let retain_from_wal_sequence = if safe_to_reclaim {
-            durable_wal_frontier.saturating_add(1)
+            effective_wal_frontier.saturating_add(1)
         } else {
             0
         };
         let retain_from_index_log_sequence = if safe_to_reclaim {
-            durable_index_log_frontier.saturating_add(1)
+            effective_index_log_frontier.saturating_add(1)
         } else {
             0
         };
@@ -731,9 +811,22 @@ impl TemporalEngine {
                 ..StorageWalReclaimReport::default()
             };
         }
+        // The plan reached `safe_to_reclaim` by finding a durable bucket-dump manifest for
+        // every live generation and taking the LOWEST wal sequence among them, so the durable
+        // index reflects everything at or below that frontier.
+        //
+        // This stays the DURABLE frontier, not the cursor-clamped one. The anchor is an upper
+        // bound on what may be dropped; `retain_from_wal_sequence` may sit below it because a
+        // retention cursor clamped it, and dropping less than the anchor permits is safe. Passing
+        // the clamped value here would prove less durability than has actually been established
+        // and would be the wrong number for a different reason.
+        let durable_index = crate::wal::DurableIndexAnchor::proven_durable_through(
+            plan.shard_id,
+            plan.durable_bucket_generation_frontier_wal_sequence,
+        );
         let wal_gc = self
             .write_ahead_log_store()
-            .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence)
+            .gc_before_sequence(plan.shard_id, plan.retain_from_wal_sequence, &durable_index)
             .ok();
         StorageWalReclaimReport {
             applied: wal_gc.is_some(),
@@ -1160,6 +1253,13 @@ impl TemporalEngine {
                 .iter()
                 .map(|victim| victim.routing_bucket)
                 .collect::<BTreeSet<_>>();
+            // Encoding the served index and writing it out are the expensive part of this
+            // flush -- measured at 42 ms of encode alone for a 2,000-key shard, plus two file
+            // writes -- and all of it used to happen while this write lock was held, so every
+            // read and write on the shard queued behind it. The lock is only needed for the
+            // mutations; a stamped CLONE (9 ms) carries the exact state out, and the encode and
+            // the writes happen after the guard is dropped.
+            let mut pending_index_flush = None;
             let mut shards = self.shards.write().expect("shards lock poisoned");
             if let Some(shard) = shards.get_mut(&shard_id) {
                 let object_keys = collect_live_page_entries(shard)
@@ -1195,20 +1295,30 @@ impl TemporalEngine {
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
                         for key in &deleted_keys {
-                            let _ = self.wal_store.append_with_sync(
-                                shard_id,
-                                Command::CommonDelete { key: key.clone() },
-                                false,
-                            );
+                            let command = Command::CommonDelete { key: key.clone() };
+                            let appended =
+                                self.wal_store
+                                    .append_with_sync(shard_id, command.clone(), false);
+                            // Same reasoning as the expiry sweep: a drop that deletes is a
+                            // deletion, and it has to reach every log a successor may replay.
+                            if appended.is_ok() {
+                                self.mirror_maintenance_write(shard_id, &command);
+                            }
                         }
                         shard.applied_wal_sequence =
                             Some(self.wal_store.stats(shard_id).last_sequence);
                     }
-                    if let Ok(index_bytes) = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard)) {
-                        let _ = self.persist_index_bytes(shard_id, &index_bytes);
-                        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
-                    }
+                    // Stamp here so the clone carries the current on-disk shape, then hand
+                    // the snapshot out; the encode and both writes happen below, unlocked.
+                    shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
+                    pending_index_flush = Some(shard.clone());
                 }
+            }
+            drop(shards);
+            if let Some(snapshot) = pending_index_flush {
+                let index_bytes = super::serialize_index(&snapshot);
+                let _ = self.persist_index_bytes(shard_id, &index_bytes);
+                let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
             }
         }
         let after_cache = self.storage_cache_inspection_report(shard_id);

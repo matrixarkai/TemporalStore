@@ -8,6 +8,19 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:  # package path
+    from tools.matrixark_temporal_location_codec import (
+        compact_location,
+        compact_location_list,
+        expand_location,
+    )
+except ImportError:
+    from matrixark_temporal_location_codec import (
+        compact_location,
+        compact_location_list,
+        expand_location,
+    )
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     MatrixArkLocalAdapter,
@@ -402,9 +415,16 @@ class _TemporalDirectBackendMixin:
                     time.sleep(max(0.05, BACKEND_READINESS_BACKOFF_MS / 1000.0))
 
     def _get_index(self) -> list[str]:
+        # A backend that cannot answer right now (shard loading / not loaded, timeout,
+        # connection refused) must stay a question: swallowing it into [] served a populated
+        # store as vacuously empty for as long as the load took -- and let a write path
+        # compute its append position from a lie. An absent index key on a reachable backend
+        # is the real "no index yet" and still answers [].
         try:
             raw = self._client.get_string(self._index_key)
-        except Exception:
+        except Exception as exc:
+            if is_retryable_temporalstore_error(exc):
+                raise
             return []
         if not raw:
             return []
@@ -417,9 +437,14 @@ class _TemporalDirectBackendMixin:
         return [str(item) for item in value]
 
     def _get_count(self) -> int:
+        # Same contract as _get_index: only an ABSENT count key on a reachable backend is
+        # count 0. A retryable failure raises so readers surface a retryable error instead
+        # of an empty-but-successful view, and writers never derive positions from 0.
         try:
             raw = self._client.get_string(self._count_key)
-        except Exception:
+        except Exception as exc:
+            if is_retryable_temporalstore_error(exc):
+                raise
             return 0
         if not raw:
             return 0
@@ -860,6 +885,41 @@ class _TemporalDirectBackendMixin:
                 seen.add(ref_hash)
         return refs
 
+    def _location_base(self) -> str:
+        """The record log every compact location is relative to.
+
+        This is the RECORD log (`{storage_prefix}:records`), not the raw-ingestion log. They are
+        different keys, and using the wrong one is silent: every entry simply fails the prefix
+        test and stays in the long form, so the encoding looks live and saves nothing.
+        """
+        base = str(getattr(self, "_record_hash_key", "") or "")
+        if base:
+            return base
+        prefix = str(getattr(self, "_storage_prefix", "") or "")
+        return ("%s:records" % prefix) if prefix else ""
+
+    def _location_token(self, location: Json) -> Json | None:
+        """One location in the form it will be STORED in, or None if it is not a location.
+
+        The merge used to expand every stored entry into `{"key", "field"}` and the writer then
+        compacted every one of them straight back -- two string formats per entry, on a list that
+        runs to four figures per ingest. Nothing in between needed the long form: the callers
+        serialize the result, count it, or compare entries to each other. So the merge now works
+        in the stored form throughout, and the compact string doubles as its own dedupe key.
+        """
+        if isinstance(location, str):
+            return location or None
+        if isinstance(location, dict):
+            key = str(location.get("key") or "")
+            field = str(location.get("field") or "")
+            if not key or not field:
+                return None
+            compact = compact_location(key, field, self._location_base())
+            if isinstance(compact, str):
+                return compact
+            return (key, field)
+        return None
+
     def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
         locations: list[Json] = []
         resource_versions: set[str] = set()
@@ -871,21 +931,17 @@ class _TemporalDirectBackendMixin:
                 decoded = {}
             raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
             for location in raw_locations if isinstance(raw_locations, list) else []:
-                if not isinstance(location, dict):
+                token = self._location_token(location)
+                if token is None or token in seen:
                     continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
+                locations.append(token)
+                seen.add(token)
         for location in new_locations:
-            key = str(location.get("key") or "")
-            field = str(location.get("field") or "")
-            if not key or not field or (key, field) in seen:
+            token = self._location_token(location)
+            if token is None or token in seen:
                 continue
-            locations.append({"key": key, "field": field})
-            seen.add((key, field))
+            locations.append(token)
+            seen.add(token)
         return locations
 
     def _merge_resource_versions(self, existing_value: str, new_versions: set[str]) -> list[str]:
@@ -938,6 +994,75 @@ class _TemporalDirectBackendMixin:
             return ""
         return str(value or "")
 
+    @staticmethod
+    def record_pointed_ref_ids(record: Json) -> list[int]:
+        """The ids a record points AT without carrying: provenance sources and tombstone/feedback
+        targets. Filed into the locator so one id lookup finds the records ABOUT an id, not just
+        the records carrying it."""
+        values: list = []
+        source_ids = record.get("source_event_ids")
+        if isinstance(source_ids, list):
+            values.extend(source_ids)
+        source_refs = record.get("source_refs")
+        if isinstance(source_refs, list):
+            values.extend(source_refs)
+        for field in ("source_event_hash", "target_memory_id", "superseded_by"):
+            if record.get(field) is not None:
+                values.append(record.get(field))
+        out: list[int] = []
+        seen: set[int] = set()
+        for value in values:
+            try:
+                ref = int(value)
+            except (TypeError, ValueError):
+                continue
+            if ref and ref not in seen:
+                seen.add(ref)
+                out.append(ref)
+        return out
+
+    def _chunk_tail_pairs(self, prefetched: dict) -> list[tuple[str, str]]:
+        """The tail field of every chunked list whose head we just read.
+
+        Three writers chunk, and each names its tail differently: ref postings use
+        ``{field}#r{n}`` with the count in ``ref_chunks``; the locator and placement lists use
+        ``{field}#{n}`` with the count in ``location_chunks``. A head that is full but has no
+        count yet rolls to chunk 1 on this very write, so that is worth fetching too.
+        """
+        pairs: list[tuple[str, str]] = []
+        for (key, field), value in list(prefetched.items()):
+            if not value:
+                continue
+            try:
+                head = json.loads(value)
+            except Exception:  # noqa: BLE001 - an unreadable head just means no prefetch.
+                continue
+            if not isinstance(head, dict):
+                continue
+            try:
+                location_chunks = int(head.get("location_chunks") or 0)
+            except (TypeError, ValueError):
+                location_chunks = 0
+            if location_chunks:
+                pairs.append((key, f"{field}#{location_chunks}"))
+            else:
+                locations = head.get("locations")
+                if isinstance(locations, list) and len(locations) >= min(
+                    self.LOCATOR_CHUNK_LOCATIONS, self.PLACEMENT_CHUNK_LOCATIONS
+                ):
+                    pairs.append((key, f"{field}#1"))
+            try:
+                ref_chunks = int(head.get("ref_chunks") or 0)
+            except (TypeError, ValueError):
+                ref_chunks = 0
+            if ref_chunks:
+                pairs.append((key, f"{field}#r{ref_chunks}"))
+            else:
+                refs = head.get("ref_hashes")
+                if isinstance(refs, list) and len(refs) >= self.REF_HASH_CHUNK:
+                    pairs.append((key, f"{field}#r1"))
+        return pairs
+
     def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
         """Build sidecar lookup rows so retrieval can avoid broad record scans.
 
@@ -976,6 +1101,10 @@ class _TemporalDirectBackendMixin:
                     locator_updates.setdefault(ref_hash, []).append(location)
                     if route:
                         route_by_hash_field.setdefault((self._context_ref_locator_key(), str(ref_hash)), route)
+                for ref_hash in self.record_pointed_ref_ids(record):
+                    locator_updates.setdefault(ref_hash, []).append(location)
+                    if route:
+                        route_by_hash_field.setdefault((self._context_ref_locator_key(), str(ref_hash)), route)
                 if record.get("record_type") != "context_index":
                     continue
                 index_name = str(record.get("index_name") or "").strip()
@@ -1001,6 +1130,17 @@ class _TemporalDirectBackendMixin:
         wanted.extend((prefetch_locator_key, str(ref_hash)) for ref_hash in locator_updates)
         wanted.extend(placement_updates.keys())
         prefetched = self._read_hash_values_best_effort(wanted) if wanted else {}
+        # Second phase. The batch above covers the HEAD of each list, but every chunked writer then
+        # asks for a TAIL whose field name is only knowable once its head has been read -- so those
+        # fell through to a per-entry read. Measured per add: 24.7 single `hget`s at 0.51 ms, 12.5
+        # ms, against 1.75 ms for a batch of any size.
+        #
+        # Now the heads name their tails and those are fetched in one more batch. This is purely a
+        # prefetch: `existing_for` still falls back to the single read, so a tail this guesses
+        # wrong costs one wasted entry in a batch and never a wrong answer.
+        tail_pairs = self._chunk_tail_pairs(prefetched)
+        if tail_pairs:
+            prefetched.update(self._read_hash_values_best_effort(tail_pairs))
 
         def existing_for(key: str, field: str) -> str:
             """The stored value: from the batch when it covered this pair, per-entry otherwise."""
@@ -1012,6 +1152,16 @@ class _TemporalDirectBackendMixin:
             new_refs = update.get("ref_hashes", []) if isinstance(update, dict) else []
             new_buckets = update.get("posting_buckets", set()) if isinstance(update, dict) else set()
             existing_value = existing_for(key, field)
+            # Same unbounded rewrite the placement list had: a posting's ref set grows with every
+            # record filed under that term, and holding it in one value meant re-writing all of it
+            # per add. Measured at 87 755 bytes for a subject with 125 memories against 2 170 for a
+            # fresh one. Overflow goes to sibling fields; the head keeps its name and shape.
+            chunked = self._ref_hash_chunk_entries(
+                key, field, new_refs, existing_value, existing_for,
+                route_by_hash_field.get((key, field), {}))
+            if chunked is not None:
+                entries.extend(chunked)
+                continue
             merged_refs = self._merge_ref_hashes(existing_value, new_refs)
             existing_buckets: set[int] = set()
             if existing_value:
@@ -1047,31 +1197,314 @@ class _TemporalDirectBackendMixin:
                 }
             )
         locator_key = self._context_ref_locator_key()
+        # Store birth: the batch placing the very first record (shard 000000, field 000000) also
+        # stamps the coverage marker, so readers can trust that pointed-id indexing was active
+        # for every record this store has ever held. Idempotent; existing stores never gain it.
+        def _is_birth_location(record_key: str, record_id: str) -> bool:
+            # Shard 0, field 0 -- the store's very first append. Field ids are zero-padded to a
+            # width that differs from the shard width, so compare numerically, not by literal.
+            if not record_key.endswith(":000000"):
+                return False
+            try:
+                return int(record_id) == 0
+            except (TypeError, ValueError):
+                return False
+
+        if any(_is_birth_location(record_key, record_id)
+               for _, record_key, record_id in bundles):
+            entries.append({
+                "key": locator_key + "_meta",
+                "field": "provenance_from_start",
+                "value": "1",
+                "storage_route": {},
+            })
         for ref_hash, new_locations in locator_updates.items():
             field = str(ref_hash)
-            merged_locations = self._merge_ref_locations(existing_for(locator_key, field), new_locations)
-            entries.append(
-                {
-                    "key": locator_key,
-                    "field": field,
-                    "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
-                    "storage_route": route_by_hash_field.get((locator_key, field), {}),
-                }
+            entries.extend(
+                self._locator_entries_for_ref(
+                    locator_key,
+                    field,
+                    new_locations,
+                    existing_for,
+                    route_by_hash_field.get((locator_key, field), {}),
+                )
             )
         for (key, field), update in placement_updates.items():
             new_locations = update.get("locations", []) if isinstance(update, dict) else []
             new_versions = update.get("resource_versions", set()) if isinstance(update, dict) else set()
-            existing_value = existing_for(key, field)
-            merged_locations = self._merge_ref_locations(existing_value, new_locations)
-            merged_versions = self._merge_resource_versions(existing_value, new_versions if isinstance(new_versions, set) else set())
-            entries.append(
-                {
-                    "key": key,
-                    "field": field,
-                    "value": json.dumps({"locations": merged_locations, "resource_versions": merged_versions}, separators=(",", ":")),
-                    "storage_route": route_by_hash_field.get((key, field), {}),
-                }
+            entries.extend(
+                self._placement_entries_for_node(
+                    key,
+                    field,
+                    new_locations,
+                    new_versions if isinstance(new_versions, set) else set(),
+                    existing_for,
+                    route_by_hash_field.get((key, field), {}),
+                )
             )
+        return entries
+
+    # A node's placement list is every record location belonging to that node, and a retrieval
+    # needs all of it -- so it cannot be capped. It CAN stop being one value. Held whole, each
+    # append re-read the list, added one entry and wrote the whole thing back: O(list) bytes per
+    # add, O(list^2) over a subject's life. Measured on one store with the same 62-byte message,
+    # this write was 3 486 bytes for a fresh subject and 197 106 bytes for a subject with 125
+    # memories -- 47% of everything that add wrote.
+    #
+    # Chunked, an append rewrites only the tail. The head field keeps its original name and shape,
+    # so a reader that knows nothing about chunks still finds locations there; overflow lives in
+    # sibling fields "{node}#1", "{node}#2", ... and the head records how many exist.
+    # An append rewrites its TAIL chunk, so this number is what one add pays to touch a posting,
+    # and 256 was a first guess. Measured at three sizes -- 150 adds into ONE subject, so the
+    # posting lists actually grow, which is the case that matters for a large corpus:
+    #
+    #     chunk 256   236.3 KB per add    add median 241.2 ms
+    #     chunk  64   207.5 KB per add    add median 266.2 ms
+    #     chunk  16   174.7 KB per add    add median 253.8 ms
+    #
+    # 26% less disk per add at 16, with add latency flat inside the noise and retrieval returning
+    # the same items at every size. The cost of going smaller is more chunk fields to fetch, but
+    # the reader collects them in ONE batch call whatever the count, so it buys back little below
+    # this. Shrinking the placement chunk alongside it changed nothing measurable (174.6 vs 174.7),
+    # because a node's location list is far shorter than a term's posting list -- so that one
+    # stays where it is rather than being tuned on a number that did not move.
+    REF_HASH_CHUNK = 16
+
+    def _ref_hash_chunk_entries(self, key, field, new_refs, existing_value, existing_for,
+                                storage_route):
+        """Append ref hashes to a posting without rewriting the whole set.
+
+        Returns None when the head still has room, so the caller keeps its original single-value
+        path (and the original shape) for small postings -- which is every posting until a term
+        has been used a few hundred times.
+        """
+        head_decoded: Json = {}
+        if existing_value:
+            try:
+                decoded = json.loads(existing_value)
+                if isinstance(decoded, dict):
+                    head_decoded = decoded
+            except Exception:
+                head_decoded = {}
+        head_refs = head_decoded.get("ref_hashes")
+        head_refs = head_refs if isinstance(head_refs, list) else []
+        try:
+            chunk_count = int(head_decoded.get("ref_chunks") or 0)
+        except (TypeError, ValueError):
+            chunk_count = 0
+        if not chunk_count and len(head_refs) < self.REF_HASH_CHUNK:
+            return None
+
+        tail_index = max(chunk_count, 1)
+        tail_field = f"{field}#r{tail_index}"
+        tail_value = existing_for(key, tail_field)
+        merged_tail = self._merge_ref_hashes(tail_value, new_refs)
+        # Anything already in the head stays there; only genuinely new hashes ride the tail.
+        head_set = {str(ref) for ref in head_refs}
+        merged_tail = [ref for ref in merged_tail if str(ref) not in head_set]
+        if len(merged_tail) > self.REF_HASH_CHUNK:
+            kept = self._merge_ref_hashes(tail_value, [])
+            kept = [ref for ref in kept if str(ref) not in head_set]
+            overflow = [ref for ref in merged_tail if ref not in kept]
+            if overflow:
+                tail_index += 1
+                tail_field = f"{field}#r{tail_index}"
+                merged_tail = overflow
+
+        entries = [{"key": key, "field": tail_field,
+                    "value": json.dumps({"ref_hashes": merged_tail}, separators=(",", ":")),
+                    "storage_route": storage_route}]
+        if tail_index != chunk_count:
+            payload = dict(head_decoded)
+            payload["ref_hashes"] = head_refs
+            payload["ref_chunks"] = tail_index
+            entries.append({"key": key, "field": field,
+                            "value": json.dumps(payload, separators=(",", ":")),
+                            "storage_route": storage_route})
+        return entries
+
+    PLACEMENT_CHUNK_LOCATIONS = 64
+
+    @staticmethod
+    def _placement_chunk_field(field: str, index: int) -> str:
+        return field if index == 0 else f"{field}#{index}"
+
+    # A ref's locator list is every record location carrying that ref, and it had exactly the
+    # problem the placement list had before chunking: held whole, each append re-read the list,
+    # added an entry, and wrote the whole thing back. O(list) bytes per add, O(list^2) over the
+    # life of a term. Measured by walking the page segments over 300 ingests, rows carrying only a
+    # `locations` field -- which is what a locator row is -- were **76.7 KB of the 77.6 KB** that
+    # every `locations` field cost per add. The placement rows beside them, already chunked, came
+    # to 0.4 KB.
+    #
+    # Same fix, same shape: the head field keeps its original name and contents, so a reader that
+    # knows nothing about chunks still finds locations there, overflow lives in "{ref}#1", "{ref}#2",
+    # and the head names how many follow.
+    LOCATOR_CHUNK_LOCATIONS = 32
+
+    @staticmethod
+    def _locator_chunk_field(field: str, index: int) -> str:
+        return field if index == 0 else f"{field}#{index}"
+
+    def _locator_entries_for_ref(
+        self,
+        key: str,
+        field: str,
+        new_locations: list[Json],
+        existing_for,
+        storage_route: Json,
+    ) -> list[Json]:
+        """Append `new_locations` to a ref's locator list, touching only the tail chunk."""
+        head_value = existing_for(key, field)
+        head_decoded: Json = {}
+        if head_value:
+            try:
+                decoded = json.loads(head_value)
+                if isinstance(decoded, dict):
+                    head_decoded = decoded
+            except Exception:
+                head_decoded = {}
+        head_locations = head_decoded.get("locations")
+        head_locations = head_locations if isinstance(head_locations, list) else []
+        try:
+            chunk_count = int(head_decoded.get("location_chunks") or 0)
+        except (TypeError, ValueError):
+            chunk_count = 0
+
+        tail_index = chunk_count if chunk_count else 0
+        if tail_index == 0 and len(head_locations) >= self.LOCATOR_CHUNK_LOCATIONS:
+            tail_index = 1
+        tail_field = self._locator_chunk_field(field, tail_index)
+        tail_value = head_value if tail_index == 0 else existing_for(key, tail_field)
+
+        merged_tail = self._merge_ref_locations(tail_value, new_locations)
+        # A tail that overflows starts the next chunk rather than growing without bound. A list
+        # already over the limit -- written before chunking -- is left where it is: rewriting it
+        # would cost exactly the O(list) write this exists to avoid.
+        if tail_index > 0 and len(merged_tail) > self.LOCATOR_CHUNK_LOCATIONS:
+            keep = self._merge_ref_locations(tail_value, [])
+            overflow = [item for item in merged_tail if item not in keep]
+            if overflow:
+                tail_index += 1
+                tail_field = self._locator_chunk_field(field, tail_index)
+                merged_tail = overflow
+        elif tail_index == 0 and len(merged_tail) > self.LOCATOR_CHUNK_LOCATIONS and head_locations:
+            overflow = [item for item in merged_tail if item not in head_locations]
+            if overflow:
+                tail_index = 1
+                tail_field = self._locator_chunk_field(field, tail_index)
+                merged_tail = overflow
+
+        base = self._location_base()
+        entries: list[Json] = []
+        if tail_index == 0:
+            payload: Json = {"locations": compact_location_list(merged_tail, base)}
+            if chunk_count:
+                payload["location_chunks"] = chunk_count
+            entries.append({"key": key, "field": field,
+                            "value": json.dumps(payload, separators=(",", ":")),
+                            "storage_route": storage_route})
+            return entries
+
+        entries.append({"key": key, "field": tail_field,
+                        "value": json.dumps(
+                            {"locations": compact_location_list(merged_tail, base)},
+                            separators=(",", ":")),
+                        "storage_route": storage_route})
+        # The head is rewritten only when the chunk count actually changes -- once per rollover,
+        # not once per add. That is the whole point: the common add touches one small tail.
+        if tail_index != chunk_count:
+            entries.append({"key": key, "field": field,
+                            "value": json.dumps(
+                                {"locations": compact_location_list(head_locations, base),
+                                 "location_chunks": tail_index},
+                                separators=(",", ":")),
+                            "storage_route": storage_route})
+        return entries
+
+    def _placement_entries_for_node(
+        self,
+        key: str,
+        field: str,
+        new_locations: list[Json],
+        new_versions: set[str],
+        existing_for,
+        storage_route: Json,
+    ) -> list[Json]:
+        """Append `new_locations` to a node's placement list, touching only the tail chunk."""
+        head_value = existing_for(key, field)
+        head_decoded: Json = {}
+        if head_value:
+            try:
+                decoded = json.loads(head_value)
+                if isinstance(decoded, dict):
+                    head_decoded = decoded
+            except Exception:
+                head_decoded = {}
+        head_locations = head_decoded.get("locations")
+        head_locations = head_locations if isinstance(head_locations, list) else []
+        try:
+            chunk_count = int(head_decoded.get("location_chunks") or 0)
+        except (TypeError, ValueError):
+            chunk_count = 0
+
+        # Which chunk is the tail: the head while it still has room, otherwise the last overflow.
+        tail_index = chunk_count if chunk_count else 0
+        if tail_index == 0 and len(head_locations) >= self.PLACEMENT_CHUNK_LOCATIONS:
+            tail_index = 1
+        tail_field = self._placement_chunk_field(field, tail_index)
+        tail_value = head_value if tail_index == 0 else existing_for(key, tail_field)
+
+        merged_tail = self._merge_ref_locations(tail_value, new_locations)
+        # A tail that overflows starts the next chunk rather than growing without bound. Anything
+        # already over the limit (a list written before chunking) is left where it is: rewriting it
+        # would cost exactly the O(list) write this exists to avoid.
+        if tail_index > 0 and len(merged_tail) > self.PLACEMENT_CHUNK_LOCATIONS:
+            keep = self._merge_ref_locations(tail_value, [])
+            overflow = [item for item in merged_tail if item not in keep]
+            if overflow:
+                tail_index += 1
+                tail_field = self._placement_chunk_field(field, tail_index)
+                merged_tail = overflow
+        elif tail_index == 0 and len(merged_tail) > self.PLACEMENT_CHUNK_LOCATIONS and head_locations:
+            overflow = [item for item in merged_tail if item not in head_locations]
+            if overflow:
+                tail_index = 1
+                tail_field = self._placement_chunk_field(field, tail_index)
+                merged_tail = overflow
+
+        entries: list[Json] = []
+        if tail_index == 0:
+            merged_versions = self._merge_resource_versions(head_value, new_versions)
+            payload: Json = {
+                "locations": compact_location_list(merged_tail, self._location_base()),
+                "resource_versions": merged_versions,
+            }
+            if chunk_count:
+                payload["location_chunks"] = chunk_count
+            entries.append({"key": key, "field": field, "value": json.dumps(payload, separators=(",", ":")),
+                            "storage_route": storage_route})
+            return entries
+
+        entries.append({"key": key, "field": tail_field,
+                        "value": json.dumps(
+                            {"locations": compact_location_list(merged_tail, self._location_base())},
+                            separators=(",", ":"),
+                        ),
+                        "storage_route": storage_route})
+        # The head carries the chunk count and the resource versions, and is rewritten only when
+        # one of those actually changes -- once per chunk rollover, not once per add.
+        merged_versions = self._merge_resource_versions(head_value, new_versions)
+        head_versions = head_decoded.get("resource_versions")
+        head_versions = head_versions if isinstance(head_versions, list) else []
+        if tail_index != chunk_count or merged_versions != head_versions:
+            payload = {
+                "locations": head_locations,
+                "resource_versions": merged_versions,
+                "location_chunks": tail_index,
+            }
+            entries.append({"key": key, "field": field, "value": json.dumps(payload, separators=(",", ":")),
+                            "storage_route": storage_route})
         return entries
 
     def _context_event_ingestion_time_ms(self, record: Json) -> int:
@@ -1130,9 +1563,22 @@ class _TemporalDirectBackendMixin:
             if record.get("event_id_hash") is None:
                 continue
             enriched = attach_context_event_time_key(record)
+            # Slim unless explicitly asked for the whole record. The `or parent_segment_hash`
+            # that used to be here made the common case the expensive one: a segment-parented
+            # event stored the ENTIRE event a second time, measured at 6 329 bytes of one add
+            # against 252 for the slim form. That is exactly what the payload helper's own
+            # docstring warns against -- "the full ContextEvent is already written to the serving
+            # record log ... avoids doubling hot write bytes for every event" -- and the other
+            # writer of this same index never had the exception, so the two disagreed about what
+            # the index is for.
+            #
+            # It is an ORDERING structure: the field is {timestamp:020d}:{event_hash}, so lexical
+            # order is chronological, and the slim payload carries what a reader needs to reach the
+            # canonical record (ref_hash, node_hash, scope_key, timestamp).
+            # MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD still restores the full copy.
             payload = (
                 json.dumps(enriched, sort_keys=True, separators=(",", ":"))
-                if full_payload or enriched.get("parent_segment_hash")
+                if full_payload
                 else self._context_event_time_index_payload(enriched)
             )
             entries.append(

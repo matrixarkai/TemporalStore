@@ -50,6 +50,8 @@ impl SingleNodeMeta {
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
+                reported_record_count: 0,
+                reported_storage_bytes: 0,
                 load_key_count: 0,
                 load_memory_bytes: 0,
                 worst_shard_state_penalty: 0,
@@ -229,6 +231,16 @@ impl SingleNodeMeta {
             .iter()
             .map(|load| load.memory_bytes)
             .sum();
+        server.reported_record_count = server
+            .shard_states
+            .iter()
+            .map(|reported| reported.total_records as u64)
+            .sum();
+        server.reported_storage_bytes = server
+            .shard_states
+            .iter()
+            .map(|reported| reported.storage_bytes as u64)
+            .sum();
         server.worst_shard_state_penalty = server
             .shard_states
             .iter()
@@ -321,6 +333,12 @@ impl SingleNodeMeta {
             MetaEntityState::Normal,
             now_ms(),
         );
+        record_topology_event(
+            &mut state,
+            "register_proxy",
+            format!("proxy:{proxy_addr}"),
+            "state=normal",
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -336,7 +354,7 @@ impl SingleNodeMeta {
                 namespace: String::new(),
                 config_version: 0,
                 serving_mode: String::new(),
-                drop_percent: 0,
+                drop_percent: None,
             };
         };
         if proxy.state == MetaEntityState::Frozen {
@@ -346,7 +364,7 @@ impl SingleNodeMeta {
                 namespace: proxy.namespace.clone(),
                 config_version: proxy.config_version,
                 serving_mode: proxy_serving_mode_for_state(proxy.state).to_string(),
-                drop_percent: 0,
+                drop_percent: None,
             };
         }
         proxy.last_heartbeat_ms = now_ms();
@@ -370,12 +388,14 @@ impl SingleNodeMeta {
         // The attached group is the authority on what this proxy serves, so the
         // heartbeat is where a reassignment -- or a release back to idle --
         // reaches the proxy.
-        let (group_changed, namespace, config_version) = Self::proxy_group_config(
+        let served = Self::proxy_group_config(
             &state,
             &proxy_addr,
             &request.namespace,
             request.config_version,
         );
+        let (group_changed, namespace, config_version) =
+            (served.changed, served.namespace, served.config_version);
         let attached = state
             .proxies
             .get(&proxy_addr)
@@ -401,7 +421,20 @@ impl SingleNodeMeta {
             namespace,
             config_version,
             serving_mode,
-            drop_percent: 0,
+            // What the group asks its proxies to shed, and nothing at all when this proxy
+            // belongs to no group.
+            //
+            // The unattached branch used to send 0, which is not the same statement: the
+            // proxy applied it, so a proxy configured to shed through its own /config had
+            // that wiped by every heartbeat. A deployment that uses no groups is entirely
+            // unattached proxies, and namespace and config_version two branches above
+            // already fall back to local configuration for exactly that case -- this now
+            // says the same thing the same way.
+            drop_percent: if attached {
+                Some(served.drop_percent)
+            } else {
+                None
+            },
         }
     }
 
@@ -421,10 +454,20 @@ impl SingleNodeMeta {
     pub(super) fn apply_add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         self.counters.namespace_create_total.fetch_add(1, Ordering::Relaxed);
+        let namespace = request.namespace;
+        let created = !state.namespaces.contains_key(&namespace);
         state
             .namespaces
-            .entry(request.namespace)
+            .entry(namespace.clone())
             .or_insert(MetaEntityState::Normal);
+        if created {
+            record_topology_event(
+                &mut state,
+                "add_namespace",
+                format!("namespace:{namespace}"),
+                "state=normal",
+            );
+        }
         AckResponse {
             status: Status::ok(),
         }
@@ -494,18 +537,21 @@ impl SingleNodeMeta {
         }
         // Recorded before the state moves, so a crash between the two replays
         // the change rather than losing it. `record_mutation` does not touch
-        // `self.inner`, so holding the lock here cannot deadlock.
-        self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
-        Self::apply_namespace_state_locked(&mut state, &request, next)
+        // `self.inner`, so holding the lock here cannot deadlock. It answers
+        // with the time it recorded, and the drop clock is stamped from that
+        // rather than from now, so a replay stamps what the log says.
+        let at_ms = self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
+        Self::apply_namespace_state_locked(&mut state, &request, next, at_ms)
     }
 
     pub(crate) fn apply_set_namespace_state(
         &self,
         request: AddNamespaceRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        Self::apply_namespace_state_locked(&mut state, &request, next)
+        Self::apply_namespace_state_locked(&mut state, &request, next, at_ms)
     }
 
     /// The state change itself, for a caller that already holds the write lock.
@@ -517,6 +563,7 @@ impl SingleNodeMeta {
         state: &mut MetaState,
         request: &AddNamespaceRequest,
         next: MetaEntityState,
+        at_ms: u64,
     ) -> AckResponse {
         let Some(current) = state.namespaces.get_mut(&request.namespace) else {
             return AckResponse {
@@ -528,7 +575,7 @@ impl SingleNodeMeta {
             state,
             &dropped_key("namespace", &request.namespace),
             next,
-            now_ms(),
+            at_ms,
         );
         // Topology is derived on read, so the version bump is what makes clients
         // notice that a namespace stopped, or resumed, serving.

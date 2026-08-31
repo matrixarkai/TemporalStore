@@ -314,6 +314,14 @@ class _AccessPortalMixin:
         }
 
     def audit(self, args: Json, identity: Json) -> Json:
+        # Audit rows have one reading funnel (this method; the portal dashboard calls it too), so
+        # this is where buffered audits must become readable. Flushing here instead of on every
+        # metadata read keeps the per-request auth lookups (find_active_api_key and friends, which
+        # read metadata on every enforced-mode call) from paying the durable append the buffered
+        # path exists to move off the request path.
+        flusher = getattr(self.adapter, "flush_audits", None)
+        if callable(flusher):
+            flusher()
         limit = args.get("limit", 100)
         if not isinstance(limit, int) or limit <= 0:
             raise MatrixArkError("limit must be a positive integer")

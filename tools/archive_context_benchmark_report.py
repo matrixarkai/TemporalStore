@@ -18,7 +18,7 @@ def main() -> int:
     parser.add_argument("--report", required=True, help="Raw LOCOMO/LongMemEval_s benchmark JSON report.")
     parser.add_argument("--input", default="", help="Dataset artifact path, used to fill hash/bytes if absent.")
     parser.add_argument("--output", required=True, help="Paper-comparable archive JSON path.")
-    parser.add_argument("--paper-name", default="VikingMem/OpenViking long-memory benchmark")
+    parser.add_argument("--paper-name", default="ExternalBaseline/ExternalBaseline long-memory benchmark")
     parser.add_argument("--claim-level", default="paper_comparable_report_fields")
     args = parser.parse_args()
 
@@ -55,8 +55,8 @@ def main() -> int:
     )
 
     archived = {
-        "schema": "matrixark_vikingmem_paper_comparable_report_v1",
-        "report_contract_format": "matrixark_vikingmem_context_benchmark_report_v1",
+        "schema": "matrixark_external_baseline_paper_comparable_report_v1",
+        "report_contract_format": "matrixark_external_baseline_context_benchmark_report_v1",
         "created_at_unix": int(time.time()),
         "paper_name": args.paper_name,
         "claim_level": args.claim_level,

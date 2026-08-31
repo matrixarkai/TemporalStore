@@ -26,6 +26,20 @@ _LEXICAL_EXACT_STOPWORDS = frozenset({
 })
 
 
+
+# record_type -> (ref_type, owner hash field): how a folded owner names the embedding it
+# carries, mirroring INLINE_VECTOR_OWNER_BY_REF_TYPE on the write side.
+_EMBEDDING_OWNER_REFS = {
+    "context_event": ("event", "event_id_hash"),
+    "context_entity": ("entity", "entity_hash"),
+    "context_summary": ("summary", "summary_hash"),
+    "context_node": ("node", "node_hash"),
+    "context_segment": ("segment", "segment_hash"),
+    "context_compression_event": ("compression", "compression_id_hash"),
+    "resource_chunk": ("resource_chunk", "chunk_hash"),
+    "skill_section": ("skill_section", "section_hash"),
+}
+
 def lexical_exact_recall_enabled() -> bool:
     """Feature gate. Default ON; set MATRIXARK_LEXICAL_EXACT_RECALL=0 to restore exact prior behavior."""
     return str(_os.environ.get("MATRIXARK_LEXICAL_EXACT_RECALL", "1")).strip().lower() not in {
@@ -948,7 +962,8 @@ class _LocalAdapterRetrieveMixin:
                 "Python reference packing is disabled unless explicitly overridden for local debug."
             )
         embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(retrieval_query)
+        # The query side takes the query prefix; every other call here embeds document text.
+        query_embedding = embedding_for_text(retrieval_query, role="query")
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
@@ -1046,6 +1061,13 @@ class _LocalAdapterRetrieveMixin:
             record_scope = candidate_access_scope(record)
             if record_scope:
                 return record_scope
+            # A folded owner carries the retired embedding record's fields under embedding_meta;
+            # the access scope that used to be recovered from the separate record is there.
+            meta = record.get("embedding_meta")
+            if isinstance(meta, dict):
+                record_scope = candidate_access_scope(meta)
+                if record_scope:
+                    return record_scope
             if record.get("record_type") == "context_embedding":
                 ref_scope = ref_scope_by_key.get((str(record.get("ref_type") or ""), record.get("ref_hash")))
                 if ref_scope:
@@ -1241,6 +1263,19 @@ class _LocalAdapterRetrieveMixin:
                 remember_embedding_metadata(record)
                 if not recovered_scope_matches(record, retrieval_scope):
                     continue
+            else:
+                # A folded owner carries the retired record's copy under embedding_meta; the
+                # self-repair net reads it exactly as it read the separate row, so an owner
+                # that lost top-level fields is still repaired from its own ride-along copy.
+                meta = record.get("embedding_meta")
+                owner_ref = _EMBEDDING_OWNER_REFS.get(str(record_type or ""))
+                if isinstance(meta, dict) and meta and owner_ref is not None:
+                    ref_type, field = owner_ref
+                    ref_hash = record.get(field)
+                    if ref_hash not in (None, ""):
+                        remember_embedding_metadata(
+                            {**meta, "ref_type": ref_type, "ref_hash": ref_hash}
+                        )
             if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1", "context_node"}:
                 dense_score = cosine(query_embedding, record.get("vector", []))
                 node_hash = record["node_hash"]
@@ -1260,14 +1295,44 @@ class _LocalAdapterRetrieveMixin:
                         "embedding_type": record.get("embedding_type"),
                     }
             elif record_type == "context_event" and record.get("vector"):
-                # Fold step 2, DUAL-READ: an owner record may carry its own vector. setdefault so
-                # a separate context_embedding record always wins when both exist -- with both
-                # present the two are identical by construction (the dual-write test asserts
-                # equality), so this changes nothing today. It is what lets step 3 drop the
-                # separate records without retrieval losing its vectors.
+                # DUAL-READ: the owner record carries its vector -- since the fold-and-drop this
+                # is the ONLY place a new log stores it. setdefault so a separate
+                # context_embedding record from an old log still wins when both exist; the two
+                # are identical by construction where both were written.
                 event_embedding_vectors.setdefault(record["event_id_hash"], record["vector"])
             elif record_type == "context_entity" and record.get("vector"):
                 entity_embedding_vectors.setdefault(record["entity_hash"], record["vector"])
+            elif record_type == "context_segment" and record.get("vector"):
+                segment_embedding_vectors.setdefault(record["segment_hash"], record["vector"])
+            elif record_type == "context_compression_event" and record.get("vector"):
+                compression_embedding_vectors.setdefault(
+                    record["compression_id_hash"], record["vector"]
+                )
+            elif record_type == "resource_chunk" and record.get("vector"):
+                resource_embedding_vectors.setdefault(record["chunk_hash"], record["vector"])
+            elif record_type == "skill_section" and record.get("vector"):
+                resource_embedding_vectors.setdefault(record["section_hash"], record["vector"])
+            elif record_type == "context_node" and record.get("vector"):
+                # Node scoring from the node's own vector, exactly the formula the separate
+                # records used; an old log's separate record wins via the earlier branch, so
+                # this only fills nodes nothing has scored yet.
+                dense_score = cosine(query_embedding, record.get("vector", []))
+                node_hash = record["node_hash"]
+                node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
+                sparse_score = sparse_lexical_score(query_terms, node_text)
+                index_hint_boost = 0.08 if node_hash in secondary_index_prefilter_node_hashes else 0.0
+                score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score + index_hint_boost), 6)
+                current = node_scores.get(node_hash)
+                if current is None or score > current["score"]:
+                    node_scores[node_hash] = {
+                        "node_hash": node_hash,
+                        "node_path": record.get("node_path", []),
+                        "depth": record.get("depth", len(record.get("node_path", []))),
+                        "score": score,
+                        "dense_score": dense_score,
+                        "sparse_score": sparse_score,
+                        "embedding_type": "context_node",
+                    }
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
                 event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") in {"entity_state", "profile_entity_state"}:
@@ -2236,7 +2301,8 @@ class _LocalAdapterRetrieveMixin:
                 "coordinate_tuples": record.get("coordinate_tuples", []),
                 "non_contiguous": record.get("non_contiguous", False),
                 "source_event_ids": record.get("source_event_ids", []),
-                "source_event_count": len(record.get("source_event_ids", []) or []),
+                "source_event_count": int(record.get("source_event_count") or 0)
+                or len(record.get("source_event_ids", []) or []),
                 "source_record_type": record.get("source_record_type", ""),
                 "segment_origin": record.get("segment_origin", ""),
                 "derived_from_context_events": bool(record.get("derived_from_context_events", False)),

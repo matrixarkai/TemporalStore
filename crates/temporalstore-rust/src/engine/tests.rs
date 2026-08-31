@@ -7,7 +7,7 @@ use crate::engine::golden::{
     native_api_golden_corpus_report, native_feature_sequence_golden_corpus_report,
 };
 use crate::types::{
-    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding,
+    ContextAuditRef, ContextChildRef, ContextCompressionEvent,
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };
@@ -80,5 +80,50 @@ mod raft_apply_coalesce;
 mod phase1_flat;
 mod part1;
 mod part2;
+mod quota;
+mod upsert_deltas;
 mod part3;
 mod part4;
+
+
+/// The token-bucket arithmetic with explicit clocks -- the whole model is this pure function,
+/// so this is the whole model under test: start full, drain to deny with an honest
+/// retry-after, refill by elapsed time capped at capacity, tolerate a backwards clock, and
+/// name the impossible take.
+#[test]
+fn bucket_take_arithmetic_with_explicit_clocks() {
+    use crate::engine::execute_on_shard::bucket_take;
+
+    // An absent bucket starts full: 10 capacity, take 3 -> 7 left.
+    let (allowed, remaining, retry, state) = bucket_take(None, 1_000, 3.0, 10.0, 1.0);
+    assert!(allowed);
+    assert_eq!(7.0, remaining);
+    assert_eq!(0, retry);
+    assert_eq!((7.0, 1_000), state);
+
+    // Drain past the level: denied, retry-after is the shortfall at the refill rate.
+    let (allowed, remaining, retry, state) = bucket_take(Some(state), 1_000, 9.0, 10.0, 1.0);
+    assert!(!allowed);
+    assert_eq!(7.0, remaining, "a denied take consumes nothing");
+    assert_eq!(2_000, retry, "2 tokens short at 1 token/sec");
+
+    // 5 seconds later the refill covers it: 7 + 5 = 12, capped at 10, take 9 -> 1.
+    let (allowed, remaining, _, state) = bucket_take(Some(state), 6_000, 9.0, 10.0, 1.0);
+    assert!(allowed);
+    assert_eq!(1.0, remaining);
+
+    // A clock that moved backwards refills nothing and never panics.
+    let (allowed, remaining, _, _) = bucket_take(Some(state), 5_000, 0.5, 10.0, 1.0);
+    assert!(allowed);
+    assert_eq!(0.5, remaining);
+
+    // A take larger than capacity can never succeed: the sentinel says so.
+    let (allowed, _, retry, _) = bucket_take(None, 1_000, 20.0, 10.0, 1.0);
+    assert!(!allowed);
+    assert_eq!(u64::MAX, retry);
+
+    // Zero refill rate: a denied take also answers the sentinel rather than dividing by zero.
+    let (allowed, _, retry, _) = bucket_take(Some((0.0, 1_000)), 2_000, 1.0, 10.0, 0.0);
+    assert!(!allowed);
+    assert_eq!(u64::MAX, retry);
+}

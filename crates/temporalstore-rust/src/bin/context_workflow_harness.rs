@@ -855,7 +855,7 @@ fn run_resource_skill_conversation_scale(
         ContextResourceParseRequest {
             raw_uri: "git://github.com/matrixarkai/TemporalStore/docs/context".to_string(),
             resource_type: Some("git".to_string()),
-            text: "# Context Repository Notes\n\nContextEvent, ContextSegment, ContextEntity, ContextSummary, ContextEmbedding, and secondary index rows must survive restart and shared-store replay.".to_string(),
+            text: "# Context Repository Notes\n\nContextEvent, ContextSegment, ContextEntity, ContextSummary, and secondary index rows must survive restart and shared-store replay.".to_string(),
             max_chunk_chars: 240,
             overlap_chars: 32,
             chunk_hash_base: Some(20_260_627),
@@ -1080,7 +1080,10 @@ fn run_resource_skill_conversation_scale(
         resource_lifecycle_watched_count: resource_skill_report.resource_lifecycle.watched_count,
         skill_registry_enabled_count: resource_skill_report.skill_registry.enabled_count,
         skill_registry_disabled_count: resource_skill_report.skill_registry.disabled_count,
-        embedding_ref_count: resource_skill_report.embedding_refs.len(),
+        embedding_ref_count: resource_skill_report
+            .ingest
+            .extracts
+            .len(),
         embedding_requested_vectors: resource_skill_report
             .embedding_evidence
             .requested_vector_count,

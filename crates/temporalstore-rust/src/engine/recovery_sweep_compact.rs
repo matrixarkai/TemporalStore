@@ -313,22 +313,26 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // earlier SET/EXPIRE records.
             if !replaying_wal() {
                 for key in &expired_keys {
-                    let _ = self.wal_store.append_with_sync(
-                        request.shard_id,
-                        Command::CommonDelete { key: key.clone() },
-                        false,
-                    );
+                    let command = Command::CommonDelete { key: key.clone() };
+                    let appended = self
+                        .wal_store
+                        .append_with_sync(request.shard_id, command.clone(), false);
+                    // An expiry is a real deletion, so it has to reach every log that a
+                    // successor might replay -- not only this node's.
+                    if appended.is_ok() {
+                        self.mirror_maintenance_write(request.shard_id, &command);
+                    }
                 }
                 shard.applied_wal_sequence =
                     Some(self.wal_store.stats(request.shard_id).last_sequence);
             }
-            let index_bytes = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard))
+            let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
             self.persist_index_bytes(request.shard_id, &index_bytes)
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
             let _ = self
                 .index_log_store
-                .append_json(request.shard_id, &index_bytes);
+                .append_index_bytes(request.shard_id, &index_bytes);
         }
         Ok(ShardExpirySweepReport {
             shard_id: request.shard_id,
@@ -426,6 +430,26 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
+        for members in shard.zsets.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                "zset",
+                members.values_mut().map(|entry| &mut entry.1),
+                &mut rewrite_stats,
+            )?;
+        }
+        for elements in shard.lists.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                "list",
+                elements.values_mut(),
+                &mut rewrite_stats,
+            )?;
+        }
         for members in shard.sets.values_mut() {
             compact_page_addresses(
                 &self.page_store,
@@ -502,17 +526,6 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        compact_page_addresses(
-            &self.page_store,
-            &self.cache,
-            shard_id,
-            "context_embedding",
-            shard
-                .context_embeddings
-                .values_mut()
-                .flat_map(|series| series.values_mut()),
-            &mut rewrite_stats,
-        )?;
         for series in shard.context_summaries.values_mut() {
             compact_feature_page_addresses(
                 &self.page_store,
@@ -572,11 +585,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     ),
                 )
             })?;
-            let partial_index_bytes = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard))
+            let partial_index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
                 .map_err(|serialize| Status::error("page_compaction_failed", serialize.to_string()))?;
             self.persist_index_bytes(shard_id, &partial_index_bytes)
                 .map_err(|persist| Status::error("page_compaction_failed", persist.to_string()))?;
-            let _ = self.index_log_store.append_json(shard_id, &partial_index_bytes);
+            let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             return Err(err);
         }
 
@@ -628,11 +641,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 ),
             )
         })?;
-        let index_bytes = serde_json::to_vec_pretty(&super::stamp_index_format_version(shard))
+        let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+        let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_pages = rewrite_stats.rewritten_page_refs;
         let bucket_layout_transition_count =
             bucket_layout_transition_count_after.saturating_sub(bucket_layout_transition_count_before);

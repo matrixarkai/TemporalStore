@@ -14,6 +14,7 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -77,6 +78,14 @@ struct RecordLogRequest {
     shard_size: Option<u64>,
     #[serde(default)]
     record_types: Option<Vec<String>>,
+    /// Cap the scan to the newest N locations of a given record type, by append order.
+    ///
+    /// For a consumer that only ever looks at the tail of a type -- prior context reads the newest
+    /// eight events and stops -- fetching the whole type is work whose result is discarded. Capping
+    /// is per TYPE on purpose: the same scan also carries tombstones and retention cutoffs, and a
+    /// cap on the union would drop the very records that make deleted memories stay deleted.
+    #[serde(default)]
+    newest_by_type: Option<BTreeMap<String, usize>>,
     /// Identity ids to remove, for `matrixark_delete_records`. Sent by the caller, which owns the
     /// decision about what a delete covers; the engine only matches and removes.
     #[serde(default)]
@@ -95,6 +104,28 @@ struct RecordLogRequest {
     visibility_keys: Vec<String>,
     #[serde(default)]
     top_level_response: bool,
+    /// Byte offset for `matrixark_resource_blob_fetch` (0 = start).
+    #[serde(default)]
+    blob_offset: Option<u64>,
+    /// Byte count for `matrixark_resource_blob_fetch` (0/absent = to the end).
+    #[serde(default)]
+    blob_length: Option<u64>,
+    /// Content hashes (16-digit hex) the caller's resource records still name, for
+    /// `matrixark_resource_blob_sweep` -- everything else older than the age floor goes.
+    #[serde(default)]
+    blob_referenced_hashes: Option<Vec<String>>,
+    /// Minimum age before an unreferenced blob is eligible for the sweep.
+    #[serde(default)]
+    blob_min_age_ms: Option<u64>,
+    /// Client-chosen correlation id, echoed verbatim on the response. The serve loop answers
+    /// requests strictly in order on one stdout, so a client that abandons a slow request (its
+    /// own timeout) and keeps the process alive would otherwise read the ABANDONED request's
+    /// late response as the answer to its next request -- every later reply shifted one back,
+    /// silently serving the wrong data (observed as one scope's scan answered with another
+    /// scope's records). The echo lets the client discard late responses instead of
+    /// mis-attributing them.
+    #[serde(default)]
+    client_request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -346,6 +377,9 @@ struct RecordLogResponse {
     error_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
+    /// The request's correlation id, echoed verbatim (see RecordLogRequest::client_request_id).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_request_id: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -423,6 +457,7 @@ fn response_from_result(
             error: String::new(),
             error_code: String::new(),
             retryable: None,
+            client_request_id: None,
             extra: output.extra,
         },
         Err((op, error)) => {
@@ -447,6 +482,7 @@ fn response_from_result(
                 error,
                 error_code,
                 retryable: Some(retryable),
+                client_request_id: None,
                 extra: BTreeMap::new(),
             }
         }
@@ -541,6 +577,13 @@ fn serve() -> i32 {
         }
         let started = Instant::now();
         let request: Result<RecordLogRequest, _> = serde_json::from_str(&line);
+        // Captured before the request moves into its handler; echoed on EVERY response line
+        // (including shutdown), so the client can match responses to requests and discard the
+        // late answer of a request it abandoned instead of shifting every later reply back one.
+        let client_request_id = request
+            .as_ref()
+            .ok()
+            .and_then(|request| request.client_request_id.clone());
         let result = match request {
             Ok(request) if request.op == "shutdown" => {
                 let cached_clients = cached_engine_count();
@@ -555,6 +598,7 @@ fn serve() -> i32 {
                     Ok(("shutdown".to_string(), output)),
                     started.elapsed().as_millis(),
                 );
+                response.client_request_id = client_request_id;
                 let _ = writeln!(stdout, "{}", serialize_response_with_metrics(&mut response));
                 let _ = stdout.flush();
                 return 0;
@@ -586,6 +630,7 @@ fn serve() -> i32 {
         };
         let elapsed_ms = started.elapsed().as_millis();
         let mut response = response_from_result(result, elapsed_ms);
+        response.client_request_id = client_request_id;
         let response_json = serialize_response_with_metrics(&mut response);
         command_count += 1;
         let observed_elapsed_ms = response.elapsed_ms.unwrap_or(elapsed_ms);
@@ -1065,10 +1110,14 @@ fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
         "shard_size": command.shard_size.unwrap_or(1024).max(1),
         "count": count,
         "record_types": command.record_types,
+        "record_ids": command.record_ids,
         "selected_node_hashes": command.selected_node_hashes,
         "secondary_index_groups": command.secondary_index_groups,
         "scope": command.scope,
         "return_index_records": command.return_index_records,
+        // A capped scan and an uncapped one are different answers to the same question, so they
+        // must not share a cache entry: the capped answer is a SUBSET.
+        "newest_by_type": command.newest_by_type,
     }))
     .unwrap_or_else(|_| format!("fallback:{count}"))
 }
@@ -1110,6 +1159,33 @@ fn hgetall_snapshot_contains(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Drop named fields from a cached shard snapshot, keeping the rest of it.
+///
+/// The write side has always patched snapshots in place; deletes dropped the whole snapshot for
+/// the key, which is the same as discarding a shard's worth of reads because one field went away.
+/// It showed up as `update` being far slower than `add` on the same subject: an update purges the
+/// superseded version, and every index and record snapshot that purge touched had to be rebuilt
+/// cold by the very next scan -- one page read per member. A `HashDelete` names ONE field, so the
+/// exact post-delete snapshot is the snapshot minus that field.
+fn remove_hgetall_snapshot_fields(key: &str, fields: &[String]) {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        let Some(snapshot) = cache.get_mut(key) else {
+            return;
+        };
+        for field in fields {
+            snapshot.remove(field);
+        }
+        // Deleting the LAST field of a hash removes the whole key in the engine, and a cached
+        // empty map for a key that no longer exists is the shape that once pinned a served view
+        // at zero rows until restart. `hgetall_map` refuses to cache an empty read for the same
+        // reason; a removal must not create through the back door what the read path declines to
+        // store. Drop the snapshot instead and let the next read decide.
+        if snapshot.is_empty() {
+            cache.remove(key);
+        }
+    }
+}
+
 fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
         if let Some(snapshot) = cache.get_mut(key) {
@@ -1122,6 +1198,107 @@ fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
                 }
             }
         }
+    }
+}
+
+/// Fetch the payload values at `locations` ("{shard:06}:{field}") through the shard hash
+/// snapshots, in append order (lexical location order = shard, then zero-padded field).
+///
+/// Reads whole shard hashes via hgetall_map on purpose: HashMultiGet re-reads each field's page
+/// uncached on every call (measured ~0.5 ms/field, never warming), while the snapshot is read
+/// once and then kept current by the write runtimes -- the same coherence the shard walk has
+/// always relied on. A location whose field is missing or empty is a stale index entry: the
+/// record was physically removed after its entry was written, and skipping it is the contract.
+fn fetch_indexed_payload_values(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    locations: &std::collections::BTreeSet<String>,
+) -> Result<(Vec<String>, u64), String> {
+    let mut fields_by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for location in locations {
+        if let Some((shard, field)) = location.split_once(':') {
+            fields_by_shard
+                .entry(shard.to_string())
+                .or_default()
+                .push(field.to_string());
+        }
+    }
+    let shards_touched = fields_by_shard.len() as u64;
+    let mut values = Vec::with_capacity(locations.len());
+    for (shard, fields) in fields_by_shard {
+        let snapshot = hgetall_map(engine, format!("{record_hash_key}:{shard}"))?;
+        for field in fields {
+            match snapshot.get(&field) {
+                Some(value) if !value.is_empty() => values.push(value.clone()),
+                _ => {}
+            }
+        }
+    }
+    Ok((values, shards_touched))
+}
+
+/// Read named fields of one record shard, without paying for the rest of it.
+///
+/// Deliberately NOT used by the sweep paths. There, whole-shard reads are the right call and the
+/// comment on `fetch_indexed_payload_values` explains why: a named-field read costs about half a
+/// millisecond per field and never warms, while a shard snapshot is read once and then kept
+/// current by the write runtimes, so a repeated sweep pays nothing after the first. Narrowing
+/// those measurably made them slower.
+///
+/// The purge is the opposite case, and measurably so. It names a handful of fields the locator
+/// already identified, and it MUTATES those shards immediately after, which invalidates any
+/// snapshot it would have populated -- so the snapshot is pure cost. Measured deleting an
+/// identical freshly-created memory (same closure: 4 ids, 96 records scanned, 5 fields rewritten)
+/// on two stores: 41.7 ms against a 20 MB store, 385.7 ms against a 249 MB one. Identical work,
+/// nine times the time, because a shard on the larger store is full and the whole thing was being
+/// decoded to reach five fields.
+fn fetch_shard_fields(
+    engine: &TemporalEngine,
+    key: String,
+    fields: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    if fields.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    // An already-cached snapshot is free and current, so prefer it when one happens to be in hand.
+    if let Ok(cache) = hgetall_snapshot_cache().lock() {
+        if let Some(cached) = cache.get(&key) {
+            let mut subset = BTreeMap::new();
+            for field in fields {
+                if let Some(value) = cached.get(field) {
+                    subset.insert(field.clone(), value.clone());
+                }
+            }
+            return Ok(subset);
+        }
+    }
+    let response = engine.execute_durable(ExecuteRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        command: Command::HashMultiGet {
+            key,
+            fields: fields.to_vec(),
+        },
+    });
+    if !response.status.ok {
+        return Err(format!(
+            "{}: {}",
+            response.status.code, response.status.message
+        ));
+    }
+    match response.response {
+        CommandResponse::Values { values } => {
+            let mut decoded = BTreeMap::new();
+            for (field, value) in fields.iter().zip(values.into_iter()) {
+                let Some(bytes) = value else { continue };
+                let text = String::from_utf8(bytes)
+                    .map_err(|error| format!("stored value is not UTF-8: {error}"))?;
+                if !text.is_empty() {
+                    decoded.insert(field.clone(), text);
+                }
+            }
+            Ok(decoded)
+        }
+        other => Err(format!("unexpected response for hmget: {other:?}")),
     }
 }
 
@@ -1149,8 +1326,14 @@ fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, 
                     .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
                 decoded.insert(field, value);
             }
-            if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
-                cache.insert(key, decoded.clone());
+            // An empty read must stay a question, not become an answer: caching it would pin
+            // "no data" for a key no write may ever touch again (observed once as a pinned
+            // get_all stuck at 0 rows after a cold start until restart). An actually-empty hash
+            // re-reads at map-miss cost, no page reads.
+            if !decoded.is_empty() {
+                if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+                    cache.insert(key, decoded.clone());
+                }
             }
             Ok(decoded)
         }
@@ -1315,14 +1498,20 @@ fn passes_secondary_groups(terms: &HashSet<String>, groups: &[Vec<String>]) -> b
 }
 
 fn decode_matrixark_payload(value: &str) -> Vec<Value> {
-    let Ok(decoded) = serde_json::from_str::<Value>(value) else {
+    let Ok(mut decoded) = serde_json::from_str::<Value>(value) else {
         return Vec::new();
     };
-    if let Some(bundle) = decoded.get("record_bundle").and_then(Value::as_array) {
-        return bundle
-            .iter()
-            .filter(|item| item.is_object())
-            .cloned()
+    // Take the bundle rather than copying it. `decoded` is ours -- it was just parsed here and
+    // nothing else can see it -- so cloning each record deep-copied every map and vector in it
+    // for no one. Sampling the proxy under sustained ingest put `BTreeMap::clone_subtree` and
+    // `Vec<Value>::clone` among the hottest frames; this is where they came from.
+    if let Some(bundle) = decoded
+        .get_mut("record_bundle")
+        .and_then(Value::as_array_mut)
+    {
+        return std::mem::take(bundle)
+            .into_iter()
+            .filter(Value::is_object)
             .collect();
     }
     if decoded.is_object() {
@@ -1330,6 +1519,487 @@ fn decode_matrixark_payload(value: &str) -> Vec<Value> {
     } else {
         Vec::new()
     }
+}
+
+fn type_index_key(record_hash_key: &str, record_type: &str) -> String {
+    format!("{record_hash_key}:type_index:{record_type}")
+}
+
+fn type_index_ready_key(record_hash_key: &str) -> String {
+    format!("{record_hash_key}:type_index_ready")
+}
+
+/// `Some((record_hash_key, shard6))` when `key` is a record-shard key (`...:records:NNNNNN`).
+///
+/// The append op sees every hash entry a write carries -- latest-state rows, side-index rows,
+/// counters -- and only the record shards may feed the type index: an index-served scan fetches
+/// whatever the index names, and naming a non-record key would make it return rows the walk it
+/// replaces could never have seen.
+/// A stored location, in either shape, as `(shard, field)` within `record_hash_key`.
+///
+/// The long shape spells the whole thing out -- `{"key":"<base>:000003","field":"000...014"}` --
+/// and the compact shape is `"3:14"`, shard and offset in decimal. Measured over 300 ingests, the
+/// long shape was 87% of every byte written to a page, because the base is one deployment-wide
+/// string repeated in every entry and the offset is a twenty-digit rendering of a small number.
+///
+/// A compact entry is always relative to the reader's own record log, which is the same thing the
+/// long shape's base check enforces: an entry under another base is not this log's business, and
+/// the writer leaves those in the long shape precisely because the compact one cannot say them.
+/// Every location a ref's locator holds, head chunk and continuations together.
+///
+/// A locator list longer than one chunk keeps its head under the ref's own field and continues in
+/// `"{ref}#1"`, `"{ref}#2"`, with the head naming how many follow. A reader that stops at the head
+/// sees a truncated list, and here that is not a slow answer but a wrong one: one of these callers
+/// decides which records a delete touches, so a missed chunk leaves records undeleted.
+fn locator_location_values(
+    engine: &TemporalEngine,
+    locator_key: &str,
+    id: &str,
+) -> Result<Vec<Value>, String> {
+    let mut out: Vec<Value> = Vec::new();
+    let raw = read_bytes(
+        engine,
+        Command::HashGet {
+            key: locator_key.to_string(),
+            field: id.to_string(),
+        },
+    )?;
+    if raw.is_empty() {
+        return Ok(out);
+    }
+    let Ok(decoded) = serde_json::from_str::<Value>(&raw) else {
+        return Ok(out);
+    };
+    if let Some(items) = decoded.get("locations").and_then(Value::as_array) {
+        out.extend(items.iter().cloned());
+    }
+    let chunks = decoded
+        .get("location_chunks")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    for index in 1..=chunks {
+        let chunk_raw = read_bytes(
+            engine,
+            Command::HashGet {
+                key: locator_key.to_string(),
+                field: format!("{id}#{index}"),
+            },
+        )?;
+        if chunk_raw.is_empty() {
+            continue;
+        }
+        if let Ok(chunk) = serde_json::from_str::<Value>(&chunk_raw) {
+            if let Some(items) = chunk.get("locations").and_then(Value::as_array) {
+                out.extend(items.iter().cloned());
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn location_shard_and_field(location: &Value, record_hash_key: &str) -> Option<(String, String)> {
+    if let Some(compact) = location.as_str() {
+        let (shard, offset) = compact.split_once(':')?;
+        let shard: u64 = shard.parse().ok()?;
+        let offset: u64 = offset.parse().ok()?;
+        return Some((format!("{shard:06}"), format!("{offset:020}")));
+    }
+    let key = location.get("key").and_then(Value::as_str).unwrap_or("");
+    let field = location.get("field").and_then(Value::as_str).unwrap_or("");
+    if key.is_empty() || field.is_empty() {
+        return None;
+    }
+    // Only locations in THIS record log: the locator is shared per prefix, and a location under
+    // another base must not leak into this scan.
+    let (base, shard) = record_shard_key_parts(key)?;
+    if base != record_hash_key {
+        return None;
+    }
+    Some((shard.to_string(), field.to_string()))
+}
+
+fn record_shard_key_parts(key: &str) -> Option<(&str, &str)> {
+    let (base, shard) = key.rsplit_once(':')?;
+    if shard.len() != 6 || !shard.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if !base.ends_with(":records") {
+        return None;
+    }
+    Some((base, shard))
+}
+
+/// The record types stored in one shard-field payload, bundle-expanded.
+/// Distinct `record_type`s across already-decoded records.
+///
+/// Split out of `payload_record_types` so a caller that has already decoded the payload -- the
+/// batch-append handler, which also needs the records for the scope index -- does not decode it
+/// a second time just to read one field.
+fn records_record_types(records: &[Value]) -> Vec<String> {
+    let mut types: Vec<String> = Vec::new();
+    for record in records {
+        if let Some(record_type) = record.get("record_type").and_then(Value::as_str) {
+            if !record_type.is_empty() && !types.iter().any(|t| t == record_type) {
+                types.push(record_type.to_string());
+            }
+        }
+    }
+    types
+}
+
+fn payload_record_types(value: &str) -> Vec<String> {
+    records_record_types(&decode_matrixark_payload(value))
+}
+
+/// Payload values for the requested types via the type index, in append order.
+///
+/// `Ok(None)` when the index cannot answer -- no ready-marker yet -- and the caller must walk.
+/// Locations that no longer resolve (a field physically removed after a partial-cleanup path)
+/// are skipped: the caller re-decodes and re-filters everything it is handed, so a stale entry
+/// can cost a read but never change an answer.
+/// The newest `limit` locations, or all of them when there is no cap.
+///
+/// A location is "{shard:06}:{field}" with both parts zero-padded, so lexical order IS append
+/// order and the newest are the last. Sorting is not assumed of the input: the type index is read
+/// into a map whose iteration order is its own business, and a cap that trusted the wrong order
+/// would silently keep the OLDEST records instead -- a wrong answer rather than a slow one.
+fn newest_locations(mut locations: Vec<String>, limit: Option<usize>) -> Vec<String> {
+    match limit {
+        Some(limit) if locations.len() > limit => {
+            locations.sort();
+            locations.split_off(locations.len() - limit)
+        }
+        _ => locations,
+    }
+}
+
+fn type_index_payloads(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    allowed_types: &HashSet<String>,
+    newest_by_type: Option<&BTreeMap<String, usize>>,
+) -> Result<Option<(Vec<String>, u64)>, String> {
+    let ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
+    if ready.trim() != "1" {
+        return Ok(None);
+    }
+    let mut locations: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for record_type in allowed_types {
+        // Per-type cap, the same rule the pinned-scope path applies: a location is
+        // "{shard:06}:{field}" with both parts zero-padded, so lexical order IS append order and
+        // the newest N are the last N. A type with no cap keeps every position it had.
+        //
+        // Without this, a scan that carries a cap but no scope lands here and cap the type index
+        // ignores it -- so a caller asking for one record of a type is handed every record of
+        // that type, and what it pays grows with the store.
+        let limit = newest_by_type
+            .and_then(|caps| caps.get(record_type))
+            .copied()
+            .filter(|limit| *limit > 0);
+        let of_type: Vec<String> =
+            hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                .into_iter()
+                .map(|(location, _)| location)
+                .collect();
+        locations.extend(newest_locations(of_type, limit));
+    }
+    // BTreeSet order is lexical: shard6 then the zero-padded record field = append order.
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &locations)?;
+    Ok(Some((values, shards_touched)))
+}
+
+fn scope_index_key(record_hash_key: &str, bucket: &str) -> String {
+    format!("{record_hash_key}:scope_index:{bucket}")
+}
+
+fn scope_index_ready_key(record_hash_key: &str) -> String {
+    format!("{record_hash_key}:scope_index_ready")
+}
+
+/// Bumped when the bucket layout changes; a store whose marker holds an older value re-walks
+/// once and rebuilds. Version 2 = the type-partitioned scopeless bucket.
+const SCOPE_INDEX_LAYOUT_VERSION: &str = "2";
+
+/// The scope buckets a record files its field under, from its OWN scope_key -- the same source
+/// the scope matcher reads.
+///
+/// Scopeless records match EVERY query under the matcher's rules, so they must reach every
+/// index-served scan -- but ingest bundles a scoped event with scopeless system records in ONE
+/// field, so a single master bucket would put nearly every field in the store there (measured:
+/// 380 of ~460) and the fetch degenerates to a walk. A scopeless record therefore files under
+/// "none" (for untyped queries) AND "none:{record_type}" (so a typed query only drags in
+/// scopeless records of the types it asked for). "partial" = a scope_key lacking a tenant or
+/// user part: the matcher rejects those against any pinned query, so nothing fetches the bucket.
+fn record_scope_buckets(record: &Value) -> Vec<String> {
+    let scope_key = candidate_scope_key(record);
+    if scope_key.is_empty() {
+        let record_type = record
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        return vec!["none".to_string(), format!("none:{record_type}")];
+    }
+    let parts = parse_scope_key(&scope_key);
+    match (parts.get("t"), parts.get("u")) {
+        (Some(tenant), Some(user)) if *tenant != 0 && *user != 0 => {
+            vec![format!("t={tenant}|u={user}")]
+        }
+        _ => vec!["partial".to_string()],
+    }
+}
+
+/// The bucket a query pins, or None when the query is not pinned enough for the scope index.
+///
+/// Pinned = non-zero tenant and user hashes with the user marked explicit. A tenant-wide query
+/// would need every user's bucket, and a session-mode refinement is applied by the shared filter
+/// loop after the fetch -- the index only has to be a superset.
+fn query_scope_bucket(query_scope: Option<&Value>) -> Option<String> {
+    let query = query_scope.filter(|value| value.is_object())?;
+    let tenant = query.get("tenant_hash").and_then(Value::as_u64).unwrap_or(0);
+    let user = query.get("user_hash").and_then(Value::as_u64).unwrap_or(0);
+    if tenant == 0 || user == 0 || !scope_key_explicit(query, "user_id") {
+        return None;
+    }
+    Some(format!("t={tenant}|u={user}"))
+}
+
+/// Payload values for a pinned-scope scan, in append order: the bucket's locations plus the
+/// scopeless bucket, intersected with the requested types' locations when the type index can
+/// answer. `Ok(None)` = the scope index cannot answer; the caller walks (and backfills).
+fn scope_index_payloads(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    allowed_types: &HashSet<String>,
+    bucket: &str,
+    newest_by_type: Option<&BTreeMap<String, usize>>,
+) -> Result<Option<(Vec<String>, u64)>, String> {
+    let ready = read_record_count(engine, &scope_index_ready_key(record_hash_key))?;
+    if ready.trim() != SCOPE_INDEX_LAYOUT_VERSION {
+        return Ok(None);
+    }
+    let mut source_buckets: Vec<String> = vec![bucket.to_string()];
+    // Tenant-scoped records (a scope_key with a tenant but no user) live in "partial". Consumers
+    // differ on them -- get_all wants exact tenant AND user equality and drops them, while prior
+    // context accepts a tenant-wide summary for a user in that tenant -- so the fetch includes
+    // them and the shared filter loop applies each consumer's real predicate. The index stays a
+    // pre-filter; widening it can cost a wasted read, never a wrong answer, and an unpinned scan
+    // was already returning these rows.
+    source_buckets.push("partial".to_string());
+    if allowed_types.is_empty() {
+        source_buckets.push("none".to_string());
+    } else {
+        for record_type in allowed_types {
+            source_buckets.push(format!("none:{record_type}"));
+        }
+    }
+    let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for source_bucket in &source_buckets {
+        for (location, _) in
+            hgetall_map(engine, scope_index_key(record_hash_key, source_bucket))?
+        {
+            positions.insert(location);
+        }
+    }
+    if !allowed_types.is_empty() {
+        let type_ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
+        if type_ready.trim() == "1" {
+            let mut type_positions: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for record_type in allowed_types {
+                for (location, _) in
+                    hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                {
+                    type_positions.insert(location);
+                }
+            }
+            positions = positions
+                .intersection(&type_positions)
+                .cloned()
+                .collect();
+            // Per-type cap, applied AFTER the scope intersection so "newest" means newest within
+            // this scope rather than newest in the store. A location is "{shard:06}:{field}" with
+            // both parts zero-padded, so lexical order IS append order and the newest N are the
+            // last N. Types without a cap keep every position they had.
+            if let Some(caps) = newest_by_type {
+                let mut capped: std::collections::BTreeSet<String> = positions.clone();
+                for (record_type, limit) in caps {
+                    if *limit == 0 || !allowed_types.contains(record_type) {
+                        continue;
+                    }
+                    let mut of_type: Vec<String> = Vec::new();
+                    for (location, _) in
+                        hgetall_map(engine, type_index_key(record_hash_key, record_type))?
+                    {
+                        if positions.contains(&location) {
+                            of_type.push(location);
+                        }
+                    }
+                    if of_type.len() <= *limit {
+                        continue;
+                    }
+                    of_type.sort();
+                    let keep: std::collections::BTreeSet<String> =
+                        of_type[of_type.len() - *limit..].iter().cloned().collect();
+                    for location in of_type {
+                        if !keep.contains(&location) {
+                            capped.remove(&location);
+                        }
+                    }
+                }
+                positions = capped;
+            }
+        }
+    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &positions)?;
+    Ok(Some((values, shards_touched)))
+}
+
+/// Persist a walk-built scope index and its ready-marker, once. Returns whether it wrote.
+fn persist_scope_index_backfill(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    entries_by_index_key: BTreeMap<String, Vec<(String, Vec<u8>)>>,
+) -> Result<bool, String> {
+    let ready = read_record_count(engine, &scope_index_ready_key(record_hash_key))?;
+    if ready.trim() == SCOPE_INDEX_LAYOUT_VERSION {
+        return Ok(false);
+    }
+    let mut commands: Vec<Command> = entries_by_index_key
+        .into_iter()
+        .map(|(key, entries)| Command::HashMultiSet { key, entries })
+        .collect();
+    commands.push(Command::StringSet {
+        key: scope_index_ready_key(record_hash_key),
+        value: SCOPE_INDEX_LAYOUT_VERSION.as_bytes().to_vec(),
+    });
+    execute_empty_batch_runtime(engine, commands, true)?;
+    Ok(true)
+}
+
+/// Is this record about one of `ids` -- carrying it, targeting it, or created by superseding it?
+///
+/// `record_addressable_ids` covers what a record CARRIES (its own identity and its ref hashes);
+/// history also needs the records that POINT at an id: a tombstone's `target_memory_id`, and the
+/// supersede link `superseded_by` that marks the successor's creation.
+fn record_id_linked(record: &Value, ids: &HashSet<String>) -> bool {
+    if record_addressable_ids(record)
+        .iter()
+        .any(|id| ids.contains(id.as_str()))
+    {
+        return true;
+    }
+    for field in ["target_memory_id", "superseded_by", "source_event_hash"] {
+        match record.get(field) {
+            Some(Value::String(text)) if ids.contains(text.as_str()) => return true,
+            Some(Value::Number(number)) if ids.contains(number.to_string().as_str()) => {
+                return true
+            }
+            _ => {}
+        }
+    }
+    // Provenance arrays: a derivative points at its sources through these, without carrying
+    // them as addressable ids -- exactly the records a get-by-id must return alongside the event.
+    for field in ["source_event_ids", "source_refs"] {
+        if let Some(Value::Array(items)) = record.get(field) {
+            for item in items {
+                match item {
+                    Value::String(text) if ids.contains(text.as_str()) => return true,
+                    Value::Number(number) if ids.contains(number.to_string().as_str()) => {
+                        return true
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Payload values for an id-scoped scan, in append order: the ids' locator locations plus the
+/// type-index locations of every requested type except `context_event` (events carry their own
+/// id, so the locator covers them; tombstones and feedback point at an id without carrying it,
+/// and they are sparse). `Ok(None)` = compose cannot answer; the caller walks.
+fn id_scoped_payloads(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    allowed_types: &HashSet<String>,
+    requested_ids: &[String],
+) -> Result<Option<(Vec<String>, u64)>, String> {
+    let ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
+    if ready.trim() != "1" {
+        return Ok(None);
+    }
+    // The record hash key is `{prefix}:records`, so the locator key derives from it -- callers
+    // do not reliably send storage_prefix, and the id mode must not depend on an optional field.
+    let Some(prefix) = record_hash_key.strip_suffix(":records") else {
+        return Ok(None);
+    };
+    let locator_key = format!("{prefix}:context_ref_locator");
+    // A store whose locator was fed pointed ids (provenance + targets) from its FIRST append
+    // marks itself; on such stores the locator alone answers "records about these ids", and the
+    // type-index compose below -- which would fetch every record of each requested type -- is
+    // skipped. Unmarked (pre-existing) stores keep the composed behavior unchanged.
+    let locator_covers_pointed_ids = hgetall_map(engine, format!("{locator_key}_meta"))
+        .ok()
+        .map(|meta| {
+            meta.get("provenance_from_start")
+                .map(|value| value.trim() == "1")
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+    let mut positions: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for id in requested_ids {
+        let mut found = 0_usize;
+        for location in locator_location_values(engine, &locator_key, id)? {
+            let Some((shard, field)) = location_shard_and_field(&location, record_hash_key) else {
+                continue;
+            };
+            positions.insert(format!("{shard}:{field}"));
+            found += 1;
+        }
+        if found == 0 {
+            // An old store predating the side index, or an id that never existed. The walk is
+            // the correct answer for both; guessing "no records" here would erase real history.
+            return Ok(None);
+        }
+    }
+    if !locator_covers_pointed_ids {
+        for record_type in allowed_types {
+            if record_type == "context_event" {
+                continue;
+            }
+            for (location, _) in hgetall_map(engine, type_index_key(record_hash_key, record_type))? {
+                positions.insert(location);
+            }
+        }
+    }
+    let (values, shards_touched) =
+        fetch_indexed_payload_values(engine, record_hash_key, &positions)?;
+    Ok(Some((values, shards_touched)))
+}
+
+/// Persist a walk-built index and its ready-marker, once. Returns whether it wrote.
+fn persist_type_index_backfill(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    entries_by_index_key: BTreeMap<String, Vec<(String, Vec<u8>)>>,
+) -> Result<bool, String> {
+    let ready = read_record_count(engine, &type_index_ready_key(record_hash_key))?;
+    if ready.trim() == "1" {
+        return Ok(false);
+    }
+    let mut commands: Vec<Command> = entries_by_index_key
+        .into_iter()
+        .map(|(key, entries)| Command::HashMultiSet { key, entries })
+        .collect();
+    commands.push(Command::StringSet {
+        key: type_index_ready_key(record_hash_key),
+        value: b"1".to_vec(),
+    });
+    execute_empty_batch_runtime(engine, commands, true)?;
+    Ok(true)
 }
 
 fn scan_matrixark_candidates(
@@ -1372,16 +2042,102 @@ fn scan_matrixark_candidates(
     } else {
         (count - 1) / shard_size
     };
-    let placement_partitions_touched = if count == 0 { 0 } else { max_shard + 1 };
+    let mut placement_partitions_touched = if count == 0 { 0 } else { max_shard + 1 };
     let mut scanned_records = 0_u64;
     let mut dropped_by_type = 0_u64;
     let mut dropped_by_scope = 0_u64;
     let mut selected_node_dropped = 0_u64;
+    // Collect payloads first -- from the type index when it can answer, from the shard walk
+    // otherwise -- then run one shared filter loop, so the two paths cannot drift.
+    let mut payload_values: Vec<String> = Vec::new();
+    let requested_ids: Vec<String> = command.record_ids.clone().unwrap_or_default();
+    let requested_id_set: HashSet<String> = requested_ids.iter().cloned().collect();
+    let mut id_scoped_used = false;
+    let mut type_index_used = false;
+    if !requested_ids.is_empty() && count > 0 {
+        if let Some((values, shards_touched)) = id_scoped_payloads(
+            engine,
+            &record_hash_key,
+            &allowed_types,
+            &requested_ids,
+        )? {
+            payload_values = values;
+            placement_partitions_touched = shards_touched;
+            id_scoped_used = true;
+        }
+    }
+    let query_bucket = query_scope_bucket(command.scope.as_ref());
+    let mut scope_index_used = false;
+    if !id_scoped_used && count > 0 {
+        if let Some(bucket) = &query_bucket {
+            if let Some((values, shards_touched)) = scope_index_payloads(
+                engine,
+                &record_hash_key,
+                &allowed_types,
+                bucket,
+                command.newest_by_type.as_ref(),
+            )? {
+                payload_values = values;
+                placement_partitions_touched = shards_touched;
+                scope_index_used = true;
+            }
+        }
+    }
+    // A pinned query whose scope index is not ready takes the WALK on purpose -- the walk
+    // backfills the scope index, while the type path would serve this scan and leave the scope
+    // index unbuilt forever on stores that predate it.
+    if !id_scoped_used
+        && !scope_index_used
+        && query_bucket.is_none()
+        && !allowed_types.is_empty()
+        && count > 0
+    {
+        if let Some((values, shards_touched)) = type_index_payloads(
+            engine,
+            &record_hash_key,
+            &allowed_types,
+            command.newest_by_type.as_ref(),
+        )? {
+            payload_values = values;
+            placement_partitions_touched = shards_touched;
+            type_index_used = true;
+        }
+    }
+    let mut type_index_backfilled = false;
+    if !id_scoped_used && !scope_index_used && !type_index_used && count > 0 {
+        // The walk this scan pays anyway sees every payload, so it can build the index for every
+        // type in the store as a side effect; the marker makes the next scan's miss authoritative.
+        let mut backfill: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+        let mut scope_backfill: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+        for shard in 0..=max_shard {
+            let key = format!("{}:{:06}", record_hash_key, shard);
+            let shard6 = format!("{shard:06}");
+            for (field, value) in hgetall_map(engine, key.clone())? {
+                for record_type in payload_record_types(&value) {
+                    backfill
+                        .entry(type_index_key(&record_hash_key, &record_type))
+                        .or_default()
+                        .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                }
+                for record in decode_matrixark_payload(&value) {
+                    for bucket in record_scope_buckets(&record) {
+                        scope_backfill
+                            .entry(scope_index_key(&record_hash_key, &bucket))
+                            .or_default()
+                            .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                    }
+                }
+                payload_values.push(value);
+            }
+        }
+        type_index_backfilled =
+            persist_type_index_backfill(engine, &record_hash_key, backfill)?;
+        persist_scope_index_backfill(engine, &record_hash_key, scope_backfill)?;
+    }
     let mut records = Vec::new();
-    for shard in 0..=max_shard {
-        let key = format!("{}:{:06}", record_hash_key, shard);
-        for (_field, value) in hgetall_map(engine, key.clone())? {
-            for record in decode_matrixark_payload(&value) {
+    {
+        for value in &payload_values {
+            for record in decode_matrixark_payload(value) {
                 scanned_records += 1;
                 let record_type = record
                     .get("record_type")
@@ -1389,6 +2145,10 @@ fn scan_matrixark_candidates(
                     .unwrap_or("");
                 if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
                     dropped_by_type += 1;
+                    continue;
+                }
+                if !requested_id_set.is_empty() && !record_id_linked(&record, &requested_id_set) {
+                    dropped_by_scope += 1; // id-filtered, counted with scope drops
                     continue;
                 }
                 if !scope_matches_record(&record, command.scope.as_ref()) {
@@ -1536,6 +2296,10 @@ fn scan_matrixark_candidates(
             "dropped_by_scope": dropped_by_scope,
             "selected_node_dropped_candidate_count": selected_node_dropped,
             "secondary_index_groups_supplied": secondary_groups.len(),
+            "id_scoped_used": id_scoped_used,
+            "scope_index_used": scope_index_used,
+            "type_index_used": type_index_used,
+            "type_index_backfilled": type_index_backfilled,
             "secondary_index_matched_candidate_count": secondary_matched,
             "secondary_index_dropped_candidate_count": secondary_dropped,
             "native_pack_assembly": false,
@@ -1684,6 +2448,23 @@ fn forget_scope_records(
             }
             stats.records_removed += removed_here;
             if survivors.is_empty() {
+                // The field is going away entirely: its type-index entries go in the same batch.
+                // A partial rewrite leaves its entries alone -- an index-served fetch re-filters
+                // everything it loads, so a stale entry is a wasted read, not a wrong answer.
+                for record_type in payload_record_types(&value) {
+                    commands.push(Command::HashDelete {
+                        key: type_index_key(record_hash_key, &record_type),
+                        field: format!("{shard:06}:{field}"),
+                    });
+                }
+                for record in decode_matrixark_payload(&value) {
+                    for bucket in record_scope_buckets(&record) {
+                        commands.push(Command::HashDelete {
+                            key: scope_index_key(record_hash_key, &bucket),
+                            field: format!("{shard:06}:{field}"),
+                        });
+                    }
+                }
                 commands.push(Command::HashDelete {
                     key: key.clone(),
                     field,
@@ -1751,6 +2532,44 @@ fn record_addressable_ids(record: &Value) -> Vec<String> {
 /// Mirrors `forget_scope_records` -- same shard walk, same survivor rewrite, same single durable
 /// batch that also clears the scan/hgetall caches so a later retrieve cannot re-serve a removed
 /// record from cache. Only the predicate differs: identity ids instead of a scope.
+/// The `(shard, field)` locations the ref locator holds for `ids`, or `None` when the locator
+/// cannot be trusted to be complete for this store.
+///
+/// Completeness is the whole question: visiting only located fields is correct exactly when the
+/// locator saw every record this store ever wrote, which is what the `provenance_from_start`
+/// marker attests (it is stamped by the batch that writes the store's first record). Without it
+/// the caller must walk, because a missed field would leave a deleted record physically present.
+fn located_fields_for_ids(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    ids: &[String],
+) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
+    let Some(prefix) = record_hash_key.strip_suffix(":records") else {
+        return Ok(None);
+    };
+    let locator_key = format!("{prefix}:context_ref_locator");
+    let covered = hgetall_map(engine, format!("{locator_key}_meta"))?
+        .get("provenance_from_start")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false);
+    if !covered {
+        return Ok(None);
+    }
+    let mut by_shard: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in ids {
+        for location in locator_location_values(engine, &locator_key, id)? {
+            let Some((shard, field)) = location_shard_and_field(&location, record_hash_key) else {
+                continue;
+            };
+            let fields = by_shard.entry(shard).or_default();
+            if !fields.iter().any(|existing| existing == &field) {
+                fields.push(field);
+            }
+        }
+    }
+    Ok(Some(by_shard))
+}
+
 fn delete_records_by_ids(
     engine: &TemporalEngine,
     record_hash_key: &str,
@@ -1775,10 +2594,34 @@ fn delete_records_by_ids(
     }
     let max_shard = (count - 1) / shard_size;
     let mut commands = Vec::new();
-    for shard in 0..=max_shard {
+    // Which fields could hold these ids? The locator answers directly on a store it covers
+    // completely; otherwise every shard has to be read.
+    let located = located_fields_for_ids(engine, record_hash_key, ids)?;
+    let visit: Vec<(String, Vec<String>)> = match &located {
+        Some(by_shard) => by_shard
+            .iter()
+            .map(|(shard, fields)| (shard.clone(), fields.clone()))
+            .collect(),
+        None => (0..=max_shard)
+            .map(|shard| (format!("{shard:06}"), Vec::new()))
+            .collect(),
+    };
+    for (shard, only_fields) in visit {
         stats.shards_scanned += 1;
-        let key = format!("{}:{:06}", record_hash_key, shard);
-        for (field, value) in hgetall_map(engine, key.clone())? {
+        let key = format!("{}:{}", record_hash_key, shard);
+        // With located fields, read exactly those. Without them (no locator coverage) the whole
+        // shard is genuinely needed, because the walk is the fallback that finds the records the
+        // locator could not name.
+        let entries: Vec<(String, String)> = if only_fields.is_empty() {
+            hgetall_map(engine, key.clone())?.into_iter().collect()
+        } else {
+            let found = fetch_shard_fields(engine, key.clone(), &only_fields)?;
+            only_fields
+                .into_iter()
+                .filter_map(|field| found.get(&field).map(|value| (field, value.clone())))
+                .collect()
+        };
+        for (field, value) in entries {
             let records = decode_matrixark_payload(&value);
             if records.is_empty() {
                 // Undecodable / non-record field (e.g. a counter): never touch it.
@@ -1802,6 +2645,23 @@ fn delete_records_by_ids(
             }
             stats.records_removed += removed_here;
             if survivors.is_empty() {
+                // The field is going away entirely: its type-index entries go in the same batch.
+                // A partial rewrite leaves its entries alone -- an index-served fetch re-filters
+                // everything it loads, so a stale entry is a wasted read, not a wrong answer.
+                for record_type in payload_record_types(&value) {
+                    commands.push(Command::HashDelete {
+                        key: type_index_key(record_hash_key, &record_type),
+                        field: format!("{shard}:{field}"),
+                    });
+                }
+                for record in decode_matrixark_payload(&value) {
+                    for bucket in record_scope_buckets(&record) {
+                        commands.push(Command::HashDelete {
+                            key: scope_index_key(record_hash_key, &bucket),
+                            field: format!("{shard}:{field}"),
+                        });
+                    }
+                }
                 commands.push(Command::HashDelete {
                     key: key.clone(),
                     field,
@@ -2032,6 +2892,91 @@ fn execute_record_log_request(
             cached_clients: None,
             extra: BTreeMap::new(),
         },
+        // Attachment blob tier, engine command side: the python surface reaches the
+        // embedded engine's content-addressed blob store through these ops, mirroring the
+        // datanode's HTTP /blob tier for deployments that run no HTTP server. Payloads ride
+        // base64 in `value`; structured results ride the flattened extra map.
+        "matrixark_resource_blob_put" => {
+            let tenant_hash: u64 = request
+                .key
+                .trim()
+                .parse()
+                .map_err(|_| format!("blob put needs a decimal tenant hash in key, got {:?}", request.key))?;
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobPut {
+                    tenant_hash,
+                    payload_base64: request.value.clone(),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobCommitted { uri, size_bytes, content_hash } = response.response {
+                output.status = "committed".to_string();
+                output.extra.insert("matrixark_blob_uri".to_string(), json!(uri));
+                output.extra.insert("matrixark_blob_size_bytes".to_string(), json!(size_bytes));
+                output.extra.insert(
+                    "matrixark_blob_content_hash".to_string(),
+                    json!(format!("{content_hash:016x}")),
+                );
+            }
+            output
+        }
+        "matrixark_resource_blob_fetch" => {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobFetch {
+                    uri: request.key.clone(),
+                    offset: request.blob_offset.unwrap_or(0),
+                    length: request.blob_length.unwrap_or(0),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobChunk { payload_base64, total_size, eof } = response.response {
+                output.status = "served".to_string();
+                output.value = payload_base64;
+                output.extra.insert("matrixark_blob_total_size".to_string(), json!(total_size));
+                output.extra.insert("matrixark_blob_eof".to_string(), json!(eof));
+            }
+            output
+        }
+        "matrixark_resource_blob_sweep" => {
+            let tenant_hash: u64 = request
+                .key
+                .trim()
+                .parse()
+                .map_err(|_| format!("blob sweep needs a decimal tenant hash in key, got {:?}", request.key))?;
+            let referenced: Vec<u64> = request
+                .blob_referenced_hashes
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+                .collect();
+            let response = engine.execute(ExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                command: Command::ContextResourceBlobSweep {
+                    tenant_hash,
+                    referenced_content_hashes: referenced,
+                    min_age_ms: request.blob_min_age_ms.unwrap_or(3_600_000),
+                },
+            });
+            if !response.status.ok {
+                return Err(format!("{}: {}", response.status.code, response.status.message));
+            }
+            let mut output = empty_output(root);
+            if let CommandResponse::ContextResourceBlobSwept { scanned, deleted } = response.response {
+                output.status = "swept".to_string();
+                output.extra.insert("matrixark_blob_scanned".to_string(), json!(scanned));
+                output.extra.insert("matrixark_blob_deleted".to_string(), json!(deleted));
+            }
+            output
+        }
         "matrixark_publish_visibility" => {
             let visibility_key_count = request.visibility_keys.len();
             let index_bytes = engine
@@ -2130,9 +3075,47 @@ fn execute_record_log_request(
                     .or_default()
                     .push((field, value.into_bytes()));
             }
-            let mut commands =
-                Vec::with_capacity(grouped.len() + usize::from(!request.key.trim().is_empty()));
+            // Type-index maintenance rides the same durable batch as the data, derived from the
+            // very payloads being written, so the index can never lag a committed append. Only
+            // record-shard keys feed it (see record_shard_key_parts).
+            let mut index_entries: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            for (key, entries) in &grouped {
+                if let Some((base, shard6)) = record_shard_key_parts(key) {
+                    for (field, value) in entries {
+                        let Ok(value_text) = std::str::from_utf8(value) else {
+                            continue;
+                        };
+                        // Both side indexes come from the same records, so decode once. This
+                        // used to call `payload_record_types` (itself a wrapper over
+                        // `decode_matrixark_payload`) and then decode the same string again,
+                        // deserializing every appended record into a Value tree twice.
+                        let decoded = decode_matrixark_payload(value_text);
+                        for record_type in records_record_types(&decoded) {
+                            index_entries
+                                .entry(type_index_key(base, &record_type))
+                                .or_default()
+                                .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                        }
+                        for record in &decoded {
+                            for bucket in record_scope_buckets(record) {
+                                index_entries
+                                    .entry(scope_index_key(base, &bucket))
+                                    .or_default()
+                                    .push((format!("{shard6}:{field}"), b"1".to_vec()));
+                            }
+                        }
+                    }
+                }
+            }
+            let mut commands = Vec::with_capacity(
+                grouped.len()
+                    + index_entries.len()
+                    + usize::from(!request.key.trim().is_empty()),
+            );
             for (key, entries) in grouped {
+                commands.push(Command::HashMultiSet { key, entries });
+            }
+            for (key, entries) in index_entries {
                 commands.push(Command::HashMultiSet { key, entries });
             }
             if !request.key.trim().is_empty() {
@@ -2256,6 +3239,21 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "hgetall" | "scan_hash" => hash_entries_output(&engine, request.key, root)?,
+        // Read the durability barrier counters. They are collected by every site that takes a
+        // barrier and were, until now, unreachable from outside the process -- so the one number
+        // that says how much of a write is barrier-bound could not be measured, only argued.
+        // `field == "reset"` clears them first, so a harness can bracket a span.
+        "durability_barriers" => {
+            if request.field == "reset" {
+                temporalstore_rust::durability_metrics::reset();
+            }
+            let counts = temporalstore_rust::durability_metrics::snapshot();
+            let mut map = serde_json::Map::new();
+            for (site, count) in counts {
+                map.insert(site.to_string(), serde_json::json!(count));
+            }
+            json_output(serde_json::Value::Object(map), root)?
+        }
         "matrixark_scan_candidates" => {
             json_output(scan_matrixark_candidates(&engine, &request)?, root)?
         }
@@ -2358,7 +3356,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         | "metrics_prometheus"
         | "shutdown"
         | "matrixark_publish_visibility" => Ok(()),
-        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
+        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash"
+        | "matrixark_resource_blob_put"
+        | "matrixark_resource_blob_fetch"
+        | "matrixark_resource_blob_sweep" => {
             require_non_empty("key", &request.key)
         }
         "matrixark_scan_candidates"
@@ -2394,6 +3395,8 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
                 Err("forget requires a scope object".to_string())
             }
         }
+        // Read-only counter dump: no key, no field, nothing to validate.
+        "durability_barriers" => Ok(()),
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;
             require_non_empty("field", &request.field)
@@ -2480,35 +3483,25 @@ fn hash_entries_output(
     key: String,
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
-    let response = engine.execute_durable(ExecuteRequest {
-        shard_id: DEFAULT_SHARD_ID,
-        command: Command::HashGetAll { key: key.clone() },
-    });
-    if !response.status.ok {
-        return Err(format!(
-            "{}: {}",
-            response.status.code, response.status.message
-        ));
-    }
-    match response.response {
-        CommandResponse::HashEntries { entries } => {
-            let mut decoded = BTreeMap::new();
+    // Read through the hash snapshot: a raw HashGetAll re-reads every field's page uncached on
+    // each call (measured 14.6 ms warm for a 27-field hash), while the snapshot is read once and
+    // kept current by the write runtimes -- the same coherence every internal hgetall relies on.
+    {
+        let decoded = hgetall_map(engine, key.clone())?;
+        {
             let mut records = Vec::new();
-            for (field, value) in entries {
-                let value = String::from_utf8(value)
-                    .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+            for (field, value) in &decoded {
                 records.push(HashReadRecord {
                     key: key.clone(),
                     field: field.clone(),
                     value: value.clone(),
                 });
-                decoded.insert(field, value);
             }
             let mut extra = BTreeMap::new();
             extra.insert("native_prefix_scan".to_string(), json!(true));
             extra.insert(
                 "prefix_scan_path".to_string(),
-                json!("rust_proxy_scan_hash"),
+                json!("rust_proxy_scan_hash_snapshot"),
             );
             Ok(RecordLogOutput {
                 value: serde_json::to_string(&decoded)
@@ -2526,7 +3519,6 @@ fn hash_entries_output(
                 extra,
             })
         }
-        other => Err(format!("unexpected response for hgetall: {other:?}")),
     }
 }
 
@@ -2543,6 +3535,64 @@ fn clear_engine_cache() {
     if let Ok(mut cache) = engine_cache().lock() {
         cache.clear();
     }
+}
+
+/// Page-cache capacity already handed out across every engine this process has opened.
+static ENGINE_CACHE_GRANTED_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// MemTotal in bytes, or None where /proc is not available.
+fn system_memory_bytes() -> Option<usize> {
+    let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in text.lines() {
+        let rest = match line.strip_prefix("MemTotal:") {
+            Some(rest) => rest,
+            None => continue,
+        };
+        let kilobytes: usize = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+        return kilobytes.checked_mul(1024);
+    }
+    None
+}
+
+/// Page-cache capacity for a newly opened engine.
+///
+/// The old fixed 128 MiB default is smaller than the working set of any store past a few hundred
+/// megabytes, and every page read that misses it pays a second-layer read AND a cache fill. That
+/// is what made writes look linear in corpus size. Measured on one 260 MB store, the same ingest
+/// took 3 291 ms at 128 MiB, 1 157 ms at 384 MiB and 902 ms at 1 GiB, while that ingest against a
+/// 20 MB store took 173 ms -- so the "linear growth" was mostly the working set crossing a fixed
+/// cache, not the corpus. A 24 GiB machine now lands each engine at the 512 MiB per-engine
+/// ceiling.
+///
+/// This is a CAPACITY, not an allocation: a cache that may hold a gigabyte still holds only what
+/// has actually been read, so a small store costs no more than it did before. What the capacity
+/// does set is a ceiling, so the number is derived from the machine and bounded twice -- per
+/// engine, and across every engine this process opens, since one proxy can serve many namespaces
+/// and N independent caches at the per-engine size would be N times the intended footprint.
+/// `MATRIXARK_RUST_PROXY_CACHE_BYTES` still overrides this absolutely, per engine, for
+/// deployments that know their own working set.
+fn default_engine_cache_bytes() -> usize {
+    const FLOOR: usize = 128 * 1024 * 1024;
+    const PER_ENGINE_CEILING: usize = 512 * 1024 * 1024;
+    const PROCESS_FLOOR: usize = 512 * 1024 * 1024;
+    const PROCESS_CEILING: usize = 4096 * 1024 * 1024;
+
+    let memory = match system_memory_bytes() {
+        Some(memory) => memory,
+        None => return FLOOR,
+    };
+    // Per engine, not per process: one proxy opens a separate engine per record-log prefix, so a
+    // generous per-engine number spent entirely on the first one starves the rest. A share each
+    // beats everything for one.
+    let want = (memory / 16).clamp(FLOOR, PER_ENGINE_CEILING);
+    let process_ceiling = (memory / 4).clamp(PROCESS_FLOOR, PROCESS_CEILING);
+    // First come, first served against the process budget: an engine opened once the budget is
+    // spent falls back to the floor rather than pushing the process past its ceiling.
+    let granted = ENGINE_CACHE_GRANTED_BYTES.load(Ordering::Relaxed);
+    let remaining = process_ceiling.saturating_sub(granted);
+    let grant = if remaining >= want { want } else { FLOOR };
+    ENGINE_CACHE_GRANTED_BYTES.fetch_add(grant, Ordering::Relaxed);
+    grant
 }
 
 fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
@@ -2565,7 +3615,17 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(128 * 1024 * 1024);
+        .unwrap_or_else(default_engine_cache_bytes);
+    eprintln!(
+        "engine page cache: {} MiB for {} ({})",
+        cache_bytes / (1024 * 1024),
+        root.display(),
+        if env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES").is_ok() {
+            "MATRIXARK_RUST_PROXY_CACHE_BYTES"
+        } else {
+            "default, derived from system memory"
+        }
+    );
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_bytes,
         root.join("cache"),
@@ -2581,7 +3641,31 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
     if defaulted_nonblocking_warm {
         env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
     }
-    engine.load_shard(DEFAULT_SHARD_ID);
+    // A shard load can be REFUSED (corrupt delta stream, WAL hole, replay failure) or can
+    // genuinely fail partway. `load_shard` discards that answer, and the engine below is
+    // cached -- so a refused load used to become a healthy-looking server whose every op
+    // returns shard_not_loaded, which upstream layers can mistake for an empty store. That
+    // is precisely how a damaged-at-scale store served vacuous empties on every reload.
+    // Refuse to open instead: the error names the cause, nothing is cached, and the next
+    // request retries the load rather than inheriting a permanently-empty engine.
+    let load = engine.load_shard_with(temporalstore_rust::LoadShardRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: 0,
+        end_routing_bucket: u32::MAX,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !load.status.ok && load.status.code != "already_exists" {
+        return Err(format!(
+            "shard load refused for record-log root {}: {}: {}",
+            root.display(),
+            load.status.code,
+            load.status.message
+        ));
+    }
     let async_cache_warm = !matches!(
         env::var("MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD")
             .unwrap_or_else(|_| "1".to_string())
@@ -2623,6 +3707,40 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             ..Config::default()
         },
     });
+    // Embedded log maintenance: the proxy engine runs no storage-manager cycle (only the
+    // server/data-node do), so without this its WAL and index-log grow without bound -- a
+    // 100K-record ingest left a multi-GB index log that nothing ever truncated. Poll the
+    // threshold-dump cadence in the background: when the undumped index-log gap crosses
+    // `TS_INDEX_DUMP_WAL_GAP_BYTES`, dump the catalog and reclaim the log prefixes the dump
+    // made redundant. The poll itself is one file-length stat per interval; the dump/reclaim
+    // runs off the request path so no client write pays for the base-index materialization.
+    // No-op (thread not spawned) with the fold gate off or the interval set to 0.
+    let reclaim_interval_ms = env::var("MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(1000);
+    if temporalstore_rust::index_log::index_catalog_fold_enabled() && reclaim_interval_ms > 0 {
+        let reclaim_engine = engine.clone();
+        let reclaim_root = root.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(reclaim_interval_ms));
+            if let Some(report) = reclaim_engine.maybe_dump_and_reclaim_index_logs(DEFAULT_SHARD_ID)
+            {
+                eprintln!(
+                    "matrixark_rust_proxy_log_reclaim root={} wal_anchor={} index_log_bytes={}->{} ({} records removed) wal_bytes={}->{} ({} records removed) floor={:?}",
+                    reclaim_root.display(),
+                    report.wal_anchor,
+                    report.index_log_bytes_before,
+                    report.index_log_bytes_after,
+                    report.index_log_records_removed,
+                    report.wal_bytes_before,
+                    report.wal_bytes_after,
+                    report.wal_records_removed,
+                    report.wal_retention_floor,
+                );
+            }
+        });
+    }
     let mut cache = engine_cache()
         .lock()
         .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
@@ -2645,7 +3763,16 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
                 "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES",
                 "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
             ],
-            4096,
+            // Was 4096, and every index write an add makes is smaller than that: the postings, the
+            // placement rows, the locator entries. Those are also the most repetitive bytes in the
+            // system -- one add writes 28 postings carrying the same scope key and policy -- so
+            // they are exactly what compression is good at, and exactly what a 4 KB floor excluded.
+            //
+            // Measured over 120 adds on a fresh store: 176.8 KB per add at 4096, 148.1 KB at 256,
+            // and the adds were no slower (152.5 ms -> 144.7 ms). Compressing everything is worse:
+            // at a 1-byte floor the disk saving stops (149.7 KB) while the median add rises to
+            // 256.0 ms, because tiny payloads cost more to compress than they give back.
+            256,
         ),
         compression_level: env_i32_any(
             &[
@@ -2797,13 +3924,27 @@ fn execute_empty_batch_runtime(
     } else {
         Vec::new()
     };
+    // A whole-key delete genuinely invalidates the snapshot; a single-field delete does not.
     let cache_invalidates = commands
         .iter()
         .filter_map(|command| match command {
-            Command::HashDelete { key, .. } | Command::CommonDelete { key } => Some(key.clone()),
+            Command::CommonDelete { key } => Some(key.clone()),
             _ => None,
         })
         .collect::<Vec<_>>();
+    let cache_field_removals = if hgetall_snapshot_cache_has_entries() {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::HashDelete { key, field } if hgetall_snapshot_contains(key) => {
+                    Some((key.clone(), field.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let record_count_updates = commands
         .iter()
         .filter_map(|command| match command {
@@ -2847,6 +3988,9 @@ fn execute_empty_batch_runtime(
     }
     for key in record_count_invalidates {
         invalidate_record_count_cache(&key);
+    }
+    for (key, field) in cache_field_removals {
+        remove_hgetall_snapshot_fields(&key, std::slice::from_ref(&field));
     }
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
@@ -3724,9 +4868,72 @@ mod tests {
 
     fn env_guard() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        // A panicking test poisons this mutex, and expecting it turned ONE failure into a
+        // cascade: every later test died at "env lock" and the real defect hid among a dozen
+        // phantom ones. The guard serialises env-var use, not data -- recover and carry on.
         LOCK.get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("env lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The barrier counters are only useful if something outside the process can read them.
+    ///
+    /// They are recorded at every barrier site and were exposed nowhere, so the one number that
+    /// says how much of a write is barrier-bound could not be measured, only argued. This asserts
+    /// both halves a harness needs: a durable write moves the counters, and `reset` clears them
+    /// so a span can be bracketed instead of diffing lifetime totals by hand.
+    #[test]
+    fn durability_barriers_op_reports_and_resets() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            root.join("bar-cache"),
+            root.join("bar-pages"),
+            root.join("bar-index"),
+        );
+        engine.load_shard(DEFAULT_SHARD_ID);
+
+        let mut clear = request("durability_barriers");
+        clear.field = "reset".to_string();
+        execute_record_log_request(&engine, clear, root.clone()).expect("reset");
+
+        let prefix = "matrixark:barriertest";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{prefix}:records:000000"),
+            format!("{:020}", 0),
+            "{\"record_type\":\"context_event\"}".to_string(),
+        )];
+        execute_record_log_request(&engine, append, root.clone()).expect("append");
+
+        let output = execute_record_log_request(
+            &engine,
+            request("durability_barriers"),
+            root.clone(),
+        )
+        .expect("read");
+        let after_write: u64 = output.extra.values().filter_map(Value::as_u64).sum();
+        assert!(
+            after_write > 0,
+            "a durable write recorded no barriers: {:?}",
+            output.extra
+        );
+
+        let mut clear = request("durability_barriers");
+        clear.field = "reset".to_string();
+        execute_record_log_request(&engine, clear, root.clone()).expect("reset again");
+
+        let output =
+            execute_record_log_request(&engine, request("durability_barriers"), root)
+                .expect("read back");
+        let after_reset: u64 = output.extra.values().filter_map(Value::as_u64).sum();
+        assert!(
+            after_reset < after_write,
+            "reset did not clear the counters: {after_write} then {after_reset}"
+        );
     }
 
     fn request(op: &str) -> RecordLogRequest {
@@ -3750,6 +4957,7 @@ mod tests {
             record_hash_key: None,
             shard_size: None,
             record_types: None,
+            newest_by_type: None,
             selected_node_hashes: None,
             secondary_index_groups: None,
             scope: None,
@@ -3757,7 +4965,574 @@ mod tests {
             record: None,
             visibility_keys: Vec::new(),
             top_level_response: false,
+            blob_offset: None,
+            blob_length: None,
+            blob_referenced_hashes: None,
+            blob_min_age_ms: None,
+            client_request_id: None,
         }
+    }
+
+    fn typed_scan(
+        engine: &TemporalEngine,
+        storage_prefix: &str,
+        types: &[&str],
+        root: PathBuf,
+    ) -> Value {
+        let mut scan = request("matrixark_scan_candidates");
+        scan.storage_prefix = storage_prefix.to_string();
+        scan.count_key = Some(format!("{storage_prefix}:record_count"));
+        scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+        scan.shard_size = Some(1); // several shards, so index order across shards is exercised
+        scan.record_types = Some(types.iter().map(|t| t.to_string()).collect());
+        // json_output spreads the scan object into ; rebuild the object from there.
+        let output = execute_record_log_request(engine, scan, root).expect("typed scan");
+        Value::Object(output.extra.into_iter().collect())
+    }
+
+    fn scan_record_texts(scan: &Value) -> Vec<String> {
+        scan.get("records")
+            .and_then(Value::as_array)
+            .expect("records")
+            .iter()
+            .map(|record| {
+                record
+                    .get("text")
+                    .or_else(|| record.get("target_memory_id"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn append_one(
+        engine: &TemporalEngine,
+        storage_prefix: &str,
+        sequence: u64,
+        payload: &str,
+        root: PathBuf,
+    ) {
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = (sequence + 1).to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:{sequence:06}"),
+            format!("{sequence:020}"),
+            payload.to_string(),
+        )];
+        execute_record_log_request(engine, append, root).expect("append");
+    }
+
+    fn pinned_scan(
+        engine: &TemporalEngine,
+        storage_prefix: &str,
+        tenant: u64,
+        user: u64,
+        explicit_user: bool,
+        root: PathBuf,
+    ) -> Value {
+        let mut scan = request("matrixark_scan_candidates");
+        scan.storage_prefix = storage_prefix.to_string();
+        scan.count_key = Some(format!("{storage_prefix}:record_count"));
+        scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+        scan.shard_size = Some(1);
+        scan.record_types = Some(vec!["context_event".to_string()]);
+        let mut scope = json!({"tenant_hash": tenant, "user_hash": user});
+        if explicit_user {
+            scope["_explicit_scope_keys"] = json!(["tenant_id", "user_id"]);
+        }
+        scan.scope = Some(scope);
+        let output = execute_record_log_request(engine, scan, root).expect("pinned scan");
+        Value::Object(output.extra.into_iter().collect())
+    }
+
+    fn scoped_event(event_id: u64, tenant: u64, user: u64, text: &str) -> String {
+        format!(
+            r#"{{"record_type":"context_event","event_id_hash":{event_id},"text":"{text}","scope_key":"t={tenant}|u={user}|s=1|","access_scope":{{"tenant_hash":{tenant},"user_hash":{user},"scope_key":"t={tenant}|u={user}|s=1|"}}}}"#
+        )
+    }
+
+    /// A store whose shard load is REFUSED (here: a corrupt WAL record with no base to hide
+    /// behind) must refuse to open -- not hand back a cached engine whose every op answers
+    /// shard_not_loaded. Upstream layers read that steady error stream as an empty store, which
+    /// is exactly how a damaged-at-scale store served vacuous empties on every reload while its
+    /// records sat durably on disk. The refusal must also not be cached: each open retries the
+    /// load, so repairing the artifacts heals the next request.
+    #[test]
+    fn a_refused_shard_load_refuses_open_instead_of_serving_empty() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        {
+            let engine = open_engine(&probe).expect("fresh store opens");
+            let mut put = request("put_string");
+            put.key = "k1".to_string();
+            put.value = "v1".to_string();
+            execute_record_log_request(&engine, put, root.clone()).expect("write lands");
+        }
+        // Crash-and-damage: the process is gone (drop the cache's engine), the durable base is
+        // absent (none was materialized), and a WAL record is corrupt -- so the reload must
+        // replay the WAL and must refuse when it cannot.
+        clear_engine_cache();
+        let wal_path = root.join("indexes").join("wals").join("shard-1.wal.jsonl");
+        let contents = std::fs::read(&wal_path).expect("wal exists");
+        let mut damaged = b"GARBAGE-NOT-A-FRAMED-RECORD".to_vec();
+        damaged.push(b'\n');
+        damaged.extend_from_slice(&contents);
+        std::fs::write(&wal_path, damaged).expect("corrupt wal");
+        let base_path = root.join("indexes").join("shard-1.index.json");
+        let _ = std::fs::remove_file(&base_path);
+
+        let refused = open_engine(&probe);
+        let error = refused.expect_err("a refused load must refuse the open");
+        assert!(
+            error.contains("shard load refused"),
+            "the refusal must name the cause, got: {error}"
+        );
+        assert!(
+            !engine_cache()
+                .lock()
+                .expect("engine cache lock")
+                .contains_key(&root),
+            "a refused load must not cache an engine; the next open must retry the load"
+        );
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    /// The blob ops are the python surface's road to the embedded engine's attachment tier:
+    /// put publishes a content-addressed blob and answers with its URI, fetch range-reads it
+    /// back byte-identical through the same op surface, and sweep leaves a still-referenced
+    /// blob alone while collecting the orphan.
+    #[test]
+    fn blob_ops_roundtrip_the_attachment_through_the_op_surface() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+
+        let payload = b"the original attachment bytes, fetched back whole".repeat(64);
+        let mut put = request("matrixark_resource_blob_put");
+        put.key = "42".to_string();
+        put.value = base64_encode_bytes(&payload);
+        let committed = execute_record_log_request(&engine, put, root.clone()).expect("blob put");
+        let uri = committed
+            .extra
+            .get("matrixark_blob_uri")
+            .and_then(Value::as_str)
+            .expect("blob uri")
+            .to_string();
+        assert!(uri.starts_with("temporalstore://resources/"), "unexpected uri {uri}");
+        let kept_hash = committed
+            .extra
+            .get("matrixark_blob_content_hash")
+            .and_then(Value::as_str)
+            .expect("content hash")
+            .to_string();
+
+        let mut fetch = request("matrixark_resource_blob_fetch");
+        fetch.key = uri.clone();
+        let served = execute_record_log_request(&engine, fetch, root.clone()).expect("blob fetch");
+        assert_eq!(
+            Some(payload.len() as u64),
+            served.extra.get("matrixark_blob_total_size").and_then(Value::as_u64)
+        );
+        assert_eq!(Some(true), served.extra.get("matrixark_blob_eof").and_then(Value::as_bool));
+        assert_eq!(payload, base64_decode_str(&served.value), "fetched bytes differ");
+
+        let mut range = request("matrixark_resource_blob_fetch");
+        range.key = uri.clone();
+        range.blob_offset = Some(3);
+        range.blob_length = Some(11);
+        let window = execute_record_log_request(&engine, range, root.clone()).expect("range fetch");
+        assert_eq!(payload[3..14].to_vec(), base64_decode_str(&window.value));
+        assert_eq!(Some(false), window.extra.get("matrixark_blob_eof").and_then(Value::as_bool));
+
+        let mut orphan = request("matrixark_resource_blob_put");
+        orphan.key = "42".to_string();
+        orphan.value = base64_encode_bytes(b"orphaned attachment");
+        execute_record_log_request(&engine, orphan, root.clone()).expect("orphan put");
+
+        let mut sweep = request("matrixark_resource_blob_sweep");
+        sweep.key = "42".to_string();
+        sweep.blob_referenced_hashes = Some(vec![kept_hash]);
+        sweep.blob_min_age_ms = Some(0);
+        let swept = execute_record_log_request(&engine, sweep, root.clone()).expect("sweep");
+        assert_eq!(Some(2), swept.extra.get("matrixark_blob_scanned").and_then(Value::as_u64));
+        assert_eq!(Some(1), swept.extra.get("matrixark_blob_deleted").and_then(Value::as_u64));
+
+        let mut refetch = request("matrixark_resource_blob_fetch");
+        refetch.key = uri;
+        let still_there = execute_record_log_request(&engine, refetch, root).expect("kept blob");
+        assert_eq!(payload, base64_decode_str(&still_there.value), "the referenced blob must survive the sweep");
+    }
+
+    fn base64_encode_bytes(bytes: &[u8]) -> String {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        STANDARD.encode(bytes)
+    }
+
+    fn base64_decode_str(encoded: &str) -> Vec<u8> {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine as _;
+        STANDARD.decode(encoded).expect("valid base64")
+    }
+
+    /// The core property: walk + backfill on the first pinned scan, scope index on the second,
+    /// identical ordered answers -- with a scopeless record present in both (it matches every
+    /// query, so the none-bucket must ride along) and another subject's record in neither.
+    #[test]
+    fn scope_index_serves_a_pinned_scan_with_the_walks_answer() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "alices first"), root.clone());
+        append_one(&engine, storage_prefix, 1,
+            &scoped_event(2, 11, 33, "bobs record"), root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"context_event","event_id_hash":3,"text":"scopeless"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 3,
+            &scoped_event(4, 11, 22, "alices second"), root.clone());
+
+        let walk = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = walk.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("scope_index_used").and_then(Value::as_bool));
+
+        clear_matrixark_scan_cache();
+        let scoped = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = scoped.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("scope_index_used").and_then(Value::as_bool),
+            "the second pinned scan must be served by the scope index");
+        assert_eq!(scan_record_texts(&walk), scan_record_texts(&scoped),
+            "scope-indexed and walk answers must be identical, in the same order");
+        assert_eq!(vec!["alices first", "scopeless", "alices second"],
+            scan_record_texts(&scoped),
+            "another subject's record must be absent; the scopeless one present");
+    }
+
+    /// A scopeless record of a type the query did not ask for must not drag its field into the
+    /// fetch. This is the property the one-bucket layout got wrong: ingest bundles a scoped
+    /// event with scopeless system records, so the master bucket held nearly every field and a
+    /// pinned scan fetched the store (measured: 4,921 records fetched to keep 2).
+    #[test]
+    fn scope_index_skips_scopeless_records_of_other_types() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index-riders";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "alices event"), root.clone());
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_type":"context_index","posting":"rider"}"#, root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"context_event","event_id_hash":3,"text":"scopeless"}"#,
+            root.clone());
+
+        pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone()); // walk + backfill
+        clear_matrixark_scan_cache();
+        let scan = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = scan.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("scope_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["alices event", "scopeless"], scan_record_texts(&scan),
+            "scopeless events still ride along; the posting must not");
+        assert_eq!(Some(2_u64), stats.get("scanned_records").and_then(Value::as_u64),
+            "the posting-only field must not be fetched at all");
+    }
+
+    /// A query that does not pin the user must not be scope-index-served: the bucket scheme
+    /// cannot answer a tenant-wide question.
+    #[test]
+    fn scope_index_declines_an_unpinned_query() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index-unpinned";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "alice"), root.clone());
+        append_one(&engine, storage_prefix, 1,
+            &scoped_event(2, 11, 33, "bob"), root.clone());
+
+        // Backfill via a pinned scan, then ask tenant-wide (user not explicit).
+        pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        clear_matrixark_scan_cache();
+        let tenant_wide = pinned_scan(&engine, storage_prefix, 11, 22, false, root.clone());
+        let stats = tenant_wide.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("scope_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["alice", "bob"], scan_record_texts(&tenant_wide));
+    }
+
+    /// Records appended after the backfill are bucketed in the same durable batch as the data.
+    #[test]
+    fn scope_index_sees_records_appended_after_the_backfill() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:scope-index-append";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            &scoped_event(1, 11, 22, "before"), root.clone());
+        pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone()); // walk + backfill
+        append_one(&engine, storage_prefix, 1,
+            &scoped_event(2, 11, 22, "after"), root.clone());
+
+        clear_matrixark_scan_cache();
+        let scan = pinned_scan(&engine, storage_prefix, 11, 22, true, root.clone());
+        let stats = scan.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("scope_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["before", "after"], scan_record_texts(&scan));
+    }
+
+    /// Id mode: the locator finds the id's own rows, the type index finds the rows that point
+    /// at it, and the composed answer equals the walk's -- in the walk's order.
+    #[test]
+    fn id_scoped_scan_matches_the_walk() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:id-scoped";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":77,"text":"the memory"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_type":"context_event","event_id_hash":88,"text":"someone else"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"matrixark_memory_tombstone","tombstone_kind":"delete","tombstone_reason":"supersede","target_memory_id":"77","superseded_by":"99"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 3,
+            r#"{"record_type":"matrixark_memory_feedback","target_memory_id":"77","feedback":"POSITIVE"}"#,
+            root.clone());
+
+        // The locator entry the adapter's side-index builder would have written: the id's OWN
+        // row only. The tombstone and feedback must come from the type index -- that split is
+        // the design under test.
+        let mut locator = request("hset");
+        locator.key = format!("{storage_prefix}:context_ref_locator");
+        locator.field = "77".to_string();
+        locator.value = format!(
+            r#"{{"locations":[{{"key":"{storage_prefix}:records:000000","field":"{:020}"}}]}}"#,
+            0
+        );
+        execute_record_log_request(&engine, locator, root.clone()).expect("locator entry");
+
+        let id_request = |root: PathBuf| {
+            let mut scan = request("matrixark_scan_candidates");
+            scan.storage_prefix = storage_prefix.to_string();
+            scan.count_key = Some(format!("{storage_prefix}:record_count"));
+            scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+            scan.shard_size = Some(1);
+            scan.record_types = Some(vec![
+                "context_event".to_string(),
+                "matrixark_memory_tombstone".to_string(),
+                "matrixark_memory_feedback".to_string(),
+            ]);
+            scan.record_ids = Some(vec!["77".to_string()]);
+            let output = execute_record_log_request(&engine, scan, root).expect("id scan");
+            Value::Object(output.extra.into_iter().collect())
+        };
+
+        // First run: no marker yet, so the walk answers (id-filtered) and backfills.
+        let walk = id_request(root.clone());
+        let stats = walk.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("id_scoped_used").and_then(Value::as_bool));
+        assert_eq!(Some(true), stats.get("type_index_backfilled").and_then(Value::as_bool));
+
+        clear_matrixark_scan_cache();
+        let scoped = id_request(root.clone());
+        let stats = scoped.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("id_scoped_used").and_then(Value::as_bool),
+            "the second run must be served by the locator + type-index compose");
+        assert_eq!(scan_record_texts(&walk), scan_record_texts(&scoped),
+            "id-scoped and walk answers must be identical, in the same order");
+        assert_eq!(vec!["the memory", "77", "77"], scan_record_texts(&scoped),
+            "the other memory's event must be absent; order is log order");
+    }
+
+    /// An id the locator has never seen falls back to the walk -- absence must be walked, not
+    /// guessed, because an old store predates the side index.
+    #[test]
+    fn id_scoped_scan_walks_when_the_locator_has_no_entry() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:id-scoped-miss";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":77,"text":"unlocated"}"#,
+            root.clone());
+
+        let mut scan = request("matrixark_scan_candidates");
+        scan.storage_prefix = storage_prefix.to_string();
+        scan.count_key = Some(format!("{storage_prefix}:record_count"));
+        scan.record_hash_key = Some(format!("{storage_prefix}:records"));
+        scan.shard_size = Some(1);
+        scan.record_types = Some(vec!["context_event".to_string()]);
+        scan.record_ids = Some(vec!["77".to_string()]);
+        let output = execute_record_log_request(&engine, scan.clone(), root.clone()).expect("scan");
+        let first = Value::Object(output.extra.into_iter().collect());
+        clear_matrixark_scan_cache();
+        let output = execute_record_log_request(&engine, scan, root).expect("scan");
+        let second = Value::Object(output.extra.into_iter().collect());
+        for result in [&first, &second] {
+            let stats = result.get("scan_stats").expect("stats");
+            assert_eq!(Some(false), stats.get("id_scoped_used").and_then(Value::as_bool));
+            assert_eq!(vec!["unlocated"], scan_record_texts(result));
+        }
+    }
+
+    /// The core property: walk + backfill on the first typed scan, index on the second, and the
+    /// two answers are byte-identical in content and order.
+    #[test]
+    fn type_index_serves_the_second_scan_with_the_walks_answer() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:type-index-equality";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":1,"text":"first event"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_bundle":[{"record_type":"context_summary","summary_hash":9,"text":"a summary"},{"record_type":"matrixark_memory_tombstone","tombstone_kind":"delete","target_memory_id":"42"}]}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 2,
+            r#"{"record_type":"context_event","event_id_hash":2,"text":"second event"}"#,
+            root.clone());
+
+        let first = typed_scan(&engine, storage_prefix,
+            &["context_event", "matrixark_memory_tombstone"], root.clone());
+        let stats = first.get("scan_stats").expect("stats");
+        assert_eq!(Some(false), stats.get("type_index_used").and_then(Value::as_bool));
+        assert_eq!(Some(true), stats.get("type_index_backfilled").and_then(Value::as_bool),
+            "the first typed scan walks anyway, so it must build the index");
+
+        clear_matrixark_scan_cache(); // or the second scan is a cache hit, not an index read
+        let second = typed_scan(&engine, storage_prefix,
+            &["context_event", "matrixark_memory_tombstone"], root.clone());
+        let stats = second.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("type_index_used").and_then(Value::as_bool));
+        assert_eq!(
+            scan_record_texts(&first),
+            scan_record_texts(&second),
+            "index-served and walk-served answers must be identical, in the same order"
+        );
+        assert_eq!(vec!["first event", "42", "second event"], scan_record_texts(&second));
+    }
+
+    /// Appends after the backfill maintain the index in the same durable batch as the data.
+    #[test]
+    fn type_index_sees_records_appended_after_the_backfill() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:type-index-append";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":1,"text":"before backfill"}"#,
+            root.clone());
+        typed_scan(&engine, storage_prefix, &["context_event"], root.clone()); // walk + backfill
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_type":"context_event","event_id_hash":2,"text":"after backfill"}"#,
+            root.clone());
+
+        clear_matrixark_scan_cache();
+        let scan = typed_scan(&engine, storage_prefix, &["context_event"], root.clone());
+        let stats = scan.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("type_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["before backfill", "after backfill"], scan_record_texts(&scan));
+    }
+
+    /// A physically deleted record neither serves nor errors through the index.
+    #[test]
+    fn type_index_survives_a_physical_delete() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        clear_engine_cache();
+        clear_matrixark_scan_cache();
+
+        let storage_prefix = "matrixark:test:type-index-delete";
+        let probe = request("get_string");
+        let root = record_log_root(&probe);
+        let engine = open_engine(&probe).expect("engine");
+        append_one(&engine, storage_prefix, 0,
+            r#"{"record_type":"context_event","event_id_hash":11,"text":"stays"}"#,
+            root.clone());
+        append_one(&engine, storage_prefix, 1,
+            r#"{"record_type":"context_event","event_id_hash":22,"text":"goes"}"#,
+            root.clone());
+        typed_scan(&engine, storage_prefix, &["context_event"], root.clone()); // backfill
+
+        let mut delete = request("matrixark_delete_records");
+        delete.count_key = Some(format!("{storage_prefix}:record_count"));
+        delete.record_hash_key = Some(format!("{storage_prefix}:records"));
+        delete.shard_size = Some(1);
+        delete.record_ids = Some(vec!["22".to_string()]);
+        execute_record_log_request(&engine, delete, root.clone()).expect("delete");
+
+        clear_matrixark_scan_cache();
+        let scan = typed_scan(&engine, storage_prefix, &["context_event"], root.clone());
+        let stats = scan.get("scan_stats").expect("stats");
+        assert_eq!(Some(true), stats.get("type_index_used").and_then(Value::as_bool));
+        assert_eq!(vec!["stays"], scan_record_texts(&scan));
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
@@ -3809,7 +5584,14 @@ mod tests {
 
         let options = matrixark_proxy_block_store_options();
         assert!(options.compression_enabled);
-        assert_eq!(options.compression_min_bytes, 4096);
+        // 256, not the 4096 this pinned before, and the floor moved because it was measured
+        // rather than because it was in the way: every index write an add makes is under 4 KB, and
+        // those are the most repetitive bytes in the store. Over 120 adds on a fresh store the
+        // disk cost went 176.8 -> 148.1 KB per add and the median add went 152.5 -> 144.7 ms, so
+        // the throughput this threshold exists to protect did not pay for it. Dropping the floor
+        // to 1 is worse on both counts (149.7 KB, 256.0 ms): the smallest payloads cost more to
+        // compress than they give back, which is what a floor is for.
+        assert_eq!(options.compression_min_bytes, 256);
         assert_eq!(
             options.compression_level,
             BlockStoreOptions::default().compression_level
@@ -4167,6 +5949,11 @@ mod tests {
             .expect("get targeted hash field"),
             r#"{"record_type":"context_event","text":"target published"}"#
         );
+        // Every acked write lands a WAL record even under async storage -- async only
+        // defers the fsync barrier, it does not skip the log -- so a clean reopen
+        // replays the log and restores writes the publish did not target. Targeted
+        // publish governs which keys get their index snapshot persisted (asserted
+        // above via the publish diagnostics), not which writes survive replay.
         assert_eq!(
             read_bytes(
                 &reopened,
@@ -4176,7 +5963,7 @@ mod tests {
                 },
             )
             .expect("get untargeted hash field"),
-            ""
+            r#"{"record_type":"context_event","text":"target not published"}"#
         );
 
         clear_engine_cache();
@@ -5431,5 +7218,46 @@ mod tests {
             Some(1),
             "bob still retrievable after recovery: {bob_result}"
         );
+    }
+}
+
+
+#[cfg(test)]
+mod scan_cap_tests {
+    use super::newest_locations;
+
+    fn at(shard: u32, field: u32) -> String {
+        format!("{shard:06}:{field:06}")
+    }
+
+    #[test]
+    fn no_cap_keeps_everything() {
+        let all = vec![at(0, 2), at(0, 1), at(0, 3)];
+        let kept = newest_locations(all.clone(), None);
+        assert_eq!(kept.len(), all.len());
+    }
+
+    #[test]
+    fn a_cap_keeps_the_newest_by_append_order() {
+        // Deliberately out of order on the way in: the index is read from a map, and a cap that
+        // assumed sorted input would keep the wrong records rather than merely too many.
+        let all = vec![at(0, 3), at(0, 1), at(1, 0), at(0, 2)];
+        assert_eq!(newest_locations(all.clone(), Some(2)), vec![at(0, 3), at(1, 0)]);
+        assert_eq!(newest_locations(all.clone(), Some(1)), vec![at(1, 0)]);
+    }
+
+    #[test]
+    fn a_cap_larger_than_the_set_keeps_all_of_it() {
+        let all = vec![at(0, 1), at(0, 2)];
+        assert_eq!(newest_locations(all.clone(), Some(9)).len(), 2);
+        assert_eq!(newest_locations(all.clone(), Some(2)).len(), 2);
+    }
+
+    #[test]
+    fn shard_order_beats_field_order() {
+        // A later shard is always newer, even when its field number is smaller -- the shard part
+        // leads the key, which is why zero-padding both parts matters.
+        let all = vec![at(0, 999), at(1, 1)];
+        assert_eq!(newest_locations(all, Some(1)), vec![at(1, 1)]);
     }
 }

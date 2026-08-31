@@ -145,6 +145,31 @@ except ImportError:
 )
 
 
+# How many provenance entries a profile entity keeps inline. The rest live in overflow records.
+_PROFILE_PROVENANCE_INLINE = 16
+
+
+def _profile_provenance_overflow(previous_profile, *, refs_all, events_all):
+    """The provenance entries that just aged out of the inline window, or None.
+
+    One small append per promotion instead of re-writing the whole history: what this returns is
+    the DELTA between what the previous version already carried and what the new window keeps, so
+    nothing is lost and nothing is written twice.
+    """
+    previous_refs = list((previous_profile or {}).get("source_refs", []) or [])
+    previous_events = list((previous_profile or {}).get("source_event_ids", []) or [])
+    kept_refs = set(str(value) for value in refs_all[-_PROFILE_PROVENANCE_INLINE:])
+    kept_events = set(str(value) for value in events_all[-_PROFILE_PROVENANCE_INLINE:])
+    already = set(str(value) for value in previous_refs) | set(str(value) for value in previous_events)
+    aged_refs = [value for value in refs_all
+                 if str(value) not in kept_refs and str(value) not in already]
+    aged_events = [value for value in events_all
+                   if str(value) not in kept_events and str(value) not in already]
+    if not aged_refs and not aged_events:
+        return None
+    return {"source_refs": aged_refs, "source_event_ids": aged_events}
+
+
 class _LocalAdapterIngestMixin:
     _MEMORY_UPSERT_ARG_KEYS = ("expires_at", "ttl_seconds", "retention_cutoff_ts", "identity_key", "truth_class")
 
@@ -293,6 +318,7 @@ class _LocalAdapterIngestMixin:
                 pending_memory_layer = candidate_memory_layer_name(pending_event_record)
                 if pending_memory_layer:
                     pending_event_record["memory_layer"] = pending_memory_layer
+                self._begin_append_coalescing()
                 self.append(pending_event_record)
                 pending_embedding_record = compact_context_embedding_record(
                     {
@@ -361,6 +387,7 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+            self._flush_append_coalescing()
             pending_events = self.pending_session_events(envelope["scope"])
             pending_event_count = len(pending_events)
             pending_message_count = session_event_message_count(pending_events)
@@ -490,7 +517,7 @@ class _LocalAdapterIngestMixin:
                 "auto_batch_extract_result": auto_batch_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
-        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records(envelope["scope"])
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")
@@ -541,6 +568,7 @@ class _LocalAdapterIngestMixin:
         resource_import_task_hash = 0
         resource_import_task_status = "not_applicable"
         resource_import_wait = True
+        held_import_completion: list[Json] = []
         resource_import_metrics: Json = {}
         resource_fact_event_hashes: list[int] = []
         resource_fact_entity_hashes: list[int] = []
@@ -660,7 +688,9 @@ class _LocalAdapterIngestMixin:
             resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
             try:
                 storage_resolution = resolve_raw_resource_for_ingest(
-                    args,
+                    # The engine blob tier rides the adapter's rust proxy client when there is
+                    # one; the pure-local adapter has none and the key stays absent.
+                    {**args, "_engine_blob_client": getattr(self, "_client", None)},
                     envelope,
                     requested_raw_uri,
                     resource_type,
@@ -1330,7 +1360,15 @@ class _LocalAdapterIngestMixin:
                 "summary_dirty_count": len(resource_dirty_hashes),
             }
             resource_import_task_status = "completed"
-            self.append(
+            # On the background worker this call still has writes ahead of it -- the hot path
+            # event batch and its index postings land after this point. Appending "completed"
+            # here publishes the one signal a caller polls for while a fifth of the task's
+            # records are still missing, and lets the caller tear the log down underneath the
+            # worker. Hold the marker and append it once the call has finished writing.
+            append_import_completion = (
+                held_import_completion.append if resource_import_background else self.append
+            )
+            append_import_completion(
                 {
                     "record_type": "resource_import_task",
                     "task_hash": resource_import_task_hash,
@@ -1695,6 +1733,8 @@ class _LocalAdapterIngestMixin:
                     threshold_messages=session_buffer_threshold,
                 )
             )
+        for held_record in held_import_completion:
+            self.append(held_record)
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
@@ -1779,6 +1819,7 @@ class _LocalAdapterIngestMixin:
             "auto_batch_extract_result": auto_batch_result,
         }
 
+
     def batch_extract(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         extraction_context_messages = args.get("extraction_context_messages", [])
@@ -1834,7 +1875,7 @@ class _LocalAdapterIngestMixin:
                 "reason": "logical batch below extraction threshold",
             }
 
-        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records()
+        prior_records = [] if args.get("skip_prior_context") else self.prior_context_records(envelope["scope"])
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
             if args.get("skip_prior_context")
@@ -2696,11 +2737,33 @@ class _LocalAdapterIngestMixin:
                 profile_source_entity_hashes = ordered_unique_any(
                     list(previous_profile.get("source_entity_hashes", [])) + [entity_hash]
                 )
-                profile_source_refs = ordered_unique_any(
+                # A profile entity is re-written on every promotion, and these two lists carried its
+                # whole history, so version k wrote k entries: O(list) bytes per add and O(list^2)
+                # over the entity's life. Measured by walking the page segments over 300 ingests of
+                # one subject: 261 versions of one profile, `source_event_ids` growing 1 -> 299 and
+                # the record with it, 4 221 -> 16 687 bytes. `context_entity` was the largest record
+                # type in the store at 15.6 KB per add, and most of it was this.
+                #
+                # The tail is kept, not dropped: `_profile_provenance_overflow` records carry every
+                # id that ages out, one small append per promotion, so the full history stays in the
+                # store and stops being re-written. What stays on the entity is the newest window
+                # plus an EXACT count, because the count is what production actually reads --
+                # nothing iterates a context_entity's `source_event_ids` for completeness (the
+                # index-compaction tombstone builder, which would, has no production caller).
+                profile_source_refs_all = ordered_unique_any(
                     list(previous_profile.get("source_refs", [])) + list(promoted_entity.get("source_refs", []))
                 )
-                profile_source_event_ids = ordered_unique_any(
+                profile_source_event_ids_all = ordered_unique_any(
                     list(previous_profile.get("source_event_ids", [])) + entity_source_event_ids
+                )
+                profile_source_refs = profile_source_refs_all[-_PROFILE_PROVENANCE_INLINE:]
+                profile_source_event_ids = profile_source_event_ids_all[-_PROFILE_PROVENANCE_INLINE:]
+                profile_source_ref_count = len(profile_source_refs_all)
+                profile_source_event_id_count = len(profile_source_event_ids_all)
+                profile_provenance_overflow = _profile_provenance_overflow(
+                    previous_profile,
+                    refs_all=profile_source_refs_all,
+                    events_all=profile_source_event_ids_all,
                 )
                 profile_source_roles = ordered_unique_any(
                     list(previous_profile.get("source_roles", [])) + entity_source_roles
@@ -2856,8 +2919,8 @@ class _LocalAdapterIngestMixin:
                         "profile_memory_kind": profile_memory_kind,
                         "source_session_ids": profile_source_session_ids,
                         "source_entity_count": len(profile_source_entity_hashes),
-                        "source_ref_count": len(profile_source_refs),
-                        "source_event_count": len(profile_source_event_ids),
+                        "source_ref_count": profile_source_ref_count,
+                        "source_event_count": profile_source_event_id_count,
                         "source_roles": profile_source_roles,
                         "source_role_counts": profile_source_role_counts,
                         "source_hook_types": profile_source_hook_types,
@@ -2894,6 +2957,12 @@ class _LocalAdapterIngestMixin:
                     "operator": promoted_entity["operator"],
                     "source_refs": profile_source_refs,
                     "source_event_ids": profile_source_event_ids,
+                    # The lists above are the newest window; these are the true totals. A reader
+                    # that wants "how many events back this profile" must read the count, not the
+                    # length of the window.
+                    "source_ref_count": profile_source_ref_count,
+                    "source_event_count": profile_source_event_id_count,
+                    "source_provenance_windowed": True,
                     "source_session_ids": profile_source_session_ids,
                     "source_entity_hashes": profile_source_entity_hashes,
                     "source_roles": profile_source_roles,
@@ -2938,6 +3007,23 @@ class _LocalAdapterIngestMixin:
                 if profile_entity_memory_layer:
                     profile_entity_record["memory_layer"] = profile_entity_memory_layer
                 records_to_append.append(profile_entity_record)
+                if profile_provenance_overflow:
+                    # One small append carrying only what just aged out of the window. The history
+                    # is preserved in the store; what stops happening is re-writing all of it on
+                    # every promotion.
+                    records_to_append.append(
+                        {
+                            "record_type": "context_entity_provenance",
+                            "entity_hash": profile_entity_hash,
+                            "node_hash": profile_node_hash,
+                            "batch_id_hash": batch_id_hash,
+                            "scope": profile_scope,
+                            "access_scope": profile_scope,
+                            "source_refs": profile_provenance_overflow["source_refs"],
+                            "source_event_ids": profile_provenance_overflow["source_event_ids"],
+                            "updated_at_ms": now_ms(),
+                        }
+                    )
                 profile_entity_embedding_text = promoted_entity["entity_type"] + " " + promoted_entity["state"]
                 profile_entity_vector = embedding_for_text(profile_entity_embedding_text)
                 profile_entity_embedding_record = compact_context_embedding_record({

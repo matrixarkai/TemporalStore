@@ -37,6 +37,19 @@ impl MetaRaftCluster {
         })
     }
 
+    /// Apply the conviction lock to every node's metadata.
+    ///
+    /// `TS_META_FORBID_SELF_CLEARING_CONVICTION` was read after `from_env` had
+    /// already returned the raft backend, so it reached the single-node
+    /// metaserver and nothing else. The checks that consult it run on these
+    /// nodes, against a flag that was always false.
+    pub fn set_conviction_lock(&self, forbid: bool) {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        for node in inner.nodes.values_mut() {
+            node.meta.set_conviction_lock(forbid);
+        }
+    }
+
     pub fn propose(&self, command: MetaCommand) -> Result<(), RaftError> {
         self.propose_inner(command).map(|_| ())
     }
@@ -44,7 +57,22 @@ impl MetaRaftCluster {
     pub fn propose_mutation(&self, mutation: MetaMutation) -> Result<Status, RaftError> {
         Ok(self
             .propose_inner(MetaCommand::ApplyMutation(mutation))?
-            .unwrap_or_else(Status::ok))
+            .unwrap_or_else(|| {
+                // `apply_meta_committed` answers `None` only when it applied
+                // nothing, which for a change just appended and committed means
+                // the entry was skipped as already applied. Reporting that as
+                // success is what let a numbering defect discard every metadata
+                // change after a snapshot install while every caller was told
+                // the change had been made.
+                //
+                // Not reachable today, and that is the point: this is the
+                // difference between the next defect of that shape being loud
+                // and being silent.
+                Status::error(
+                    "mutation_not_applied",
+                    "the metaserver committed this change and applied nothing",
+                )
+            }))
     }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
@@ -95,7 +123,7 @@ impl MetaRaftCluster {
                 namespace: String::new(),
                 config_version: 0,
                 serving_mode: "not_serving".to_string(),
-                drop_percent: 0,
+                drop_percent: None,
             },
             |meta| meta.proxy_heartbeat(request),
         )
@@ -269,6 +297,21 @@ impl MetaRaftCluster {
         AckResponse {
             status: self.mutation_status(MetaMutation::SetReservedNames(reserved)),
         }
+    }
+
+    pub fn topology_events(
+        &self,
+        request: crate::meta::TopologyEventsRequest,
+    ) -> crate::meta::TopologyEventsResponse {
+        self.read_meta().map_or_else(
+            |status| crate::meta::TopologyEventsResponse {
+                status,
+                events: Vec::new(),
+                oldest_retained_version: 0,
+                missed_events: false,
+            },
+            |meta| meta.topology_events(request),
+        )
     }
 
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
@@ -648,7 +691,15 @@ impl MetaRaftCluster {
             .ok_or(RaftError::LeaderUnavailable)?;
         let entry = MetaLogEntry {
             term: leader.current_term,
-            index: leader.log.last().map(|entry| entry.index + 1).unwrap_or(1),
+            // Numbered from the log *or the installed snapshot*, whichever is
+            // further along. Installing a meta snapshot truncates the log and
+            // marks everything up to the snapshot applied, so taking the next
+            // index from the log alone restarted numbering at 1 -- indices the
+            // node had already applied. Every proposal after an install was
+            // skipped as a duplicate, and `propose_mutation` turns "not applied"
+            // into `Status::ok`, so the change was discarded and reported
+            // successful.
+            index: meta_node_last_log_or_snapshot_index(leader) + 1,
             command,
         };
         let mut replicated = 0;
@@ -1001,12 +1052,17 @@ impl MetaRaftCluster {
         };
         for node in inner.nodes.values_mut().filter(|node| node.alive) {
             install_meta_snapshot_state(node, raft_snapshot.clone());
-            let meta = SingleNodeMeta::default();
-            let status = meta.install_snapshot(snapshot.clone()).status;
+            // Installed into the node's own metadata rather than into a fresh
+            // default that replaces it. A snapshot carries metadata, not the
+            // configuration of the process holding it, and replacing the whole
+            // meta discarded the conviction lock along with the event bus, the
+            // metrics recorder and the counters -- the last three documented as
+            // shared by clone, so every handle taken before the install was
+            // quietly left writing to an orphan.
+            let status = node.meta.install_snapshot(snapshot.clone()).status;
             if !status.ok {
                 return Err(RaftError::InvalidConfig(status.message));
             }
-            node.meta = meta;
         }
         Ok(())
     }

@@ -14,6 +14,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::{ShardStatInfo, ShardCanonicalStorageStats};
 use crate::types::{ShardId, Status};
+
+/// TS_META_ADMIN_TOKEN: shared secret for the metaserver's HTTP surface.
+///
+/// When the metaserver starts with this set, every route except the liveness
+/// probes (`/health`, `/readiness`, `/metrics` and its alias) requires
+/// `Authorization: Bearer <token>`; when unset, the surface stays open, which
+/// is the previous behavior. The same variable is what the metaserver's
+/// clients (proxy, datanode, SDK topology sync) read to attach the credential,
+/// so one value configures a whole deployment.
+pub fn admin_auth_token() -> Option<String> {
+    std::env::var("TS_META_ADMIN_TOKEN")
+        .ok()
+        .filter(|token| !token.is_empty())
+}
+
+/// The ready-to-append header line for metaserver-bound requests, from
+/// TS_META_ADMIN_TOKEN. Empty when unset, so callers can attach it
+/// unconditionally.
+pub fn admin_auth_header() -> String {
+    admin_auth_token()
+        .map(|token| format!("Authorization: Bearer {token}\r\n"))
+        .unwrap_or_default()
+}
 mod partitioning;
 mod lifecycle;
 mod snapshot_ops;
@@ -384,6 +407,19 @@ pub struct ServerMetaInfo {
     pub load_memory_bytes: u64,
     #[serde(default)]
     pub worst_shard_state_penalty: u8,
+    /// What this server's shards add up to, from the states it reports.
+    ///
+    /// Every heartbeat carries `total_records` and `storage_bytes` for each
+    /// shard the server holds, and nothing read either. The metaserver knew how
+    /// much data sat on every node and had no way to say so -- `/metrics`
+    /// counted shards and never their size.
+    ///
+    /// Summed here rather than at scrape time, like the placement figures
+    /// beside them: a scrape should not walk every shard of every server.
+    #[serde(default)]
+    pub reported_record_count: u64,
+    #[serde(default)]
+    pub reported_storage_bytes: u64,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
@@ -495,8 +531,12 @@ pub struct ProxyHeartbeatResponse {
     pub config_version: u64,
     #[serde(default)]
     pub serving_mode: String,
+    /// None means the metaserver has no opinion, which today is always: there is no
+    /// per-proxy drop_percent in the meta model at all -- the one that exists is a TABLE
+    /// serving option. As a bare `u8` this field could not say that, so it said 0, and the
+    /// proxy applied it and lifted whatever drain an operator had put in force.
     #[serde(default)]
-    pub drop_percent: u8,
+    pub drop_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -602,6 +642,94 @@ pub struct TableServingOptions {
     pub io_timeout_ms: u64,
     #[serde(default = "default_table_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
+    /// The fields this table set for itself, by name.
+    ///
+    /// Which fields a table has spoken for is not recoverable from the values: the
+    /// patch that carries them knows, and flattening it into this struct used to
+    /// throw that away. Records written before this field carry none, and are read
+    /// exactly as they were before -- see `table_decides`.
+    #[serde(default)]
+    pub set_fields: BTreeSet<String>,
+}
+
+/// A field of `TableServingOptions`, for naming one without spelling it.
+///
+/// The names go on the wire as plain strings, so a reader that meets a field it does
+/// not know simply carries it; but every name a caller can ask for comes from here,
+/// so a misspelling is a compile error rather than a silent "the table did not set
+/// this".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TableServingField {
+    PinPrimary,
+    ReplicaReadPolicy,
+    PreferredLocation,
+    DropPercent,
+    MaxReadRetries,
+    MaxWriteRetries,
+    RetryBackoffMs,
+    ContinuousFailedTimeMs,
+    IoTimeoutMs,
+    ConnectTimeoutMs,
+}
+
+impl TableServingField {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::PinPrimary => "pin_primary",
+            Self::ReplicaReadPolicy => "replica_read_policy",
+            Self::PreferredLocation => "preferred_location",
+            Self::DropPercent => "drop_percent",
+            Self::MaxReadRetries => "max_read_retries",
+            Self::MaxWriteRetries => "max_write_retries",
+            Self::RetryBackoffMs => "retry_backoff_ms",
+            Self::ContinuousFailedTimeMs => "continuous_failed_time_ms",
+            Self::IoTimeoutMs => "io_timeout_ms",
+            Self::ConnectTimeoutMs => "connect_timeout_ms",
+        }
+    }
+}
+
+impl TableServingOptions {
+    /// Whether this table means to decide `field` itself, rather than leaving it to
+    /// whatever the calling client was configured with.
+    ///
+    /// A table that set the field decides it. Records written before `set_fields`
+    /// existed say nothing about what was set, so for those the only signal left is
+    /// that the value differs from the default -- which is what every caller used to
+    /// rely on, and which cannot express a table deliberately choosing a default
+    /// value. `drop_percent: 0` means "never shed this table" and
+    /// `max_write_retries: 0` means "never retry a write here"; both equal the
+    /// default, so both were quietly replaced by the client's own setting. The two
+    /// options whose whole purpose is to hold something back were the two that could
+    /// not be said.
+    pub fn table_decides(&self, field: TableServingField) -> bool {
+        if self.set_fields.contains(field.name()) {
+            return true;
+        }
+        let defaults = Self::default();
+        match field {
+            TableServingField::PinPrimary => self.pin_primary != defaults.pin_primary,
+            TableServingField::ReplicaReadPolicy => {
+                self.replica_read_policy != defaults.replica_read_policy
+            }
+            TableServingField::PreferredLocation => {
+                self.preferred_location != defaults.preferred_location
+            }
+            TableServingField::DropPercent => self.drop_percent != defaults.drop_percent,
+            TableServingField::MaxReadRetries => self.max_read_retries != defaults.max_read_retries,
+            TableServingField::MaxWriteRetries => {
+                self.max_write_retries != defaults.max_write_retries
+            }
+            TableServingField::RetryBackoffMs => self.retry_backoff_ms != defaults.retry_backoff_ms,
+            TableServingField::ContinuousFailedTimeMs => {
+                self.continuous_failed_time_ms != defaults.continuous_failed_time_ms
+            }
+            TableServingField::IoTimeoutMs => self.io_timeout_ms != defaults.io_timeout_ms,
+            TableServingField::ConnectTimeoutMs => {
+                self.connect_timeout_ms != defaults.connect_timeout_ms
+            }
+        }
+    }
 }
 
 impl Default for TableServingOptions {
@@ -617,6 +745,7 @@ impl Default for TableServingOptions {
             continuous_failed_time_ms: default_continuous_failed_time_ms(),
             io_timeout_ms: default_table_io_timeout_ms(),
             connect_timeout_ms: default_table_connect_timeout_ms(),
+            set_fields: BTreeSet::new(),
         }
     }
 }
@@ -735,6 +864,31 @@ pub struct TopologyVersionReport {
     pub events: Vec<TopologyChangeEvent>,
     #[serde(default)]
     pub event_history_truncated: bool,
+}
+
+/// Which slice of the change history to return.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyEventsRequest {
+    /// Return changes newer than this topology version. Zero returns whatever
+    /// the ring still holds.
+    #[serde(default)]
+    pub after_version: u64,
+    /// Most changes to return. Zero means the ring's own limit.
+    #[serde(default)]
+    pub limit: usize,
+}
+
+/// What the metaserver recorded, and whether the caller missed anything.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyEventsResponse {
+    pub status: Status,
+    pub events: Vec<TopologyChangeEvent>,
+    /// The oldest change still held. The history is a bounded ring, so anything
+    /// older than this has been overwritten and cannot be asked for.
+    pub oldest_retained_version: u64,
+    /// Set when the caller asked to resume from a point the ring no longer
+    /// holds, so a gap in what they receive is not mistaken for quiet.
+    pub missed_events: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -889,6 +1043,14 @@ pub struct MetaStats {
     pub namespace_count: usize,
     pub table_count: usize,
     pub shard_count: usize,
+    /// How many of those shards are not serving.
+    ///
+    /// A shard can be taken out of service on its own, and nothing counted it:
+    /// an operator could freeze one and see no change on any dashboard. Counted
+    /// here rather than kept as a running total, because a tally maintained
+    /// beside the shards is a second thing to keep in step with them.
+    #[serde(default)]
+    pub frozen_shard_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -970,6 +1132,28 @@ pub enum MetaMutation {
     /// were accepted live, and a mute entry flips the flag at exactly the point
     /// the original sequence did.
     SetMetaChangeMuted(bool),
+    /// A snapshot installed over the whole state.
+    ///
+    /// Carries the snapshot because replay has to reach the same state the
+    /// install did. Every record before it is superseded by it, which is what
+    /// makes the restore hold across a restart.
+    InstallSnapshot(Box<MetaSnapshot>),
+}
+
+/// One line of the mutation log: a change, and when the metaserver accepted it.
+///
+/// The time has to travel with the change. Everything that ages -- retention,
+/// freeze aging -- was stamped with `now_ms()` inside the apply path, which
+/// replay also runs, so every clock restarted whenever the metaserver did and
+/// nothing was ever old enough to act on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaMutationRecord {
+    /// Zero on a line written before this field existed. Replay falls back to
+    /// the current clock for those, which is what they have always been given.
+    #[serde(default)]
+    pub at_ms: u64,
+    #[serde(flatten)]
+    pub mutation: MetaMutation,
 }
 
 #[derive(Debug, Clone)]
@@ -990,7 +1174,7 @@ impl LocalMetaMutationLog {
         })
     }
 
-    pub fn append(&self, mutation: &MetaMutation) -> io::Result<()> {
+    pub fn append(&self, mutation: &MetaMutation, at_ms: u64) -> io::Result<()> {
         let _guard = self
             .write_lock
             .lock()
@@ -999,14 +1183,18 @@ impl LocalMetaMutationLog {
             .create(true)
             .append(true)
             .open(&self.path)?;
-        serde_json::to_writer(&mut file, mutation).map_err(io::Error::other)?;
+        let record = MetaMutationRecord {
+            at_ms,
+            mutation: mutation.clone(),
+        };
+        serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         crate::durability_metrics::record_barrier("meta_log_append");
         file.sync_data()?;
         Ok(())
     }
 
-    pub fn load(&self) -> io::Result<Vec<MetaMutation>> {
+    pub fn load(&self) -> io::Result<Vec<MetaMutationRecord>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
@@ -1017,8 +1205,9 @@ impl LocalMetaMutationLog {
             if line.trim().is_empty() {
                 continue;
             }
-            let mutation = serde_json::from_str::<MetaMutation>(&line).map_err(io::Error::other)?;
-            mutations.push(mutation);
+            let record =
+                serde_json::from_str::<MetaMutationRecord>(&line).map_err(io::Error::other)?;
+            mutations.push(record);
         }
         Ok(mutations)
     }
@@ -1148,6 +1337,16 @@ pub struct MetaSnapshot {
     /// installs it keeps ageing them instead of restarting their clocks.
     #[serde(default)]
     pub frozen_since_ms: BTreeMap<String, u64>,
+    /// The recorded change history, oldest first.
+    ///
+    /// The topology version travelled while the history it belongs to did not,
+    /// so a peer installing a snapshot inherited a version with nothing behind
+    /// it -- and then reported its own control plane as blocked on evidence it
+    /// had a moment earlier. Bounded to the same ring the metaserver keeps, so
+    /// this adds a fixed, small amount to a snapshot rather than growing with
+    /// the cluster.
+    #[serde(default)]
+    pub topology_events: VecDeque<TopologyChangeEvent>,
     /// Names held back from creation. Carried so a peer that installs this
     /// snapshot keeps refusing them rather than quietly allowing what the
     /// operator reserved.
@@ -1215,6 +1414,14 @@ impl Default for SingleNodeMeta {
 }
 
 impl SingleNodeMeta {
+    /// Set the conviction lock on a meta that already exists.
+    ///
+    /// The builder cannot reach a raft node's meta: those are constructed inside
+    /// the cluster, long after the process read its configuration.
+    pub fn set_conviction_lock(&mut self, forbid: bool) {
+        self.forbid_self_clearing_conviction = forbid;
+    }
+
     /// Refuse to let a resource the metaserver convicted register its way back
     /// into service; only an explicit unfreeze returns it. Off by default.
     pub fn with_conviction_lock(mut self, forbid: bool) -> Self {
@@ -1496,8 +1703,24 @@ impl SingleNodeMeta {
             MetaMutation::SetNamespaceState(request, MetaEntityState::Dropped) => {
                 Self::namespace_not_empty_in(state, &request.namespace)
             }
+            MetaMutation::PutProxyGroup(request) => Self::proxy_group_name_refusal(request),
             _ => None,
         }
+    }
+
+    /// Refuses a proxy group that names neither itself nor a namespace.
+    ///
+    /// The group name is the key it is stored under, and an empty one is also
+    /// the value an unattached proxy carries -- so a nameless group is indexed
+    /// by "no group at all" and reads as though every idle proxy belongs to it.
+    /// The public method has always refused this; the propose path dispatched
+    /// straight to `apply_put_proxy_group`, which does not check, and committed
+    /// it into replicated metadata.
+    ///
+    /// Takes no lock: it judges the request alone, not the state around it.
+    fn proxy_group_name_refusal(request: &PutProxyGroupRequest) -> Option<Status> {
+        (request.group.is_empty() || request.namespace.is_empty())
+            .then(|| Status::error("bad_request", "group and namespace are required"))
     }
 
     /// Refuses dropping a namespace that still holds a table which is not itself
@@ -1537,6 +1760,43 @@ impl SingleNodeMeta {
             .then(|| Status::error("name_reserved", format!("table name {table} is reserved")))
     }
 
+    /// The recorded change history, oldest first.
+    ///
+    /// Every metadata change records one of these, and the only way to see them
+    /// was to subscribe and wait: an operator looking at an incident that had
+    /// already happened could not ask what changed.
+    pub fn topology_events(&self, request: TopologyEventsRequest) -> TopologyEventsResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let oldest_retained_version = state
+            .topology_events
+            .front()
+            .map(|event| event.topology_version)
+            .unwrap_or_default();
+        // Resuming from a version the ring has already overwritten means there
+        // are changes the caller will never see. Saying so is the difference
+        // between a gap and a quiet period.
+        let missed_events = request.after_version > 0
+            && oldest_retained_version > request.after_version.saturating_add(1);
+        let limit = if request.limit == 0 {
+            TOPOLOGY_EVENT_HISTORY_LIMIT
+        } else {
+            request.limit.min(TOPOLOGY_EVENT_HISTORY_LIMIT)
+        };
+        let events = state
+            .topology_events
+            .iter()
+            .filter(|event| event.topology_version > request.after_version)
+            .take(limit)
+            .cloned()
+            .collect();
+        TopologyEventsResponse {
+            status: Status::ok(),
+            events,
+            oldest_retained_version,
+            missed_events,
+        }
+    }
+
     /// Mute or resume metadata change.
     ///
     /// Never guarded by the mute itself -- an operator must always be able to
@@ -1560,14 +1820,23 @@ impl SingleNodeMeta {
         }
     }
 
-    fn record_mutation(&self, mutation: MetaMutation) {
+    /// Record a change and return the time it was accepted, which the apply
+            /// path must stamp with so replay reproduces it rather than the
+            /// clock of whenever the metaserver was last restarted.
+    fn record_mutation(&self, mutation: MetaMutation) -> u64 {
+        let at_ms = now_ms();
         if let Some(log) = &self.mutation_log {
-            log.append(&mutation)
+            log.append(&mutation, at_ms)
                 .expect("failed to append metaserver mutation log");
         }
+        at_ms
     }
 
     pub(crate) fn apply_mutation(&self, mutation: MetaMutation) -> Status {
+        self.apply_mutation_at(mutation, now_ms())
+    }
+
+    pub(crate) fn apply_mutation_at(&self, mutation: MetaMutation, at_ms: u64) -> Status {
         match mutation {
             MetaMutation::RegisterShard(request) => self.apply_register(request).status,
             MetaMutation::PublishShardSnapshot(request) => {
@@ -1577,28 +1846,28 @@ impl SingleNodeMeta {
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
-            MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
+            MetaMutation::DeleteTable(request) => self.apply_delete_table(request, at_ms).status,
             MetaMutation::UpdateTable(request) => self.apply_update_table(request).status,
             MetaMutation::FreezeTable(request) => {
-                self.apply_set_table_state(request, MetaEntityState::Frozen)
+                self.apply_set_table_state(request, MetaEntityState::Frozen, at_ms)
                     .status
             }
             MetaMutation::UnfreezeTable(request) => {
-                self.apply_set_table_state(request, MetaEntityState::Normal)
+                self.apply_set_table_state(request, MetaEntityState::Normal, at_ms)
                     .status
             }
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
             MetaMutation::UnfreezeServer(request) => {
-                self.apply_set_server_state(request, MetaEntityState::Normal)
+                self.apply_set_server_state(request, MetaEntityState::Normal, at_ms)
                     .status
             }
             MetaMutation::UnfreezeProxy(request) => {
-                self.apply_set_proxy_state(request, MetaEntityState::Normal)
+                self.apply_set_proxy_state(request, MetaEntityState::Normal, at_ms)
                     .status
             }
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::SetNamespaceState(request, next) => {
-                self.apply_set_namespace_state(request, next).status
+                self.apply_set_namespace_state(request, next, at_ms).status
             }
             MetaMutation::SetReservedNames(reserved) => {
                 self.apply_set_reserved_names(reserved).status
@@ -1620,24 +1889,27 @@ impl SingleNodeMeta {
             }
             MetaMutation::DropShard(request) => self.apply_drop_shard(request).status,
             MetaMutation::FreezeServer(request) => {
-                self.apply_set_server_state(request, MetaEntityState::Frozen)
+                self.apply_set_server_state(request, MetaEntityState::Frozen, at_ms)
                     .status
             }
             MetaMutation::DropServer(request) => {
-                self.apply_set_server_state(request, MetaEntityState::Dropped)
+                self.apply_set_server_state(request, MetaEntityState::Dropped, at_ms)
                     .status
             }
             MetaMutation::FreezeProxy(request) => {
-                self.apply_set_proxy_state(request, MetaEntityState::Frozen)
+                self.apply_set_proxy_state(request, MetaEntityState::Frozen, at_ms)
                     .status
             }
             MetaMutation::DropProxy(request) => {
-                self.apply_set_proxy_state(request, MetaEntityState::Dropped)
+                self.apply_set_proxy_state(request, MetaEntityState::Dropped, at_ms)
                     .status
             }
             MetaMutation::PurgeMeta(plan) => {
                 self.apply_meta_purge(&plan);
                 Status::ok()
+            }
+            MetaMutation::InstallSnapshot(snapshot) => {
+                self.apply_install_snapshot(*snapshot).status
             }
         }
     }
@@ -1709,41 +1981,69 @@ fn proxy_serving_mode_for_state(state: MetaEntityState) -> &'static str {
     }
 }
 
-fn apply_serving_options_patch(
-    mut options: TableServingOptions,
-    patch: &TableServingOptionsPatch,
-) -> TableServingOptions {
+impl TableServingOptionsPatch {
+    /// Apply this patch onto `base`, recording which fields it set.
+    ///
+    /// This is the only place the merge is written. It used to exist twice -- once
+    /// here and once in the metaserver's create handler, which rebuilt the same
+    /// field-by-field merge by hand and, having no reason to, did not carry over
+    /// which fields the caller had actually sent. That is how a table created with
+    /// an explicit setting arrived carrying no record of it.
+    pub fn onto(&self, base: TableServingOptions) -> TableServingOptions {
+        let patch = self;
+        let mut options = base;
+    let set = |field: TableServingField, options: &mut TableServingOptions| {
+        options.set_fields.insert(field.name().to_string());
+    };
     if let Some(pin_primary) = patch.pin_primary {
         options.pin_primary = pin_primary;
+        set(TableServingField::PinPrimary, &mut options);
     }
     if let Some(replica_read_policy) = &patch.replica_read_policy {
         options.replica_read_policy = replica_read_policy.clone();
+        set(TableServingField::ReplicaReadPolicy, &mut options);
     }
     if let Some(preferred_location) = &patch.preferred_location {
         options.preferred_location = preferred_location.clone();
+        set(TableServingField::PreferredLocation, &mut options);
     }
     if let Some(drop_percent) = patch.drop_percent {
         options.drop_percent = drop_percent;
+        set(TableServingField::DropPercent, &mut options);
     }
     if let Some(max_read_retries) = patch.max_read_retries {
         options.max_read_retries = max_read_retries;
+        set(TableServingField::MaxReadRetries, &mut options);
     }
     if let Some(max_write_retries) = patch.max_write_retries {
         options.max_write_retries = max_write_retries;
+        set(TableServingField::MaxWriteRetries, &mut options);
     }
     if let Some(retry_backoff_ms) = patch.retry_backoff_ms {
         options.retry_backoff_ms = retry_backoff_ms;
+        set(TableServingField::RetryBackoffMs, &mut options);
     }
     if let Some(continuous_failed_time_ms) = patch.continuous_failed_time_ms {
         options.continuous_failed_time_ms = continuous_failed_time_ms;
+        set(TableServingField::ContinuousFailedTimeMs, &mut options);
     }
     if let Some(io_timeout_ms) = patch.io_timeout_ms {
         options.io_timeout_ms = io_timeout_ms;
+        set(TableServingField::IoTimeoutMs, &mut options);
     }
     if let Some(connect_timeout_ms) = patch.connect_timeout_ms {
         options.connect_timeout_ms = connect_timeout_ms;
+        set(TableServingField::ConnectTimeoutMs, &mut options);
     }
     options
+    }
+}
+
+fn apply_serving_options_patch(
+    options: TableServingOptions,
+    patch: &TableServingOptionsPatch,
+) -> TableServingOptions {
+    patch.onto(options)
 }
 
 fn now_ms() -> u64 {
@@ -2112,6 +2412,99 @@ mod tests {
             .expect("registered")
     }
 
+    fn joined(meta: &SingleNodeMeta) -> Vec<String> {
+        let state = meta.inner.read().expect("meta lock poisoned");
+        state
+            .topology_events
+            .iter()
+            .map(|event| format!("{}:{}", event.kind, event.resource))
+            .collect()
+    }
+
+    #[test]
+    fn a_proxy_joining_is_recorded() {
+        // A server registering has always been recorded; a proxy registering
+        // was not, so a proxy could enter the cluster and leave no trace in the
+        // history at all.
+        let meta = SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-1:9000".to_string(),
+            namespace: "ns".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        });
+        assert!(
+            joined(&meta).contains(&"register_proxy:proxy:proxy-1:9000".to_string()),
+            "a proxy joined and the history did not notice: {:?}",
+            joined(&meta)
+        );
+    }
+
+    #[test]
+    fn a_namespace_being_created_is_recorded() {
+        // Freezing and dropping a namespace were recorded, but creating one was
+        // not -- so the history could show a namespace being frozen with no
+        // record of it ever having existed.
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "tenant-a".to_string(),
+        });
+        assert!(
+            joined(&meta).contains(&"add_namespace:namespace:tenant-a".to_string()),
+            "a namespace was created and the history did not notice: {:?}",
+            joined(&meta)
+        );
+    }
+
+    #[test]
+    fn creating_the_same_namespace_twice_records_once() {
+        // The call is idempotent. An event per repeat would advance the
+        // topology version for a change that did not happen, and a caller
+        // polling the history would see movement where there was none.
+        let meta = SingleNodeMeta::default();
+        for _ in 0..3 {
+            meta.add_namespace(AddNamespaceRequest {
+                namespace: "tenant-a".to_string(),
+            });
+        }
+        let recorded = joined(&meta)
+            .into_iter()
+            .filter(|entry| entry == "add_namespace:namespace:tenant-a")
+            .count();
+        assert_eq!(recorded, 1, "an idempotent call recorded more than once");
+    }
+
+    #[test]
+    fn a_proxy_turned_away_is_not_recorded_as_having_joined() {
+        // The refusal paths return before the recording. A proxy under
+        // conviction that is refused must not appear in the history as having
+        // joined, or the history contradicts the state.
+        let meta = SingleNodeMeta::default().with_conviction_lock(true);
+        let register_proxy = || {
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+        };
+        let joins = || {
+            joined(&meta)
+                .into_iter()
+                .filter(|entry| entry.starts_with("register_proxy:"))
+                .count()
+        };
+        assert!(register_proxy().status.ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+
+        let before = joins();
+        assert_eq!(register_proxy().status.code, "conviction_requires_unfreeze");
+        assert_eq!(joins(), before, "a refused registration was recorded anyway");
+    }
+
     #[test]
     fn a_freeze_records_why_it_happened() {
         let meta = SingleNodeMeta::default();
@@ -2150,6 +2543,79 @@ mod tests {
             freeze_cooldown_ms: 0,
             reason: FreezeReason::Unspecified,
         }
+    }
+
+    #[test]
+    fn the_default_detector_reports_what_it_freezes() {
+        // temporalstore_meta_convicted_total is exported unconditionally, and
+        // only the adaptive detector was recording into it. The adaptive one is
+        // off unless asked for, so on a default metaserver the counter sat at
+        // zero while this detector froze servers and proxies -- a confident
+        // wrong number, which reads worse than an absent series.
+        let meta = SingleNodeMeta::default();
+        register(&meta, "server-a");
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let report = meta.freeze_stale_resources(0);
+        assert!(report.status.ok);
+        assert_eq!(report.frozen_servers.len(), 1, "{report:?}");
+        assert_eq!(report.frozen_proxies.len(), 1, "{report:?}");
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"server\"} 1"),
+            "the detector froze a server and the counter did not move:\n{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"proxy\"} 1"),
+            "the detector froze a proxy and the counter did not move:\n{exported}"
+        );
+    }
+
+    #[test]
+    fn each_tier_counts_only_its_own_freezes() {
+        // `record_conviction` sums both lists, so one call carrying servers and
+        // proxies together would count every freeze under both tiers. The
+        // counts are deliberately asymmetric -- two servers, one proxy -- so
+        // any cross-contamination shows up as a wrong number rather than a
+        // coincidentally equal one.
+        let meta = SingleNodeMeta::default();
+        register(&meta, "server-a");
+        register(&meta, "server-b");
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(meta.freeze_stale_resources(0).status.ok);
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"server\"} 2"),
+            "two servers frozen must count two under server:
+{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_convicted_total{tier=\"proxy\"} 1"),
+            "one proxy frozen must count one under proxy:
+{exported}"
+        );
     }
 
     #[test]
@@ -2273,6 +2739,89 @@ mod tests {
         assert_eq!(
             server_state(&recovered, "node-a").freeze_reason,
             FreezeReason::Unspecified
+        );
+    }
+
+    fn one_rack_cluster(meta: &SingleNodeMeta, servers: &[&str], replica_count: u64) -> Vec<String> {
+        for (index, addr) in servers.iter().enumerate() {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: addr.to_string(),
+                    node_id: index as u64 + 1,
+                    // One rack: the ladder can separate nothing, so every
+                    // replica after the first comes from the fallback fill.
+                    location: "us-east/dc1/az1/rack1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                first_shard_id: 700,
+                shard_count: 1,
+                replica_count,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        })
+        .shards
+        .into_iter()
+        .next()
+        .expect("one shard")
+        .replicas
+    }
+
+    #[test]
+    fn a_shard_does_not_stack_its_replicas_on_one_host() {
+        // Four datanodes, two per physical host, all in one rack -- an ordinary
+        // small deployment. Both replicas landed on host-a while host-b sat
+        // idle: the shard reported two replicas and lost both to one host.
+        let meta = SingleNodeMeta::default();
+        let replicas = one_rack_cluster(
+            &meta,
+            &["host-a:1001", "host-a:1002", "host-b:1001", "host-b:1002"],
+            2,
+        );
+        let hosts: BTreeSet<String> = replicas
+            .iter()
+            .map(|addr| super::topology_helpers::server_host(addr))
+            .collect();
+        assert_eq!(replicas.len(), 2, "{replicas:?}");
+        assert_eq!(
+            hosts.len(),
+            2,
+            "both replicas share a host while another was free: {replicas:?}"
+        );
+    }
+
+    #[test]
+    fn a_host_is_reused_only_when_there_is_no_other() {
+        // The point is to spread, not to refuse. With one host there is nothing
+        // to spread across, and the shard must still reach its replica count
+        // rather than come back short.
+        let meta = SingleNodeMeta::default();
+        let replicas = one_rack_cluster(&meta, &["host-a:1001", "host-a:1002"], 2);
+        assert_eq!(
+            replicas.len(),
+            2,
+            "spreading turned a fill into a shortfall: {replicas:?}"
         );
     }
 
@@ -2891,6 +3440,97 @@ mod tests {
         // The registration recorded before the mute still replayed: the guard
         // applies to live calls, not to replaying a log of accepted changes.
         assert_eq!(recovered.list_servers().servers.len(), 1);
+    }
+
+    fn meta_with_history() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        register(&meta, "server-a");
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(
+            !meta
+                .inner
+                .read()
+                .expect("meta lock poisoned")
+                .topology_events
+                .is_empty(),
+            "the fixture recorded no history to lose"
+        );
+        meta
+    }
+
+    #[test]
+    fn the_change_history_survives_a_snapshot_install() {
+        // The topology version travelled and the history it belongs to did not,
+        // so a peer inherited a version with nothing behind it.
+        let meta = meta_with_history();
+        let expected = meta
+            .inner
+            .read()
+            .expect("meta lock poisoned")
+            .topology_events
+            .clone();
+
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+
+        let carried = peer
+            .inner
+            .read()
+            .expect("meta lock poisoned")
+            .topology_events
+            .clone();
+        assert_eq!(carried, expected, "the change history was dropped on install");
+    }
+
+    #[test]
+    fn a_peer_that_installs_a_snapshot_is_not_reported_as_missing_its_history() {
+        // The readiness report treats the history as evidence, so dropping it on
+        // install made a healthy peer report its own control plane as blocked on
+        // evidence it had a moment earlier.
+        let meta = meta_with_history();
+        assert!(meta.control_plane_parity_report().topology_history_ready);
+
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+
+        let report = peer.control_plane_parity_report();
+        assert!(
+            report.topology_history_ready,
+            "a peer reported its history missing right after inheriting it"
+        );
+        assert!(
+            !report
+                .blockers
+                .iter()
+                .any(|blocker| blocker.contains("topology history")),
+            "{:?}",
+            report.blockers
+        );
+    }
+
+    #[test]
+    fn a_snapshot_written_before_this_field_still_installs() {
+        // The field is defaulted, so an older snapshot on disk -- or from a peer
+        // that has not been upgraded -- must still load rather than be rejected
+        // as malformed.
+        let meta = meta_with_history();
+        let mut encoded: serde_json::Value =
+            serde_json::to_value(meta.export_snapshot()).expect("snapshot encodes");
+        encoded
+            .as_object_mut()
+            .expect("snapshot is an object")
+            .remove("topology_events")
+            .expect("the field was there to remove");
+
+        let older: MetaSnapshot = serde_json::from_value(encoded).expect("an older snapshot loads");
+        assert!(older.topology_events.is_empty());
+        let peer = SingleNodeMeta::default();
+        assert!(peer.install_snapshot(older).status.ok);
     }
 
     #[test]
@@ -3543,6 +4183,94 @@ mod tests {
         });
     }
 
+    fn changed(meta: &SingleNodeMeta, name: &str) {
+        register(meta, name);
+    }
+
+    fn history(meta: &SingleNodeMeta, after_version: u64) -> TopologyEventsResponse {
+        meta.topology_events(TopologyEventsRequest {
+            after_version,
+            limit: 0,
+        })
+    }
+
+    #[test]
+    fn what_changed_can_be_asked_for_after_the_fact() {
+        // Every metadata change records one of these, and the only way to see
+        // them was to subscribe and wait -- so an operator looking at an
+        // incident that had already happened could not ask what changed.
+        let meta = SingleNodeMeta::default();
+        changed(&meta, "one");
+        changed(&meta, "two");
+
+        let seen = history(&meta, 0);
+        assert!(seen.status.ok);
+        assert!(seen.events.len() >= 2);
+        assert!(seen.events.iter().any(|event| event.resource.contains("one")));
+        assert!(seen.events.iter().any(|event| event.resource.contains("two")));
+        assert!(!seen.missed_events);
+    }
+
+    #[test]
+    fn a_caller_can_resume_from_where_it_stopped() {
+        let meta = SingleNodeMeta::default();
+        changed(&meta, "one");
+        let first = history(&meta, 0);
+        let resume_from = first.events.last().expect("an event").topology_version;
+
+        changed(&meta, "two");
+        let next = history(&meta, resume_from);
+        assert!(next.events.iter().all(|event| event.topology_version > resume_from));
+        assert!(next.events.iter().any(|event| event.resource.contains("two")));
+        assert!(!next.missed_events);
+    }
+
+    #[test]
+    fn a_caller_that_fell_behind_the_ring_is_told_so() {
+        // The history is bounded. A caller resuming from a point that has been
+        // overwritten must not read the gap as a quiet period -- that is the
+        // difference between "nothing happened" and "you missed it".
+        let meta = SingleNodeMeta::default();
+        for index in 0..(TOPOLOGY_EVENT_HISTORY_LIMIT + 20) {
+            changed(&meta, &format!("ns-{index}"));
+        }
+        let stale = history(&meta, 1);
+        assert!(
+            stale.missed_events,
+            "a caller resuming from an evicted point was not warned"
+        );
+        assert!(stale.oldest_retained_version > 1);
+    }
+
+    #[test]
+    fn asking_from_the_current_version_is_quiet_not_a_gap() {
+        // The inverse: caught up is not the same as fallen behind, and must not
+        // be reported as missing anything.
+        let meta = SingleNodeMeta::default();
+        changed(&meta, "one");
+        let latest = history(&meta, 0)
+            .events
+            .last()
+            .expect("an event")
+            .topology_version;
+        let caught_up = history(&meta, latest);
+        assert!(caught_up.events.is_empty());
+        assert!(!caught_up.missed_events);
+    }
+
+    #[test]
+    fn the_history_never_returns_more_than_asked_for() {
+        let meta = SingleNodeMeta::default();
+        for index in 0..10 {
+            changed(&meta, &format!("ns-{index}"));
+        }
+        let capped = meta.topology_events(TopologyEventsRequest {
+            after_version: 0,
+            limit: 3,
+        });
+        assert_eq!(capped.events.len(), 3);
+    }
+
     #[test]
     fn a_subscriber_is_told_about_a_change_instead_of_polling_for_it() {
         let meta = bus_meta();
@@ -4018,6 +4746,137 @@ mod tests {
         assert_eq!(listed_server(&meta, "node-a").numa_nodes.len(), 2);
     }
 
+    /// A metaserver with a durable log holding one frozen table, one dropped
+    /// table and one dropped server. Returns the log path and the clocks as they
+    /// stood before the restart.
+    fn clocks_before_restart(
+        log_path: &std::path::Path,
+    ) -> (BTreeMap<String, u64>, BTreeMap<String, u64>) {
+        let meta = SingleNodeMeta::with_mutation_log(log_path).unwrap();
+        register(&meta, "server-a");
+        register(&meta, "server-b");
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for (name, first_shard_id) in [("frozen", 900), ("dropped", 950)] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                    first_shard_id,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "frozen".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .drop_server(StateChangeRequest {
+                endpoint: "server-b".to_string(),
+                reason: FreezeReason::Operator,
+                freeze_cooldown_ms: 0,
+            })
+            .status
+            .ok);
+        let snapshot = meta.export_snapshot();
+        assert!(!snapshot.frozen_since_ms.is_empty() && !snapshot.dropped_since_ms.is_empty());
+        (snapshot.frozen_since_ms, snapshot.dropped_since_ms)
+    }
+
+    #[test]
+    fn the_retention_clocks_survive_a_metaserver_restart() {
+        // Everything that ages was stamped with the wall clock inside the apply
+        // path, which replay also runs, so every clock restarted whenever the
+        // metaserver did. Retention purge and freeze aging could never fire on a
+        // cluster that restarts more often than their windows.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        let (frozen_before, dropped_before) = clocks_before_restart(&log_path);
+
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let restarted = SingleNodeMeta::with_mutation_log(&log_path)
+            .unwrap()
+            .export_snapshot();
+
+        assert_eq!(
+            restarted.frozen_since_ms, frozen_before,
+            "a freeze clock restarted with the metaserver"
+        );
+        assert_eq!(
+            restarted.dropped_since_ms, dropped_before,
+            "a retention clock restarted with the metaserver"
+        );
+    }
+
+    #[test]
+    fn a_log_written_before_the_time_was_recorded_still_replays() {
+        // Lines already on disk have no time in them. They must still load, and
+        // fall back to the current clock, which is what they have always been
+        // given -- not be rejected as malformed.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        clocks_before_restart(&log_path);
+
+        let older: String = std::fs::read_to_string(&log_path)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("at_ms")
+                    .expect("the time was written");
+                format!("{}\n", serde_json::to_string(&value).unwrap())
+            })
+            .collect();
+        std::fs::write(&log_path, older).unwrap();
+
+        let restarted = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        let snapshot = restarted.export_snapshot();
+        assert!(
+            !snapshot.frozen_since_ms.is_empty(),
+            "an older log did not replay"
+        );
+        assert_eq!(snapshot.tables.len(), 2);
+    }
+
+    #[test]
+    fn a_line_carrying_the_time_is_still_readable_without_it() {
+        // The time is an added field on the log line, so a build that predates
+        // it must still be able to read what a newer one wrote.
+        let mutation = MetaMutation::AddNamespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        let line = serde_json::to_string(&MetaMutationRecord {
+            at_ms: 1234,
+            mutation: mutation.clone(),
+        })
+        .unwrap();
+        let without_the_field: MetaMutation = serde_json::from_str(&line)
+            .expect("a line carrying the time must still read as a bare change");
+        assert_eq!(without_the_field, mutation);
+    }
+
     #[test]
     fn the_hardware_shape_survives_snapshot_and_replay() {
         let dir = tempfile::tempdir().unwrap();
@@ -4466,8 +5325,17 @@ mod tests {
     #[test]
     fn growing_a_table_that_already_owns_shards_is_refused() {
         let meta = live_two_shard_table();
-        assert_eq!(grow_to(&meta, 4).code, "shards_registered");
+        let refused = grow_to(&meta, 4);
+        assert_eq!(refused.code, "shards_registered");
         assert_eq!(meta.list_tables().tables[0].shard_count, 2);
+        // An operator reads this one. A literal wrapped across source lines
+        // keeps the indentation of the continuation unless it is escaped, and
+        // this refusal was arriving with a run of spaces in the middle of it.
+        assert!(
+            !refused.message.contains("  "),
+            "the refusal reads with a run of spaces in it: {:?}",
+            refused.message
+        );
     }
 
     #[test]
@@ -5026,6 +5894,491 @@ mod tests {
         }
     }
 
+    /// A proxy attached to a group serving one namespace.
+    fn shedding_meta(drop_percent: u8) -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "tenant".to_string(),
+            location: "rack-1".to_string(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+        });
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                group: "front".to_string(),
+                namespace: "tenant".to_string(),
+                location: String::new(),
+                instance_num: 1,
+                drop_percent,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.set_proxy_group(ProxyAttachment {
+                proxy_addr: "proxy-a".to_string(),
+                group: "front".to_string(),
+            })
+            .status
+            .ok
+        );
+        meta
+    }
+
+    fn beat_proxy(meta: &SingleNodeMeta, config_version: u64) -> ProxyHeartbeatResponse {
+        meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "tenant".to_string(),
+            config_version,
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+        })
+    }
+
+    #[test]
+    fn the_metaserver_can_tell_a_proxy_to_shed_load() {
+        // The proxy has always implemented this -- it reads the figure from its
+        // heartbeat, applies it, and exports it as a metric -- but every
+        // response carried a hard-coded zero, so the only way to pull the lever
+        // was to restart each proxy with different configuration.
+        let meta = shedding_meta(25);
+        assert_eq!(beat_proxy(&meta, 0).drop_percent, Some(25));
+    }
+
+    #[test]
+    fn a_group_that_asks_for_nothing_sheds_nothing() {
+        let meta = shedding_meta(0);
+        assert_eq!(
+            beat_proxy(&meta, 0).drop_percent,
+            Some(0),
+            "a group that asks for zero has still spoken, which is not the same as silence"
+        );
+    }
+
+    #[test]
+    fn changing_the_share_tells_the_proxy_to_re_read() {
+        // The proxy only re-reads when the config version moves, so a change
+        // nobody is told about is a change that does not happen.
+        let meta = shedding_meta(0);
+        let settled = beat_proxy(&meta, 0).config_version;
+
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                group: "front".to_string(),
+                namespace: "tenant".to_string(),
+                location: String::new(),
+                instance_num: 1,
+                drop_percent: 40,
+            })
+            .status
+            .ok
+        );
+        let after = beat_proxy(&meta, settled);
+        assert!(
+            after.config_version > settled,
+            "the version did not move, so an attached proxy would never re-read"
+        );
+        assert!(after.config_changed);
+        assert_eq!(after.drop_percent, Some(40));
+    }
+
+    #[test]
+    fn an_unattached_proxy_is_not_told_to_shed_anything() {
+        // It is not serving a namespace, so a share of its traffic is a share
+        // of nothing.
+        let meta = shedding_meta(60);
+        assert!(
+            meta.set_proxy_group(ProxyAttachment {
+                proxy_addr: "proxy-a".to_string(),
+                group: String::new(),
+            })
+            .status
+            .ok
+        );
+        assert_eq!(
+            beat_proxy(&meta, 0).drop_percent,
+            None,
+            "no group is holding an opinion about this proxy, so the heartbeat must not \n             carry one -- it used to carry 0, which erased whatever the proxy was \n             configured with"
+        );
+    }
+
+    #[test]
+    fn the_share_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("shed-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(
+                meta.put_proxy_group(PutProxyGroupRequest {
+                    group: "front".to_string(),
+                    namespace: "tenant".to_string(),
+                    location: String::new(),
+                    instance_num: 1,
+                    drop_percent: 35,
+                })
+                .status
+                .ok
+            );
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+            assert_eq!(peer.list_proxy_groups().groups[0].drop_percent, 35);
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(recovered.list_proxy_groups().groups[0].drop_percent, 35);
+    }
+
+    #[test]
+    fn a_restored_snapshot_is_still_there_after_a_restart() {
+        // Restoring a snapshot answered ok and rolled the state back, and the
+        // next start put everything back. Replay reapplies every mutation in
+        // the log, and the install left no record in it -- so the changes the
+        // operator rolled back were all still in there. The rollback looked
+        // like it took, right up until the process restarted.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "keep".to_string()
+            })
+            .status
+            .ok);
+        let snapshot = meta.export_snapshot();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "unwanted".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta.install_snapshot(snapshot).status.ok);
+
+        let names = |meta: &SingleNodeMeta| -> Vec<String> {
+            let mut out: Vec<String> = meta
+                .list_namespaces()
+                .namespaces
+                .into_iter()
+                .map(|entry| entry.namespace)
+                .collect();
+            out.sort();
+            out
+        };
+        assert_eq!(names(&meta), vec!["keep".to_string()]);
+
+        drop(meta);
+        let reopened = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            names(&reopened),
+            vec!["keep".to_string()],
+            "the restart brought back what the restore rolled away"
+        );
+
+        // And the restored state is still a working metaserver, not a frozen
+        // copy: a change after the restore survives its own restart too.
+        assert!(reopened
+            .add_namespace(AddNamespaceRequest {
+                namespace: "after".to_string()
+            })
+            .status
+            .ok);
+        drop(reopened);
+        let again = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            names(&again),
+            vec!["after".to_string(), "keep".to_string()],
+            "a change made after the restore did not survive"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_the_log_could_not_replay_is_refused_before_it_is_recorded() {
+        // The install is recorded before it is applied, so a snapshot that
+        // cannot become state must be refused before it reaches the log --
+        // otherwise replay would hit the same failure on every start.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "keep".to_string()
+            })
+            .status
+            .ok);
+
+        let mut bad = meta.export_snapshot();
+        bad.format_version = 99;
+        let refused = meta.install_snapshot(bad);
+        assert_eq!(refused.status.code, "bad_snapshot");
+
+        // The log still replays, and still says what it said before.
+        drop(meta);
+        let reopened = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(reopened.list_namespaces().namespaces.len(), 1);
+    }
+
+    #[test]
+    fn the_learned_shard_index_answers_what_the_scan_answered() {
+        // The index exists because asking every table which shard it owns, once
+        // per shard, cost shards times tables on a background round. It is only
+        // worth having if it says the same thing -- including for two tables
+        // whose ranges overlap, which the scan resolved by table map order.
+        use crate::meta::topology_helpers::{shard_owning_tables, table_for_shard};
+
+        for overlapping in [false, true] {
+            let meta = SingleNodeMeta::default();
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: "ns".to_string()
+                })
+                .status
+                .ok);
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+
+            // "a" owns 100..108. "b" owns 108..116, or 104..112 when the ranges
+            // are made to overlap.
+            let second_first = if overlapping { 104 } else { 108 };
+            for (name, first) in [("a", 100u64), ("b", second_first)] {
+                assert!(meta
+                    .add_table(AddTableRequest {
+                        namespace: "ns".to_string(),
+                        table_name: name.to_string(),
+                        first_shard_id: first,
+                        shard_count: 8,
+                        replica_count: 1,
+                        partition_version: 0,
+                        serving_options: TableServingOptions::default(),
+                    })
+                    .status
+                    .ok);
+            }
+            // Registered shards across both ranges, and two that no table owns.
+            for shard_id in [100u64, 103, 104, 107, 108, 111, 115, 200, 99] {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        shard_id,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+
+            let state = meta.inner.read().expect("meta lock poisoned");
+            let learned = shard_owning_tables(&state);
+            for shard_id in state.shards.keys() {
+                let scanned = table_for_shard(&state, *shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                let indexed = learned
+                    .get(shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                assert_eq!(
+                    indexed, scanned,
+                    "shard {shard_id} resolved differently (overlapping={overlapping})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tombstone_with_no_stamp_is_still_left_alone() {
+        // Retention starts from the drop stamps now instead of walking every
+        // resource. That is the same set only because a tombstone with no stamp
+        // is never collected -- it predates the stamps, and treating it as
+        // infinitely old would forget the whole history on the first round after
+        // an upgrade. The scan used to produce it as a candidate for the planner
+        // to reject; starting from the stamps it is simply not a candidate, and
+        // the outcome has to stay identical.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for name in ["stamped", "unstamped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                    first_shard_id: if name == "stamped" { 10 } else { 20 },
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .delete_table(DeleteTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Take the stamp away from one of them, which is what an upgrade from
+        // before the stamps existed leaves behind.
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            let key = dropped_key("table", &table_key("ns", "unstamped"));
+            assert!(state.dropped_since_ms.remove(&key).is_some());
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(
+            report.plan.tables,
+            vec![table_key("ns", "stamped")],
+            "the stamped tombstone is collected and the unstamped one is not"
+        );
+
+        let remaining = meta
+            .list_tables()
+            .tables
+            .into_iter()
+            .map(|table| table.table_name)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec!["unstamped".to_string()]);
+    }
+
+    #[test]
+    fn a_stamp_for_a_resource_that_is_gone_is_not_reported_as_a_purge() {
+        // The round starts from the drop stamps, so a stamp left behind for a
+        // resource that is no longer in the state would become a candidate, and
+        // the round would report forgetting something that was already gone --
+        // the plan is what the metrics and the operator read.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            state
+                .dropped_since_ms
+                .insert(dropped_key("table", &table_key("ns", "vanished")), 1);
+            state
+                .dropped_since_ms
+                .insert(dropped_key("server", "node-gone"), 1);
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert!(
+            report.plan.is_empty(),
+            "reported purging resources that were not there: {:?}",
+            report.plan
+        );
+    }
+
+    #[test]
+    fn a_purged_table_still_takes_its_shard_routes_with_it() {
+        // A round with nothing to collect no longer derives who owns each shard
+        // or which table owns each shard -- neither can change what an empty
+        // round returns, and deriving them walked every registered shard. The
+        // risk in that is a round which does have something to collect quietly
+        // losing the shard routes, and the planner's own test supplies those
+        // maps ready-made, so it would not notice.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+                first_shard_id: 400,
+                shard_count: 3,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        for shard_id in [400u64, 401, 402] {
+            assert!(meta
+                .register(RegisterShardRequest {
+                    shard_id,
+                    server_addr: "node-a".to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Nothing is dropped yet, so the round has nothing to say about shards.
+        let quiet = meta.plan_meta_retention_now(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(quiet.is_empty(), "{quiet:?}");
+
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+            })
+            .status
+            .ok);
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.plan.tables, vec![table_key("ns", "gone")]);
+        assert_eq!(
+            report.plan.shards,
+            vec![400, 401, 402],
+            "the purged table's shard routes were left behind"
+        );
+        assert!(
+            meta.list_shards(ListShardsRequest {
+                server_addr: String::new(),
+                after_shard_id: 0,
+                limit: 0,
+            })
+            .shards
+            .is_empty(),
+            "the routes are still in the state"
+        );
+    }
+
     #[test]
     fn a_namespace_is_never_dropped_out_from_under_a_live_table() {
         // The emptiness check used to run under a read lock that was released
@@ -5501,6 +6854,81 @@ mod tests {
     }
 
     #[test]
+    fn setting_a_serving_option_to_its_default_value_is_a_real_change() {
+        // "Never shed this table" is spelled drop_percent: 0, and 0 is also the
+        // default. An update carrying it used to compare equal to what the table
+        // already had, so the metaserver answered not_modified and did nothing --
+        // the operator was told plainly that nothing had changed, while the table
+        // went on inheriting whatever shedding its clients were configured with.
+        //
+        // The table now records that it set the field, so this is a change: it says
+        // something the table was not saying before.
+        let meta = SingleNodeMeta::default();
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 100,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+        let created = meta.list_tables().tables[0].clone();
+        assert_eq!(created.serving_options.drop_percent, 0);
+        assert!(
+            !created
+                .serving_options
+                .table_decides(TableServingField::DropPercent),
+            "a table that never spoke for drop_percent must leave it to the client"
+        );
+
+        let updated = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                drop_percent: Some(0),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert!(
+            updated.status.ok,
+            "asking to shed nothing must be accepted, not answered not_modified: {updated:?}"
+        );
+
+        let table = meta.list_tables().tables[0].clone();
+        assert_eq!(table.serving_options.drop_percent, 0);
+        assert!(
+            table
+                .serving_options
+                .table_decides(TableServingField::DropPercent),
+            "the table has now spoken for drop_percent and must decide it"
+        );
+        assert!(
+            table.topology_version > created.topology_version,
+            "clients only pick this up if the topology version moves"
+        );
+
+        // Saying the same thing twice really is unchanged.
+        let again = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                drop_percent: Some(0),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert_eq!(again.status.code, "not_modified");
+    }
+
+    #[test]
     fn metaserver_update_table_expands_topology_and_guards_unsafe_changes() {
         let meta = SingleNodeMeta::default();
         meta.add_table(AddTableRequest {
@@ -5614,6 +7042,7 @@ mod tests {
                     continuous_failed_time_ms: 22,
                     io_timeout_ms: 333,
                     connect_timeout_ms: 444,
+                    set_fields: Default::default(),
                 },
             })
             .status
@@ -6067,7 +7496,10 @@ mod tests {
         assert!(response.config_changed);
         assert_eq!(response.config_version, 3);
         assert_eq!(response.serving_mode, "serving");
-        assert_eq!(response.drop_percent, 0);
+        assert_eq!(
+            response.drop_percent, None,
+            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear              to set one -- it used to answer 0, which the proxy applied over an operator's drain"
+        );
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
 
         let frozen = meta.freeze_proxy(StateChangeRequest {

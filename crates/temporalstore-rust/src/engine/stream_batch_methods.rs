@@ -64,7 +64,7 @@ impl TemporalEngine {
             let records = match request.stream_kind {
                 StreamKind::Wal => self
                     .wal_store
-                    .scan(
+                    .scan_bounded(
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
@@ -73,7 +73,7 @@ impl TemporalEngine {
                     .map_err(|err| err.to_string()),
                 StreamKind::IndexLog => self
                     .index_log_store
-                    .scan(
+                    .scan_bounded(
                         request.shard_id,
                         request.start_offset,
                         request.end_offset,
@@ -83,13 +83,17 @@ impl TemporalEngine {
                 StreamKind::Index | StreamKind::Block | StreamKind::Page => unreachable!(),
             };
             return match records {
-                Ok(records) => ScanStreamResponse {
+                // `truncated` is the whole point of asking: the walk stops both when the window
+                // ends and when max_bytes runs out, and this used to answer "end of stream" for
+                // either. A caller reading a range larger than its budget was handed a prefix
+                // and told it had the lot.
+                Ok((records, truncated)) => ScanStreamResponse {
                     status: Status::ok(),
                     records: records
                         .into_iter()
                         .map(|(offset, data)| StreamRecord { offset, data })
                         .collect(),
-                    end_of_stream: true,
+                    end_of_stream: !truncated,
                 },
                 Err(err) => ScanStreamResponse {
                     status: Status::error("stream_scan_failed", err.to_string()),
@@ -105,6 +109,13 @@ impl TemporalEngine {
             offset: request.start_offset,
             size,
         });
+        // A byte-addressed read is capped the same way -- `size` above is the window clamped to
+        // max_bytes -- so it ends the stream only when it reached the offset that was asked for.
+        let end_of_stream = !read.status.ok
+            || request
+                .start_offset
+                .saturating_add(read.data.len() as u64)
+                >= request.end_offset;
         ScanStreamResponse {
             status: read.status.clone(),
             records: if read.status.ok && !read.data.is_empty() {
@@ -115,11 +126,28 @@ impl TemporalEngine {
             } else {
                 Vec::new()
             },
-            end_of_stream: true,
+            end_of_stream,
         }
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        // Every command here executes through `execute_on_shard`, which STAGES an outcome item,
+        // and the records this path appends are built from the commands -- so nothing ever took
+        // what was staged. Those items stayed in the thread's buffer, and the next write on that
+        // thread appended them as its own doing. Threads are reused across requests, so "the next
+        // write" is routinely a different request entirely.
+        //
+        // A guard rather than a drain at the end, because this function returns early on a
+        // missing shard and on a failed durable commit, and those exits leaked too. Discarding is
+        // correct while batch records carry their commands: replay re-executes them, so the items
+        // describe work that is already accounted for.
+        struct DrainStagedOnExit;
+        impl Drop for DrainStagedOnExit {
+            fn drop(&mut self) {
+                let _ = super::block_in_wal::take_outcomes();
+            }
+        }
+        let _drain_staged = DrainStagedOnExit;
         let command_count = request.commands.len();
         let mut responses = Vec::with_capacity(command_count);
         if command_count == 0 {
@@ -195,19 +223,48 @@ impl TemporalEngine {
             .as_ref()
             .map(|info| info.end_routing_bucket)
             .unwrap_or(u32::MAX);
-        if promote_model_maps_to_bucket_index_authority(
-            request.shard_id,
-            shard,
-            start_routing_bucket,
-            end_routing_bucket,
-        ) {
-            reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+        // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
+        // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
+        // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
+        // that `bucket_index` -- which each mutating command already upserts before returning --
+        // is in sync. Measured on a 290 MB store, that made an ingest 1.65 s of pure proxy CPU
+        // against 0.15 s on a 26 MB one, and it was the single hottest frame in a stack profile
+        // of the write path. Every mem0 write arrives here, so the guarded path was the one that
+        // mattered and the unguarded one was the one being used.
+        //
+        // `promote_scan_done` is `#[serde(skip)]`, so a freshly loaded shard still pays exactly
+        // one full reconcile before the skip engages, and with the gate off the scan runs on
+        // every batch precisely as before.
+        if !(phase1_flat_enabled() && shard.promote_scan_done) {
+            self.promote_scans
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if promote_model_maps_to_bucket_index_authority(
+                request.shard_id,
+                shard,
+                start_routing_bucket,
+                end_routing_bucket,
+            ) {
+                reconcile_secondary_views_from_bucket_index(&self.page_store, shard, None);
+            }
+            // Latch only once the shard actually holds model-map state: `promote` returns false
+            // without establishing anything on an empty shard, so guarding on non-emptiness
+            // avoids latching before the first real write.
+            if phase1_flat_enabled() && shard_has_model_entries(shard) {
+                shard.promote_scan_done = true;
+            }
         }
         let mut mutated_any = false;
+        // Set if any command in this batch rebuilt the bucket index, which invalidates the
+        // per-batch record of touched buckets and forces the full sweep below.
+        let mut rebuilt_bucket_index = false;
         let mut wal_commands = Vec::new();
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
+        // Some(components) while every mutating command in the batch is a pure page-upsert;
+        // one non-upsert write downgrades the whole record to snapshot semantics.
+        let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
+            Some(Vec::new());
         for command in request.commands {
             let write_command = is_write_command(&command);
             if readonly && write_command {
@@ -285,6 +342,13 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
+                match (
+                    &mut batch_upsert_components,
+                    command_upsert_components(&command_for_post_write),
+                ) {
+                    (Some(collected), Some(components)) => collected.extend(components),
+                    (state, _) => *state = None,
+                }
                 if object_keys.is_empty() {
                     rebuild_bucket_page_ownership(
                         request.shard_id,
@@ -313,6 +377,9 @@ impl TemporalEngine {
                         start_routing_bucket,
                         end_routing_bucket,
                     );
+                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                    // this batch touched no longer describes it.
+                    rebuilt_bucket_index = true;
                 }
                 if write_command {
                     wal_commands.push(command_for_post_write);
@@ -324,7 +391,14 @@ impl TemporalEngine {
             });
         }
         if mutated_any {
-            refresh_bucket_runtime_flags(shard);
+            if rebuilt_bucket_index {
+                refresh_bucket_runtime_flags(shard);
+            } else {
+                // Refresh only the buckets this batch disturbed. The full sweep is
+                // O(total pages), so running it per batch left bulk ingest quadratic in the
+                // corpus -- with a smaller constant than the per-write sweep, but the same shape.
+                refresh_pending_bucket_runtime_flags(shard);
+            }
             // Every write records a WAL entry before any page is written. async_storage only
             // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
             // buffered, no fsync (a fire-and-forget commit).
@@ -336,10 +410,34 @@ impl TemporalEngine {
             // which for a non-idempotent / time-unspecified command (FeatureAppend occur_time=0 ->
             // a fresh now on each apply) would otherwise duplicate points.
             let sync = !config.async_storage && !bulk_ingest_mode();
-            if let Err(err) =
+            // Use what the batch staged rather than discarding it. Every command here recorded
+            // what it DID; writing the commands instead left those items in the thread's buffer
+            // and put this whole path outside data-only, which is why a batch measured larger
+            // than the same writes made separately.
+            //
+            // one record carrying every item, when the items can be found again after a crash --
+            // the same rule a single write follows. Otherwise the commands go, as before.
+            let staged_outcomes = super::block_in_wal::take_outcomes();
+            let staged_blocks = super::block_in_wal::take_staged();
+            let recoverable = sync || !staged_blocks.is_empty();
+            let batch_result = if crate::wal::wal_data_only_enabled()
+                && !staged_outcomes.is_empty()
+                && recoverable
+            {
+                self.wal_store
+                    .append_batch_as_one_record(
+                        request.shard_id,
+                        staged_outcomes,
+                        staged_blocks,
+                        sync,
+                    )
+                    .map(|_| ())
+            } else {
                 self.wal_store
                     .append_batch_atomic(request.shard_id, wal_commands, sync)
-            {
+                    .map(|_| ())
+            };
+            if let Err(err) = batch_result {
                 if sync {
                     // A durable batch commit that failed is not durable; surface it rather than
                     // acking undurable writes (mirrors the single-command execute path).
@@ -374,12 +472,30 @@ impl TemporalEngine {
                 // Append the pages this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
-                let items = collect_command_index_items(
-                    shard,
-                    &delta_command_keys,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let (items, upsert_record) = match batch_upsert_components
+                    .as_ref()
+                    .filter(|_| upsert_deltas_enabled())
+                {
+                    Some(components) => (
+                        collect_upsert_index_items(
+                            shard,
+                            request.shard_id,
+                            components,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        true,
+                    ),
+                    None => (
+                        collect_command_index_items(
+                            shard,
+                            &delta_command_keys,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        false,
+                    ),
+                };
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 let _ = self.index_log_store.append_delta(
                     request.shard_id,
@@ -387,6 +503,7 @@ impl TemporalEngine {
                     key_states,
                     shard.applied_wal_sequence,
                     None,
+                    upsert_record,
                     // Non-blocking on the raft apply path (raft log is the durability source).
                     !raft_applying(),
                 );
@@ -483,7 +600,7 @@ impl TemporalEngine {
                 let mut publish_targets = shard
                     .strings
                     .iter()
-                    .filter(|(_, address)| address.page_slab_id == HOT_PAGE_SLAB_ID)
+                    .filter(|(_, address)| crate::wal_record::is_wal_resident(address.page_slab_id))
                     .map(|(key, address)| {
                         (PublishTarget::String { key: key.clone() }, address.clone())
                     })
@@ -494,7 +611,7 @@ impl TemporalEngine {
                         .iter()
                         .flat_map(|(key, fields)| {
                             fields.iter().filter_map(move |(field, address)| {
-                                (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
+                                crate::wal_record::is_wal_resident(address.page_slab_id).then(|| {
                                     (
                                         PublishTarget::Hash {
                                             key: key.clone(),
@@ -512,7 +629,7 @@ impl TemporalEngine {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
                     if let Some(address) = shard.strings.get(key) {
-                        if address.page_slab_id == HOT_PAGE_SLAB_ID {
+                        if crate::wal_record::is_wal_resident(address.page_slab_id) {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
                                 address.clone(),
@@ -521,7 +638,7 @@ impl TemporalEngine {
                     }
                     if let Some(fields) = shard.hashes.get(key) {
                         publish_targets.extend(fields.iter().filter_map(|(field, address)| {
-                            (address.page_slab_id == HOT_PAGE_SLAB_ID).then(|| {
+                            crate::wal_record::is_wal_resident(address.page_slab_id).then(|| {
                                 (
                                     PublishTarget::Hash {
                                         key: key.clone(),

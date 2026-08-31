@@ -30,12 +30,13 @@ impl ProxyService {
         old_topology_version: u64,
     ) -> Result<TopologyVersionReport, Status> {
         let options = self.options();
-        post_json_with_options::<_, TopologyVersionReport>(
+        post_json_with_options_and_headers::<_, TopologyVersionReport>(
             &options.meta_addr,
             "/meta/topology_version",
             &TopologyVersionRequest {
                 old_topology_version,
             },
+            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .map_err(|err| Status::error("topology_check_failed", err.to_string()))
@@ -55,13 +56,17 @@ impl ProxyService {
             config_version: proxy_config_version(&options),
             binary_version: options.binary_version.clone(),
         };
-        match post_json_with_options::<_, ProxyHeartbeatResponse>(
+        match post_json_with_options_and_headers::<_, ProxyHeartbeatResponse>(
             &options.meta_addr,
             "/proxies/heartbeat",
             &request,
+            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         ) {
             Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
+                // The metaserver is reachable and answering, so this is the cheapest moment to
+                // learn how many shards the cluster has.
+                self.refresh_cluster_shard_count();
                 self.record_service_discovery_heartbeat(&response.status);
                 self.apply_heartbeat_config(&response);
                 response
@@ -81,10 +86,11 @@ impl ProxyService {
                     return response;
                 }
                 if self.auto_register_proxy(&options).status.ok {
-                    let response = post_json_with_options::<_, ProxyHeartbeatResponse>(
+                    let response = post_json_with_options_and_headers::<_, ProxyHeartbeatResponse>(
                         &options.meta_addr,
                         "/proxies/heartbeat",
                         &request,
+                        &crate::meta::admin_auth_header(),
                         options.control_http_options(),
                     )
                     .unwrap_or_else(|err| ProxyHeartbeatResponse {
@@ -93,7 +99,7 @@ impl ProxyService {
                         namespace: String::new(),
                         config_version: 0,
                         serving_mode: "not_serving".to_string(),
-                        drop_percent: 0,
+                        drop_percent: None,
                     });
                     if response.status.ok {
                         self.record_service_discovery_heartbeat(&response.status);
@@ -131,7 +137,7 @@ impl ProxyService {
                     namespace: String::new(),
                     config_version: 0,
                     serving_mode: "not_serving".to_string(),
-                    drop_percent: 0,
+                    drop_percent: None,
                 }
             }
         }
@@ -173,7 +179,7 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .auto_register_total += 1;
-        let response = post_json_with_options::<_, AckResponse>(
+        let response = post_json_with_options_and_headers::<_, AckResponse>(
             &options.meta_addr,
             "/proxies/register",
             &RegisterProxyRequest {
@@ -183,6 +189,7 @@ impl ProxyService {
                 config_version: proxy_config_version(options),
                 binary_version: options.binary_version.clone(),
             },
+            &crate::meta::admin_auth_header(),
             options.control_http_options(),
         )
         .unwrap_or_else(|err| AckResponse {
@@ -197,7 +204,9 @@ impl ProxyService {
         let policy_changed = {
             let options = self.options();
             serving_mode.is_some_and(|mode| mode != options.serving_mode)
-                || response.drop_percent <= 100 && response.drop_percent != options.drop_percent
+                || response
+                    .drop_percent
+                    .is_some_and(|percent| percent <= 100 && percent != options.drop_percent)
         };
         if !response.config_changed && !policy_changed {
             return;
@@ -212,8 +221,14 @@ impl ProxyService {
         if let Some(serving_mode) = serving_mode {
             options.serving_mode = serving_mode;
         }
-        if response.drop_percent <= 100 {
-            options.drop_percent = response.drop_percent;
+        // Only when the metaserver actually spoke for it. The three fields above are each
+        // guarded the same way -- namespace when non-empty, config_version when non-zero,
+        // serving_mode when it parses -- and this one was not, so every heartbeat carried a
+        // hardcoded 0 into the field an operator sets to drain the proxy.
+        if let Some(percent) = response.drop_percent {
+            if percent <= 100 {
+                options.drop_percent = percent;
+            }
         }
         let _ = self.update_options_report(options);
     }

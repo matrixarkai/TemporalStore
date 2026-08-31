@@ -2446,19 +2446,28 @@ class _CodexPipelinePart3:
                 },
             )
 
-            embeddings = [
-                record
-                for record in adapter.read_all()
-                if record.get("record_type") == "context_embedding"
-                and record.get("embedding_type") in {"event_text", "session_l0"}
-            ]
-            self.assertEqual({"event_text", "session_l0"}, {record.get("embedding_type") for record in embeddings})
-            event_embedding = next(record for record in embeddings if record.get("embedding_type") == "event_text")
+            # Folded: the owners carry the vectors, and the retired records' lineage rides
+            # along under embedding_meta -- one meta per owner kind, exactly the fields the
+            # separate records used to persist.
+            rows = adapter.read_all()
+            event_owner = next(
+                record for record in rows
+                if record.get("record_type") == "context_event" and record.get("vector")
+            )
+            summary_owner = next(
+                record for record in rows
+                if record.get("record_type") == "context_summary"
+                and record.get("summary_type") == "session_l0"
+                and record.get("vector")
+            )
+            event_embedding = event_owner.get("embedding_meta") or {}
+            session_summary_embedding = summary_owner.get("embedding_meta") or {}
+            embeddings = [event_embedding, session_summary_embedding]
             self.assertEqual("assistant_response", event_embedding["event_type"])
             self.assertEqual("NEW_EVENT", event_embedding["classification"])
             self.assertEqual("observed", event_embedding["status"])
             self.assertEqual("message", event_embedding["source_kind"])
-            hot_event = next(record for record in adapter.read_all() if record.get("record_type") == "context_event")
+            hot_event = next(record for record in rows if record.get("record_type") == "context_event")
             self.assertEqual("assistant_response", hot_event["event_type"])
             event_indexes = {
                 record.get("index_name")
@@ -2467,7 +2476,6 @@ class _CodexPipelinePart3:
                 and record.get("data_model") == "context_event"
             }
             self.assertIn("event_type:assistant_response", event_indexes)
-            session_summary_embedding = next(record for record in embeddings if record.get("embedding_type") == "session_l0")
             self.assertNotIn("event_type", session_summary_embedding)
             for embedding in embeddings:
                 self.assertEqual("session", embedding["memory_scope"])

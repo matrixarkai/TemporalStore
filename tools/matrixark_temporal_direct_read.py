@@ -8,6 +8,11 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:  # package path
+    from tools.matrixark_temporal_location_codec import compact_location_list, expand_location
+except ImportError:
+    from matrixark_temporal_location_codec import compact_location_list, expand_location
+
 try:  # names owned by the parent module
     from tools.matrixark_mcp_temporal_adapters import (
     RETRIEVAL_HOT_RECORD_TYPES,
@@ -404,12 +409,29 @@ class _TemporalDirectReadMixin:
         records = result.get("records")
         if not isinstance(records, list):
             return []
-        return [
+        found = [
             record
             for record in records
             if isinstance(record, dict)
             and record.get("record_type") == "matrixark_async_pipeline_task"
         ]
+        # Tasks written since they gained a latest-state identity live in that hash, NOT the append
+        # log the scan walks -- so the scan alone would stop seeing new tasks and the drain would
+        # quietly never fire. Tasks written before it are still in the log. Both are returned, and
+        # the drain's own last-write-wins fold over task_hash reconciles a task that appears in
+        # both. A store that predates the change keeps working; a fresh one stops paying for the
+        # log side entirely, because nothing writes there any more.
+        try:
+            latest_state = self._load_latest_context_state_records()
+        except Exception:  # noqa: BLE001 - a missing latest-state view is not a reason to drop
+            latest_state = []                     # the tasks the scan did find.
+        found.extend(
+            record
+            for record in latest_state
+            if isinstance(record, dict)
+            and record.get("record_type") == "matrixark_async_pipeline_task"
+        )
+        return found
 
     def _direct_record_load_lock(self) -> threading.RLock:
         with _DIRECT_RECORD_CACHE_LOCK:
@@ -633,6 +655,32 @@ class _TemporalDirectReadMixin:
             rows = batch_hget(entries)
         except Exception as exc:
             return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "posting_buckets": [], "eligible": False, "reason": f"index_lookup_failed:{exc}"}
+        # A posting's ref set is held in bounded chunks so an append does not rewrite all of it.
+        # The head names how many follow; missing them would silently narrow every search that
+        # uses this term, which looks like a memory that was never stored.
+        chunk_entries = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get("value"):
+                continue
+            try:
+                decoded = json.loads(str(row.get("value")))
+            except Exception:
+                continue
+            if not isinstance(decoded, dict):
+                continue
+            try:
+                chunks = int(decoded.get("ref_chunks") or 0)
+            except (TypeError, ValueError):
+                chunks = 0
+            for index in range(1, chunks + 1):
+                chunk_entries.append({"key": row.get("key"), "field": f"{row.get('field')}#r{index}"})
+        if chunk_entries:
+            try:
+                extra = batch_hget(chunk_entries)
+            except Exception:
+                extra = []
+            if isinstance(extra, list):
+                rows = list(rows) + extra
         ref_hashes: set[int] = set()
         posting_buckets: set[int] = set()
         postings_found = 0
@@ -683,6 +731,32 @@ class _TemporalDirectReadMixin:
             rows = batch_hget(entries)
         except Exception:
             return {"locations": [], "locator_rows": 0}
+        # A locator list longer than one chunk continues in sibling fields "{ref}#1", "{ref}#2".
+        # The head names how many follow. Not reading them drops locations silently, which reads
+        # as a memory that simply is not there -- so this follow-up is not an optimisation.
+        chunk_entries = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or not row.get("value"):
+                continue
+            try:
+                decoded = json.loads(str(row.get("value")))
+            except Exception:
+                continue
+            if not isinstance(decoded, dict):
+                continue
+            try:
+                chunks = int(decoded.get("location_chunks") or 0)
+            except (TypeError, ValueError):
+                chunks = 0
+            for index in range(1, chunks + 1):
+                chunk_entries.append({"key": row.get("key"), "field": f"{row.get('field')}#{index}"})
+        if chunk_entries:
+            try:
+                extra = batch_hget(chunk_entries)
+                if isinstance(extra, list):
+                    rows = list(rows) + extra
+            except Exception:
+                pass
         locations: list[Json] = []
         resource_versions: set[str] = set()
         seen: set[tuple[str, str]] = set()
@@ -704,12 +778,13 @@ class _TemporalDirectReadMixin:
             if not isinstance(raw_locations, list):
                 continue
             locator_rows += 1
+            scan_base = str(getattr(self, "_record_hash_key", "") or "")
             for location in raw_locations:
-                if not isinstance(location, dict):
+                expanded = expand_location(location, scan_base)
+                if expanded is None:
                     continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
+                key, field = expanded
+                if (key, field) in seen:
                     continue
                 locations.append({"key": key, "field": field})
                 seen.add((key, field))

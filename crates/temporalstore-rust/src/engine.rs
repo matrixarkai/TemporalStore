@@ -23,6 +23,8 @@ mod object_manager;
 mod packed_pages;
 mod product_model;
 mod set_index_serde;
+mod zset_index_serde;
+mod seen_index_serde;
 mod bucket_dump_manifest_methods;
 mod storage_lifecycle_methods;
 mod storage_manager_cycle;
@@ -33,6 +35,8 @@ mod recovery_sweep_compact;
 mod persistence;
 mod bucket_dump_io;
 mod command_validation;
+pub mod resource_blobs;
+pub mod quota;
 pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
 // which previously kept a drifted subset that mis-classified context/control-state writes
@@ -40,7 +44,10 @@ pub(crate) mod eviction_sampler;
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
 mod storage_bucket_internals;
-pub use storage_bucket_internals::{live_page_scan_entries, reset_live_page_scan_entries};
+pub use storage_bucket_internals::{
+    bucket_page_index_visits, bucket_visit_sites, layout_by_caller, live_page_scan_entries,
+    reset_bucket_page_index_visits, reset_live_page_scan_entries,
+};
 mod compaction;
 mod storage_reporting;
 mod hashing;
@@ -57,6 +64,9 @@ mod state;
 
 use self::admin_report::*;
 use self::constants::*;
+// Re-exported so `wal_record::is_wal_resident` can answer for this sentinel too, rather than
+// every site comparing against it by hand.
+pub(crate) use self::constants::HOT_PAGE_SLAB_ID;
 use self::execute_on_shard::execute_on_shard;
 use self::context::*;
 use self::packed_pages::*;
@@ -83,8 +93,8 @@ use crate::index_log::LocalIndexLogStore;
 use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockStoreGcPolicy, BlockStoreOptions};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
-    ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryVector,
     ContextDirtyNode, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
@@ -103,24 +113,249 @@ pub struct TemporalEngine {
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
+    // Set only when the engine minted its own index_dir (no caller-supplied one): the
+    // engine owns that scratch directory, and the last clone's drop removes it.
+    index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
+    /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
+    /// environment carries a default.
+    quotas: Arc<RwLock<quota::QuotaTable>>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
     /// TS_PHASE1_FLAT this fires once per command (O(writes)); with the gate on the
     /// `promote_scan_done` fast-skip holds it to a small constant once warm. Read by the phase-1
     /// aging test to prove the per-write O(n) reconcile scan is gone.
     promote_scans: Arc<std::sync::atomic::AtomicU64>,
+    /// Diagnostics: how many recorded outcomes this engine has INSTALLED during WAL replay.
+    ///
+    /// Recovery falls back to re-executing a record's command when it carries no outcomes, so a
+    /// restart test comparing shard shapes passes either way and proves nothing about which path
+    /// ran. This makes the claim checkable: a test can require that recovery installed what the
+    /// writes recorded rather than quietly replaying commands again.
+    replay_installs: Arc<std::sync::atomic::AtomicU64>,
+    /// Where to mirror writes this engine performs OUTSIDE the request path.
+    ///
+    /// Request-path writes are mirrored a layer up, by the data node, which sees each command
+    /// as it arrives. Maintenance never passes through there: eviction and the expiry sweep
+    /// append their own tombstones straight to the WAL. In shared mode those deletions therefore
+    /// reached the local log and no other, so a successor replaying the shared log never saw
+    /// them and the key came back -- the same failure the tombstone was introduced to fix, one
+    /// level up from where it was fixed.
+    maintenance_mirror: Arc<RwLock<Option<Arc<dyn crate::data_node::SharedWalSink>>>>,
+}
+
+
+/// TS_WAL_RESIDENT_PAGES: how many log-resident pages one shard may hold before the oldest are
+/// written out to the block store. Zero disables the bound entirely.
+///
+/// resident pages are bounded because an unbounded set costs twice. Each one is a registration,
+/// which is memory; each one also pins `min_registered_sequence`, and reclaim may not truncate
+/// below the lowest registration — so a set that only grows is a log that can never be reclaimed
+/// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
+/// tracked writes ONE FOR ONE: 200 writes 200 held, 1200 writes 1200 held.
+///
+/// The default is deliberately generous. The recent ones are worth keeping where they are: a page
+/// written moments ago is the one a read is most likely to want, and its bytes are already in the
+/// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
+/// How many times a sweep has moved pages out, for tests that need to know the bound fired
+/// rather than that the count merely happened to stay low.
+pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn wal_resident_page_limit() -> usize {
+    std::env::var("TS_WAL_RESIDENT_PAGES")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(4096)
+}
+
+/// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
+/// materialise on every single append.
+fn wal_resident_page_floor(limit: usize) -> usize {
+    limit.saturating_sub(limit / 4).max(1)
 }
 
 impl TemporalEngine {
+    /// Rebuild the bucket first-index once, for a caller that deferred it across a window.
+    ///
+    /// Only meaningful after an `IngestReconstructWindow` has held off the per-record rebuilds;
+    /// calling it otherwise just repeats work the writes already did.
+    pub(crate) fn reconstruct_bucket_index_now(&self, shard_id: ShardId) {
+        let (start_routing_bucket, end_routing_bucket) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+            .unwrap_or((0, u32::MAX));
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return;
+        };
+        storage_bucket_internals::rebuild_bucket_first_index(
+            shard_id,
+            shard,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
+        storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+    }
+
+    /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
+    /// to the same place request-path writes go.
+    ///
+    /// Opt-in. With nothing attached the engine behaves exactly as it did.
+    pub fn set_maintenance_wal_mirror(&self, sink: Arc<dyn crate::data_node::SharedWalSink>) {
+        *self
+            .maintenance_mirror
+            .write()
+            .expect("maintenance mirror lock poisoned") = Some(sink);
+    }
+
+    /// Hand a maintenance-generated command to the mirror, if one is attached.
+    ///
+    /// Called after the local append succeeds, so the mirror never learns of a deletion the
+    /// local log does not already hold.
+    pub(crate) fn mirror_maintenance_write(&self, shard_id: ShardId, command: &Command) {
+        let sink = self
+            .maintenance_mirror
+            .read()
+            .expect("maintenance mirror lock poisoned")
+            .clone();
+        if let Some(sink) = sink {
+            sink.record_write(shard_id, command);
+        }
+    }
+
+    /// Set a shard's read and write rate limits, on a running engine.
+    ///
+    /// A rate of zero leaves that direction unlimited. Replacing a limit rebuilds the bucket, so
+    /// credit accumulated under the previous rate is dropped -- credit earned at one rate does not
+    /// mean anything at another.
+    pub fn set_shard_quota(&self, shard_id: ShardId, config: quota::ShardQuotaConfig) {
+        self.quotas
+            .write()
+            .expect("quota lock poisoned")
+            .set(shard_id, config);
+    }
+
+    /// What a shard's limits currently are, if any were set.
+    pub fn shard_quota(&self, shard_id: ShardId) -> Option<quota::ShardQuotaConfig> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .config_of(shard_id)
+    }
+
+    /// How far behind the log each loaded shard's durable index is, in records.
+    ///
+    /// Records land in the log first and the index accounts for them afterwards; this is the
+    /// distance between. It explains two symptoms that otherwise look unrelated to each other: a
+    /// restart that takes much longer than usual, because everything past the index anchor is
+    /// replayed, and reclaim that frees nothing, because it will not pass that anchor.
+    ///
+    /// Every shard in one pass. Callers that already hold a read lock on the shard table must not
+    /// ask per shard: a second read on the same lock, with a writer queued between them, deadlocks.
+    pub fn shard_index_lags(&self) -> Vec<(ShardId, u64)> {
+        let applied: Vec<(ShardId, u64)> = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            shards
+                .iter()
+                .map(|(shard_id, shard)| (*shard_id, shard.applied_wal_sequence.unwrap_or(0)))
+                .collect()
+        };
+        applied
+            .into_iter()
+            .map(|(shard_id, applied)| {
+                let appended = self.wal_store.cached_last_sequence(shard_id);
+                (shard_id, appended.saturating_sub(applied))
+            })
+            .collect()
+    }
+
+    /// How many keys each loaded shard is holding an expiry deadline for.
+    ///
+    /// The sweep's own report says what it REMOVED, which looks equally healthy whether the backlog
+    /// behind it is draining or growing. This says which. The engine already decides how hard to
+    /// work from this number -- it becomes the expiry component of the storage cycle's pressure
+    /// signal -- so publishing it only makes visible what is already being acted on.
+    ///
+    /// Every shard in one pass, for the same reason as the trailing distance: a caller inside the
+    /// metrics loop already holds a read lock on the shard table.
+    pub fn shard_expiry_backlogs(&self) -> Vec<(ShardId, u64)> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .iter()
+            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms.len() as u64))
+            .collect()
+    }
+
+    /// What a shard's rate limit has allowed and refused, if it has one.
+    ///
+    /// Absent means the shard is not limited, which is different from a limit that has refused
+    /// nothing -- and the difference is the one an operator actually wants.
+    pub fn shard_quota_counters(&self, shard_id: ShardId) -> Option<quota::QuotaCounters> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .counters_of(shard_id)
+    }
+
+    /// Every shard carrying a rate limit, for reporting.
+    pub fn rate_limited_shards(&self) -> Vec<ShardId> {
+        self.quotas
+            .read()
+            .expect("quota lock poisoned")
+            .limited_shards()
+    }
+
+    /// Take one token for `kind`. True when the command may proceed.
+    ///
+    /// The overwhelmingly common case is a shard with no limit, and that case must not pay for
+    /// this. The environment default is read once for the process rather than per command, and a
+    /// shard that is not limited settles under a READ lock -- taking the write lock on every
+    /// command would serialise the engine on a feature almost nobody has turned on.
+    fn charge_quota(&self, shard_id: ShardId, kind: quota::QuotaKind) -> bool {
+        static DEFAULT: std::sync::OnceLock<quota::ShardQuotaConfig> = std::sync::OnceLock::new();
+        let default = *DEFAULT.get_or_init(quota::ShardQuotaConfig::from_env);
+        if default.is_unlimited() {
+            let table = self.quotas.read().expect("quota lock poisoned");
+            if !table.limits(shard_id) {
+                return true;
+            }
+        }
+        self.quotas
+            .write()
+            .expect("quota lock poisoned")
+            .try_consume(shard_id, kind, default)
+    }
+
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None)
+        self.execute_with_storage_override(request, None, Vec::new())
+    }
+
+    /// Apply `request`, attaching `pages` to its log record instead of whatever this node
+    /// would derive for it.
+    ///
+    /// For replaying a write that was already acked somewhere else. A page can be derived
+    /// state -- a serialized counter series, a hash map -- and re-executing the command that
+    /// produced it reconstructs it only from a state this node may no longer have. When the
+    /// original bytes travelled with the command, they are the truth, and re-deriving would
+    /// quietly substitute a reconstruction for what was actually acknowledged.
+    ///
+    /// An empty `pages` is exactly [`execute`](Self::execute).
+    pub fn execute_with_carried_pages(
+        &self,
+        request: ExecuteRequest,
+        pages: Vec<crate::wal::StagedPage>,
+    ) -> ExecuteResponse {
+        self.execute_with_storage_override(request, None, pages)
     }
 
     pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, Some(false))
+        self.execute_with_storage_override(request, Some(false), Vec::new())
     }
 
     /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
@@ -131,7 +366,7 @@ impl TemporalEngine {
     /// tail is safe -- raft-log replay on restart re-applies and rebuilds the served index.
     pub fn execute_raft_apply(&self, request: ExecuteRequest) -> ExecuteResponse {
         let _guard = RaftApplyGuard::enter();
-        self.execute_with_storage_override(request, Some(false))
+        self.execute_with_storage_override(request, Some(false), Vec::new())
     }
 
     /// Apply a batch of committed raft entries to the state machine. Under
@@ -156,7 +391,7 @@ impl TemporalEngine {
         let batch_guard = RaftApplyBatchGuard::enter();
         let mut responses = Vec::with_capacity(requests.len());
         for request in requests {
-            responses.push(self.execute_with_storage_override(request, Some(false)));
+            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new()));
         }
         let barrier = batch_guard.take_barrier();
         drop(batch_guard);
@@ -189,10 +424,10 @@ impl TemporalEngine {
         };
         match replication_mode {
             EventReplicationMode::SyncStorage => {
-                self.execute_with_storage_override(request, Some(false))
+                self.execute_with_storage_override(request, Some(false), Vec::new())
             }
             EventReplicationMode::AsyncStorage => {
-                self.execute_with_storage_override(request, Some(true))
+                self.execute_with_storage_override(request, Some(true), Vec::new())
             }
             EventReplicationMode::Raft | EventReplicationMode::Inherit => self.execute(request),
         }
@@ -229,7 +464,43 @@ impl TemporalEngine {
         &self,
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
+        mut carried_pages: Vec<crate::wal::StagedPage>,
     ) -> ExecuteResponse {
+        // Charged before anything else, including the read-only fast path -- a read served without
+        // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
+        // not a limit.
+        //
+        // Not charged while applying a replicated entry or replaying the log. Refusing either is
+        // not shedding load: a follower that rejects what the leader committed diverges from it,
+        // and a replay that rejects a record already in the log cannot rebuild the shard.
+        if !raft_applying() && !replaying_wal() {
+            let kind = if command_validation::is_write_command(&request.command) {
+                quota::QuotaKind::Write
+            } else {
+                quota::QuotaKind::Read
+            };
+            if !self.charge_quota(request.shard_id, kind) {
+                return ExecuteResponse {
+                    status: Status::error(
+                        "quota_exhausted",
+                        format!(
+                            "shard {} is over its {} rate limit",
+                            request.shard_id,
+                            match kind {
+                                quota::QuotaKind::Write => "write",
+                                quota::QuotaKind::Read => "read",
+                            }
+                        ),
+                    ),
+                    response: CommandResponse::Empty,
+                };
+            }
+        }
+        // Blob commands run before the shard lock: blobs live beside the engine, not inside
+        // any shard's record state, and a large upload must never hold the shard write lock.
+        if let Some(response) = self.execute_resource_blob_command(&request) {
+            return response;
+        }
         if async_storage_override.is_some() {
             if let Some(response) = self.execute_read_only_fast_path(&request) {
                 return response;
@@ -421,6 +692,7 @@ impl TemporalEngine {
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
             let delta_command_keys = object_keys.clone();
+            let upsert_components = command_upsert_components(&command);
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -468,10 +740,10 @@ impl TemporalEngine {
             // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
             // rebuilds the first-index once at the end, so deferring here is
             // correctness-preserving.
-            if !defer_bucket_index_reconstruct()
+            let rebuilt_bucket_index = !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
-                    || shard.bucket_index.bucket_map.is_empty())
-            {
+                    || shard.bucket_index.bucket_map.is_empty());
+            if rebuilt_bucket_index {
                 rebuild_bucket_first_index(
                     request.shard_id,
                     shard,
@@ -480,14 +752,53 @@ impl TemporalEngine {
                 );
             }
             if !defer_bucket_index_reconstruct() {
-                refresh_bucket_runtime_flags(shard);
+                if rebuilt_bucket_index {
+                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                    // changed no longer describes it; recompute everything.
+                    refresh_bucket_runtime_flags(shard);
+                } else {
+                    // Refresh only what this write touched. Sweeping the shard here cost
+                    // O(total pages) on EVERY write, which made ingestion quadratic in the corpus.
+                    refresh_pending_bucket_runtime_flags(shard);
+                }
             }
             // Every
             // write records a WAL entry before any page is written.
             // async_storage only changes whether the commit BLOCKS: sync -> fsync,
             // async (or bulk backfill) -> buffered, no fsync (a fire-and-forget
             // commit). Page/index materialization stays deferred to dump.
+            // Drain what this execution recorded, on EVERY path -- not only the ones that go
+            // on to append. Staging happens during execution, but the append below is guarded,
+            // so any write that does not reach it left its items sitting in the thread's
+            // buffer for whatever wrote next on that thread to adopt as its own. Replay is the
+            // loud case: it re-executes commands with `replaying_wal()` true, stages an item
+            // for everything it re-applies, and appends none of it -- so the first write after
+            // a recovery inherited the recovery's items and recorded them as changes it had
+            // made itself. A later replay then installs them, and if one cannot be applied it
+            // aborts the whole shard load, taking unrelated keys down with it.
+            let mut staged_outcomes = block_in_wal::take_outcomes();
+            if !crate::wal::wal_outcome_items_enabled() {
+                staged_outcomes.clear();
+            }
             if write_command && !replaying_wal() {
+                // A write that changed the shard and recorded nothing cannot be replaced by its
+                // record. Off unless a sweep asks for it; when it is on, every existing test that
+                // writes anything becomes a probe for that property -- which covers far more of
+                // the mutating surface than a hand-listed fixture per command ever would.
+                if crate::wal::wal_outcome_items_enabled()
+                    && crate::wal::wal_outcome_strict()
+                    && staged_outcomes.is_empty()
+                {
+                    let rendered = format!("{command:?}");
+                    let label = rendered
+                        .split_once(' ')
+                        .map(|(head, _)| head.to_string())
+                        .unwrap_or(rendered);
+                    panic!(
+                        "TS_WAL_OUTCOME_STRICT: {label} changed shard {} and recorded nothing about what it did",
+                        request.shard_id
+                    );
+                }
                 let sync = !config.async_storage && !bulk_ingest_mode();
                 // Concurrent-commit path (gated, default OFF): for a synchronous write, only
                 // RESERVE the WAL sequence + append the bytes here (under the `shards` lock);
@@ -502,23 +813,49 @@ impl TemporalEngine {
                 // WAL sequence here; the single coalesced fdatasync is issued once for the whole
                 // batch in `execute_raft_apply_batch` (see `raft_apply_batch_active`). WAL order
                 // still equals apply order (reservation + byte-append stay under this lock).
-                let concurrent_commit =
-                    sync && (engine_concurrent_commit() || raft_apply_batch_active());
+                // The reserve-only branch appends bytes without pages, so a write carrying
+                // pages must take the staged branch or they would be dropped on the floor.
+                // Staged pages still force the other branch -- their addresses are back-patched
+                // once the record's log id exists, which this path does not do. Outcomes no
+                // longer do: they are resolved before they are staged, so they ride along and a
+                // recording write keeps its place in the group-commit queue.
+                let concurrent_commit = sync
+                    && carried_pages.is_empty()
+                    && (engine_concurrent_commit() || raft_apply_batch_active());
+                // Where each page this write stages ends up, so the index can carry it. Filled
+                // by the append below, which is the first moment the log id exists.
+                let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
+                    Vec::new();
                 let append_result = if concurrent_commit {
                     self.wal_store
-                        .append_for_group_commit(request.shard_id, command)
+                        .append_for_group_commit(
+                            request.shard_id,
+                            command,
+                            std::mem::take(&mut staged_outcomes),
+                        )
                         .map(|record| Some(record.sequence))
                 } else {
                     self.wal_store
-                        .append_with_sync_staged(
+                        .append_with_outcomes(
                             request.shard_id,
                             command,
                             sync,
-                            if block_in_wal::enabled() {
-                                block_in_wal::take_staged()
+                            if carried_pages.is_empty() {
+                                if block_in_wal::enabled() {
+                                    block_in_wal::take_staged()
+                                } else {
+                                    Vec::new()
+                                }
                             } else {
-                                Vec::new()
+                                // The caller handed us the pages the original write produced.
+                                // Drop whatever this execute re-derived rather than letting a
+                                // reconstruction win over the bytes that were acked.
+                                if block_in_wal::enabled() {
+                                    let _ = block_in_wal::take_staged();
+                                }
+                                std::mem::take(&mut carried_pages)
                             },
+                            std::mem::take(&mut staged_outcomes),
                         )
                         .map(|(record, log_id)| {
                             // Point every page this record carries at the record, keyed on the
@@ -526,17 +863,37 @@ impl TemporalEngine {
                             // carries, so a read finds it by identity rather than by timing.
                             if block_in_wal::enabled() {
                                 block_in_wal::register_record(
+                                    &self.page_store,
                                     request.shard_id,
                                     &record.staged_pages,
                                     log_id,
+                                    record.sequence,
                                     &self.wal_store,
                                 );
+                                // Same fact, written down where it survives this process.
+                                wal_resident_updates.extend(record.staged_pages.iter().map(
+                                    |page| {
+                                        (
+                                            page.object_id,
+                                            crate::engine::state::WalResidentPage {
+                                                log_id,
+                                                sequence: record.sequence,
+                                            },
+                                        )
+                                    },
+                                ));
                             }
                             None
                         })
                 };
                 match append_result {
                     Ok(deferred_seq) => {
+                        // The index carries where each staged page landed, so a reload can hand
+                        // the mapping back rather than leaving the address unresolvable until a
+                        // full replay re-derives the page.
+                        for (object_id, placement) in wal_resident_updates.drain(..) {
+                            shard.wal_resident_pages.insert(object_id, placement);
+                        }
                         // In concurrent-commit mode remember the reserved sequence; its durable
                         // barrier is awaited after the `shards` lock is dropped (below). The ack
                         // is returned strictly AFTER that barrier succeeds -- never before.
@@ -597,12 +954,30 @@ impl TemporalEngine {
                 // stream. The whole base index is NOT rewritten per write (that O(store) path
                 // is gone); the base is materialized at compaction/unload, the funnel serves
                 // the live in-memory shard between them, and cold reload folds base + deltas.
-                let items = collect_command_index_items(
-                    shard,
-                    &delta_command_keys,
-                    start_routing_bucket,
-                    end_routing_bucket,
-                );
+                let (items, upsert_record) = match upsert_components
+                    .as_ref()
+                    .filter(|_| upsert_deltas_enabled())
+                {
+                    Some(components) => (
+                        collect_upsert_index_items(
+                            shard,
+                            request.shard_id,
+                            components,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        true,
+                    ),
+                    None => (
+                        collect_command_index_items(
+                            shard,
+                            &delta_command_keys,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        false,
+                    ),
+                };
                 let key_states = capture_key_states(shard, &delta_command_keys);
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
@@ -619,6 +994,7 @@ impl TemporalEngine {
                     key_states,
                     shard.applied_wal_sequence,
                     None,
+                    upsert_record,
                     index_log_durable,
                 );
             }
@@ -648,6 +1024,23 @@ impl TemporalEngine {
                     ),
                     response: CommandResponse::Empty,
                 };
+            }
+        }
+        // Locks are released and the barrier is done: a safe point to bound the resident set.
+        // Not inside the write lock -- moving a page takes the same lock -- and not before the
+        // barrier, because the write this call is acking must reach disk first.
+        if write_command && !replaying_wal() {
+            let limit = wal_resident_page_limit();
+            if limit > 0
+                && block_in_wal::registration_count(&self.page_store, request.shard_id) > limit
+            {
+                let moved = self.materialize_oldest_resident_pages(
+                    request.shard_id,
+                    wal_resident_page_floor(limit),
+                );
+                if moved > 0 {
+                    RESIDENT_SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
             }
         }
         ExecuteResponse {
@@ -1379,7 +1772,7 @@ fn bulk_ingest_mode() -> bool {
 /// and the deferred context (model-map) records are append-only until the single
 /// reconstruct folds them in (bulk: flush_shard_index(); replay: replay_wal_into_shard()).
 fn defer_bucket_index_reconstruct() -> bool {
-    bulk_ingest_mode() || replaying_wal()
+    bulk_ingest_mode() || replaying_wal() || coalescing_index_reconstruct()
 }
 
 /// Whether load_shard should eagerly warm the in-memory cache tier from the page
@@ -1420,8 +1813,230 @@ pub(super) fn stamp_index_format_version(shard: &ShardState) -> serde_json::Valu
     value
 }
 
+/// Serialize a shard whose stamp is already current, straight to bytes.
+///
+/// The stamping path builds an entire intermediate `serde_json::Value` tree of the whole index
+/// before encoding it -- serializing a multi-megabyte structure twice, once into a tree of
+/// allocations and once into bytes, on every snapshot. A shard whose version field is already
+/// correct needs none of that; one whose field is stale still takes the stamping path, so the
+/// bytes are identical either way.
+pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
+    shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
+    encode_index_bytes(shard)
+}
+
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    serde_json::to_vec(&stamp_index_format_version(shard)).expect("shard index should serialize")
+    if shard.index_format_version == SHARD_INDEX_FORMAT_VERSION {
+        return encode_index_bytes(shard);
+    }
+    wrap_index_json(
+        serde_json::to_vec(&stamp_index_format_version(shard))
+            .expect("shard index should serialize"),
+    )
+}
+
+/// Container magic for a non-JSON served index. A JSON index starts with `{`, so a reader can
+/// tell the two apart from the first byte and never has to be told which it is holding.
+const INDEX_CONTAINER_MAGIC: &[u8] = b"TSIDX\x01";
+
+/// Payload codec ids inside the container. The whole point of the container is that this is an
+/// enumeration rather than a decision: each payload is an id whose decoder lands beside the
+/// others, and every index written before it keeps loading.
+const INDEX_CODEC_ZSTD_JSON: u8 = 1;
+/// The struct's own serde model in a binary encoding, then compressed.
+///
+/// Two decisions are baked in here, and measurement forced both.
+///
+/// NOT a hand-written protobuf schema. The served index IS a `ShardState` and has to round-trip
+/// one exactly. A schema mirroring its ~26 fields and their nested maps is a second definition of
+/// the same type, and the two drifting apart fails SILENTLY -- a field added here and forgotten
+/// there simply disappears from the durable image, and the loss surfaces as missing data after a
+/// reload. Riding the existing derives means a new field participates because it exists, not
+/// because someone remembered to add it in two places.
+///
+/// NOT a field-ORDER encoding either, which is what an earlier attempt at this used. These structs
+/// lean on `#[serde(skip_serializing_if)]` and `#[serde(default)]` -- `BlockAddress` alone skips
+/// six optional fields -- so the writer omits fields that a positional decoder still expects and
+/// the stream slides out of alignment. Tried directly here: the round-trip fails with "tag for
+/// enum is not valid, found 9". A self-describing encoding (field names, struct-as-map) keeps
+/// exactly the semantics JSON had, which is the only way those attributes stay honest.
+const INDEX_CODEC_ZSTD_MSGPACK: u8 = 2;
+
+/// Binary payloads carry the struct version they were written from, big-endian, right after the
+/// codec id. A name-free encoding read against a different struct does not fail, it MIS-READS --
+/// so the version is checked before a byte is decoded, and a mismatch is refused. This is also the
+/// trap that sank the previous attempt from the other end: the struct's own
+/// `index_format_version` field lives INSIDE the payload, so it cannot be consulted until after
+/// the decode it is supposed to guard, and a fresh shard carries 0 there regardless.
+const INDEX_BINARY_VERSION_BYTES: usize = 4;
+
+/// Compression level for the container payload. The served index is written whole, in the
+/// background, and read whole -- so this trades a little CPU on a path that is not the request
+/// path for a large cut in bytes written and bytes read at load.
+const INDEX_ZSTD_LEVEL: i32 = 3;
+
+/// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
+/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
+/// index written either way loads in either setting.
+/// Does this look like a served index, in either of the two formats a reader may be handed?
+///
+/// A JSON index starts with `{`; a container starts with its magic. Callers that only need to
+/// know "these bytes are an index" -- rather than to decode one -- ask this instead of parsing.
+pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
+}
+
+/// ON by default; `TS_INDEX_BINARY=0` is the escape hatch.
+///
+/// The container was built, measured and then left switched off, so every store written since has
+/// carried a plain-JSON served index. Measured at 300 adds into one subject, which is the shape
+/// that grows an index rather than merely touching it:
+///
+/// ```text
+///                    index      WAL    durable per memory   add p50
+///     JSON          19.9 MB  15.4 MB          227.0 KB      383.1 ms
+///     container      2.2 MB   2.3 MB          122.0 KB      367.8 ms
+/// ```
+///
+/// 46% less durable disk per memory. The WAL falls with it because index deltas ride the WAL, and
+/// page bytes do not move at all -- the data is unchanged, only the way the index is written.
+///
+/// A format default is a durability decision, not a size one, so the flip is gated on recovery
+/// rather than on the table above. Three cases, 120 memories each, comparing full retrieval
+/// snapshots across a restart:
+///
+///   * written by the container, reopened by it -- identical.
+///   * written as JSON, reopened with the container on -- identical, and the index on disk becomes
+///     a container, so an existing store upgrades in place with no migration step.
+///   * written by the container, reopened with the hatch pulled -- identical, and the index goes
+///     back to JSON. The flip is reversible in both directions, which is what makes it safe to
+///     make it the default rather than an opt-in.
+///
+/// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
+/// magic, so both formats stay loadable whichever way this flag points.
+fn index_binary_container_enabled() -> bool {
+    env_flag_default_on("TS_INDEX_BINARY")
+}
+
+/// TS_INDEX_CODEC: which payload to write when the container is on. `msgpack` (the default when
+/// the container is enabled) encodes the struct itself; `zstd-json` keeps the compressed-JSON
+/// payload, which any reader can still inspect with a decompressor and a JSON parser.
+fn index_container_codec() -> u8 {
+    match std::env::var("TS_INDEX_CODEC")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "zstd-json" | "json" => INDEX_CODEC_ZSTD_JSON,
+        _ => INDEX_CODEC_ZSTD_MSGPACK,
+    }
+}
+
+/// Encode a shard with the container's binary payload: the serde model as a binary map,
+/// compressed, behind the magic, the codec id and the struct version.
+fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
+    // struct-as-MAP, not struct-as-array: the array form is positional, and positional is what
+    // mis-reads a struct that skipped an absent optional.
+    let mut encoded = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut encoded).with_struct_map();
+    serde::Serialize::serialize(shard, &mut serializer).ok()?;
+    let payload = zstd::stream::encode_all(encoded.as_slice(), INDEX_ZSTD_LEVEL).ok()?;
+    let mut out = Vec::with_capacity(
+        payload.len() + INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES,
+    );
+    out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+    out.push(INDEX_CODEC_ZSTD_MSGPACK);
+    out.extend_from_slice(&SHARD_INDEX_FORMAT_VERSION.to_be_bytes());
+    out.extend_from_slice(&payload);
+    Some(out)
+}
+
+/// The single place the served index becomes bytes.
+///
+/// The measured cost of raw JSON here is real: a 1 000-memory store carries a 74 MB index, and a
+/// dump rewrites it whole. Compressing the same JSON keeps ONE representation of the struct --
+/// no schema mirrored by hand, no second definition to drift -- while cutting what is written and
+/// what must be read back at load.
+pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
+    if index_binary_container_enabled() && index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
+        // A binary payload only works from the struct itself, so the version-stamping path (which
+        // patches a `Value`) keeps to JSON; both still land inside the same container.
+        if let Some(encoded) = encode_index_msgpack(shard) {
+            return encoded;
+        }
+    }
+    wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
+}
+
+/// Put already-serialized index JSON into the container (or leave it as JSON when the container
+/// is off). Separate from `encode_index_bytes` because the version-stamping path serializes a
+/// patched `Value` rather than the struct, and both must produce the same on-disk shape.
+fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
+    if !index_binary_container_enabled() {
+        return json;
+    }
+    match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
+        Ok(payload) => {
+            let mut out = Vec::with_capacity(payload.len() + INDEX_CONTAINER_MAGIC.len() + 1);
+            out.extend_from_slice(INDEX_CONTAINER_MAGIC);
+            out.push(INDEX_CODEC_ZSTD_JSON);
+            out.extend_from_slice(&payload);
+            out
+        }
+        // A compression failure must not cost the index: fall back to the bytes that always work.
+        Err(_) => json,
+    }
+}
+
+/// The single place served-index bytes become a `ShardState`, whatever wrote them.
+///
+/// Sniffs the container magic, so JSON written by any earlier binary keeps loading unchanged and
+/// a container written by a newer one is refused with a clear error rather than mis-parsed. Every
+/// decode site goes through here; the previous attempt at a binary index failed precisely because
+/// the decoders were scattered and could not move together.
+pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
+    if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
+        return serde_json::from_slice::<ShardState>(bytes).map_err(|error| error.to_string());
+    }
+    let body = &bytes[INDEX_CONTAINER_MAGIC.len()..];
+    let (codec, payload) = body
+        .split_first()
+        .ok_or_else(|| "served index container is truncated".to_string())?;
+    match *codec {
+        INDEX_CODEC_ZSTD_JSON => {
+            let json = zstd::stream::decode_all(payload)
+                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
+            serde_json::from_slice::<ShardState>(&json).map_err(|error| error.to_string())
+        }
+        INDEX_CODEC_ZSTD_MSGPACK => {
+            if payload.len() < INDEX_BINARY_VERSION_BYTES {
+                return Err("served index binary payload is truncated".to_string());
+            }
+            let (version_bytes, body) = payload.split_at(INDEX_BINARY_VERSION_BYTES);
+            let version = u32::from_be_bytes(
+                version_bytes
+                    .try_into()
+                    .map_err(|_| "served index version stamp is malformed".to_string())?,
+            );
+            // Checked BEFORE decoding, deliberately. This payload is addressed by field order, so
+            // decoding it against a different struct shape does not error, it produces a plausible
+            // and wrong `ShardState`. Refusing is treated like an absent index: the caller replays
+            // the WAL and the index-log deltas, which is slower and correct.
+            if version != SHARD_INDEX_FORMAT_VERSION {
+                return Err(format!(
+                    "served index was written from struct version {version}, this binary is {}",
+                    SHARD_INDEX_FORMAT_VERSION
+                ));
+            }
+            let decoded = zstd::stream::decode_all(body)
+                .map_err(|error| format!("served index payload did not decompress: {error}"))?;
+            rmp_serde::from_slice::<ShardState>(&decoded).map_err(|error| error.to_string())
+        }
+        other => Err(format!(
+            "served index uses payload codec {other}, which this binary cannot read"
+        )),
+    }
 }
 
 /// Collect the served-index delta items for exactly the object keys a single write
@@ -1430,6 +2045,109 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
 /// touched key. Deleted pages ride as `deleted` tombstones so a fold applies the removal.
 /// Empty when the command has no object keys (e.g. a context rebuild command); the caller
 /// still appends the record so the index-log sequence advances per write.
+/// The (kind, object_key, component) writes a command performs when -- and only when -- every
+/// one of them lands through the page-upsert path (one new page per component, predecessor
+/// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
+/// rewrites), and the caller must fall back to the whole-object snapshot record.
+/// Emission gate for upsert delta records. ON by default; TS_INDEXLOG_UPSERT_DELTAS=0 is the
+/// escape hatch. The gate was OFF while a multi-restart scale store that reconstructed EMPTY
+/// on reload was attributed to the fold of a large upsert-record log. The scale
+/// reload-equality suite (tests/upsert_reload_equality.rs: thousands of batch-committed
+/// upsert records, config-log present, threshold dumps, SIGKILL restarts across two
+/// generations, verified under BOTH recovery modes) plus an engine-level reload of the
+/// preserved damaged store under every mode/artifact combination showed the fold reconstructs
+/// the full served view; the observed emptiness came from the serving layer answering
+/// vacuously (a discarded shard-load failure served as an empty store) and is fixed there.
+fn upsert_deltas_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("TS_INDEXLOG_UPSERT_DELTAS")
+            .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
+            .unwrap_or(true)
+    })
+}
+
+fn command_upsert_components(
+    command: &Command,
+) -> Option<Vec<(&'static str, String, Option<String>)>> {
+    match command {
+        Command::HashSet { key, field, .. } => {
+            Some(vec![("hash", key.clone(), Some(field.clone()))])
+        }
+        Command::HashMultiSet { key, entries } => Some(
+            entries
+                .iter()
+                .map(|(field, _)| ("hash", key.clone(), Some(field.clone())))
+                .collect(),
+        ),
+        Command::HashIncrBy { key, field, .. } => {
+            Some(vec![("hash", key.clone(), Some(field.clone()))])
+        }
+        Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
+        _ => None,
+    }
+}
+
+/// Build the exact index items for an upsert record from post-apply shard state: each written
+/// component's address is read back from the map the write just updated, so the logged page is
+/// precisely the one a reload must serve. A component absent from the map (its append failed)
+/// is skipped -- it produced no page to pin.
+fn collect_upsert_index_items(
+    shard: &ShardState,
+    shard_id: ShardId,
+    components: &[(&'static str, String, Option<String>)],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+) -> Vec<crate::index_log::IndexItem> {
+    let mut items = Vec::with_capacity(components.len());
+    for (kind, object_key, component) in components {
+        let address = match (*kind, component) {
+            ("hash", Some(field)) => shard
+                .hashes
+                .get(object_key)
+                .and_then(|fields| fields.get(field))
+                .cloned(),
+            ("string", None) => shard.strings.get(object_key).cloned(),
+            _ => None,
+        };
+        let Some(address) = address else { continue };
+        let routing_bucket = address
+            .routing_bucket
+            .unwrap_or_else(|| {
+                page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+            });
+        let object_id = address.object_id.unwrap_or_else(|| {
+            stable_page_object_id(shard_id, kind, object_key, component.as_deref())
+        });
+        let page_ref_key = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            kind,
+            object_key,
+            component.as_deref().unwrap_or(""),
+            address.page_slab_id,
+            address.offset,
+            address.length,
+            address.page_id.unwrap_or_default(),
+            address.generation.unwrap_or_default()
+        );
+        items.push(crate::index_log::IndexItem {
+            kind: crate::index_log::IndexItemKind::Page,
+            routing_bucket,
+            page_ref_key,
+            object_key: object_key.clone(),
+            model_id: (*kind).to_string(),
+            component: component.clone(),
+            object_id,
+            page_id: address.page_id.unwrap_or(0),
+            size: address.length,
+            in_log: address.page_id.is_none(),
+            deleted: false,
+            address: Some(address),
+        });
+    }
+    items
+}
+
 fn collect_command_index_items(
     shard: &ShardState,
     command_keys: &[String],
@@ -1457,7 +2175,7 @@ fn collect_command_index_items(
             items.push(crate::index_log::IndexItem {
                 kind: crate::index_log::IndexItemKind::Page,
                 routing_bucket,
-                page_ref_key: page_ref_key.clone(),
+                page_ref_key: page_ref_key.to_string(),
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone(),
                 component: page.component.clone(),
@@ -1503,7 +2221,6 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 "context_summaries": shard.context_summaries.get(key),
                 "context_compressions": shard.context_compressions.get(key),
                 "context_entities": shard.context_entities.get(key),
-                "context_embeddings": shard.context_embeddings.get(key),
             })
         })
         .collect()
@@ -1547,11 +2264,6 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_compressions"),
         );
         apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
-        apply_key_state_field(
-            &mut shard.context_embeddings,
-            key,
-            blob.get("context_embeddings"),
-        );
     }
 }
 
@@ -1611,8 +2323,24 @@ fn fold_delta_page_items(
     bucket_index: &mut CoreIndex,
     covered_keys: &BTreeSet<String>,
     items: &[crate::index_log::IndexItem],
+    upsert: bool,
 ) {
-    if !covered_keys.is_empty() {
+    if upsert {
+        // Upsert record: each item replaces exactly its (kind, object, component) predecessor,
+        // the same replacement the write path performed in memory. The predecessor lives in the
+        // same routing bucket (the bucket derives from the object key), so the removal scans one
+        // bucket per item and the covered-key wipe below stays untouched for snapshot records.
+        for item in items {
+            let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
+                continue;
+            };
+            bucket.page_index.retain(|_, page| {
+                !(page.model_id == item.model_id
+                    && page.object_key == item.object_key
+                    && page.component == item.component)
+            });
+        }
+    } else if !covered_keys.is_empty() {
         for bucket in bucket_index.bucket_map.values_mut() {
             bucket
                 .page_index
@@ -1637,7 +2365,9 @@ fn fold_delta_page_items(
             });
         bucket.object_index.insert(item.object_id);
         bucket.page_index.insert(
-            item.page_ref_key.clone(),
+            // The record carries an owned String; the in-memory structures share one allocation,
+            // so it is converted once here as the page is installed.
+            std::sync::Arc::from(item.page_ref_key.as_str()),
             PageIndex {
                 object_key: item.object_key.clone(),
                 model_id: item.model_id.clone(),
@@ -1782,6 +2512,46 @@ pub(super) fn resolve_now_ms() -> u64 {
         .unwrap_or_else(now_ms)
 }
 
+thread_local! {
+    static COALESCING_INDEX_RECONSTRUCT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn coalescing_index_reconstruct() -> bool {
+    COALESCING_INDEX_RECONSTRUCT.with(|cell| cell.get())
+}
+
+/// Hold the per-record index reconstruct for the span of ONE logical ingest.
+///
+/// A context ingest issues about eight writes, and no `Command::Context*` appears in
+/// `command_updates_bucket_index_directly`, so each one fires `rebuild_bucket_first_index` --
+/// which walks every live page in the shard. Measured end to end: 5 762 400 page visits across
+/// 600 adds, the per-add cost doubling as the corpus doubles, and latency degrading 11.79x over a
+/// run. With the reconstruct deferred the same run is FLAT at 0.97x and 26.6x faster on the last
+/// thirty adds.
+///
+/// This is the same mechanism bulk backfill and WAL replay already use, scoped to one ingest
+/// instead of a whole session: the window defers, and the caller reconstructs ONCE as it closes.
+/// It cuts eight reconstructs to one. It does NOT make an add O(1) in the corpus -- the single
+/// remaining reconstruct still walks the store -- and that needs the context write path to
+/// maintain the index the way `StringSet` does.
+///
+/// A guard rather than a pair of calls so an early return cannot leave the window open: a leaked
+/// window would silently stop reconstructing for the rest of the thread's life.
+pub(crate) struct IngestReconstructWindow;
+
+impl IngestReconstructWindow {
+    pub(crate) fn open() -> Self {
+        COALESCING_INDEX_RECONSTRUCT.with(|cell| cell.set(true));
+        Self
+    }
+}
+
+impl Drop for IngestReconstructWindow {
+    fn drop(&mut self) {
+        COALESCING_INDEX_RECONSTRUCT.with(|cell| cell.set(false));
+    }
+}
+
 struct WalReplayGuard;
 
 impl WalReplayGuard {
@@ -1907,8 +2677,9 @@ pub(super) fn wal_single_barrier() -> bool {
 /// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
 /// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
 /// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
-/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default OFF ->
-/// byte-identical to the legacy in-lock `append_with_sync` barrier. The ack is always returned
+/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default ON; set
+/// the variable to 0 for byte-identical behaviour to the legacy in-lock `append_with_sync`
+/// barrier. The ack is always returned
 /// strictly AFTER the covering barrier succeeds, so durability is never weakened.
 fn engine_concurrent_commit() -> bool {
     env_flag_default_on("TS_ENGINE_CONCURRENT_COMMIT")
@@ -1922,8 +2693,9 @@ fn engine_concurrent_commit() -> bool {
 /// `execute_with_storage_override`, which walks + clones every live model-map entry only to
 /// re-confirm that `bucket_index` (which every write already keeps authoritative) is in sync. With
 /// the gate on, once a promote scan has confirmed sync (`ShardState.promote_scan_done`) the hot
-/// path skips the repeat scan. Default OFF -> byte-identical (the scan runs every command exactly
-/// as before). Sharing one gate with the WAL fast-append so a single switch flattens phase-1.
+/// path skips the repeat scan. Default ON; set the variable to 0 for byte-identical behaviour
+/// (the scan then runs every command exactly as before). Sharing one gate with the WAL
+/// fast-append so a single switch flattens phase-1.
 fn phase1_flat_enabled() -> bool {
     env_flag_default_on("TS_PHASE1_FLAT")
 }
@@ -1931,7 +2703,8 @@ fn phase1_flat_enabled() -> bool {
 /// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
 /// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
 /// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
-/// O(1) cached WAL sequence. Default OFF -> per-entry `execute_raft_apply` (byte-identical). The
+/// O(1) cached WAL sequence. Default ON; set the variable to 0 for per-entry
+/// `execute_raft_apply` (byte-identical). The
 /// raft log stays the durability + reconstruction source; the coalesced barrier still completes
 /// before the raft runtime advances the durable applied_index.
 fn raft_apply_coalesce() -> bool {
@@ -2004,16 +2777,9 @@ fn next_temp_counter() -> u64 {
     COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+#[cfg(test)]
 fn unique_temp_path(kind: &str) -> PathBuf {
-    let counter = next_temp_counter();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    std::env::temp_dir().join(format!(
-        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
-        std::process::id()
-    ))
+    crate::scratch::unique_temp_path(kind)
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
@@ -2219,6 +2985,10 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
     removed |= shard.sets.remove(key).is_some();
+    removed |= shard.lists.remove(key).is_some();
+    removed |= shard.zsets.remove(key).is_some();
+    removed |= shard.buckets.remove(key).is_some();
+    removed |= shard.seen.remove(key).is_some();
     if shard.features.remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
@@ -2237,7 +3007,6 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
     removed |= shard.context_children.remove(key).is_some();
-    removed |= shard.context_embeddings.remove(key).is_some();
     removed |= shard.context_summaries.remove(key).is_some();
     removed |= shard.context_compressions.remove(key).is_some();
     removed
@@ -2278,17 +3047,13 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
-    if shard.bucket_index.object_component_lookup.is_empty() {
+    if shard.bucket_index.object_page_lookup.is_empty() {
         return shard.bucket_index.bucket_map.keys().copied().collect();
     }
     let mut buckets = BTreeSet::new();
     for kind in storage_model_kinds() {
-        if let Some(page_refs) = shard
-            .bucket_index
-            .object_component_lookup
-            .get(&object_component_lookup_key(kind, key))
-        {
-            buckets.extend(page_refs.iter().map(|page_ref| page_ref.routing_bucket));
+        if let Some(entry) = shard.bucket_index.object_page_refs(kind, key) {
+            buckets.extend(entry.all_refs().map(|page_ref| page_ref.routing_bucket));
         }
     }
     buckets
@@ -2296,10 +3061,28 @@ fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> 
 
 fn mark_bucket_index_page_deleted(
     shard: &mut ShardState,
+    shard_id: ShardId,
     model_id: &str,
     key: &str,
     component: Option<&str>,
 ) -> bool {
+    // Removing a member IS an outcome, and it is the one a command log states worst: replay has
+    // to re-run the removal and hope the state it removes from matches. Saying "this component
+    // is gone" needs no such hope. Recorded here because every typed removal comes through.
+    if crate::wal::wal_outcome_items_enabled() {
+        block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+            kind: model_id.to_string(),
+            object_key: key.to_string(),
+            component: component.map(str::to_string),
+            object_id: stable_page_object_id(shard_id, model_id, key, component),
+            routing_bucket: page_routing_bucket(key, 0, u32::MAX),
+            address: None,
+            value: None,
+            ttl: None,
+            deleted: true,
+            meta: true,
+        });
+    }
     let mut removed = false;
     let target_buckets = if shard.bucket_index.object_page_lookup.is_empty() {
         shard
@@ -2311,8 +3094,7 @@ fn mark_bucket_index_page_deleted(
     } else {
         shard
             .bucket_index
-            .object_page_lookup
-            .get(&object_page_lookup_key(model_id, key, component))
+            .page_refs_for(model_id, key, component)
             .map(|page_refs| {
                 page_refs
                     .iter()
@@ -2352,7 +3134,25 @@ fn mark_bucket_index_page_deleted(
         }
     }
     if removed {
-        shard.bucket_index.rebuild_object_page_lookup();
+        // Removes exactly the entry it deleted, instead of rebuilding the whole lookup.
+        //
+        // `rebuild_object_page_lookup` clears `object_page_lookup` and `object_component_lookup`
+        // and re-inserts one entry per page in the shard -- 58 696 of them on a 250 MB store --
+        // and this ran once per deleted page. A purge deleting five fields paid it five times.
+        // That is why deleting an identical, freshly created memory cost 41.7 ms against a 20 MB
+        // store and 385.7 ms against a 249 MB one, for provably the same closure: same four ids,
+        // same 96 records scanned, same five fields rewritten. Identical work, nine times the
+        // time, all of it spent rebuilding a lookup to the same shape it already had minus one
+        // entry.
+        //
+        // This is the exact inverse of the `insert_object_page_lookup` the page went in through,
+        // keyed on the same (model_id, object_key, component) -- which is how the upsert path
+        // has always maintained the lookup. The whole-object deleter above still rebuilds; it
+        // drops every component of a key at once, so the entry-at-a-time inverse does not apply
+        // to it unchanged.
+        shard
+            .bucket_index
+            .remove_object_page_lookup_entry(model_id, key, component);
     }
     removed
 }
@@ -2383,6 +3183,12 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     for members in shard.sets.values() {
         ids.extend(members.values().map(|address| address.page_slab_id));
     }
+    for elements in shard.lists.values() {
+        ids.extend(elements.values().map(|address| address.page_slab_id));
+    }
+    for members in shard.zsets.values() {
+        ids.extend(members.values().map(|(_, address)| address.page_slab_id));
+    }
     for series in shard.features.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
@@ -2405,9 +3211,6 @@ fn collect_live_page_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.context_children.values() {
-        ids.extend(series.values().map(|address| address.page_slab_id));
-    }
-    for series in shard.context_embeddings.values() {
         ids.extend(series.values().map(|address| address.page_slab_id));
     }
     for series in shard.context_summaries.values() {
@@ -2532,7 +3335,7 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    let bucket_index_exists = if shard.bucket_index.object_component_lookup.is_empty() {
+    let bucket_index_exists = if shard.bucket_index.object_page_lookup.is_empty() {
         shard.bucket_index.bucket_map.values().any(|bucket| {
             bucket.page_index
                 .values()
@@ -2542,10 +3345,9 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         storage_model_kinds().iter().any(|kind| {
             shard
                 .bucket_index
-                .object_component_lookup
-                .get(&object_component_lookup_key(kind, key))
+                .object_page_refs(kind, key)
                 .map(|page_refs| {
-                    page_refs.iter().any(|page_ref| {
+                    page_refs.all_refs().any(|page_ref| {
                         shard
                             .bucket_index
                             .bucket_map
@@ -2564,6 +3366,10 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
+        || shard.lists.contains_key(key)
+        || shard.zsets.contains_key(key)
+        || shard.buckets.contains_key(key)
+        || shard.seen.contains_key(key)
         || shard.features.contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_pages.contains_key(key)
@@ -2575,7 +3381,6 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_audits.contains_key(key)
         || shard.context_entities.contains_key(key)
         || shard.context_children.contains_key(key)
-        || shard.context_embeddings.contains_key(key)
         || shard.context_summaries.contains_key(key)
         || shard.context_compressions.contains_key(key)
 }
@@ -2585,6 +3390,8 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "string",
         "hash",
         "set",
+        "list",
+        "zset",
         "feature",
         "sequence",
         "control_state",
@@ -2627,7 +3434,7 @@ fn read_page_bytes(
     // the redirect and read the durable copy. On a genuine miss (never spilled, or spill failed)
     // this falls through to the normal read below, which returns None -- the WAL still holds the
     // value and a reload replays it.
-    if address.page_slab_id == HOT_PAGE_SLAB_ID {
+    if crate::wal_record::is_wal_resident(address.page_slab_id) {
         if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset) {
             if let Ok(bytes) = page_store.read(&real_address) {
                 let _ = cache.put(cache_key, bytes.clone());
@@ -2640,7 +3447,9 @@ fn read_page_bytes(
         // parses a log record.
         if block_in_wal::enabled() {
             if let Some(bytes) =
-                address.object_id.and_then(|object_id| block_in_wal::read_page(shard_id, object_id))
+                address
+                    .object_id
+                    .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
             {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
@@ -2695,15 +3504,23 @@ fn object_manager_stats(
 ) -> ObjectManagerStats {
     if !shard.bucket_index.bucket_map.is_empty() {
         let (bucket_object_count, bucket_page_ref_count, bucket_dirty_object_count) =
-            if !shard.bucket_index.object_component_lookup.is_empty() {
+            if !shard.bucket_index.object_page_lookup.is_empty() {
                 (
-                    shard.bucket_index.object_component_lookup.len(),
-                    shard
-                        .bucket_index
-                        .object_component_lookup
-                        .values()
-                        .map(BTreeSet::len)
-                        .sum::<usize>(),
+                    // The map is keyed by OBJECT now, so its length is the object count directly.
+                    // It used to be the length of a second map kept alongside this one, which is
+                    // the question that stopped that map from simply being deleted.
+                    shard.bucket_index.object_page_lookup.len(),
+                    // Maintained incrementally; the walk is the fallback for an index that has
+                    // been deserialized but not yet rebuilt. This runs on the heartbeat timer
+                    // under the shard read lock, so walking here shows up as write contention.
+                    shard.bucket_index.object_component_page_refs.unwrap_or_else(|| {
+                        shard
+                            .bucket_index
+                            .object_page_lookup
+                            .values()
+                            .map(crate::engine::state::ObjectPageRefs::total_refs)
+                            .sum::<usize>()
+                    }),
                     shard.dirty_objects.len(),
                 )
             } else {
@@ -2746,6 +3563,8 @@ fn object_manager_stats(
         let secondary_object_count = shard.strings.len()
             + shard.hashes.len()
             + shard.sets.len()
+            + shard.lists.len()
+            + shard.zsets.len()
             + shard.features.len()
             + shard.control_state.len()
             + shard.control_state_changes.len()
@@ -2755,7 +3574,6 @@ fn object_manager_stats(
             + shard.context_audits.len()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_children.len()
-            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_summaries.len()
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
@@ -2763,6 +3581,8 @@ fn object_manager_stats(
         let secondary_page_ref_count = shard.strings.len()
             + shard.hashes.values().map(HashMap::len).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.lists.values().map(BTreeMap::len).sum::<usize>()
+            + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_nodes.len()
             + shard
@@ -2786,7 +3606,6 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>()
-            + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
             + shard
                 .context_summaries
                 .values()
@@ -2797,15 +3616,34 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>();
-        let dirty_bucket_count = if !shard.bucket_index.object_component_lookup.is_empty() {
+        let dirty_bucket_count = if !shard.bucket_index.object_page_lookup.is_empty() {
             let mut dirty_buckets = shard
                 .bucket_index
                 .bucket_map
                 .iter()
                 .filter_map(|(bucket_id, bucket)| bucket.dirty.then_some(*bucket_id))
                 .collect::<BTreeSet<_>>();
-            for object_key in &shard.dirty_objects {
-                dirty_buckets.extend(bucket_index_target_buckets_for_object_key(shard, object_key));
+            // The loop below asks, per dirty object, which buckets hold its pages -- building a
+            // composite lookup key each time. `dirty_objects` grows with the ingest, and this
+            // runs on the heartbeat timer under the shard read lock, so it was the shard-sized
+            // work that made writes cost more as the store grew: profiling a running ingest
+            // showed `bucket_index_target_buckets_for_object_key` and `push_lookup_part` rising
+            // together with `RwLock::write_contended`.
+            //
+            // The answer is a set of bucket ids, so it cannot exceed the number of buckets. Once
+            // every bucket is already in it the loop cannot change the result, and during ingest
+            // that is the normal case -- `mark_async_dirty_object` marks an object's routing
+            // bucket dirty as it records the object, so the collect above already has them.
+            // Stopping there is exact, not an approximation.
+            let bucket_total = shard.bucket_index.bucket_map.len();
+            if dirty_buckets.len() < bucket_total {
+                for object_key in &shard.dirty_objects {
+                    dirty_buckets
+                        .extend(bucket_index_target_buckets_for_object_key(shard, object_key));
+                    if dirty_buckets.len() >= bucket_total {
+                        break;
+                    }
+                }
             }
             dirty_buckets.len()
         } else {
@@ -2833,6 +3671,8 @@ fn object_manager_stats(
     let object_count = shard.strings.len()
         + shard.hashes.len()
         + shard.sets.len()
+        + shard.lists.len()
+        + shard.zsets.len()
         + shard.features.len()
         + shard.control_state.len()
         + shard.context_nodes.len()
@@ -2841,12 +3681,13 @@ fn object_manager_stats(
         + shard.context_audits.len()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_children.len()
-        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
     let page_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.lists.values().map(BTreeMap::len).sum::<usize>()
+        + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_nodes.len()
         + shard
@@ -2870,7 +3711,6 @@ fn object_manager_stats(
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()
-        + shard.context_embeddings.values().map(BTreeMap::len).sum::<usize>()
         + shard
             .context_summaries
             .values()
@@ -2905,3 +3745,114 @@ fn object_manager_stats(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod flag_default_doc_tests {
+    use std::path::Path;
+
+    /// A flag's doc comment must not claim the opposite default from its code.
+    ///
+    /// Seven of them did: they called `env_flag_default_on` -- true unless the variable is
+    /// explicitly 0/false/no/off -- while their comment said "Default OFF", usually with a
+    /// reassuring "byte-identical / exactly as before" after it. A reader asking the question
+    /// that matters ("is this path actually live?") got the wrong answer, and nothing failed,
+    /// because a comment cannot fail. This reads the sources so it can.
+    #[test]
+    fn flag_docs_state_the_default_the_code_actually_has() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut wrong: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        collect_rs(&root, &mut files);
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                let trimmed = line.trim_start();
+                if !trimmed.starts_with("fn ") || !trimmed.ends_with("() -> bool {") {
+                    continue;
+                }
+                // body: up to the closing brace at the same indent
+                let mut body = String::new();
+                for next in lines.iter().skip(index + 1) {
+                    if next.trim_start() == "}" && next.len() - next.trim_start().len()
+                        == line.len() - line.trim_start().len()
+                    {
+                        break;
+                    }
+                    body.push_str(next);
+                    body.push('\n');
+                }
+                let actual_on = if body.contains("env_flag_default_on") {
+                    true
+                } else if body.contains("env_flag_on") {
+                    false
+                } else {
+                    continue;
+                };
+
+                // doc block immediately above
+                let mut doc = String::new();
+                for back in (0..index).rev() {
+                    let candidate = lines[back].trim_start();
+                    if candidate.starts_with("///") {
+                        doc.insert_str(0, &format!("{candidate}\n"));
+                    } else if candidate.starts_with("#[") {
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+                if doc.is_empty() {
+                    continue;
+                }
+                checked += 1;
+                let low = doc.to_ascii_lowercase();
+                let says_off = low.contains("default off") || low.contains("defaults off");
+                let says_on = low.contains("default on") || low.contains("defaults on");
+                let name = trimmed
+                    .trim_start_matches("fn ")
+                    .split('(')
+                    .next()
+                    .unwrap_or("?");
+                if actual_on && says_off && !says_on {
+                    wrong.push(format!(
+                        "{}::{name} documents \"default off\" but calls env_flag_default_on",
+                        file.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                if !actual_on && says_on && !says_off {
+                    wrong.push(format!(
+                        "{}::{name} documents \"default on\" but calls env_flag_on",
+                        file.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+            }
+        }
+
+        assert!(checked > 0, "no documented flag functions found; the scan is broken");
+        assert!(
+            wrong.is_empty(),
+            "flag docs contradict their code ({} of {checked} checked):\n  {}",
+            wrong.len(),
+            wrong.join("\n  ")
+        );
+    }
+
+    fn collect_rs(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+}

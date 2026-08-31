@@ -57,8 +57,11 @@ fn main() {
     // large log, so almost everything present has to survive the operation.
     let retain_from = (records / 10) as u64;
     let started = Instant::now();
+    // A measurement harness driving reclaim directly: there is no durable index here to
+    // anchor against, and constraining the pass would measure the clamp instead of the copy.
+    let durable_index = temporalstore_rust::wal::DurableIndexAnchor::unproven(shard);
     let report = store
-        .gc_before_sequence(shard, retain_from)
+        .gc_before_sequence(shard, retain_from, &durable_index)
         .expect("reclaim");
     let reclaim_ms = started.elapsed().as_secs_f64() * 1000.0;
     let bytes_after = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);

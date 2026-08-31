@@ -425,6 +425,45 @@ impl SingleNodeMeta {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_server_the_check_skipped_is_not_reported_as_consistent() {
+        // The check skips a server that has never reported shard states -- it
+        // `continue`s, so that server's shards are never examined. Without this
+        // reported, `diverged 0` means either "nothing diverged" or "the servers
+        // that mattered were never looked at", and nothing tells them apart.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                numa_nodes: Vec::new(),
+                server_addr: "quiet".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+
+        let mut checker = ShardChecker::new(ShardCheckOptions::default());
+        let (report, _) = meta.check_shard_divergence(&mut checker);
+        assert!(report.diverged.is_empty());
+        assert_eq!(report.skipped_without_shard_reports.len(), 1, "{report:?}");
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains(
+                "temporalstore_meta_divergence_skipped{reason=\"no_shard_reports\"} 1"
+            ),
+            "a server the check never examined was not reported:\n{exported}"
+        );
+        // And the clean reason stays at zero, so the two are distinguishable.
+        assert!(
+            exported
+                .contains("temporalstore_meta_divergence_skipped{reason=\"reboot_grace\"} 0"),
+            "{exported}"
+        );
+    }
+
     use super::*;
 
     fn owners(pairs: &[(ShardId, &str)]) -> BTreeMap<ShardId, String> {
@@ -465,6 +504,8 @@ mod tests {
     /// A healthy, reporting server that boots long before any test clock.
     fn server(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
+            reported_record_count: 0,
+            reported_storage_bytes: 0,
             numa_nodes: Vec::new(),
             load_key_count: 0,
             load_memory_bytes: 0,

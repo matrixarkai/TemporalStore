@@ -23,7 +23,7 @@ DEFAULT_QUERIES = [
     "What did the user ask about and Rust TemporalStore parity?",
     "What did the user ask about Windows Docker installation for TemporalStore?",
     "What did the user ask about context management data fields and compaction?",
-    "What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and VikingMem benchmarking?",
+    "What did the user ask about Qwen, Ollama, vLLM, LoCoMo, LongMemEval, and ExternalBaseline benchmarking?",
     "What did the user ask about MatrixObject, shared storage, S3, and object storage?",
 ]
 
@@ -250,7 +250,7 @@ def build_entities(events: list[ContextEvent], max_entities: int) -> list[Contex
         "vllm": "oss_reader_benchmark",
         "locomo": "memory_benchmark",
         "longmemeval": "memory_benchmark",
-        "vikingmem": "memory_benchmark",
+        "external_baseline": "memory_benchmark",
         "windows": "windows_docker_install",
         "docker": "windows_docker_install",
         "matrixobject": "matrixobject_shared_storage",

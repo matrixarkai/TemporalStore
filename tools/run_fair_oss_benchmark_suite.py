@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run fair OSS MatrixArk vs OpenViking/VikingMem-style benchmark pairs.
+"""Run fair OSS MatrixArk vs ExternalBaseline/ExternalBaseline-style benchmark pairs.
 
 This wrapper exists to prevent accidental apples-to-oranges comparisons. It
 pins one OSS reader, one embedding/encoding model, one retrieval budget, one
 reader context budget, and one retrieval-budget split across MatrixArk and
-OpenViking/VikingMem-style baselines, then validates and summarizes the output.
+ExternalBaseline/ExternalBaseline-style baselines, then validates and summarizes the output.
 """
 
 from __future__ import annotations
@@ -31,13 +31,13 @@ def main() -> int:
     parser.add_argument(
         "--oss-reader-model",
         default="",
-        help="Shared OSS reader model forced for MatrixArk and OpenViking/VikingMem. Overrides --reader-model.",
+        help="Shared OSS reader model forced for MatrixArk and ExternalBaseline/ExternalBaseline. Overrides --reader-model.",
     )
     parser.add_argument(
         "--oss-encoding-model",
         default="",
         help=(
-            "Shared OSS encoding/embedding model forced for MatrixArk and OpenViking/VikingMem. "
+            "Shared OSS encoding/embedding model forced for MatrixArk and ExternalBaseline/ExternalBaseline. "
             "Overrides --embedding-model."
         ),
     )
@@ -48,7 +48,7 @@ def main() -> int:
         choices=("candidate-only", "candidate-first", "candidate-hybrid", "context-only"),
         default="candidate-only",
         help=(
-            "Reader prompt/evidence policy forced for MatrixArk and OpenViking/VikingMem. "
+            "Reader prompt/evidence policy forced for MatrixArk and ExternalBaseline/ExternalBaseline. "
             "candidate-only is fastest and tests the extracted answer candidate; candidate-first "
             "also gives the OSS reader compact evidence; candidate-hybrid lets the OSS reader answer "
             "from compact evidence but falls back to a clean candidate when the reader rambles; "
@@ -128,12 +128,12 @@ def main() -> int:
 
     locomo_matrixark = out / "matrixark_locomo_oss_report.json"
     locomo_matrixark_misses = out / "matrixark_locomo_oss_misses.jsonl"
-    locomo_baseline = out / "openviking_locomo_oss_report.json"
+    locomo_baseline = out / "external_baseline_locomo_oss_report.json"
     locomo_validation = out / "locomo_shared_oss_contract_validation.json"
 
     longmem_matrixark = out / "matrixark_longmemeval_s_oss_report.json"
     longmem_matrixark_misses = out / "matrixark_longmemeval_s_oss_misses.jsonl"
-    longmem_baseline = out / "openviking_longmemeval_s_oss_report.json"
+    longmem_baseline = out / "external_baseline_longmemeval_s_oss_report.json"
     longmem_validation = out / "longmemeval_s_shared_oss_contract_validation.json"
 
     if not args.skip_matrixark:
@@ -159,7 +159,7 @@ def main() -> int:
 
     if not args.skip_baseline:
         if not run_or_record_blocker(
-            "openviking_locomo",
+            "external_baseline_locomo",
             locomo_baseline_command(repo, args, locomo_matrixark, locomo_baseline),
             repo,
             env,
@@ -168,7 +168,7 @@ def main() -> int:
         ):
             return 1
         if not run_or_record_blocker(
-            "openviking_longmemeval_s",
+            "external_baseline_longmemeval_s",
             longmem_baseline_command(repo, args, longmem_matrixark, longmem_baseline),
             repo,
             env,
@@ -189,7 +189,7 @@ def main() -> int:
             "--report",
             str(locomo_baseline),
             "--label",
-            "openviking_locomo",
+            "external_baseline_locomo",
             "--allow-diagnostic",
             "--output-json",
             str(locomo_validation),
@@ -208,7 +208,7 @@ def main() -> int:
             "--report",
             str(longmem_baseline),
             "--label",
-            "openviking_longmem",
+            "external_baseline_longmem",
             "--allow-diagnostic",
             "--output-json",
             str(longmem_validation),
@@ -275,7 +275,7 @@ def locomo_matrixark_command(repo: Path, args: argparse.Namespace, report: Path,
         "--embedding-model",
         args.embedding_model,
         "--baseline-provider-name",
-        f"openviking-direct-source-{args.reader_model}",
+        f"external_baseline-direct-source-{args.reader_model}",
         "--baseline-reader-model",
         args.reader_model,
         "--baseline-embedding-model",
@@ -367,7 +367,7 @@ def longmem_matrixark_command(repo: Path, args: argparse.Namespace, report: Path
         "--embedding-model",
         args.embedding_model,
         "--baseline-provider-name",
-        f"openviking-direct-source-{args.reader_model}",
+        f"external_baseline-direct-source-{args.reader_model}",
         "--baseline-reader-model",
         args.reader_model,
         "--baseline-embedding-model",
@@ -405,7 +405,7 @@ def longmem_matrixark_command(repo: Path, args: argparse.Namespace, report: Path
 def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_report: Path, report: Path) -> list[str]:
     return [
         sys.executable,
-        str(repo / "tools" / "run_openviking_locomo_source_retrieval_baseline.py"),
+        str(repo / "tools" / "run_external_baseline_locomo_source_retrieval.py"),
         "--input",
         args.locomo_input,
         "--report",
@@ -419,7 +419,7 @@ def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_repo
         "--embedding-model",
         args.embedding_model,
         "--provider-name",
-        f"openviking-direct-source-{args.reader_model}",
+        f"external_baseline-direct-source-{args.reader_model}",
         "--reader-timeout-seconds",
         str(args.reader_timeout_seconds),
         "--reader-max-context-chars",
@@ -453,7 +453,7 @@ def locomo_baseline_command(repo: Path, args: argparse.Namespace, matrixark_repo
 def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_report: Path, report: Path) -> list[str]:
     command = [
         sys.executable,
-        str(repo / "tools" / "run_openviking_longmem_source_retrieval_baseline.py"),
+        str(repo / "tools" / "run_external_baseline_longmem_source_retrieval.py"),
         "--input",
         args.longmem_input,
         "--report",
@@ -467,7 +467,7 @@ def longmem_baseline_command(repo: Path, args: argparse.Namespace, matrixark_rep
         "--embedding-model",
         args.embedding_model,
         "--provider-name",
-        f"openviking-direct-source-{args.reader_model}",
+        f"external_baseline-direct-source-{args.reader_model}",
         "--reader-timeout-seconds",
         str(args.reader_timeout_seconds),
         "--top-k",
@@ -560,7 +560,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
         "same_oss_reader_model_forced": True,
         "same_oss_encoding_model_forced": True,
         "rule": (
-            "MatrixArk, OpenViking, VikingMem, and other baselines in this suite are forced to use "
+            "MatrixArk, ExternalBaseline, ExternalBaseline, and other baselines in this suite are forced to use "
             "one shared OSS reader model and one shared encoding/embedding model. Child runners and "
             "the validator fail closed if a report drifts from this stack."
         ),
@@ -578,7 +578,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "reader_fallback_allowed": False,
             "contract_required": True,
         },
-        "openviking_stack": {
+        "external_baseline_stack": {
             "reader_model": reader_model,
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
@@ -586,7 +586,7 @@ def write_shared_oss_stack_contract(output_root: Path, args: argparse.Namespace)
             "reader_fallback_allowed": False,
             "contract_required": True,
         },
-        "vikingmem_stack": {
+        "external_baseline_stack": {
             "reader_model": reader_model,
             "embedding_model": embedding_model,
             "encoding_model": embedding_model,
@@ -656,7 +656,7 @@ def run_or_record_blocker(
         "cwd": str(cwd),
         "message": (
             "Fair OSS benchmark suite stopped before comparison because this stage failed. "
-            "Do not use partial rows as MatrixArk vs OpenViking/VikingMem quality evidence."
+            "Do not use partial rows as MatrixArk vs ExternalBaseline/ExternalBaseline quality evidence."
         ),
         "stdout_tail": tail_text(completed.stdout),
         "stderr_tail": tail_text(completed.stderr),
