@@ -1941,10 +1941,16 @@ pub fn retrieve_context(
                 let foreign_model = node.embedding_model_hash != 0
                     && active_embedding_model_hash != 0
                     && node.embedding_model_hash != active_embedding_model_hash;
-                if node.vector.is_empty() || foreign_model {
-                    // A vector from another encoder is treated exactly as an un-embedded node:
+                // Width catches what the hash cannot: a store written before the hash existed
+                // carries 0 on both sides, is therefore not "foreign", and could still hold
+                // vectors of another width. Scoring those returns 0 and -- worse -- marks the
+                // node as scored, which is what excludes it from the lexical pass below.
+                let incomparable_width = node.vector.len() != query_embedding.len();
+                if node.vector.is_empty() || foreign_model || incomparable_width {
+                    // A vector that cannot be compared is treated exactly as an un-embedded node:
                     // handed to the hybrid lexical pass, scoring nothing. Two encoders are often
-                    // the same width, so nothing else in the stack would have noticed.
+                    // the same width, so nothing else in the stack would have noticed the model
+                    // change; and two widths are not comparable at all.
                     l0_row_fallback.push(node.node_hash);
                 } else {
                     let score =
@@ -1982,6 +1988,15 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
             for entry in vectors {
+                // A summary vector carries no model hash -- ContextSummaryVector is node_hash plus
+                // vector -- so width is the only thing that can be checked here, and a same-width
+                // encoder swap is uncatchable at this level without a schema change. Skipping
+                // rather than scoring 0 matters as much as the check: `scores.1` is what the
+                // hybrid lexical pass reads to decide a node needs rescuing, so counting an
+                // incomparable vector would strand the node with no score of any kind.
+                if entry.vector.len() != query_embedding.len() {
+                    continue;
+                }
                 let score =
                     context_embedding_similarity_micros(&query_embedding, &entry.vector);
                 let scores = summary_scores_by_node.entry(entry.node_hash).or_default();

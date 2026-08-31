@@ -3240,3 +3240,62 @@ fn retrieve_still_scores_vectors_whose_encoder_was_never_recorded() {
         "a vector whose encoder was never recorded was refused -- unknown is not foreign"
     );
 }
+
+
+#[test]
+fn retrieve_falls_back_on_a_width_mismatch_even_when_no_encoder_was_recorded() {
+    // The hash check cannot see this one: a store written before the field existed carries 0 on
+    // both sides, so nothing is "foreign", and it can still hold vectors of another width --
+    // `mixed_dimensions` is a state the product reports, so this is not hypothetical.
+    //
+    // Scoring it returns 0, and the damage is not the 0: the call site counts the node as scored,
+    // and the hybrid lexical pass only rescues nodes that were never scored. The node ends up with
+    // no cosine and no lexical score either.
+    let engine = test_engine();
+    let node_hash = ingest_with_encoder(
+        &engine,
+        20260834,
+        provider_with_encoder("chat-alpha", "encoder-alpha"),
+    );
+    let node = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash: 20260834,
+            node_hash,
+        },
+    });
+    let mut stored = match node.response {
+        CommandResponse::ContextNode { node: Some(node), .. } => node,
+        other => panic!("expected the node back, got {other:?}"),
+    };
+    assert!(!stored.vector.is_empty());
+
+    // A vector of another width, with no encoder recorded -- exactly what an older store holds.
+    stored.vector = vec![0.5_f32; stored.vector.len() * 2];
+    stored.embedding_model_hash = 0;
+    let put = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: 20260834,
+            node: stored,
+        },
+    });
+    assert!(put.status.ok, "{:?}", put.status);
+
+    let report = retrieve_with_encoder(
+        &engine,
+        20260834,
+        node_hash,
+        provider_with_encoder("chat-alpha", "encoder-alpha"),
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert!(
+        report.fanout_plan.summary_candidate_nodes > 0,
+        "no candidates, so the count below would be vacuously zero"
+    );
+    assert!(
+        report.fanout_plan.l0_row_fallback_nodes > 0,
+        "a vector of another width was scored and counted as scored, which is what keeps the \
+         hybrid lexical pass from rescuing the node"
+    );
+}
