@@ -1451,14 +1451,13 @@ impl TemporalStoreTable {
         if self.client.inner.options.meta_addr.is_none() {
             return Ok(());
         }
-        let key = table_combine_name(&self.namespace, &self.table_name);
         let due = self
             .client
             .inner
             .meta_sync_tables
             .lock()
             .expect("client meta sync table lock poisoned")
-            .get(&key)
+            .get(&self.combined_name)
             .map(|state| state.next_sync_after_unix_ms <= now_unix_ms())
             .unwrap_or(false);
         if due {
