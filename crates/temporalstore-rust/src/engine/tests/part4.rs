@@ -9698,3 +9698,384 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
         }
     }
 }
+/// Does a context node page end up in the bucket index, or not?
+///
+/// This decides how the per-record rebuild can be removed, and the code says two things that pull
+/// opposite ways. The executor for `ContextUpsertNode` stages its outcome under its own kind with
+/// the comment "this writes a hash page and -- unlike HashSet -- never registers it in the bucket
+/// index". But the page IS put into `shard.hashes`, and `rebuild_bucket_first_index` derives the
+/// index from `collect_model_live_page_entries`, which reads the model maps.
+///
+/// If context pages ARE in the index, the rebuild is load-bearing and removing it needs the write
+/// path to call `upsert_bucket_index_page` itself. If they are NOT, the rebuild is doing nothing
+/// for these writes and they can be classified as not dirtying the index at all -- a much smaller
+/// change. Reading the code has been wrong repeatedly here, so this asks the shard.
+#[test]
+fn whether_a_context_page_reaches_the_bucket_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        2 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A plain hash write, as the control: this one is known to register.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "control-hash".to_string(),
+            field: "f".to_string(),
+            value: vec![b'h'; 64],
+        },
+    });
+
+    let ingest = crate::context_workflow::ingest_extract_context(
+        &engine,
+        crate::context_workflow::ContextIngestExtractRequest {
+            shard_id: 1,
+            tenant_hash: 4242,
+            sources: vec![crate::context_workflow::ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 4242,
+                source_kind: crate::context_workflow::ContextSourceKind::Incident,
+                source_id: "IDX-1".to_string(),
+                title: "index membership".to_string(),
+                body: "does this page reach the bucket index".to_string(),
+                timestamp_ms: 1_000,
+                provider: crate::context_workflow::ContextModelProviderConfig::default(),
+            }],
+            provider: crate::context_workflow::ContextModelProviderConfig::default(),
+            start_time_ms: 0,
+            end_time_ms: 0,
+            max_events: 0,
+            query: String::new(),
+        },
+    );
+    assert!(ingest.status.ok, "the ingest must succeed: {:?}", ingest.status);
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    // Every kind the index holds a page for, and how many of each.
+    let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.page_index.values() {
+            *kinds.entry(page.model_id.clone()).or_insert(0) += 1;
+        }
+    }
+    // And the context keys the model map holds, so the two can be compared.
+    let context_keys_in_model = shard
+        .hashes
+        .keys()
+        .filter(|key| key.contains("ctx") || key.contains("context"))
+        .count();
+    let context_pages_in_index: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.values())
+        .filter(|page| page.object_key.contains("ctx") || page.object_key.contains("context"))
+        .count();
+
+    println!(
+        "
+  page kinds held by the bucket index: {kinds:?}
+  context-ish keys in the model map:   {context_keys_in_model}
+  context-ish pages in the bucket index: {context_pages_in_index}
+"
+    );
+
+    assert!(
+        !kinds.is_empty(),
+        "the control write must put SOMETHING in the index, or this measures nothing"
+    );
+    // Report rather than assert a direction: the point is to learn which world this is, and a
+    // wrong guess baked into an assertion would just move the mistake into the test.
+    println!(
+        "  => context pages {} the bucket index",
+        if context_pages_in_index > 0 { "DO reach" } else { "do NOT reach" }
+    );
+}
+
+/// What one page costs to index here, against the 17 bytes it costs in the design being followed.
+///
+/// There, a page's index entry is a packed struct with a static assertion on its size: two u8 ids,
+/// a u16 page id, a byte of flags, a u32 size (zero meaning deleted) and a u64 address. Seventeen
+/// bytes, no heap, no strings, and the delete flag is a value the size field already had room for.
+///
+/// Here the same entry holds owned strings for the object key and model, an optional string
+/// component, a u64 id, an address struct with nine fields of its own, and three separate bools.
+/// This reports the inline size and the heap each entry pulls behind it, because `size_of` alone
+/// undercounts a struct whose fields are `String`.
+#[test]
+fn what_one_page_costs_to_index() {
+    use crate::engine::state::PageIndex;
+
+    let inline = std::mem::size_of::<PageIndex>();
+    let address_inline = std::mem::size_of::<crate::block_store::BlockAddress>();
+    let string_inline = std::mem::size_of::<String>();
+    let option_string_inline = std::mem::size_of::<Option<String>>();
+
+    // Build a shard and measure what its pages actually hold, so the heap side is observed rather
+    // than assumed from the type.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        2 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const PAGES: usize = 2_000;
+    for index in 0..PAGES {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("page-cost-{index:06}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut entries = 0usize;
+    let mut heap = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (ref_key, page) in bucket.page_index.iter() {
+            entries += 1;
+            // Everything this entry owns beyond its inline bytes.
+            heap += ref_key.len();
+            heap += page.object_key.len();
+            heap += page.model_id.len();
+            heap += page.component.as_ref().map_or(0, String::len);
+            heap += page.address.sha256.as_ref().map_or(0, String::len);
+        }
+    }
+    assert!(entries > 0, "the workload must produce pages, or this measures nothing");
+
+    let per_entry_heap = heap as f64 / entries as f64;
+    let total = inline as f64 + per_entry_heap;
+    println!(
+        "
+  one page's index entry
+    inline struct                {inline:>5} B
+      of which BlockAddress      {address_inline:>5} B
+      String is                  {string_inline:>5} B inline, Option<String> {option_string_inline} B
+    heap owned, measured         {per_entry_heap:>7.1} B over {entries} pages
+    total per page               {total:>7.1} B
+
+    the design being followed     17 B, packed, static_assert(sizeof == 17)
+    ratio                        {:>7.1}x
+",
+        total / 17.0
+    );
+
+    // A report, not a threshold -- the point is the gap and where it comes from, and a bound here
+    // would fail on unrelated changes. What must hold is that the measurement happened.
+    assert!(
+        per_entry_heap > 0.0,
+        "every entry owns at least an object key, so zero heap means the walk found nothing"
+    );
+}
+
+/// Which of a page address's 120 bytes are actually carrying anything?
+///
+/// A page's index entry costs 339.6 B here against 17 B in the design being followed, and
+/// `BlockAddress` is 120 B of it -- where that design uses ONE u64. The compact form already
+/// exists (`compact_slab_address` packs slab id and offset into a u64, `from_compact_slab_address`
+/// reconstructs) but it drops five optional fields, so the question is whether those fields hold
+/// anything at rest.
+///
+/// An `Option<u64>` costs 16 B because there is no niche to exploit; four of them are 64 B. An
+/// `Option<String>` is 24 B inline before any heap. If they are None in practice, that is dead
+/// weight in every page entry in the shard, and the measurement says how much is recoverable
+/// without changing what the type can express.
+#[test]
+fn which_parts_of_a_page_address_are_populated() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    // A mix, because a field that only one command populates would look dead in a single-shape
+    // workload: plain values, hash fields with components, and deletes leaving tombstones.
+    for index in 0..1_200 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("addr-str-{index:06}"),
+                value: vec![b'v'; 96],
+            },
+        });
+        if index % 4 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("addr-hash-{}", index % 40),
+                    field: format!("field-{index}"),
+                    value: vec![b'h'; 48],
+                },
+            });
+        }
+        if index % 13 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("addr-str-{:06}", index / 2),
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut pages = 0usize;
+    let (mut page_id, mut object_id, mut routing_bucket) = (0usize, 0usize, 0usize);
+    let (mut generation, mut band_id, mut sha256) = (0usize, 0usize, 0usize);
+    let mut compactable = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for page in bucket.page_index.values() {
+            pages += 1;
+            let a = &page.address;
+            page_id += usize::from(a.page_id.is_some());
+            object_id += usize::from(a.object_id.is_some());
+            routing_bucket += usize::from(a.routing_bucket.is_some());
+            generation += usize::from(a.generation.is_some());
+            band_id += usize::from(a.band_id.is_some());
+            sha256 += usize::from(a.sha256.is_some());
+            compactable += usize::from(a.compact_slab_address().is_some());
+        }
+    }
+    assert!(pages > 0, "the workload must produce pages, or this measures nothing");
+
+    let pct = |n: usize| 100.0 * n as f64 / pages as f64;
+    println!(
+        "
+  {pages} pages, which of the address's optional fields are set
+
+    page_id          {page_id:>6}  {:>5.1}%   16 B each
+    object_id        {object_id:>6}  {:>5.1}%   16 B
+    routing_slot     {routing_bucket:>6}  {:>5.1}%    8 B
+    generation       {generation:>6}  {:>5.1}%   16 B
+    band_id          {band_id:>6}  {:>5.1}%   16 B
+    sha256           {sha256:>6}  {:>5.1}%   24 B inline + heap
+
+    fit the compact (slab, offset) u64: {compactable:>6}  {:>5.1}%
+",
+        pct(page_id), pct(object_id), pct(routing_bucket),
+        pct(generation), pct(band_id), pct(sha256), pct(compactable),
+    );
+
+    // A report. What must hold is that the walk saw addresses at all -- a zero everywhere would
+    // read as "every field is dead" when it actually means the shard was empty.
+    assert!(
+        compactable > 0,
+        "no address fit the compact form, which means this walked nothing useful"
+    );
+}
+
+/// Which parts of a page address are recoverable from where the page already sits?
+///
+/// Every optional field is populated on every page, so none is dead weight in the "never set"
+/// sense. That is not the same as necessary. A page entry lives inside a bucket keyed by routing
+/// slot and carries its own `object_id`, so two of the address's fields may be restating what the
+/// surroundings already say -- and the design being followed spends ONE u64 on an address where
+/// this spends 120 B.
+///
+/// This checks the two candidates by comparison, and sizes the third (`sha256`, the only field
+/// with heap behind it) so the three can be ranked. Derivable fields can be dropped from the
+/// in-memory entry and reconstructed on the way out; a field that disagrees with its surroundings
+/// cannot, and the disagreement would be the finding.
+#[test]
+fn which_parts_of_a_page_address_restate_their_surroundings() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..1_200 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("redun-{index:06}"),
+                value: vec![b'v'; 96],
+            },
+        });
+        if index % 4 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("redun-hash-{}", index % 40),
+                    field: format!("field-{index}"),
+                    value: vec![b'h'; 48],
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut pages = 0usize;
+    let mut routing_matches_bucket = 0usize;
+    let mut object_id_matches_entry = 0usize;
+    let mut sha_heap = 0usize;
+    let mut sha_present = 0usize;
+    for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
+        for page in bucket.page_index.values() {
+            pages += 1;
+            if page.address.routing_bucket == Some(*bucket_key) {
+                routing_matches_bucket += 1;
+            }
+            if page.address.object_id == Some(page.object_id) {
+                object_id_matches_entry += 1;
+            }
+            if let Some(sha) = page.address.sha256.as_ref() {
+                sha_present += 1;
+                sha_heap += sha.len();
+            }
+        }
+    }
+    assert!(pages > 0, "the workload must produce pages, or this measures nothing");
+
+    let pct = |n: usize| 100.0 * n as f64 / pages as f64;
+    let sha_bytes = if sha_present > 0 { sha_heap as f64 / sha_present as f64 } else { 0.0 };
+    println!(
+        "
+  {pages} pages
+
+    address.routing_slot == the bucket it is filed under   {routing_matches_bucket:>6}  {:>5.1}%   (8 B)
+    address.object_id    == the entry's own object_id      {object_id_matches_entry:>6}  {:>5.1}%  (16 B)
+    address.sha256 present                                 {sha_present:>6}  {:>5.1}%  (24 B inline + {sha_bytes:.0} B heap)
+
+    recoverable if both hold: {} B per page, of 339.6 B measured
+",
+        pct(routing_matches_bucket),
+        pct(object_id_matches_entry),
+        pct(sha_present),
+        8 + 16 + if sha_present == pages { 24 + sha_bytes as usize } else { 0 },
+    );
+
+    // Report, with one thing asserted: a field that DISAGREES with its surroundings is a defect,
+    // not an optimisation opportunity, and it would be silently averaged away by the percentages.
+    assert!(
+        routing_matches_bucket == 0 || routing_matches_bucket == pages,
+        "address.routing_slot agrees with its bucket on {routing_matches_bucket} of {pages} pages \
+         -- a partial match means some page is filed somewhere its own address does not name"
+    );
+    assert!(
+        object_id_matches_entry == 0 || object_id_matches_entry == pages,
+        "address.object_id agrees with the entry on {object_id_matches_entry} of {pages} pages \
+         -- a partial match means an entry and its address disagree about which object it is"
+    );
+}
