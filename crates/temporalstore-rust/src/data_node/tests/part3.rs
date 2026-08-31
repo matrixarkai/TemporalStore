@@ -2397,10 +2397,36 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         controller: RequestController { timeout_ms: 30_000 },
     });
 
-    wait_until(Duration::from_secs(5), || {
-        manager.report().rounds_submitted >= 1
-            && runtime.stats().storage_manager_runs >= 1
-            && manager.report().last_completed_cycle.is_some()
+    // Wait for a cycle that saw the state these assertions describe, instead of whichever
+    // snapshot happened to be first.
+    //
+    // Two of the conditions pull against each other. The pressure plan is computed at the TOP of
+    // a cycle, so the first cycle sees no dump manifest and a replay cursor has nothing to anchor
+    // on -- zero retention blockers is the correct answer there, not a defect. But by the time a
+    // manifest exists, the writes made before the runtime started have been dumped and nothing is
+    // dirty. A shard with a lagging follower AND outstanding work is a shard still being written
+    // to, so keep writing while waiting.
+    //
+    // The predicate SELECTS a cycle; it does not stand in for the assertions. It looks at two
+    // fields, and the block below verifies the whole snapshot.
+    let mut churn = 0u64;
+    wait_until(Duration::from_secs(15), || {
+        churn += 1;
+        runtime.execute(ExecuteRequest {
+            shard_id: 8,
+            command: Command::StringSet {
+                key: format!("runtime-churn-{churn}"),
+                value: b"c".to_vec(),
+            },
+        });
+        let report = manager.report();
+        report.rounds_submitted >= 2
+            && runtime.stats().storage_manager_runs >= 2
+            && report.last_completed_cycle.is_some()
+            && report.last_pressure_snapshot.as_ref().is_some_and(|pressure| {
+                pressure.dirty_bucket_count >= 1
+                    && pressure.follower_cursor_retention_blockers >= 1
+            })
     });
     let running = manager.report();
     assert!(running.running);
@@ -2435,14 +2461,42 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(pressure.index_log_bytes >= 1, "{pressure:?}");
     assert!(pressure.cache_memory_bytes >= 1, "{pressure:?}");
     assert!(pressure.memory_cache_pressure_score >= pressure.cache_memory_bytes);
-    assert!(pressure.follower_cursor_retention_blockers >= 1);
-    assert!(pressure.raft_snapshot_retention_blockers >= 1);
+    assert!(pressure.follower_cursor_retention_blockers >= 1, "{pressure:?}");
+    assert!(pressure.raft_snapshot_retention_blockers >= 1, "{pressure:?}");
     assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
     assert!(!running.last_selected_buckets.is_empty());
     assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
-    assert!(running.last_wal_floor_sequence >= 1);
-    assert!(running.last_index_log_floor_sequence >= 1);
+    // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1,
+    // whose entire purpose is to hold the logs. Reclaim therefore refuses and the floor stays 0.
+    // Asserting that the floor ADVANCED asked the shard to discard exactly what the cursors were
+    // added to protect -- the assertion contradicted its own setup, which is why it could never
+    // have passed. What is worth checking is that the refusal NAMES them, since being named is the
+    // property a retention cursor exists to have.
+    let reclaim_wal = running
+        .last_phase_reports
+        .iter()
+        .find(|stage| stage.stage == "reclaim_wal")
+        .expect("the cycle ran a reclaim_wal stage");
+    assert!(reclaim_wal.skipped, "{reclaim_wal:?}");
+    assert!(
+        reclaim_wal
+            .reason
+            .contains("follower_cursor_retains_logs:follower-lagging-runtime"),
+        "the refusal must name the follower holding the logs: {reclaim_wal:?}"
+    );
+    assert!(
+        reclaim_wal
+            .reason
+            .contains("raft_snapshot_retains_logs:raft-snapshot-runtime"),
+        "the refusal must name the snapshot holding the logs: {reclaim_wal:?}"
+    );
+    assert_eq!(
+        running.last_wal_floor_sequence, 0,
+        "logs held by a cursor have no floor to report: {:?}",
+        running.last_skipped_reasons
+    );
+    assert_eq!(running.last_index_log_floor_sequence, 0);
     assert!(running.last_retention_blockers >= 1);
     assert!(running
         .last_phase_blockers
@@ -2454,14 +2508,11 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         .any(|stage| stage.stage == "prepare"
             && stage.pressure_signal.contains("dirty_slots")
             && stage.pressure_before >= stage.pressure_after));
-    assert!(running.last_phase_reports.iter().any(|stage| {
-        stage.stage == "reclaim_wal"
-            && !stage.selected_buckets.is_empty()
-            && stage.wal_floor_sequence >= 1
-            && stage.index_log_floor_sequence >= 1
-            && stage.retention_blockers >= 1
-            && stage.pressure_before >= stage.pressure_after
-    }));
+    // Same contradiction as above: a stage that refused to reclaim selects no buckets and reports
+    // no floor. It does report what stopped it, and that is the assertable part.
+    assert!(reclaim_wal.retention_blockers >= 1, "{reclaim_wal:?}");
+    assert_eq!(reclaim_wal.wal_floor_sequence, 0);
+    assert_eq!(reclaim_wal.index_log_floor_sequence, 0);
     assert!(running.last_phase_reports.iter().any(|stage| {
         stage.stage == "reclaim_page"
             && (stage
@@ -2485,7 +2536,13 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
 
     manager.pause();
     let paused_before = manager.report().rounds_submitted;
-    thread::sleep(Duration::from_millis(25));
+    // Wait for a skipped round instead of sleeping 25ms and hoping one fits inside it. A round is
+    // a delay PLUS a cycle, and a cycle on a busy machine outlasts that sleep -- so the assertion
+    // measured how loaded the box was rather than whether pausing skips rounds. The properties
+    // being checked are unchanged: while paused, rounds are skipped and none are submitted.
+    wait_until(Duration::from_secs(5), || {
+        manager.report().rounds_skipped_paused >= 1
+    });
     let paused = manager.report();
     assert!(paused.paused);
     assert_eq!(paused.rounds_submitted, paused_before);
