@@ -1175,6 +1175,7 @@ mod tests {
     fn proxy(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ProxyMetaInfo {
         ProxyMetaInfo {
             registered_at_ms: 0,
+            heartbeats_total: 0,
             group: String::new(),
             freeze_reason: FreezeReason::Unspecified,
             proxy_addr: addr.to_string(),

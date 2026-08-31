@@ -172,7 +172,10 @@ pub struct ProxyCalibrationReport {
 fn is_idle_candidate(proxy: &ProxyMetaInfo) -> bool {
     proxy.state == MetaEntityState::Normal
         && proxy.group.is_empty()
-        && proxy.last_heartbeat_ms != 0
+        // Counted heartbeats, not the timestamp. Registration stamps `last_heartbeat_ms`, so
+        // testing it against zero asked a question every registered proxy answered the same
+        // way -- the rule this line exists to enforce was not in force.
+        && proxy.heartbeats_total != 0
 }
 
 /// Pure planner: bring every group to its declared capacity.
@@ -568,6 +571,9 @@ mod tests {
     fn proxy(addr: &str, location: &str, attached: &str) -> ProxyMetaInfo {
         ProxyMetaInfo {
             registered_at_ms: 0,
+            // These helpers build proxies that HAVE reported in; the tests that want a silent
+            // one set this back to zero themselves.
+            heartbeats_total: 1,
             proxy_addr: addr.to_string(),
             namespace: String::new(),
             group: attached.to_string(),
@@ -739,8 +745,12 @@ mod tests {
 
     #[test]
     fn a_proxy_that_has_never_heartbeated_is_not_capacity() {
+        // The shape a registration actually has: a heartbeat TIMESTAMP, because registration
+        // stamps one, and no heartbeats counted. This test used to zero the timestamp instead,
+        // which no registered proxy ever does -- so it asserted the right rule against a state
+        // production cannot reach, and the guard it was checking passed everything through.
         let mut silent = proxy("p1", "rack-1", "");
-        silent.last_heartbeat_ms = 0;
+        silent.heartbeats_total = 0;
         let plan = plan_proxy_calibration(
             &[group("orders", "ns", "", 1)],
             &[silent],

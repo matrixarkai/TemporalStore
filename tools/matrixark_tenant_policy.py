@@ -515,3 +515,20 @@ def describe_effective_policy(scope: Any = None) -> Json:
             source = "default"
         out["knobs"][name] = {"value": resolve(name, scope), "source": source, "env": knob.env}
     return out
+
+
+# One registry, whichever name imported this module first.
+#
+# This file is reachable as ``matrixark_tenant_policy`` (running from tools/) and as
+# ``tools.matrixark_tenant_policy`` (imported as part of the package). Python treats those as two
+# modules and gives each its own ``_RECORD_POLICIES`` and ``_FILE_CACHE``, so a policy set through
+# one name is invisible to a reader that arrived through the other -- the cap silently does not
+# apply, and nothing says so.
+#
+# Aliasing both names to the module object that loaded first means there is one registry however
+# it was reached. ``setdefault`` so the first loader wins and a second import finds it rather than
+# re-executing this file.
+import sys as _sys
+
+_sys.modules.setdefault("matrixark_tenant_policy", _sys.modules[__name__])
+_sys.modules.setdefault("tools.matrixark_tenant_policy", _sys.modules[__name__])

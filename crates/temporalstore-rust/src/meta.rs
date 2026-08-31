@@ -588,6 +588,14 @@ pub struct ProxyMetaInfo {
     pub state: MetaEntityState,
     pub config_version: u64,
     pub last_heartbeat_ms: u64,
+    /// How many heartbeats this proxy has sent since it registered.
+    ///
+    /// Separate from `last_heartbeat_ms` because registration stamps that clock, so it cannot
+    /// answer "has this proxy ever reported in" -- every registered proxy reads non-zero from
+    /// the moment it appears. The staleness checks want the timestamp; the question of whether
+    /// a proxy is capacity or merely a registration wants this.
+    #[serde(default)]
+    pub heartbeats_total: u64,
     #[serde(default)]
     pub frozen_since_ms: u64,
     #[serde(default)]
@@ -2208,6 +2216,65 @@ mod tests {
         assert_eq!(server.shard_states[0].serving_state, "serving");
         assert_eq!(server.shard_states[0].wal_sequence, 9);
         assert_eq!(meta.stats().server_heartbeat_total, 1);
+    }
+
+    #[test]
+    fn a_proxy_that_only_registered_is_not_treated_as_capacity() {
+        // `is_idle_candidate` is written to keep a proxy that has never reported in out of a
+        // group -- "a registration, not capacity". It tested `last_heartbeat_ms != 0`, and
+        // registration stamps that clock, so every registered proxy passed and the rule was
+        // never in force. A proxy that registered and died was attached to a group and counted
+        // as serving capacity until the failure detector caught up.
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "silent".to_string(),
+                namespace: "ns".to_string(),
+                location: "zone-a".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
+                group: "front".to_string(),
+                namespace: "ns".to_string(),
+                location: String::new(),
+                instance_num: 1,
+            })
+            .status
+            .ok
+        );
+
+        // It has registered and nothing more, so it is not capacity yet.
+        let plan = meta.plan_proxy_calibration_now(ProxyCalibrationOptions::default());
+        assert!(
+            !plan.attach.iter().any(|item| item.proxy_addr == "silent"),
+            "a proxy that has only registered must not be attached, got {:?}",
+            plan.attach
+        );
+
+        // One heartbeat is the difference between a registration and capacity.
+        assert!(
+            meta.proxy_heartbeat(ProxyHeartbeatRequest {
+                boot_time_ms: 1,
+                proxy_addr: "silent".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        let plan = meta.plan_proxy_calibration_now(ProxyCalibrationOptions::default());
+        assert!(
+            plan.attach.iter().any(|item| item.proxy_addr == "silent"),
+            "once it has reported in it is capacity and the group should claim it, got {:?}",
+            plan.attach
+        );
     }
 
     #[test]

@@ -323,6 +323,7 @@ impl SingleNodeMeta {
         state.proxies.insert(
             request.proxy_addr.clone(),
             ProxyMetaInfo {
+                heartbeats_total: 0,
                 freeze_reason: FreezeReason::Unspecified,
                 group: String::new(),
                 proxy_addr: request.proxy_addr,
@@ -386,6 +387,7 @@ impl SingleNodeMeta {
             };
         }
         proxy.last_heartbeat_ms = now_ms();
+        proxy.heartbeats_total = proxy.heartbeats_total.saturating_add(1);
         // A changed boot time on an address we already know means the proxy restarted
         // in place. Heartbeats never stopped, so this is the only signal that its route
         // cache and config were reset underneath us.
