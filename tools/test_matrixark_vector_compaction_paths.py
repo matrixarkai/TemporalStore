@@ -22,6 +22,15 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+try:  # the fallback path is supported, so numpy is optional here too
+    import numpy  # noqa: F401
+    _HAVE_NUMPY = True
+except ImportError:
+    _HAVE_NUMPY = False
+
+_NEEDS_BOTH = unittest.skipUnless(
+    _HAVE_NUMPY, "numpy absent: only one implementation exists, nothing to compare")
+
 
 def _core(encoding):
     os.environ["MATRIXARK_EMBEDDING_VECTOR_INT8"] = "1" if encoding == "int8" else "0"
@@ -62,14 +71,20 @@ AWKWARD = [
 
 
 class TheTwoPathsAreOneBehaviour(unittest.TestCase):
-    def test_numpy_is_actually_in_use(self):
-        # Without this the comparisons below would run the fallback against itself and pass
-        # no matter what the numpy branch did.
+    def test_numpy_is_in_use_where_it_is_installed(self):
+        # The comparisons below are only meaningful when both implementations exist. Where numpy
+        # is absent there is one implementation and nothing to compare, which is a supported
+        # configuration -- not a failure.
         core = _core("float")
-        self.assertIsNotNone(
-            core._NUMPY,
-            "numpy is absent, so these tests compare the fallback with itself and prove nothing")
+        if _HAVE_NUMPY:
+            self.assertIsNotNone(
+                core._NUMPY,
+                "numpy is installed but the module did not pick it up, so the equivalence "
+                "tests would compare the fallback with itself")
+        else:
+            self.assertIsNone(core._NUMPY)
 
+    @_NEEDS_BOTH
     def test_paths_agree_on_ordinary_vectors(self):
         for encoding in ("float", "scale", "int8"):
             core = _core(encoding)
@@ -77,6 +92,7 @@ class TheTwoPathsAreOneBehaviour(unittest.TestCase):
                 fast, slow = _both(core, _unit(seed))
                 self.assertEqual(fast, slow, "%s encoding diverged on seed %d" % (encoding, seed))
 
+    @_NEEDS_BOTH
     def test_paths_agree_on_exact_half_boundaries_and_zeros(self):
         # Where two rounding implementations diverge if either does not round half to even.
         for encoding in ("float", "scale", "int8"):
@@ -86,12 +102,14 @@ class TheTwoPathsAreOneBehaviour(unittest.TestCase):
                 self.assertEqual(fast, slow,
                                  "%s encoding diverged on %r" % (encoding, vector[:4]))
 
+    @_NEEDS_BOTH
     def test_an_all_zero_vector_does_not_divide_by_its_peak(self):
         core = _core("int8")
         fast, slow = _both(core, [0.0] * 8)
         self.assertEqual([0] * 8, fast)
         self.assertEqual([0] * 8, slow)
 
+    @_NEEDS_BOTH
     def test_int8_stays_inside_the_range_on_both_paths(self):
         core = _core("int8")
         for seed in range(20):
@@ -101,6 +119,7 @@ class TheTwoPathsAreOneBehaviour(unittest.TestCase):
                 self.assertEqual(127, max(abs(v) for v in out),
                                  "the peak element must anchor the scale")
 
+    @_NEEDS_BOTH
     def test_float_encoding_keeps_its_declared_precision(self):
         core = _core("float")
         for out in _both(core, _unit(3)):
