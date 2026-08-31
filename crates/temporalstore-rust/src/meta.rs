@@ -2368,6 +2368,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -5792,6 +5793,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         for node in 0..2u64 {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: format!("node-{node}"),
                     node_id: node + 1,
@@ -6857,6 +6859,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn drainable() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -6864,6 +6867,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             numa_nodes: Vec::new(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: "node-a".to_string(),
         });
@@ -7479,6 +7483,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         // readable the moment append returns.
         log.append(
             &MetaMutation::RegisterShard(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: "solo".to_string(),
             }),
@@ -7496,6 +7501,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 for i in 0..each {
                     log.append(
                         &MetaMutation::RegisterShard(RegisterShardRequest {
+                            registered_at_ms: 0,
                             shard_id: (w * each + i) as u64 + 100,
                             server_addr: format!("node-{w}"),
                         }),
@@ -8262,6 +8268,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     fn asking_only_for_status_gives_the_same_answer_without_the_shards() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -8286,6 +8293,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         }
         for shard in 1..=4u64 {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: shard,
                 server_addr: "node-a".to_string(),
             });
@@ -8993,6 +9001,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "node-a".to_string(),
                     node_id: 1,
@@ -9004,6 +9013,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             for shard in 1..=3u64 {
                 assert!(meta
                     .register(RegisterShardRequest {
+                        registered_at_ms: 0,
                         shard_id: shard,
                         server_addr: "node-a".to_string(),
                     })
@@ -9055,6 +9065,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             for shard in 1..=2u64 {
                 assert!(meta
                     .register(RegisterShardRequest {
+                        registered_at_ms: 0,
                         shard_id: shard,
                         server_addr: "node-a".to_string(),
                     })
@@ -9073,6 +9084,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 .expect("a torn last record must not stop the metaserver starting");
             assert!(
                 meta.register(RegisterShardRequest {
+                    registered_at_ms: 0,
                     shard_id: 3,
                     server_addr: "node-a".to_string(),
                 })
@@ -9131,6 +9143,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             for shard in 1..=3u64 {
                 assert!(meta
                     .register(RegisterShardRequest {
+                        registered_at_ms: 0,
                         shard_id: shard,
                         server_addr: "node-a".to_string(),
                     })
