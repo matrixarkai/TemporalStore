@@ -3164,14 +3164,17 @@ except ImportError:  # pragma: no cover - exercised only on installs without num
     _NUMPY = None
 
 EMBEDDING_VECTOR_DECIMALS = _env_int("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", 6)
-# Default 100000. A uniform scale multiplies every stored vector by the same constant, so
+# Default 10000. A uniform scale multiplies every stored vector by the same constant, so
 # no pair of vectors can change places -- and with cosine() normalising both sides the
 # score itself is unchanged too. Measured over 500 real chunks, six EN/CN queries,
 # e5-large at 512 dims, against the float ranking: top-1 6/6, exact top-10 order 6/6,
 # overlap 10.0/10, under BOTH the normalised scorer and the bare dot it replaced.
-# Vector bytes fall 5,329 -> 3,236 per 512-dim vector (-39%), and a 1 MB skill ingest
-# 24.7 MB -> 17.8 MB (-28%). Set to 0 to store rounded floats.
-EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 100000)
+# 10000 is the smallest factor that is still EXACT here: it resolves every margin that
+# separates near-neighbours, while 100000 carries an extra digit per element that never
+# changes an ordering. Measured bytes per 512-dim vector: float 5,328, scale=1e5 3,247,
+# scale=1e4 2,736, int8 2,110 -- and of those only 1e4 and 1e5 reproduce the float
+# top-10 exactly (6/6); int8 manages 1/6. Set to 0 to store rounded floats.
+EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 10000)
 # Default OFF, and it stays off for retrieval -- measured, not assumed.
 #
 # Over 500 real chunks with six EN/CN queries (e5-large @512), scored against the FLOAT
