@@ -1101,11 +1101,11 @@ impl LocalWriteAheadLogStore {
         staged_pages: Vec<StagedPage>,
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        // In group-commit mode the durable barrier is deferred out of the append
-        // critical section (below), so the byte-append records with sync=false and the
-        // fsync is coalesced across concurrent writers. Default mode keeps the exact
-        // per-append in-lock fsync behavior.
-        let group = sync && group_commit_enabled();
+        // The durable barrier is deferred out of the append critical section (below), so the
+        // byte-append records with sync=false and the fsync is coalesced across concurrent
+        // writers. Every acked write is still durable before its ack returns; only the fsync is
+        // shared.
+        let group = sync;
         let record;
         let next_sequence;
         let log_id;
@@ -2783,25 +2783,14 @@ fn wal_preallocate_chunk() -> u64 {
         .unwrap_or(256 * 1024)
 }
 
-/// TS_GROUP_COMMIT: coalesce concurrent WAL fsyncs into shared durability barriers.
-/// The WAL append still records every byte durably before ack; only the fsync is
-/// batched across writers. Default ON (set TS_GROUP_COMMIT=0 to force exact per-append
-/// fsync behavior); every acked write is still durable before its ack returns.
-fn group_commit_enabled() -> bool {
-    match std::env::var("TS_GROUP_COMMIT") {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => true,
-    }
-}
-
-/// Public read of the `TS_GROUP_COMMIT` (config `[wal] group_commit`) gate so paths outside this
-/// module — notably the shared-store object-store SYNC writer — honor the SAME switch as the local
-/// WAL fsync coalescing. Default ON.
+/// Group commit is unconditional: concurrent WAL fsyncs coalesce into shared durability
+/// barriers. The append records every byte durably before ack; only the fsync is batched across
+/// writers, so an acked write is durable whether or not it shared its barrier.
+///
+/// This was gated and default-ON. The off path forced an exact per-append fsync and no test
+/// exercised it, so it was a configuration that shipped untested -- removed rather than kept.
 pub fn group_commit_configured() -> bool {
-    group_commit_enabled()
+    true
 }
 
 /// `TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`): optional deliberate widening of the
@@ -2815,11 +2804,14 @@ pub fn group_commit_delay() -> std::time::Duration {
     std::time::Duration::from_micros(micros)
 }
 
-/// Whether the redundant per-append WAL parent-dir fsync may be skipped (safe once the
-/// file exists). Enabled under the single-barrier default or group-commit; restored to a
-/// per-append dir fsync only under the TS_WAL_LEGACY_RECOVERY escape hatch with group-commit off.
+/// The redundant per-append WAL parent-dir fsync is always skipped -- it is safe once the file
+/// exists, and group commit is unconditional.
+///
+/// This read `!TS_WAL_LEGACY_RECOVERY || group_commit_enabled()`. With group commit always on the
+/// disjunction was already always true, so the legacy-recovery hatch had no effect here even
+/// before the gate was removed.
 fn wal_relaxed_dir_sync() -> bool {
-    !wal_env_flag_on("TS_WAL_LEGACY_RECOVERY") || group_commit_enabled()
+    true
 }
 
 

@@ -23,9 +23,31 @@ def tokens(text: str) -> list[str]:
 
 
 def cosine(left: list[float], right: list[float]) -> float:
+    """Cosine similarity, normalised on both sides.
+
+    This used to return the bare dot product, which is the same number while both sides are unit
+    vectors and a different one as soon as either is not. Every vector-compaction option produces
+    a non-unit vector: int8 divides each vector by its own peak (a NON-uniform rescale, which
+    under an unnormalised dot can reorder two stored vectors against one query), and an integer
+    scale multiplies uniformly (which cannot reorder, but leaves every score far outside the
+    [-1, 1] that normalized_dense_score clamps into, pinning them all to an endpoint).
+
+    Dividing by both norms makes the score invariant to either, so a compacted vector ranks
+    exactly where the float it replaced did. For the unit vectors stored today the result is
+    unchanged, since a unit vector's dot already IS its cosine.
+    """
     if not left or not right or len(left) != len(right):
         return 0.0
-    return round(sum(a * b for a, b in zip(left, right)), 6)
+    dot = 0.0
+    left_norm = 0.0
+    right_norm = 0.0
+    for a, b in zip(left, right):
+        dot += a * b
+        left_norm += a * a
+        right_norm += b * b
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    return round(dot / (math.sqrt(left_norm) * math.sqrt(right_norm)), 6)
 
 
 def clamp01(value: Any, default: float = 0.0) -> float:

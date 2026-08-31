@@ -2216,11 +2216,21 @@ def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KE
     return ordered_unique(terms)
 
 
+# Every priority prefix is exactly "<kind>:", and every index term is exactly
+# f"{kind}:{value}", so priority is decided by the term's kind alone. Built once here rather
+# than rediscovered by a 20-way startswith scan on each of the ~36,000 terms a document emits.
+_SECONDARY_INDEX_PRIORITY_BY_KIND = {
+    prefix[:-1]: index
+    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES)
+}
+_SECONDARY_INDEX_PRIORITY_DEFAULT = len(SECONDARY_INDEX_PRIORITY_PREFIXES)
+
+
 def secondary_index_priority(term: str) -> int:
-    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES):
-        if term.startswith(prefix):
-            return index
-    return len(SECONDARY_INDEX_PRIORITY_PREFIXES)
+    kind, separator, _ = term.partition(":")
+    if not separator:
+        return _SECONDARY_INDEX_PRIORITY_DEFAULT
+    return _SECONDARY_INDEX_PRIORITY_BY_KIND.get(kind, _SECONDARY_INDEX_PRIORITY_DEFAULT)
 
 
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
@@ -3148,30 +3158,36 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+try:  # optional: the ingest path must still run where numpy is absent
+    import numpy as _NUMPY
+except ImportError:  # pragma: no cover - exercised only on installs without numpy
+    _NUMPY = None
+
 EMBEDDING_VECTOR_DECIMALS = _env_int("MATRIXARK_EMBEDDING_VECTOR_DECIMALS", 6)
-EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 0)
-# Default OFF, and two independent reasons keep it there.
+# Default 100000. A uniform scale multiplies every stored vector by the same constant, so
+# no pair of vectors can change places -- and with cosine() normalising both sides the
+# score itself is unchanged too. Measured over 500 real chunks, six EN/CN queries,
+# e5-large at 512 dims, against the float ranking: top-1 6/6, exact top-10 order 6/6,
+# overlap 10.0/10, under BOTH the normalised scorer and the bare dot it replaced.
+# Vector bytes fall 5,329 -> 3,236 per 512-dim vector (-39%), and a 1 MB skill ingest
+# 24.7 MB -> 17.8 MB (-28%). Set to 0 to store rounded floats.
+EMBEDDING_VECTOR_SCALE = _env_int("MATRIXARK_EMBEDDING_VECTOR_SCALE", 100000)
+# Default OFF, and it stays off for retrieval -- measured, not assumed.
 #
-# The ranking reason is the decisive one and predates this note: measured over 500 candidate
-# chunks with six CN/EN queries against the float ranking, int8 got top-1 right 1/6, exact
-# top-10 order 0/6, mean overlap 4.8/10. A reconstruction cosine of 0.9999 is NOT evidence of
-# safety here -- the margins between competing near-neighbours in a real corpus are smaller
-# than that error, so a near-perfect cosine coexists with a reordered top-10.
+# Over 500 real chunks with six EN/CN queries (e5-large @512), scored against the FLOAT
+# ranking, int8 gets top-1 right 4/6 and reproduces the exact top-10 order 0/6, overlap
+# 9.5/10. Through the bare dot product this path used to use it was far worse -- 0/6 and
+# 0.5/10 -- so normalising the scorer took int8 from unusable to merely wrong, and did
+# not make it correct. A reconstruction cosine near 0.9999 does not contradict this: the
+# margins between competing near-neighbours are smaller than that error.
 #
-# A 2026-08-31 re-measurement with multilingual-e5-large @512 over 2,753 chunks / 298 queries
-# put reconstruction cosine at min 0.999816 and recall@1 at 0.7617 -> 0.7584. That does NOT
-# overturn the above: needle-match recall tolerates reordering among similarly relevant chunks,
-# whereas agreement with the float ranking does not. Two metrics, two questions.
+# The reason is structural. int8 divides each vector by its OWN peak, so two stored
+# vectors are scaled by different factors and can change places against one query.
+# EMBEDDING_VECTOR_SCALE is uniform and therefore exact, which is why it is the default
+# and this is not.
 #
-# The second reason is the consumer. matrixark_mcp_scoring.cosine is a bare dot product over
-# assumed-unit inputs, and normalized_dense_score clamps (v + 1) / 2 into [0, 1]; at int8
-# magnitudes every positive match saturates to 1.0 and every negative to 0.0, so the dense term
-# degenerates to a binary signal and 0.72 * dense + 0.28 * sparse is decided by the lexical term
-# alone. This also means EMBEDDING_VECTOR_SCALE cannot simply be turned on either: a uniform
-# rescale preserves dot ORDER but still saturates that clamp, which is why it is 0.
-#
-# int8 remains legitimate where ranking does not matter -- bulk archival, or a coarse prefilter
-# re-scored at full precision. It must not be the retrieval path.
+# int8 remains legitimate where ranking does not matter -- bulk archival, or a coarse
+# prefilter re-scored at full precision.
 EMBEDDING_VECTOR_INT8 = os.environ.get("MATRIXARK_EMBEDDING_VECTOR_INT8", "0") not in {"0", "false", "False", ""}
 
 
@@ -3220,6 +3236,22 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
                                           cosine is 1.000000000.
       MATRIXARK_EMBEDDING_VECTOR_DECIMALS rounded floats, default 6.
     """
+    # 1,690,624 element operations per 1 MB skill -- one per dimension of every chunk vector,
+    # and 44% of what record emission costs. The arithmetic is trivial; the Python loop is not,
+    # so hand it to numpy where numpy exists. Byte-identical either way: both round half to even,
+    # which is why the fallback below is a fallback and not a second behaviour.
+    if _NUMPY is not None and vector:
+        values = _NUMPY.asarray(vector, dtype=_NUMPY.float64)
+        if EMBEDDING_VECTOR_INT8:
+            peak = float(_NUMPY.abs(values).max())
+            if peak <= 0.0:
+                return [0] * len(vector)
+            return _NUMPY.rint(values / peak * 127).astype(_NUMPY.int64).tolist()
+        if EMBEDDING_VECTOR_SCALE > 0:
+            return _NUMPY.rint(values * EMBEDDING_VECTOR_SCALE).astype(_NUMPY.int64).tolist()
+        if EMBEDDING_VECTOR_DECIMALS <= 0:
+            return vector
+        return _NUMPY.round(values, EMBEDDING_VECTOR_DECIMALS).tolist()
     if EMBEDDING_VECTOR_INT8:
         peak = max((abs(value) for value in vector), default=0.0)
         if peak <= 0.0:
