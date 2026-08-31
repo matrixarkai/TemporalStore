@@ -485,6 +485,40 @@ impl Default for MetaFailureDetector {
     }
 }
 
+/// A server as the conviction planner sees it.
+///
+/// The planner judges whether a node has gone quiet: it reads the address, the
+/// state, the location it sits in, when it last heartbeated, whether it has
+/// been seen restarting, and which shards it is serving.
+///
+/// The serving shards are reduced to a set of ids here, which is all the
+/// planner ever wanted -- it used to be handed every shard serving state, each
+/// carrying its serving state, table name and uri as strings, and reduce them
+/// itself. On 32 nodes holding 1000 shards each, copying those out first cost
+/// 5.6ms a tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedLiveness {
+    pub server_addr: String,
+    pub state: MetaEntityState,
+    pub location: String,
+    pub last_heartbeat_ms: u64,
+    pub reboot_detected: bool,
+    pub serving_shards: BTreeSet<ShardId>,
+}
+
+impl ObservedLiveness {
+    pub fn of(server: &ServerMetaInfo) -> Self {
+        Self {
+            server_addr: server.server_addr.clone(),
+            state: server.state,
+            location: server.location.clone(),
+            last_heartbeat_ms: server.last_heartbeat_ms,
+            reboot_detected: server.reboot_detected,
+            serving_shards: super::shard_check::serving_shards(server),
+        }
+    }
+}
+
 impl MetaFailureDetector {
     pub fn new(options: FailureDetectorOptions) -> Self {
         Self {
@@ -592,7 +626,7 @@ impl MetaFailureDetector {
     /// metaserver should freeze.
     pub fn plan_round(
         &mut self,
-        servers: &[ServerMetaInfo],
+        servers: &[ObservedLiveness],
         now_ms: u64,
         policy: ConvictionPolicy,
     ) -> ConvictionPlan {
@@ -603,9 +637,8 @@ impl MetaFailureDetector {
                 location: server.location.as_str(),
                 state: server.state,
                 last_heartbeat_ms: server.last_heartbeat_ms,
-                serving_shards: super::shard_check::serving_shards(server)
-                    .into_iter()
-                    .collect(),
+                // Already reduced to ids when the view was taken.
+                serving_shards: server.serving_shards.iter().copied().collect(),
                 // Not gated on the detector being active: a changed boot time is
                 // direct evidence the process restarted, not an inference drawn
                 // from silence, so the stall guard does not apply to it.
@@ -757,7 +790,11 @@ impl SingleNodeMeta {
         let now = now_ms();
         let servers = {
             let state = self.inner.read().expect("meta lock poisoned");
-            state.servers.values().cloned().collect::<Vec<_>>()
+            state
+                .servers
+                .values()
+                .map(ObservedLiveness::of)
+                .collect::<Vec<_>>()
         };
         let plan = detector.plan_round(&servers, now, policy);
         let detector_paused = !detector.is_active(now);
@@ -932,7 +969,21 @@ mod tests {
         }
     }
 
-    fn server(addr: &str, location: &str, state: MetaEntityState, heartbeat_ms: u64) -> ServerMetaInfo {
+    fn server(
+        addr: &str,
+        location: &str,
+        state: MetaEntityState,
+        heartbeat_ms: u64,
+    ) -> ObservedLiveness {
+        ObservedLiveness::of(&server_record(addr, location, state, heartbeat_ms))
+    }
+
+    fn server_record(
+        addr: &str,
+        location: &str,
+        state: MetaEntityState,
+        heartbeat_ms: u64,
+    ) -> ServerMetaInfo {
         ServerMetaInfo {
             registered_at_ms: 0,
             reported_record_count: 0,
@@ -1498,7 +1549,10 @@ mod tests {
         let policy = orphan_policy(true);
         let mut now = 10_000;
         let with_shard = |addr: &str, heartbeat: u64| {
-            let mut server = server(addr, "rack-1", MetaEntityState::Normal, heartbeat);
+            // Built as a full record and then observed, so this still proves the
+            // serving set is read out of the reported shard states -- that step
+            // now happens when the view is taken rather than inside the planner.
+            let mut server = server_record(addr, "rack-1", MetaEntityState::Normal, heartbeat);
             server.shard_states = vec![ServerShardServingState {
                 shard_id: 1,
                 serving_state: "serving".to_string(),
@@ -1520,7 +1574,7 @@ mod tests {
                 dirty_object_count: 0,
                 dirty_bucket_count: 0,
             }];
-            server
+            ObservedLiveness::of(&server)
         };
         for _ in 0..40 {
             detector.plan_round(&[with_shard("a", now)], now, policy);

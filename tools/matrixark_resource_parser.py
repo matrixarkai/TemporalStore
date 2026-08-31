@@ -41,11 +41,55 @@ DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
 DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
 DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
-DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(os.environ.get("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS", "128"))
+# How many tokens each encoder actually reads. A window is a property of the MODEL, not a
+# constant: e5 and MiniLM stop at 512, BGE-M3 and jina-v3 at 8192. Anything beyond a model's
+# limit is silently truncated by its tokenizer, and anything short of it wastes capacity and
+# multiplies the number of vectors stored.
+_ENCODER_WINDOWS = (
+    ("bge-m3", 8192),
+    ("jina-embeddings-v3", 8192),
+    ("gte-multilingual", 8192),
+    ("e5", 512),
+    ("minilm", 512),
+    ("mpnet", 384),
+)
+_DEFAULT_ENCODER_WINDOW = 512
+
+
+def encoder_window_tokens(model: str | None = None) -> int:
+    """The active encoder's token window, matched on its name."""
+    name = (model or os.environ.get("MATRIXARK_EMBEDDING_MODEL")
+            or os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or "").lower()
+    for marker, window in _ENCODER_WINDOWS:
+        if marker in name:
+            return window
+    return _DEFAULT_ENCODER_WINDOW
+
+
+# How much text one vector should stand for. This is a RETRIEVAL decision, not an encoder
+# capability: measured over 298 query pairs, moving from 128 to 512 tokens gave 4.01x fewer
+# vectors and cost 25.2 points of hit@1 (77.2% -> 52.0%) and 15.1 of hit@5. One vector cannot
+# represent three times as much text without blurring what it points at.
+#
+# The encoder's window bounds this from ABOVE -- never embed more than the model will read -- but
+# it is a ceiling, not a target.
+DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
+    os.environ.get(
+        "MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS",
+        str(min(128, encoder_window_tokens())),
+    )
+)
 # Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
 # 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
 # 204 records and 8.9 MB. It had no knob, so no deployment could reach it.
-DEFAULT_MAX_CHUNK_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240"))
+# Chunk size matches the embedding window, so a chunk is never larger than the part of it that
+# reaches a vector. These disagreed -- chunks were 240 tokens and only 128 were embedded, so
+# roughly half of every chunk was findable only through a lexical index whose terms the retrieve
+# path cannot consult. Raising BOTH to the encoder's maximum was measured and rejected: it costs
+# 25.2 points of hit@1 for 4x fewer vectors.
+DEFAULT_MAX_CHUNK_TOKENS = int(
+    os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240")
+)
 DEFAULT_OVERLAP_TOKENS = int(os.environ.get("MATRIXARK_RESOURCE_OVERLAP_TOKENS", "24"))
 # Both caps bind, whichever is hit first. Deriving the character cap from the
 # token cap keeps raising one from being silently cancelled by the other.

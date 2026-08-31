@@ -43,6 +43,8 @@ pub(crate) mod eviction_sampler;
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
+#[cfg(test)]
+pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
 pub use storage_bucket_internals::{
     bucket_page_index_visits, bucket_visit_sites, layout_by_caller, live_page_scan_entries,
@@ -744,7 +746,29 @@ impl TemporalEngine {
             // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
             // rebuilds the first-index once at the end, so deferring here is
             // correctness-preserving.
-            let rebuilt_bucket_index = !defer_bucket_index_reconstruct()
+            // Maintain the index for the keys this write touched, and rebuild only if that did
+            // not cover them.
+            //
+            // A context write does not register its page, so the branch below fired a full
+            // O(store) rebuild for every one -- the last term in an add that grew with the corpus.
+            // Feature and Sequence writes already maintain on the write path, and replay already
+            // maintains these same kinds; this closes the one path that did neither.
+            //
+            // `sync_context_pages_for_object` mirrors `collect_model_live_page_entries` arm for
+            // arm and reports whether it found anything, so a write it does not cover still gets
+            // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
+            // maintenance updates an index, it does not construct one.
+            let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
+                && !delta_command_keys.is_empty()
+                && delta_command_keys.iter().all(|object_key| {
+                    storage_bucket_internals::sync_context_pages_for_object(
+                        shard,
+                        request.shard_id,
+                        object_key,
+                    )
+                });
+            let rebuilt_bucket_index = !maintained_bucket_index
+                && !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
                     || shard.bucket_index.bucket_map.is_empty());
             if rebuilt_bucket_index {
@@ -960,7 +984,6 @@ impl TemporalEngine {
                 // the live in-memory shard between them, and cold reload folds base + deltas.
                 let (items, upsert_record) = match upsert_components
                     .as_ref()
-                    .filter(|_| upsert_deltas_enabled())
                 {
                     Some(components) => (
                         collect_upsert_index_items(
@@ -2053,24 +2076,6 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
 /// one of them lands through the page-upsert path (one new page per component, predecessor
 /// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
-/// Emission gate for upsert delta records. ON by default; TS_INDEXLOG_UPSERT_DELTAS=0 is the
-/// escape hatch. The gate was OFF while a multi-restart scale store that reconstructed EMPTY
-/// on reload was attributed to the fold of a large upsert-record log. The scale
-/// reload-equality suite (tests/upsert_reload_equality.rs: thousands of batch-committed
-/// upsert records, config-log present, threshold dumps, SIGKILL restarts across two
-/// generations, verified under BOTH recovery modes) plus an engine-level reload of the
-/// preserved damaged store under every mode/artifact combination showed the fold reconstructs
-/// the full served view; the observed emptiness came from the serving layer answering
-/// vacuously (a discarded shard-load failure served as an empty store) and is fixed there.
-fn upsert_deltas_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("TS_INDEXLOG_UPSERT_DELTAS")
-            .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true)
-    })
-}
-
 fn command_upsert_components(
     command: &Command,
 ) -> Option<Vec<(&'static str, String, Option<String>)>> {
