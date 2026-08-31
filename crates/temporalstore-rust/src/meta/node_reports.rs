@@ -101,6 +101,55 @@ impl SingleNodeMeta {
         stats_from_state(&state, &self.counters)
     }
 
+    /// Everything a metrics scrape reports, in one pass under one read lock.
+    ///
+    /// The scrape reports tables, namespaces and proxy groups by count alone,
+    /// and servers and proxies by a handful of fields each. Getting there by
+    /// listing all five cloned every resource whole -- including each server's
+    /// per-shard loads and serving states, which the scrape never reads. On
+    /// 4096 tables that was 940us of a 1093us scrape; on 32 servers holding
+    /// 1000 shards each it was most of 6.1ms.
+    pub fn metrics_report(&self) -> MetaMetricsReport {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let mut report = MetaMetricsReport {
+            status: Status::ok(),
+            tables: StateTally::default(),
+            namespaces: StateTally::default(),
+            proxy_groups: StateTally::default(),
+            servers: Vec::with_capacity(state.servers.len()),
+            proxies: Vec::with_capacity(state.proxies.len()),
+        };
+        for table in state.tables.values() {
+            report.tables.record(table.info.state);
+        }
+        for namespace_state in state.namespaces.values() {
+            report.namespaces.record(*namespace_state);
+        }
+        for group in state.proxy_groups.values() {
+            report.proxy_groups.record(group.state);
+        }
+        for server in state.servers.values() {
+            report.servers.push(ServerScrapeRow {
+                server_addr: server.server_addr.clone(),
+                state: server.state,
+                reported_record_count: server.reported_record_count,
+                reported_storage_bytes: server.reported_storage_bytes,
+                last_meta_topology_version: server.runtime_load.last_meta_topology_version,
+                rejected_total: server.runtime_load.rejected_total,
+                timed_out_total: server.runtime_load.timed_out_total,
+                canceled_total: server.runtime_load.canceled_total,
+            });
+        }
+        for proxy in state.proxies.values() {
+            report.proxies.push(ProxyScrapeRow {
+                proxy_addr: proxy.proxy_addr.clone(),
+                state: proxy.state,
+                restart_count: proxy.restart_count,
+            });
+        }
+        report
+    }
+
     pub fn preflight_report(&self) -> MetaPreflightReport {
         let state = self.inner.read().expect("meta lock poisoned");
         let normal_servers = state

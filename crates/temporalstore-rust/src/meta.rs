@@ -782,6 +782,86 @@ pub struct TableServingOptionsPatch {
     pub connect_timeout_ms: Option<u64>,
 }
 
+/// How many resources there are, and how many are in each state.
+///
+/// A scrape reports exactly this about tables, namespaces and proxy groups and
+/// nothing else, but it was cloning every one of them -- names and serving
+/// options included -- to call `.len()` and filter on the state field.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateTally {
+    pub normal: u64,
+    pub frozen: u64,
+    pub dropped: u64,
+}
+
+impl StateTally {
+    fn record(&mut self, state: MetaEntityState) {
+        match state {
+            MetaEntityState::Normal => self.normal += 1,
+            MetaEntityState::Frozen => self.frozen += 1,
+            MetaEntityState::Dropped => self.dropped += 1,
+        }
+    }
+
+    /// Every resource counted, whatever state it is in.
+    ///
+    /// The three states are the whole of `MetaEntityState`, so this is the
+    /// count the listing's `.len()` used to give.
+    pub fn total(&self) -> u64 {
+        self.normal + self.frozen + self.dropped
+    }
+
+    /// How many are in the state of this name, named as
+    /// [`MetaEntityState::as_str`] names it.
+    pub fn in_state(&self, state: &str) -> u64 {
+        match state {
+            "normal" => self.normal,
+            "frozen" => self.frozen,
+            "dropped" => self.dropped,
+            _ => 0,
+        }
+    }
+}
+
+/// One server, reduced to what a scrape reports about it.
+///
+/// A server record carries its shard loads, its stat loads and its shard
+/// serving states -- one entry per shard it holds, and the serving states carry
+/// strings. A scrape reads none of them, so none of them are here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerScrapeRow {
+    pub server_addr: String,
+    pub state: MetaEntityState,
+    pub reported_record_count: u64,
+    pub reported_storage_bytes: u64,
+    pub last_meta_topology_version: u64,
+    pub rejected_total: u64,
+    pub timed_out_total: u64,
+    pub canceled_total: u64,
+}
+
+/// One proxy, reduced the same way.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyScrapeRow {
+    pub proxy_addr: String,
+    pub state: MetaEntityState,
+    pub restart_count: u64,
+}
+
+/// Everything a scrape needs, taken in one pass under one read lock.
+///
+/// The scrape used to make five separate listing calls, each taking the lock
+/// again, so its numbers described five consecutive moments rather than one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaMetricsReport {
+    pub status: Status,
+    pub tables: StateTally,
+    pub namespaces: StateTally,
+    pub proxy_groups: StateTally,
+    pub servers: Vec<ServerScrapeRow>,
+    pub proxies: Vec<ProxyScrapeRow>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GetTableTopologyRequest {
     pub namespace: String,
@@ -5403,7 +5483,258 @@ fn counting_a_namespace_tables_agrees_with_counting_them_one_by_one() {
     }
 
     #[test]
-    fn namespace_state_survives_snapshot_and_replay() {
+fn counting_resources_agrees_with_listing_them_and_counting_those() {
+        let meta = SingleNodeMeta::default();
+
+        // A server that has heartbeated, so its row has something in it, and a
+        // frozen one so the states are spread.
+        for node in 0..2u64 {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: format!("node-{node}"),
+                    node_id: node + 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: format!("node-{node}"),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: node + 1,
+                    key_count: 7 + node,
+                    memory_bytes: 4096,
+                }],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad {
+                    rejected_total: 3 + node,
+                    timed_out_total: 1,
+                    canceled_total: 2,
+                    last_meta_topology_version: 9,
+                    ..Default::default()
+                },
+                // The record and storage counters a scrape reports are summed
+                // from these, not from the loads above.
+                shard_states: vec![ServerShardServingState {
+                    shard_id: node + 1,
+                    total_records: 11 + node as usize,
+                    storage_bytes: 2048,
+                    ..Default::default()
+                }],
+            });
+        }
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-1".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unresponsive,
+            })
+            .status
+            .ok);
+
+        // Tables in all three states.
+        for table_name in ["kept", "frozen", "dropped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: table_name.to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "frozen".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped".to_string(),
+            })
+            .status
+            .ok);
+
+        // Namespaces in all three states.
+        for namespace in ["kept-ns", "frozen-ns", "dropped-ns"] {
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: namespace.to_string(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_namespace(AddNamespaceRequest {
+                namespace: "frozen-ns".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .drop_namespace(AddNamespaceRequest {
+                namespace: "dropped-ns".to_string(),
+            })
+            .status
+            .ok);
+
+        // Proxy groups, one kept and one dropped.
+        for group in ["kept-group", "dropped-group"] {
+            assert!(meta
+                .put_proxy_group(PutProxyGroupRequest {
+                    group: group.to_string(),
+                    namespace: "ns".to_string(),
+                    location: String::new(),
+                    instance_num: 1,
+                    drop_percent: 0,
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .drop_proxy_group(DropProxyGroupRequest {
+                group: "dropped-group".to_string(),
+            })
+            .status
+            .ok);
+
+        let tallies = meta.metrics_report();
+        assert!(tallies.status.ok);
+
+        // Counted against listing them and counting those, which is what the
+        // scrape did before -- for every state, and for the total.
+        let tables = meta.list_tables().tables;
+        let namespaces = meta.list_namespaces().namespaces;
+        let proxy_groups = meta.list_proxy_groups().groups;
+        assert_eq!(tallies.tables.total(), tables.len() as u64, "table total");
+        assert_eq!(
+            tallies.namespaces.total(),
+            namespaces.len() as u64,
+            "namespace total"
+        );
+        assert_eq!(
+            tallies.proxy_groups.total(),
+            proxy_groups.len() as u64,
+            "proxy group total"
+        );
+        for state in ["normal", "frozen", "dropped"] {
+            assert_eq!(
+                tallies.tables.in_state(state),
+                tables
+                    .iter()
+                    .filter(|table| table.state.as_str() == state)
+                    .count() as u64,
+                "tables in state {state}"
+            );
+            assert_eq!(
+                tallies.namespaces.in_state(state),
+                namespaces
+                    .iter()
+                    .filter(|namespace| namespace.state.as_str() == state)
+                    .count() as u64,
+                "namespaces in state {state}"
+            );
+            assert_eq!(
+                tallies.proxy_groups.in_state(state),
+                proxy_groups
+                    .iter()
+                    .filter(|group| group.state.as_str() == state)
+                    .count() as u64,
+                "proxy groups in state {state}"
+            );
+        }
+
+        // And the states are actually spread, so the agreement above is not
+        // every count being equal to zero.
+        assert_eq!(tallies.tables.normal, 1);
+        assert_eq!(tallies.tables.frozen, 1);
+        assert_eq!(tallies.tables.dropped, 1);
+        assert_eq!(tallies.namespaces.frozen, 1);
+        assert_eq!(tallies.namespaces.dropped, 1);
+
+        // A name nothing uses counts as nothing, rather than falling into one
+        // of the three.
+        assert_eq!(tallies.tables.in_state("loading"), 0);
+
+        // The server and proxy rows carry what the scrape reports, for every
+        // server and proxy there is, and they agree with the full records.
+        let full_servers = meta.list_servers().servers;
+        let full_proxies = meta.list_proxies().proxies;
+        assert_eq!(tallies.servers.len(), full_servers.len(), "a server is missing");
+        assert_eq!(tallies.proxies.len(), full_proxies.len(), "a proxy is missing");
+        for full in &full_servers {
+            let row = tallies
+                .servers
+                .iter()
+                .find(|row| row.server_addr == full.server_addr)
+                .unwrap_or_else(|| panic!("{} has no row", full.server_addr));
+            assert_eq!(row.state, full.state, "{} state", full.server_addr);
+            assert_eq!(
+                row.reported_record_count, full.reported_record_count,
+                "{} record count",
+                full.server_addr
+            );
+            assert_eq!(
+                row.reported_storage_bytes, full.reported_storage_bytes,
+                "{} storage bytes",
+                full.server_addr
+            );
+            assert_eq!(
+                row.last_meta_topology_version, full.runtime_load.last_meta_topology_version,
+                "{} topology version",
+                full.server_addr
+            );
+            assert_eq!(
+                row.rejected_total, full.runtime_load.rejected_total,
+                "{} rejected",
+                full.server_addr
+            );
+            assert_eq!(
+                row.timed_out_total, full.runtime_load.timed_out_total,
+                "{} timed out",
+                full.server_addr
+            );
+            assert_eq!(
+                row.canceled_total, full.runtime_load.canceled_total,
+                "{} canceled",
+                full.server_addr
+            );
+        }
+        for full in &full_proxies {
+            let row = tallies
+                .proxies
+                .iter()
+                .find(|row| row.proxy_addr == full.proxy_addr)
+                .unwrap_or_else(|| panic!("{} has no row", full.proxy_addr));
+            assert_eq!(row.state, full.state, "{} state", full.proxy_addr);
+            assert_eq!(
+                row.restart_count, full.restart_count,
+                "{} restart count",
+                full.proxy_addr
+            );
+        }
+        // The counters are not all zero, so the agreement above means
+        // something.
+        assert!(
+            tallies
+                .servers
+                .iter()
+                .any(|row| row.reported_record_count > 0),
+            "no server reported a record count, so the row check proves nothing"
+        );
+    }
+
+    #[test]
+        fn namespace_state_survives_snapshot_and_replay() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("namespace-mutations.jsonl");
         {

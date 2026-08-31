@@ -1724,11 +1724,14 @@ fn handle(
 
 fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskScheduler) -> String {
     let stats = backend_call!(meta, stats);
-    let servers = backend_call!(meta, list_servers).servers;
-    let proxies = backend_call!(meta, list_proxies).proxies;
-    let namespaces = backend_call!(meta, list_namespaces).namespaces;
-    let tables = backend_call!(meta, list_tables).tables;
-    let proxy_groups = backend_call!(meta, list_proxy_groups).groups;
+    // One pass, one acquisition of the read lock. Tables, namespaces and proxy
+    // groups are reported by number and by state and never itemised, so they
+    // are counted in place; servers and proxies are itemised, but only by a few
+    // fields each, so they arrive without the per-shard lists a server record
+    // carries.
+    let report = backend_call!(meta, metrics_report);
+    let servers = &report.servers;
+    let proxies = &report.proxies;
     let reserved = backend_call!(meta, reserved_names).reserved;
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
@@ -1762,12 +1765,12 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     out.push_str("# HELP temporalstore_meta_inventory Current metaserver inventory counts.\n");
     out.push_str("# TYPE temporalstore_meta_inventory gauge\n");
     for (kind, value) in [
-        ("namespace", namespaces.len() as u64),
-        ("table", tables.len() as u64),
+        ("namespace", report.namespaces.total()),
+        ("table", report.tables.total()),
         ("server", servers.len() as u64),
         ("proxy", proxies.len() as u64),
         ("shard", stats.shard_count as u64),
-        ("proxy_group", proxy_groups.len() as u64),
+        ("proxy_group", report.proxy_groups.total()),
         ("reserved_namespace", reserved.namespaces.len() as u64),
         ("reserved_table", reserved.tables.len() as u64),
     ] {
@@ -1806,10 +1809,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "table"), ("state", state)],
-            tables
-                .iter()
-                .filter(|table| table.state.as_str() == state)
-                .count() as u64,
+            report.tables.in_state(state),
         );
         // A namespace has had a state since it became something an operator can
         // freeze and drop; nothing reported it.
@@ -1817,19 +1817,13 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "namespace"), ("state", state)],
-            namespaces
-                .iter()
-                .filter(|namespace| namespace.state.as_str() == state)
-                .count() as u64,
+            report.namespaces.in_state(state),
         );
         push_meta_metric(
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "proxy_group"), ("state", state)],
-            proxy_groups
-                .iter()
-                .filter(|group| group.state.as_str() == state)
-                .count() as u64,
+            report.proxy_groups.in_state(state),
         );
     }
     // The size of what each node is holding, which every heartbeat has carried
@@ -1841,7 +1835,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_server_records gauge
 ");
-    for server in &servers {
+    for server in servers {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_server_records",
@@ -1855,7 +1849,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_server_storage_bytes gauge
 ");
-    for server in &servers {
+    for server in servers {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_server_storage_bytes",
@@ -1878,12 +1872,12 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_server_applied_topology gauge
 ");
-    for server in &servers {
+    for server in servers {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_server_applied_topology",
             &[("server", server.server_addr.as_str())],
-            server.runtime_load.last_meta_topology_version,
+            server.last_meta_topology_version,
         );
     }
 
@@ -1899,11 +1893,11 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
 # TYPE temporalstore_meta_server_{name}_total counter
 "
         ));
-        for server in &servers {
+        for server in servers {
             let value = match name {
-                "rejected" => server.runtime_load.rejected_total,
-                "timed_out" => server.runtime_load.timed_out_total,
-                _ => server.runtime_load.canceled_total,
+                "rejected" => server.rejected_total,
+                "timed_out" => server.timed_out_total,
+                _ => server.canceled_total,
             };
             push_meta_metric(
                 &mut out,
@@ -1924,7 +1918,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_proxy_restarts gauge
 ");
-    for proxy in &proxies {
+    for proxy in proxies {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_proxy_restarts",
