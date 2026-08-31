@@ -140,6 +140,32 @@ impl Default for ContextCompressionPolicy {
     }
 }
 
+/// How many nodes each traversal depth keeps, when the request does not say.
+///
+/// Retrieval breadth is a deployment decision, not a build-time one: a corpus of short playbook
+/// steps wants a wider frontier than one of long prose, and the right value is found by measuring
+/// recall on the operator's own documents. The request-level `top_k_per_depth` still wins where a
+/// caller sets it; this only supplies the default it falls back to.
+///
+/// Widening costs latency roughly linearly -- traversal work is bounded by depth x top_k x
+/// children -- which is why it is capped at CONTEXT_MAX_LIMIT rather than left open.
+pub(super) fn default_traversal_top_k() -> usize {
+    std::env::var("MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_TOP_K)
+}
+
+/// Ceiling on nodes collected across the whole traversal, when the request does not say.
+pub(super) fn default_traversal_candidates() -> usize {
+    std::env::var("MATRIXARK_RETRIEVAL_MAX_CANDIDATES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES)
+}
+
 pub(super) fn context_compression_policy_from_env() -> ContextCompressionPolicy {
     fn env_usize(name: &str, default: usize) -> usize {
         std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -910,7 +936,7 @@ pub(super) fn traverse_context_tree(
 ) -> Vec<ContextTraversedNode> {
     let max_depth = max_depth.unwrap_or(6).min(CONTEXT_MAX_TRAVERSAL_DEPTH);
     let top_k = top_k_per_depth
-        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_TOP_K)
+        .unwrap_or_else(default_traversal_top_k)
         .max(1)
         .min(CONTEXT_MAX_LIMIT);
     let child_limit = max_children_scored_per_parent
@@ -918,7 +944,7 @@ pub(super) fn traverse_context_tree(
         .max(1)
         .min(CONTEXT_MAX_LIMIT);
     let candidate_limit = max_candidate_nodes
-        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES)
+        .unwrap_or_else(default_traversal_candidates)
         .max(1)
         .min(CONTEXT_MAX_LIMIT);
     let mut frontier = vec![ContextTraversedNode {

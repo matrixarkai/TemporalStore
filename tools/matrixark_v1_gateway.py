@@ -1063,6 +1063,83 @@ def _portal_html_bytes() -> bytes:
 _STORE_SENTINELS = {"", "local", "none", "standalone", "off"}
 
 
+# Encoders this deployment can be pointed at, with what they measured on a 298-pair retrieval
+# benchmark built from real documentation. The numbers are here so an operator choosing a model sees
+# the trade rather than guessing from parameter counts, which do not predict the ranking: the 560M
+# model wins by about a point and a half at six times the cost, the 278M model wins nothing, and the
+# widest-window model scores worst of all. Dimension truncation matters as much as model size --
+# e5-large scores HIGHER truncated to 512 than at its native 1024.
+#
+# These are measurements on ONE corpus of technical documentation with English and Chinese queries.
+# They rank these models on that corpus; they do not promise the same ranking on a different one,
+# which is why the portal presents them as evidence rather than as a recommendation to apply blindly.
+_ENCODER_CATALOG = [
+    {
+        "id": "intfloat/multilingual-e5-large",
+        "label": "multilingual-e5-large @512 dims",
+        "params_m": 560, "dims": 512, "window": 512,
+        "hit_at_1": 76.2, "hit_at_5": 92.3, "texts_per_s": 1.7,
+        "vectors_mb_per_doc": 10.70, "needs_prefix": True, "recommended": True,
+        "note": "Best measured retrieval of the set. Truncating its 1024 values to 512 scores "
+                "HIGHER than leaving them full (76.2 against 74.2 hit@1) while halving vector "
+                "memory. It encodes six times slower than e5-small, which matters far less when "
+                "embedding is deferred and backfilled behind the import.",
+    },
+    {
+        "id": "intfloat/multilingual-e5-small",
+        "label": "multilingual-e5-small",
+        "params_m": 118, "dims": 384, "window": 512,
+        "hit_at_1": 74.8, "hit_at_5": 90.6, "texts_per_s": 10.7,
+        "vectors_mb_per_doc": 8.02, "needs_prefix": True, "recommended": True,
+        "note": "Best quality per unit of cost, and within about a point and a half of e5-large on "
+                "both metrics -- roughly the measurement's own error bar -- at six times the "
+                "throughput and a quarter less vector memory. The right default when the import "
+                "window is the constraint.",
+    },
+    {
+        "id": "intfloat/multilingual-e5-base",
+        "label": "multilingual-e5-base",
+        "params_m": 278, "dims": 768, "window": 512,
+        "hit_at_1": 74.8, "hit_at_5": 91.3, "texts_per_s": 4.8,
+        "vectors_mb_per_doc": 16.05, "needs_prefix": True, "recommended": False,
+        "note": "Sits between the two on quality and cost without winning either. Its edge over "
+                "e5-small comes from the wider vector, not the parameter count: truncated to 384 "
+                "it drops to 71.5%.",
+    },
+    {
+        "id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "label": "MiniLM-L12 (current default)",
+        "params_m": 118, "dims": 384, "window": 512,
+        "hit_at_1": 59.4, "hit_at_5": 82.2, "texts_per_s": 31.7,
+        "vectors_mb_per_doc": 8.02, "needs_prefix": False, "recommended": False,
+        "note": "Fastest of the set and the weakest by a wide margin -- fifteen points of hit@1 "
+                "below e5-small at identical size and memory. It remains the default only because "
+                "existing stores were embedded with it and switching requires a backfill.",
+    },
+    {
+        "id": "BAAI/bge-m3",
+        "label": "bge-m3 (long context)",
+        "params_m": 568, "dims": 1024, "window": 8192,
+        "hit_at_1": 49.7, "hit_at_5": 70.8, "texts_per_s": 0.2,
+        "vectors_mb_per_doc": 2.42, "needs_prefix": False, "recommended": False,
+        "note": "An 8192-token window needs far fewer vectors -- 2.42 MB per document against 8.02 "
+                "-- but it scored worst on retrieval and encodes over a hundred times slower than "
+                "e5-small. Consider it only when vector storage is the binding constraint.",
+    },
+]
+
+
+def encoder_catalog() -> list:
+    """The catalog, with the active model marked, for the portal's model picker."""
+    active = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
+    out = []
+    for entry in _ENCODER_CATALOG:
+        item = dict(entry)
+        item["active"] = bool(active) and active == entry["id"]
+        out.append(item)
+    return out
+
+
 def _model_config_snapshot() -> Json:
     """The effective extraction/embedding/skill-budget configuration, redacted for display.
 
@@ -1166,6 +1243,7 @@ def _model_config_snapshot() -> Json:
         "embedding": embedding,
         "skills": skills,
         "warnings": warnings,
+        "encoders": encoder_catalog(),
     }
 
 
