@@ -4267,18 +4267,32 @@ mod tests {
             elapsed
         }
 
+        /// Read a log's end with the footer setting it was WRITTEN with. Reading a log without
+        /// footers while footers are enabled walks into a slot that was never reserved and tries
+        /// to parse padding as a record, which is what made this benchmark die with a decode
+        /// error rather than report a number.
+        fn read_end(path: &std::path::Path, footers: bool) -> u64 {
+            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
+            std::env::set_var("TS_WAL_BLOCK_FOOTER", if footers { "1" } else { "0" });
+            let end = last_wal_sequence_in(path).map(|(_, end)| end);
+            match previous {
+                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
+                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
+            }
+            end.unwrap()
+        }
+
+        // Rolling off for the WHOLE benchmark, before anything is built. The segment threshold is
+        // a thread-local override and these tests share a thread, so whatever a previous test left
+        // is inherited; a log that rolls mid-build splits across files this never looks at. It was
+        // being set after both logs were already written, which is too late to matter.
+        set_wal_segment_bytes_for_test(None);
+
         for records in [4_000usize, 16_000] {
             let (_keep_a, with) = build(records, true);
             let (_keep_b, without) = build(records, false);
-            let (_, end_with) = {
-                // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
-        // these tests share a thread, so whatever the previous test left is inherited -- and a
-        // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
-                last_wal_sequence_in(&with).unwrap()
-            };
-            let (_, end_without) = last_wal_sequence_in(&without).unwrap();
+            let end_with = read_end(&with, true);
+            let end_without = read_end(&without, false);
             let footer = time_tail(&with, true, 20);
             let walk = time_tail(&without, false, 20);
             println!(
