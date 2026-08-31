@@ -85,6 +85,33 @@ impl SingleNodeMeta {
         }
     }
 
+    /// The per-resource numbers a metrics scrape reports, taken in one pass.
+    pub fn metric_rows(&self) -> (Vec<ServerMetricRow>, Vec<ProxyMetricRow>) {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let servers = state
+            .servers
+            .values()
+            .map(|server| ServerMetricRow {
+                server_addr: server.server_addr.clone(),
+                reported_record_count: server.reported_record_count,
+                reported_storage_bytes: server.reported_storage_bytes,
+                rejected_total: server.runtime_load.rejected_total,
+                timed_out_total: server.runtime_load.timed_out_total,
+                canceled_total: server.runtime_load.canceled_total,
+                last_meta_topology_version: server.runtime_load.last_meta_topology_version,
+            })
+            .collect();
+        let proxies = state
+            .proxies
+            .values()
+            .map(|proxy| ProxyMetricRow {
+                proxy_addr: proxy.proxy_addr.clone(),
+                restart_count: proxy.restart_count,
+            })
+            .collect();
+        (servers, proxies)
+    }
+
     pub fn info(&self) -> MetaInfo {
         let meta_change_muted = self.is_meta_change_muted();
         MetaInfo {

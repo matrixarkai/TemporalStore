@@ -189,7 +189,30 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
 }
 
 pub(super) fn stats_from_state(state: &MetaState, counters: &MetaCounters) -> MetaStats {
+    let mut resource_states: BTreeMap<String, usize> = BTreeMap::new();
+    let mut count = |resource: &str, state: MetaEntityState| {
+        *resource_states
+            .entry(format!("{resource}:{}", state.as_str()))
+            .or_default() += 1;
+    };
+    for server in state.servers.values() {
+        count("server", server.state);
+    }
+    for proxy in state.proxies.values() {
+        count("proxy", proxy.state);
+    }
+    for table in state.tables.values() {
+        count("table", table.info.state);
+    }
+    for namespace_state in state.namespaces.values() {
+        count("namespace", *namespace_state);
+    }
+    for group in state.proxy_groups.values() {
+        count("proxy_group", group.state);
+    }
     MetaStats {
+        proxy_group_count: state.proxy_groups.len(),
+        resource_states,
         register_shard_total: counters.register_shard_total.load(Ordering::Relaxed),
         get_shard_total: counters.get_shard_total.load(Ordering::Relaxed),
         server_register_total: counters.server_register_total.load(Ordering::Relaxed),

@@ -547,6 +547,12 @@ impl MetaRaftCluster {
         )
     }
 
+    pub fn metric_rows(&self) -> (Vec<crate::meta::ServerMetricRow>, Vec<crate::meta::ProxyMetricRow>) {
+        self.read_meta()
+            .map(|meta| meta.metric_rows())
+            .unwrap_or_default()
+    }
+
     pub fn stats(&self) -> MetaStats {
         self.read_meta()
             .map(|meta| meta.stats())

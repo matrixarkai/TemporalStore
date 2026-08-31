@@ -1724,12 +1724,17 @@ fn handle(
 
 fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskScheduler) -> String {
     let stats = backend_call!(meta, stats);
-    let servers = backend_call!(meta, list_servers).servers;
-    let proxies = backend_call!(meta, list_proxies).proxies;
-    let namespaces = backend_call!(meta, list_namespaces).namespaces;
-    let tables = backend_call!(meta, list_tables).tables;
-    let proxy_groups = backend_call!(meta, list_proxy_groups).groups;
+    // Counted from the stats rather than by listing every resource: listing
+    // copies them, and a server carries its whole shard-state list.
     let reserved = backend_call!(meta, reserved_names).reserved;
+    let (servers, proxies) = backend_call!(meta, metric_rows);
+    let state_count = |resource: &str, state: &str| {
+        stats
+            .resource_states
+            .get(&format!("{resource}:{state}"))
+            .copied()
+            .unwrap_or(0) as u64
+    };
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
     let mut out = String::new();
@@ -1762,12 +1767,12 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     out.push_str("# HELP temporalstore_meta_inventory Current metaserver inventory counts.\n");
     out.push_str("# TYPE temporalstore_meta_inventory gauge\n");
     for (kind, value) in [
-        ("namespace", namespaces.len() as u64),
-        ("table", tables.len() as u64),
-        ("server", servers.len() as u64),
-        ("proxy", proxies.len() as u64),
+        ("namespace", stats.namespace_count as u64),
+        ("table", stats.table_count as u64),
+        ("server", stats.server_count as u64),
+        ("proxy", stats.proxy_count as u64),
         ("shard", stats.shard_count as u64),
-        ("proxy_group", proxy_groups.len() as u64),
+        ("proxy_group", stats.proxy_group_count as u64),
         ("reserved_namespace", reserved.namespaces.len() as u64),
         ("reserved_table", reserved.tables.len() as u64),
     ] {
@@ -1788,28 +1793,19 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "server"), ("state", state)],
-            servers
-                .iter()
-                .filter(|server| server.state.as_str() == state)
-                .count() as u64,
+            state_count("server", state),
         );
         push_meta_metric(
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "proxy"), ("state", state)],
-            proxies
-                .iter()
-                .filter(|proxy| proxy.state.as_str() == state)
-                .count() as u64,
+            state_count("proxy", state),
         );
         push_meta_metric(
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "table"), ("state", state)],
-            tables
-                .iter()
-                .filter(|table| table.state.as_str() == state)
-                .count() as u64,
+            state_count("table", state),
         );
         // A namespace has had a state since it became something an operator can
         // freeze and drop; nothing reported it.
@@ -1817,19 +1813,13 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "namespace"), ("state", state)],
-            namespaces
-                .iter()
-                .filter(|namespace| namespace.state.as_str() == state)
-                .count() as u64,
+            state_count("namespace", state),
         );
         push_meta_metric(
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "proxy_group"), ("state", state)],
-            proxy_groups
-                .iter()
-                .filter(|group| group.state.as_str() == state)
-                .count() as u64,
+            state_count("proxy_group", state),
         );
     }
     // The size of what each node is holding, which every heartbeat has carried
@@ -1883,7 +1873,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_server_applied_topology",
             &[("server", server.server_addr.as_str())],
-            server.runtime_load.last_meta_topology_version,
+            server.last_meta_topology_version,
         );
     }
 
@@ -1901,9 +1891,9 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
         ));
         for server in &servers {
             let value = match name {
-                "rejected" => server.runtime_load.rejected_total,
-                "timed_out" => server.runtime_load.timed_out_total,
-                _ => server.runtime_load.canceled_total,
+                "rejected" => server.rejected_total,
+                "timed_out" => server.timed_out_total,
+                _ => server.canceled_total,
             };
             push_meta_metric(
                 &mut out,
@@ -2532,6 +2522,59 @@ mod tests {
             warning.contains("diverge"),
             "it should say what goes wrong: {warning}"
         );
+    }
+
+    #[test]
+    fn a_scrape_counts_the_same_resources_listing_them_would() {
+        // The scrape used to list every server, proxy, namespace, table and
+        // proxy group and count the copies. It now reads counts gathered where
+        // the state is held, which is only right if it reaches the same
+        // numbers -- including for a resource that is frozen or dropped rather
+        // than normal.
+        let meta = SingleNodeMeta::default();
+        for (i, state) in ["normal", "frozen", "dropped"].iter().enumerate() {
+            let addr = format!("node-{i}");
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    numa_nodes: Vec::new(),
+                    server_addr: addr.clone(),
+                    node_id: i as u64 + 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            let change = |endpoint: String| StateChangeRequest {
+                endpoint,
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unspecified,
+            };
+            if *state == "frozen" {
+                assert!(meta.freeze_server(change(addr)).status.ok);
+            } else if *state == "dropped" {
+                assert!(meta.drop_server(change(addr)).status.ok);
+            }
+        }
+
+        let listed = meta.list_servers().servers;
+        let stats = meta.stats();
+        assert_eq!(stats.server_count, listed.len());
+        for state in ["normal", "frozen", "dropped"] {
+            let by_listing = listed
+                .iter()
+                .filter(|server| server.state.as_str() == state)
+                .count();
+            let by_stats = stats
+                .resource_states
+                .get(&format!("server:{state}"))
+                .copied()
+                .unwrap_or(0);
+            assert_eq!(
+                by_stats, by_listing,
+                "server:{state} counted differently without listing"
+            );
+            assert_eq!(by_listing, 1, "one server should be {state}");
+        }
     }
 
     #[test]

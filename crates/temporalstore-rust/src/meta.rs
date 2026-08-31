@@ -1051,6 +1051,40 @@ pub struct MetaStats {
     /// beside the shards is a second thing to keep in step with them.
     #[serde(default)]
     pub frozen_shard_count: usize,
+    /// How many proxy groups there are, which nothing counted.
+    #[serde(default)]
+    pub proxy_group_count: usize,
+    /// How many of each resource are in each state, keyed `<resource>:<state>`.
+    ///
+    /// Reporting this meant listing every server, proxy, namespace, table and
+    /// proxy group and counting the copies -- and listing a server copies its
+    /// whole shard-state list, three strings for every shard it holds. Counted
+    /// here instead, in the pass that is already walking them.
+    #[serde(default)]
+    pub resource_states: BTreeMap<String, usize>,
+}
+
+/// The per-server numbers a metrics scrape reports.
+///
+/// Listing the servers to report these copied each one whole, and a server
+/// carries its shard-load list and its shard-state list -- three strings for
+/// every shard it holds. None of those appear below.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ServerMetricRow {
+    pub server_addr: String,
+    pub reported_record_count: u64,
+    pub reported_storage_bytes: u64,
+    pub rejected_total: u64,
+    pub timed_out_total: u64,
+    pub canceled_total: u64,
+    pub last_meta_topology_version: u64,
+}
+
+/// The per-proxy numbers a metrics scrape reports.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ProxyMetricRow {
+    pub proxy_addr: String,
+    pub restart_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
