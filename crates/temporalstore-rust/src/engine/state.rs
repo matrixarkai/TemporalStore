@@ -307,12 +307,6 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 /// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
 /// page, instead of each of the three keeping its own copy of the same ~117-byte string.
 pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
-/// A sorted, deduplicated vector rather than a set: measured, 100% of these entries hold exactly
-/// one ref, and a B-tree node costs its full size whether it holds one element or eleven.
-/// Insertion goes through `insert_page_lookup_ref`, which keeps both invariants.
-///
-/// Serializes identically -- both a `Vec` and a `BTreeSet` encode as a sequence -- which matters
-/// because this map is part of the serialized index.
 /// One entry per OBJECT, with its components nested inside.
 ///
 /// This replaced two maps keyed by overlapping composites -- (model, object) and
@@ -343,6 +337,12 @@ pub(super) struct ObjectPageRefs {
 pub(super) struct ComponentPages {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
+    /// A sorted, deduplicated vector rather than a set: measured, 100% of these hold exactly one
+    /// ref, and a B-tree node costs its full size whether it holds one element or eleven.
+    /// Insertion goes through `insert_page_lookup_ref`, which keeps both invariants.
+    ///
+    /// Serializes identically -- a `Vec` and a `BTreeSet` both encode as a sequence -- which
+    /// matters because this is part of the serialized index.
     #[serde(default)]
     pub(super) refs: Vec<PageLookupRef>,
 }
