@@ -744,7 +744,29 @@ impl TemporalEngine {
             // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
             // rebuilds the first-index once at the end, so deferring here is
             // correctness-preserving.
-            let rebuilt_bucket_index = !defer_bucket_index_reconstruct()
+            // Maintain the index for the keys this write touched, and rebuild only if that did
+            // not cover them.
+            //
+            // A context write does not register its page, so the branch below fired a full
+            // O(store) rebuild for every one -- the last term in an add that grew with the corpus.
+            // Feature and Sequence writes already maintain on the write path, and replay already
+            // maintains these same kinds; this closes the one path that did neither.
+            //
+            // `sync_context_pages_for_object` mirrors `collect_model_live_page_entries` arm for
+            // arm and reports whether it found anything, so a write it does not cover still gets
+            // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
+            // maintenance updates an index, it does not construct one.
+            let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
+                && !delta_command_keys.is_empty()
+                && delta_command_keys.iter().all(|object_key| {
+                    storage_bucket_internals::sync_context_pages_for_object(
+                        shard,
+                        request.shard_id,
+                        object_key,
+                    )
+                });
+            let rebuilt_bucket_index = !maintained_bucket_index
+                && !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
                     || shard.bucket_index.bucket_map.is_empty());
             if rebuilt_bucket_index {

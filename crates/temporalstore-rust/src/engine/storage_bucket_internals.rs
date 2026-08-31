@@ -1025,6 +1025,72 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.context_compressions.is_empty()
 }
 
+/// Bring the bucket index up to date for ONE object key, across every context kind.
+///
+/// A context write does not register its page. The shard rebuilds the whole first-index afterwards
+/// instead -- `rebuild_bucket_first_index`, which walks every live page in the store -- and with
+/// several context writes per add that was the last term in an add that grows with the corpus.
+/// Measured before coalescing: 5 762 400 page visits across 600 adds, per-add cost doubling as the
+/// corpus doubled.
+///
+/// Feature and Sequence writes already maintain the index this way on the write path, and REPLAY
+/// already does it for these very kinds (`lifecycle.rs`, via the same `sync_bucket_index_object_pages`).
+/// The context write path was the one that did not.
+///
+/// The kinds and the maps below mirror `collect_model_live_page_entries` arm for arm, deliberately:
+/// maintenance and rebuild then derive from the same source and cannot disagree about which kind a
+/// page belongs to. `context_entity` composes its key from the collection key and the entity hash,
+/// which is exactly the sort of detail a hand-written command-to-kind mapping gets wrong.
+///
+/// Returns whether anything was synced, so the caller can fall back to a rebuild for a write this
+/// does not cover rather than silently leaving the index stale.
+pub(super) fn sync_context_pages_for_object(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+) -> bool {
+    // Read every kind's live addresses first, so the shared borrow ends before the sync below
+    // takes a mutable one.
+    let mut groups: Vec<(&'static str, String, Vec<BlockAddress>)> = Vec::new();
+
+    if let Some(address) = shard.context_nodes.get(object_key) {
+        groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
+    }
+    for (kind, series) in [
+        ("context_event", &shard.context_events),
+        ("context_index", &shard.context_indexes),
+        ("context_audit", &shard.context_audits),
+        ("context_child", &shard.context_children),
+        ("context_summary", &shard.context_summaries),
+        ("context_compression", &shard.context_compressions),
+    ] {
+        if let Some(points) = series.get(object_key) {
+            let live = unique_timestamped_kv_page_addresses(points);
+            if !live.is_empty() {
+                groups.push((kind, object_key.to_string(), live));
+            }
+        }
+    }
+    // Entities live grouped by node but index one entry per entity, under the composed key.
+    if let Some(series) = shard.context_entities.get(object_key) {
+        for (entity_hash, address) in series.iter() {
+            groups.push((
+                "context_entity",
+                format!("{object_key}:{entity_hash}"),
+                vec![address.clone()],
+            ));
+        }
+    }
+
+    if groups.is_empty() {
+        return false;
+    }
+    for (kind, key, live) in groups {
+        sync_bucket_index_object_pages(shard, shard_id, kind, &key, live, true);
+    }
+    true
+}
+
 pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     entries.extend(
