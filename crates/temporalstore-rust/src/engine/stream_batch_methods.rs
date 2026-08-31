@@ -349,6 +349,9 @@ impl TemporalEngine {
                     (Some(collected), Some(components)) => collected.extend(components),
                     (state, _) => *state = None,
                 }
+                // The keys this write touched, for the maintenance below. `object_keys` is
+                // consumed by the loop, so they are kept as they go past.
+                let mut object_keys_for_maintenance: Vec<String> = Vec::new();
                 if object_keys.is_empty() {
                     rebuild_bucket_page_ownership(
                         request.shard_id,
@@ -358,6 +361,7 @@ impl TemporalEngine {
                     );
                 } else {
                     for object_key in object_keys {
+                        object_keys_for_maintenance.push(object_key.clone());
                         shard.dirty_objects.insert(object_key.clone());
                         mark_async_dirty_object(
                             shard,
@@ -367,7 +371,25 @@ impl TemporalEngine {
                         );
                     }
                 }
-                if !defer_bucket_index_reconstruct()
+                // The same maintenance the single-command path does. An ingest's writes are
+                // split across both paths, which is why covering only the other one removed
+                // exactly half the rebuild work and left the rest: 2404 page visits per add
+                // became 1205, and stayed there until this site was covered too.
+                //
+                // Same two guards: every touched key must report that it synced, or the rebuild
+                // still runs; and an empty bucket_map still rebuilds, because maintenance updates
+                // an index rather than constructing one.
+                let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
+                    && !object_keys_for_maintenance.is_empty()
+                    && object_keys_for_maintenance.iter().all(|object_key| {
+                        crate::engine::storage_bucket_internals::sync_context_pages_for_object(
+                            shard,
+                            request.shard_id,
+                            object_key,
+                        )
+                    });
+                if !maintained_bucket_index
+                    && !defer_bucket_index_reconstruct()
                     && (!command_updates_bucket_index_directly(&command_for_post_write)
                         || shard.bucket_index.bucket_map.is_empty())
                 {

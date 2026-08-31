@@ -10154,6 +10154,12 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
         !held.is_empty(),
         "the ingests must populate the index, or the comparison below compares nothing"
     );
+    let uncovered = crate::engine::uncovered_maintenance::snapshot();
+    println!("
+  keys maintenance found nothing for ({}):", uncovered.len());
+    for key in uncovered.iter().take(10) {
+        println!("    {key}");
+    }
 
     // And what a rebuild from the model maps would hold.
     engine.reconstruct_bucket_index_now(1);
