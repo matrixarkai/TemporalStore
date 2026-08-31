@@ -1482,8 +1482,55 @@ fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
 }
 
+/// Pages visited by `update_bucket_layout`, attributed to the CALL SITE that asked for it.
+///
+/// The visit counter lives inside the function, so it reports how much work was done and not who
+/// caused it -- and with ten callers that is the difference between a fix and a guess. Two guesses
+/// were spent on the wrong site before this existed: the per-insert rebuild (fixing it moved the
+/// counter by exactly zero) and narrowing the rebuild's bucket range (the range is only a hashing
+/// input; the function walks the whole shard regardless).
+///
+/// Only written under `#[cfg(test)]` -- it takes a lock, and `update_bucket_layout` is on a write
+/// path.
+pub mod layout_by_caller {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    pub(super) static LAYOUT_BY_CALLER: Mutex<Option<BTreeMap<String, u64>>> = Mutex::new(None);
+
+    #[cfg(test)]
+    pub(super) fn note(caller: &std::panic::Location<'static>, pages: usize) {
+        let mut guard = LAYOUT_BY_CALLER.lock().expect("layout caller tally poisoned");
+        *guard
+            .get_or_insert_with(BTreeMap::new)
+            .entry(format!("{}:{}", caller.file(), caller.line()))
+            .or_insert(0) += pages as u64;
+    }
+
+    pub fn reset() {
+        *LAYOUT_BY_CALLER.lock().expect("layout caller tally poisoned") = Some(BTreeMap::new());
+    }
+
+    /// Call sites and the pages each has caused to be visited, largest first.
+    pub fn snapshot() -> Vec<(String, u64)> {
+        let guard = LAYOUT_BY_CALLER.lock().expect("layout caller tally poisoned");
+        let mut rows: Vec<(String, u64)> = guard
+            .as_ref()
+            .map(|map| map.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows
+    }
+}
+
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.page_index.len());
+    // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
+    // because the visit counter lives INSIDE this function and so reports how much work happened
+    // without saying who asked for it -- with ten callers, that was the difference between a fix
+    // and a guess.
+    #[cfg(test)]
+    layout_by_caller::note(std::panic::Location::caller(), bucket.page_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
         .page_index
         .values()

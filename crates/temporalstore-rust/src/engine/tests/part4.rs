@@ -9550,3 +9550,151 @@ fn the_dump_drain_looks_at_each_dirty_object_once() {
         );
     }
 }
+
+/// Does the incrementally-maintained live-object set agree with a full rebuild?
+///
+/// `update_bucket_layout` recomputes `object_index` by scanning every page in the bucket, and it is
+/// called per page insert. Measured on the add path: 5 762 400 page visits per 600 adds, four times
+/// the work for twice the adds. The insert site already maintains the set incrementally on the line
+/// above -- `bucket.object_index.insert(object_id)` -- and the rebuild then discards that work.
+///
+/// Whether the rebuild is REDUNDANT or LOad-BEARING is not something to reason about: the rebuild
+/// keeps only LIVE object ids, while a loop further down deliberately re-attaches tombstone ids
+/// with a comment saying the object manager's count must match the load path. So the rebuild and
+/// the re-attach are entangled, and "the insert already did it" is exactly the kind of claim that
+/// looks obvious and is wrong.
+///
+/// This drives a workload with every shape that can move the set -- fresh inserts, overwrites of a
+/// live object, deletes, and re-inserts of a deleted key -- then compares what the shard actually
+/// holds against a rebuild computed from the pages. Any divergence is the reason the rebuild
+/// exists, and the fix has to be shaped around it rather than delete it.
+#[test]
+fn the_maintained_object_index_matches_a_full_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        2 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..120 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("live-{index}"),
+                value: vec![b'v'; 48],
+            },
+        });
+        // Overwrite an earlier key: a second live page for an id already in the set.
+        if index % 3 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("live-{}", index / 2),
+                    value: vec![b'w'; 96],
+                },
+            });
+        }
+        // Delete: the case where the set may need to LOSE an id, which one page cannot decide.
+        if index % 7 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("live-{}", index / 4),
+                },
+            });
+        }
+        // Re-insert a deleted key: the set must gain it back.
+        if index % 11 == 0 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("live-{}", index / 4),
+                    value: vec![b'r'; 32],
+                },
+            });
+        }
+        // Hash fields, so an object carries several pages under one id.
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("hash-{}", index % 9),
+                field: format!("field-{index}"),
+                value: vec![b'h'; 32],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut divergent = Vec::new();
+    let mut checked = 0usize;
+    let mut live_total = 0usize;
+    for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+        // What a rebuild would produce: the ids of the pages that are not deleted.
+        let rebuilt: std::collections::BTreeSet<u64> = bucket
+            .page_index
+            .values()
+            .filter(|page| !page.deleted)
+            .map(|page| page.object_id)
+            .collect();
+        checked += 1;
+        live_total += rebuilt.len();
+        if bucket.object_index != rebuilt {
+            let held: Vec<u64> = bucket.object_index.difference(&rebuilt).copied().collect();
+            let missing: Vec<u64> = rebuilt.difference(&bucket.object_index).copied().collect();
+            divergent.push((*routing_bucket, held, missing));
+        }
+    }
+
+    println!(
+        "
+  buckets checked            {checked}
+  live object ids (rebuilt)  {live_total}
+  buckets where the held set differs from a rebuild  {}
+",
+        divergent.len()
+    );
+    for (bucket, held, missing) in divergent.iter().take(6) {
+        println!("    bucket {bucket}: holds-but-rebuild-drops {held:?}, rebuild-has-but-holds-not {missing:?}");
+    }
+
+    // Anti-vacuity first: a comparison over an empty shard agrees about nothing.
+    assert!(
+        checked > 0 && live_total > 0,
+        "the workload must populate buckets, or the comparison below compares nothing"
+    );
+
+    // The finding, whichever way it goes. If this holds, the per-insert rebuild is recomputing
+    // what the insert already knew and can go. If it does not, the difference names exactly what
+    // the rebuild is for -- and the tombstone ids re-attached after it are the first suspect.
+    // The held set is a strict SUPERSET of a rebuild, and the extra ids are tombstones the object
+    // manager must keep reporting until GC reclaims the slot -- `rebuild_bucket_first_index`
+    // re-attaches them deliberately after recomputing the live set. Measured: 14 of 183 buckets
+    // hold exactly one extra id each, and NOTHING is ever missing in the other direction.
+    //
+    // So the invariant is containment plus a named exception, not equality. Asserting equality
+    // would fail on correct behaviour, and asserting nothing would miss a live id going astray.
+    for (bucket_id, held_extra, missing) in &divergent {
+        assert!(
+            missing.is_empty(),
+            "bucket {bucket_id} is MISSING live object ids a rebuild would produce: {missing:?} -- \
+             a live page exists whose id the index does not hold"
+        );
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .get(bucket_id)
+            .expect("the divergent bucket was read from this map");
+        for object_id in held_extra {
+            assert!(
+                bucket.deleted_object_index.contains(object_id),
+                "bucket {bucket_id} holds object id {object_id}, which is neither live nor a \
+                 recorded tombstone"
+            );
+        }
+    }
+}
