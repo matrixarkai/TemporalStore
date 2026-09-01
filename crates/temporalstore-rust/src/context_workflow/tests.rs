@@ -3363,6 +3363,119 @@ fn omitting_inline_payload_still_means_the_payload_is_held_inline() {
 /// that distinguishes them; a single average would hide it.
 ///
 ///   cargo test -p temporalstore-rust --lib what_one_add_costs_end_to_end -- --ignored --nocapture
+/// What would a scoring-only projection of the node fetch actually save?
+///
+/// Since the summary vector moved onto the node, the node fetch is nearly all of what a retrieve
+/// spends per candidate. It returns whole `ContextNode`s; the scoring pass uses `node_hash`, the
+/// two vectors and the model hashes, and drops `canonical_name`, `l0`, `l1_ref` and
+/// `raw_metadata_ref` -- four text fields decoded per candidate and thrown away. This varies
+/// three of them; `canonical_name` is held constant because the engine requires it non-empty,
+/// so the delta below is a LOWER bound on what a projection could save.
+///
+/// Two arms differing ONLY in those four fields, so the delta is the ceiling for a projection.
+/// Measured before building one: the same question asked before #558 came out at 6% of the total
+/// and the change was rightly abandoned, and the answer moves as the rest of the path gets cheaper.
+///
+///   cargo test --features alloc-probe --lib what_the_discarded_node_text_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_the_discarded_node_text_costs() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    const TENANT: u64 = 7301;
+    const NODES: u64 = 120;
+
+    fn run(text_len: usize) -> (u64, u64) {
+        let engine = test_engine();
+        let filler = "t".repeat(text_len);
+        let hashes: Vec<u64> = (1..=NODES).collect();
+        for node_hash in &hashes {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode {
+                    tenant_hash: TENANT,
+                    node: ContextNode {
+                        node_hash: *node_hash,
+                        parent_hash: 0,
+                        kind: 1,
+                        // Constant across both arms: the engine requires it non-empty, so it
+                        // cannot be part of what is varied. It cancels in the delta.
+                        canonical_name: format!("session/node-{node_hash}"),
+                        l0: filler.clone(),
+                        status: 0,
+                        last_event_time_ms: 1_781_700_000_000,
+                        l1_ref: filler.clone(),
+                        raw_metadata_ref: filler.clone(),
+                        vector: vec![0.25_f32; 16],
+                        embedding_model_hash: 7,
+                        embedding_updated_at_ms: 1,
+                        summary_vector: vec![0.5_f32; 16],
+                        summary_vector_valid_from_ms: 1_781_700_000_000,
+                        summary_vector_model_hash: 7,
+                    },
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+
+        let fetch = || ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNodes {
+                tenant_hash: TENANT,
+                node_hashes: hashes.clone(),
+            },
+        };
+        // Warm: the first fetch fills caches that a steady-state read finds warm.
+        let warm = engine.execute(fetch());
+        assert!(
+            matches!(warm.response, CommandResponse::ContextNodes { ref nodes } if nodes.len() == NODES as usize),
+            "every node must come back, or the arms measure different amounts of work"
+        );
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..5 {
+            let out = engine.execute(fetch());
+            assert!(matches!(out.response, CommandResponse::ContextNodes { .. }));
+        }
+        let counts = probe.stop();
+        (counts.allocs / 5, counts.alloc_bytes / 5)
+    }
+
+    println!(
+        "
+  node text   allocs/fetch   allocs per node   bytes/fetch   bytes per node
+"
+    );
+    let mut rows = Vec::new();
+    for text_len in [0usize, 64, 512] {
+        let (allocs, bytes) = run(text_len);
+        println!(
+            "  {text_len:>9}   {allocs:>12}   {:>15.2}   {bytes:>11}   {:>14.1}",
+            allocs as f64 / NODES as f64,
+            bytes as f64 / NODES as f64,
+        );
+        rows.push((text_len, allocs, bytes));
+    }
+    let (_, bare_allocs, bare_bytes) = rows[0];
+    let (len, full_allocs, full_bytes) = rows[rows.len() - 1];
+    println!();
+    println!(
+        "  text 0 -> {len} bytes costs {:.2} extra allocations and {:.1} extra bytes PER NODE",
+        (full_allocs as f64 - bare_allocs as f64) / NODES as f64,
+        (full_bytes as f64 - bare_bytes as f64) / NODES as f64,
+    );
+    println!(
+        "  -> a scoring-only projection could remove at most that, against ~15 allocations per"
+    );
+    println!("     candidate for the whole node fetch. Worth building only if it is a real share.");
+}
+
 /// How many allocations does one retrieve make, and how does that scale with the corpus?
 ///
 /// Bytes decoded are not the interesting quantity on their own: with a production-width vector the
