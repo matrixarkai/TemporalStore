@@ -1728,7 +1728,17 @@ mod tests {
         assert_eq!(address.page_slab_id, 3);
         assert_eq!(address.offset, 128);
         assert_eq!(address.length, 126);
-        assert_eq!(address.sha256.map(|d| d[0]), Some(0xc3));
+        // Every other field the legacy record carried, under whichever name it used: this is the
+        // "all of them must still land" the comment above promises, and asserting one of them was
+        // never enough to keep that promise.
+        assert_eq!(address.page_id(), Some(9));
+        assert_eq!(address.object_id(), Some(122110326161599232));
+        assert_eq!(address.routing_bucket(), Some(545210715));
+        assert_eq!(address.generation(), Some(2));
+        assert_eq!(address.band_id(), Some(4), "`zone_id` is the older spelling of this one");
+        // And the digest is accepted and dropped rather than rejected: an index written before the
+        // address stopped carrying one still loads, which is the whole point of keeping the alias.
+        // The page envelope holds the digest that verifies the bytes.
     }
 
     #[test]
@@ -1744,7 +1754,6 @@ mod tests {
             Some(545210715),
             Some(2),
             Some(4),
-            None,
         );
         let encoded = serde_json::to_string(&address).unwrap();
         // Not vacuous: the values must still be there before the size claim means anything.
