@@ -1645,6 +1645,7 @@ pub(crate) fn extract_context_gated(
         text: l0.clone(),
         valid_from_ms: timestamp_ms,
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let mut summary_l1 = emit_l1.then(|| ContextSummary {
         node_hash,
@@ -1652,6 +1653,7 @@ pub(crate) fn extract_context_gated(
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
         vector: Vec::new(),
+        embedding_model_hash: 0,
     });
     // What the node is SEARCHED by is not what it is SHOWN as. `l0` is the routing preview --
     // title plus one sentence, 18 words -- and embedding it gave the node a vector built from
@@ -1735,6 +1737,12 @@ pub(crate) fn extract_context_gated(
         // embedding_inputs order is node_l0, [node_l1], event_text, so the vectors line up
         // with their owners: index 0 is the L0 summary (and the node), index 1 the L1 summary
         // when emitted, and the event last.
+        //
+        // One encoder produced all of them, so its identity is computed once and stamped on
+        // every owner that takes a vector. The summaries need it as much as the node does: the
+        // retrieve pass scores an L1 summary vector too, and an unstamped one cannot be told
+        // apart from one the encoder in use wrote.
+        let embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
         if let Some(vector) = embedding_vectors.first() {
             // The level-1 summary carries its own vector because that is the only place a
             // summary's vector lives -- the embedding fold moved vectors off separate rows and
@@ -1743,16 +1751,20 @@ pub(crate) fn extract_context_gated(
             // write on that basis is the exact mistake
             // context_extract_stores_embedding_vectors_on_the_records_themselves exists to catch.
             summary_l0.vector = vector.clone();
+            summary_l0.embedding_model_hash = embedding_model_hash;
             // The node itself carries its L0 vector too: the traversal scores children from
             // node.vector first, and without this the happy path would leave it empty on every
             // fresh ingest -- only the drainer's deferred path would ever fill it, so the
             // fallback to the separate record could never be retired.
             node.vector = vector.clone();
-            node.embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
+            node.embedding_model_hash = embedding_model_hash;
             node.embedding_updated_at_ms = timestamp_ms;
         }
         if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
             summary.vector = vector.clone();
+            // The one summary vector retrieval actually scores: level 2 is the only level the
+            // retrieve pass queries for vectors, so this stamp is what the guard there reads.
+            summary.embedding_model_hash = embedding_model_hash;
         }
         let event_vector_index = if emit_l1 { 2 } else { 1 };
         if let Some(vector) = embedding_vectors.get(event_vector_index) {
@@ -2036,6 +2048,19 @@ pub fn retrieve_context(
                     // Same reasoning as the node pass: skip entirely rather than record a zero,
                     // so the count stays at zero and the lexical pass still owns this node.
                     width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    continue;
+                }
+                if context_embedding_model_conflicts(
+                    entry.embedding_model_hash,
+                    active_embedding_model_hash,
+                ) {
+                    // The node's own vector is declined above when its encoder was replaced,
+                    // which removed only ONE of this node's two routes into the ranking. Both
+                    // passes fill THIS map, so scoring the summary here would rank the node on a
+                    // cosine taken across two vector spaces AND mark it scored -- withdrawing the
+                    // lexical fallback the other guard deliberately handed it to. Skip without
+                    // recording, exactly as there.
+                    model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     continue;
                 }
                 let score =
