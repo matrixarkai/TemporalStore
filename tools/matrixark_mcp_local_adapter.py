@@ -116,7 +116,15 @@ LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_
 LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
     1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "2000"))
 )
-LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "0")))
+# A floor between durable read-cache writes. The append-only fast path keeps the usual cost
+# proportional to what was appended, but when it cannot apply -- no epoch, a competing
+# adapter, or a compaction since the last write -- the fallback rewrites the WHOLE record
+# set as JSON, and with no floor that happened on every append.
+#
+# Measured: test_intern_record_metadata's codec round-trip does not finish in 45s at 0, and
+# passes with a 250ms floor. The cache is validated by signature on read, so a slightly
+# staler file costs nothing but a rebuild.
+LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "250")))
 LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 1
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
 
