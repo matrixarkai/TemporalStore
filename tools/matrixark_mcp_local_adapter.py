@@ -661,6 +661,13 @@ INLINE_VECTOR_OWNER_BY_REF_TYPE = {
 # owner's hash, so it inherits the owner's node and timestamp. Kept when they differ.
 _EMBEDDING_META_SAME_AS_OWNER = ("node_path", "updated_at_ms", "node_hash")
 
+# `embedding_type` repeats the owner's record_type whenever the fold's owner map is identity, which
+# it is for chunks: skill_section -> skill_section, resource_chunk -> resource_chunk. It is NOT
+# identity for the other six -- event -> context_event, summary -> context_summary -- and there the
+# value says something the owner cannot (`node_l0` is not `context_summary`). So it is compared
+# against record_type rather than assumed equal to it.
+_EMBEDDING_META_SAME_AS_RECORD_TYPE = "embedding_type"
+
 _EMBEDDING_META_SKIP = (
     "record_type",
     "ref_type",
@@ -756,6 +763,8 @@ def fold_embedding_records(
         for key in _EMBEDDING_META_SAME_AS_OWNER:
             if key in meta and key in owner and owner[key] == meta[key]:
                 del meta[key]
+        if meta.get(_EMBEDDING_META_SAME_AS_RECORD_TYPE) == owner.get("record_type"):
+            del meta[_EMBEDDING_META_SAME_AS_RECORD_TYPE]
         if meta:
             owner.setdefault("embedding_meta", meta)
         if index not in replace:

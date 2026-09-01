@@ -2096,7 +2096,14 @@ def serving_resource_metadata(metadata: Json) -> Json:
         for key in SERVING_RESOURCE_METADATA_FIELDS
         if key in sanitized and sanitized[key] not in (None, "", [], {})
     }
-    serving["raw_storage_policy"] = sanitized.get("raw_storage_policy", "raw_uri_only")
+    # `raw_storage_policy` is not carried per chunk: it is a document fact, identical on every
+    # chunk, and no reader takes it from a stored chunk. The dashboard reads the TOP-level
+    # field on manifest rows, ingest reads the live storage_resolution, and resource IO reads
+    # the ENVELOPE metadata while deciding where raw bytes go. 93.1 KB per 1 MB skill.
+    #
+    # `resource_version` stays, though it is the same shape: the retrieve path reads it from a
+    # stored record to decide version_state, falling back to a top-level field sections do not
+    # carry, so dropping it would make every chunk look current.
     # `raw_bytes_stored` is a per-document fact and a constant False on every chunk of a
     # document, 27 B a row -- 66.2 KB per 1 MB skill. It is not carried here because
     # nothing reads it from a chunk: every mention inside a metadata dict is an

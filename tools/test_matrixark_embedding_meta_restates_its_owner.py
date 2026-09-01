@@ -76,7 +76,16 @@ class EmbeddingMetaDoesNotRestateItsOwner(unittest.TestCase):
         meta = _folded(_pair()).get("embedding_meta") or {}
         self.assertEqual("e5-small", meta.get("model"))
         self.assertEqual(2, meta.get("dim"))
-        self.assertEqual("skill_section", meta.get("embedding_type"))
+
+    def test_embedding_type_is_not_repeated_when_it_is_the_owners_record_type(self):
+        """For a chunk the fold's owner map is identity, so this restates record_type.
+
+        It is kept where the map is NOT identity -- summary owners carry node_l0, which
+        context_summary does not say -- and that case is covered in
+        test_matrixark_embedding_type_restates_record_type.
+        """
+        meta = _folded(_pair()).get("embedding_meta") or {}
+        self.assertNotIn("embedding_type", meta)
 
 
 if __name__ == "__main__":
