@@ -4380,3 +4380,136 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
         "the page-ref total drifted; the stats path reads it instead of walking the shard"
     );
 }
+
+
+/// Reading the page, or decoding it: which half of a node fetch costs the 15 allocations?
+///
+/// Retrieve is 16.4 allocations per candidate and the node fetch is 15.0 of them -- the largest
+/// remaining cost on any indicator once ingest went flat. `load_context_node` is a map lookup, then
+/// `read_page_bytes`, then `context_from_bytes`. The lookup cannot be 15, so it is one of the other
+/// two, and each implies a different fix: a read that dominates asks for buffer reuse, a decode that
+/// dominates asks about the record's shape -- four Strings and two vectors per node, built whether
+/// or not the scoring pass reads them.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_two_halves_of_a_node_fetch_cost -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_the_two_halves_of_a_node_fetch_cost() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 5501;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..80_usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("FETCH-{index:06}"),
+                    title: format!("fetch {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "grow {index}: {:?}", report.status);
+    }
+
+    // A node that exists, found the way retrieval finds one.
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+    let (object_key, address) = shard
+        .hashes
+        .iter()
+        .find_map(|(key, fields)| {
+            fields
+                .get(super::constants::CONTEXT_NODE_FIELD)
+                .map(|address| (key.clone(), address.clone()))
+        })
+        .expect("the ingest wrote at least one context node page");
+
+    let cache = &engine.cache;
+    let page_store = &engine.page_store;
+
+    // Warm: the first read of a page touches one-off structures.
+    let warm = super::read_page_bytes(cache, page_store, 1, &address)
+        .expect("the page reads back");
+    assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
+
+    let probe = crate::alloc_probe::Probe::start();
+    let bytes = super::read_page_bytes(cache, page_store, 1, &address)
+        .expect("the page reads back");
+    let read_allocs = probe.stop().allocs;
+
+    let probe = crate::alloc_probe::Probe::start();
+    let node = super::context::context_from_bytes::<crate::types::ContextNode>(&bytes)
+        .expect("the page decodes to a node");
+    let decode_allocs = probe.stop().allocs;
+
+    println!(
+        "
+  half                         allocs
+  read_page_bytes           {read_allocs:>9}
+  context_from_bytes        {decode_allocs:>9}
+  ------------------------------------
+  together                  {:>9}   (a whole fetch measures ~15 per candidate)
+",
+        read_allocs + decode_allocs,
+    );
+
+    println!(
+        "  what the decode built, and what scoring actually reads:
+    canonical_name    {:>5} bytes
+    l0                {:>5} bytes   <- the discarded text
+    l1_ref            {:>5} bytes
+    raw_metadata_ref  {:>5} bytes
+    vector            {:>5} floats
+    summary_vector    {:>5} floats  <- the one scoring reads
+",
+        node.canonical_name.len(),
+        node.l0.len(),
+        node.l1_ref.len(),
+        node.raw_metadata_ref.len(),
+        node.vector.len(),
+        node.summary_vector.len(),
+    );
+    println!(
+        "  read >> decode => reuse the read buffer.
+  decode >> read => the record's shape is the cost, and a projection that skips fields scoring
+                    never reads is worth its complexity.
+"
+    );
+}
