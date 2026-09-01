@@ -159,6 +159,18 @@ class DashboardMetricsTest(unittest.TestCase):
                             cells.add((x, y))
 
 
+def _series_in(path: str) -> Set[str]:
+    """Metric names a dashboard's panels query."""
+    with io.open(path, encoding="utf-8") as handle:
+        text = handle.read()
+    names: Set[str] = set()
+    for panel in json.loads(text).get("panels") or []:
+        for target in panel.get("targets") or []:
+            names.update(re.findall(r"\b((?:temporalstore|matrixark|rust)_[a-z0-9_]+)",
+                                    str(target.get("expr", ""))))
+    return names
+
+
 class ServedAssetsTest(unittest.TestCase):
     """The dashboards a customer can actually get hold of.
 
@@ -215,6 +227,200 @@ class ServedAssetsTest(unittest.TestCase):
         from test_matrixark_v1_gateway import drive
         status, _h, _b = drive(self.app, method="GET", path="/v1/admin/monitoring/gateway")
         self.assertEqual(401, status)
+
+
+class CataloguedAssetsTest(unittest.TestCase):
+    """Every monitoring asset in the tree is offered, and offered against the right target.
+
+    Both halves are things that failed here. The engine dashboard and the engine alert rules sat in
+    docs/ops from the beginning and were served by nothing: a customer setting up monitoring from
+    the portal got the gateway and the importer, and had no way to discover that Raft, the
+    metaserver, the proxy, the stores and replication were monitorable at all. The existing
+    forward check -- every named asset resolves -- passes perfectly while that is true, because it
+    only ever looks at the names already in the registry.
+
+    The second half is the reason serving them is not enough. These series come from the engine
+    processes' own /metrics, not from the gateway's /v1/metrics, and importing the dashboard
+    against the wrong one is not an error: it is twelve blank panels, which is precisely the
+    "reads as no traffic" failure this file exists to prevent.
+    """
+
+    def setUp(self) -> None:
+        import matrixark_v1_gateway as gateway
+        self.gw = gateway
+
+    def test_every_monitoring_asset_in_the_tree_is_served(self) -> None:
+        served = set()
+        for relative, _ct in self.gw._GRAFANA_ASSETS.values():
+            served.add(os.path.basename(relative))
+        ops = os.path.join(REPO, "docs", "ops")
+        on_disk = {
+            name for name in os.listdir(ops)
+            if name.endswith(".json") or (name.endswith(".yml") and "alert" in name)
+        }
+        missing = sorted(on_disk - served)
+        self.assertEqual(
+            [], missing,
+            "monitoring assets exist in docs/ops that the portal offers no way to get: %s. An "
+            "asset nobody serves is one a customer never learns exists." % missing)
+
+    def test_the_catalogue_and_the_registry_agree(self) -> None:
+        catalogue = self.gw.monitoring_catalogue("http://127.0.0.1:17002")
+        listed = {entry["asset"] for entry in catalogue["assets"]}
+        self.assertEqual(
+            set(self.gw._GRAFANA_ASSETS), listed,
+            "the portal lists a different set of assets than the gateway can serve, so either a "
+            "row downloads a 404 or a served asset is invisible on the page")
+        for entry in catalogue["assets"]:
+            with self.subTest(asset=entry["asset"]):
+                relative, _ct = self.gw._GRAFANA_ASSETS[entry["asset"]]
+                self.assertEqual(os.path.basename(relative), entry["filename"])
+                self.assertIn(entry["scrape"], catalogue["targets"])
+                self.assertTrue(entry["covers"].strip())
+
+    def test_the_engine_target_is_taken_from_the_configured_datanode(self) -> None:
+        # A placeholder host would make the copied scrape config something to hand-edit, and the
+        # deployment already knows the answer: the data node serves /metrics on the same listener
+        # it serves /blob on, which is the URL the gateway is configured to dial.
+        catalogue = self.gw.monitoring_catalogue("http://10.1.2.3:17002")
+        self.assertEqual("10.1.2.3:17002", catalogue["targets"]["engine"]["host"])
+        self.assertEqual("/metrics", catalogue["targets"]["engine"]["metrics_path"])
+        self.assertEqual("/v1/metrics", catalogue["targets"]["gateway"]["metrics_path"])
+
+    def test_the_engine_dashboard_would_be_blank_against_the_gateway(self) -> None:
+        # The claim the "scraped from" column makes, checked rather than asserted in prose: none of
+        # the engine dashboard's series are in the gateway's export, so pointing that dashboard at
+        # /v1/metrics really does produce empty panels rather than merely a slower query.
+        engine = _series_in(os.path.join(REPO, "docs", "ops", "temporalstore-dashboard.json"))
+        self.assertTrue(engine, "read no series out of the engine dashboard")
+        overlap = sorted(engine & EMITTED)
+        self.assertEqual(
+            [], overlap,
+            "the engine dashboard and the gateway export share series (%s), so the two scrape "
+            "targets are no longer distinct and the portal's advice is stale" % overlap)
+
+
+class ShippedStackTest(unittest.TestCase):
+    """A rule file with no job behind it is permanent silence, and silence reads as health."""
+
+    def _prometheus(self) -> dict:
+        import yaml
+        with io.open(os.path.join(TOOLS, "temporalstore-prometheus", "prometheus.yml"),
+                     encoding="utf-8") as handle:
+            return yaml.safe_load(handle)
+
+    def test_the_engine_rules_have_a_job_that_feeds_them(self) -> None:
+        config = self._prometheus()
+        loaded = " ".join(config.get("rule_files") or [])
+        self.assertIn("engine-alerts", loaded,
+                      "the engine alert rules are not loaded by the shipped Prometheus config")
+        # Asking whether ANY job uses /metrics is not a check: node-exporter's job omits
+        # metrics_path, which defaults to /metrics, so that question answers itself while the
+        # engine job points anywhere at all. The job that feeds these rules has to be named.
+        jobs_by_name = {job["job_name"]: job for job in config["scrape_configs"]}
+        self.assertIn(
+            "temporalstore_engine", jobs_by_name,
+            "the engine alert rules are loaded but no job scrapes the engine, so every one of "
+            "those rules evaluates against nothing and can never fire -- and a rule that cannot "
+            "fire is indistinguishable from a healthy cluster")
+        engine = jobs_by_name["temporalstore_engine"]
+        self.assertEqual(
+            "/metrics", engine.get("metrics_path", "/metrics"),
+            "the engine job is not reading the engine's own Prometheus endpoint; the gateway's "
+            "/v1/metrics carries none of these series")
+        gateway_hosts = set()
+        for job in config["scrape_configs"]:
+            if job["job_name"] == "matrixark_gateway":
+                for static in job.get("static_configs") or []:
+                    gateway_hosts.update(str(t) for t in static.get("targets") or [])
+        engine_hosts = set()
+        for static in engine.get("static_configs") or []:
+            engine_hosts.update(str(t) for t in static.get("targets") or [])
+        self.assertTrue(engine_hosts, "the engine job has no targets")
+        self.assertEqual(
+            set(), engine_hosts & gateway_hosts,
+            "the engine job and the gateway job scrape the same address, so one of them is "
+            "reading an endpoint that does not serve its series")
+
+    def test_the_engine_job_targets_the_service_ports(self) -> None:
+        config = self._prometheus()
+        engine = [j for j in config["scrape_configs"] if j["job_name"] == "temporalstore_engine"]
+        self.assertEqual(1, len(engine), "no engine scrape job")
+        targets = engine[0]["static_configs"][0]["targets"]
+        # proxy / metaserver / datanode, as config/temporalstore.toml defines them.
+        ports = sorted(str(t).rsplit(":", 1)[-1] for t in targets)
+        self.assertEqual(["17000", "17001", "17002"], ports)
+
+
+class MonitoringTableRendersTest(unittest.TestCase):
+    """The section is built from the payload, so the payload is what it has to be built against.
+
+    Reading the page source proves only that the table-building code is present. It cannot tell a
+    table that renders from one whose builder is never reached because the response is shaped
+    differently than the page expects -- the two pages contain identical text. So this feeds the
+    page the real GET /v1/admin/config body, runs its scripts, and reads back what landed in the
+    DOM, including what a click on the engine row actually requests.
+    """
+
+    def setUp(self) -> None:
+        import shutil
+        if not shutil.which("node"):
+            self.skipTest("node is not installed")
+        import matrixark_v1_gateway as gateway
+        from test_matrixark_v1_gateway import _FakeServer, _cfg, drive
+        gateway._GRAFANA_CACHE.clear()
+        app = gateway.make_v1_app(_FakeServer(), _cfg())
+        status, _h, body = drive(app, method="GET", path="/v1/admin/config",
+                                 headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, status)
+        self.payload = body.decode("utf-8") if isinstance(body, bytes) else body
+
+    def _run(self) -> dict:
+        import subprocess
+        import tempfile
+        page = os.path.join(TOOLS, "portal", "setup_portal.html")
+        harness = os.path.join(TOOLS, "portal", "monitoring_table_harness.js")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+            handle.write(self.payload)
+            fixture = handle.name
+        try:
+            proc = subprocess.run(["node", harness, page, fixture],
+                                  capture_output=True, text=True, timeout=60)
+        finally:
+            os.unlink(fixture)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_the_table_renders_a_row_per_served_asset(self) -> None:
+        import matrixark_v1_gateway as gateway
+        result = self._run()
+        self.assertEqual([], result["errors"], "the page's scripts threw")
+        # One header row plus one per asset.
+        self.assertEqual(len(gateway._GRAFANA_ASSETS) + 1, result["rows"], result["table"])
+        self.assertIn("Engine and storage", result["table"])
+        self.assertIn("Engine alert rules", result["table"])
+
+    def test_the_engine_row_names_the_engine_endpoint(self) -> None:
+        result = self._run()
+        self.assertIn("/metrics", result["table"])
+        self.assertIn("the engine processes", result["table"])
+        self.assertIn("this gateway", result["table"])
+
+    def test_the_scrape_config_carries_both_jobs(self) -> None:
+        result = self._run()
+        scrape = result["scrape"]
+        self.assertIn("job_name: matrixark_gateway", scrape)
+        self.assertIn("job_name: matrixark_engine", scrape)
+        self.assertIn("metrics_path: /v1/metrics", scrape)
+        self.assertIn("metrics_path: /metrics", scrape)
+        # The gateway job takes the browser's host; the engine job takes the datanode this
+        # deployment is configured to dial, so neither is a placeholder to be edited by hand.
+        self.assertIn("gw.example:8080", scrape)
+
+    def test_clicking_the_engine_row_downloads_the_engine_dashboard(self) -> None:
+        result = self._run()
+        self.assertEqual(["/v1/admin/monitoring/engine"], result["clicked"],
+                         "the delegated handler did not reach the download")
 
 
 if __name__ == "__main__":

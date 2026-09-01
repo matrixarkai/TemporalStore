@@ -56,9 +56,15 @@ services:
       - --web.enable-lifecycle
     ports:
       - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./temporalstore-alerts.yml:/etc/prometheus/temporalstore-alerts.yml:ro
+      # Mounted under a distinct name: this is the engine rule set from docs/ops, which shares a
+      # basename with the local readiness rules above but is a different file covering different
+      # series.
+      - ../../docs/ops/temporalstore-alerts.yml:/etc/prometheus/temporalstore-engine-alerts.yml:ro
       - prometheus-data:/prometheus
     networks:
       - temporalstore-monitor

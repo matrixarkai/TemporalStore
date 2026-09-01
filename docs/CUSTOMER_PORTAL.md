@@ -805,7 +805,21 @@ scrape_configs:
     metrics_path: /v1/metrics
     static_configs:
       - targets: ['gateway:8080']
+
+  # The engine's own Prometheus output, on the service port of each process. This is a different
+  # surface from /v1/metrics and carries none of the same series.
+  - job_name: matrixark_engine
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['proxy:17000', 'metaserver:17001', 'datanode:17002']
 ```
+
+**Two targets, not one.** The gateway publishes at `/v1/metrics`; the data node, the metaserver and
+each raft node publish at `/metrics` on the same listener they serve their service routes on. The
+engine dashboard queries only the second set, so importing it against the gateway produces twelve
+blank panels — and a blank panel reads as an idle cluster rather than as a query aimed at the wrong
+process. The setup page prints this config with the engine host filled in from the datanode this
+deployment is configured to dial, so what you copy resolves.
 
 ### What it exports
 
@@ -833,7 +847,8 @@ would let any client create unbounded series in the operator's Prometheus.
 ### Grafana
 
 The dashboards and alert rules are **served by the gateway** at
-`GET /v1/admin/monitoring/{gateway|ingestion|alerts}`, and the setup page offers them as downloads.
+`GET /v1/admin/monitoring/{gateway|ingestion|engine|alerts|engine-alerts}`, and the setup page
+lists them in a table with what each covers and which target feeds it.
 The portal used to name a repo path, which a customer running this as a managed service cannot
 reach — and even with a checkout, the file on their disk is whatever their copy is rather than what
 this build emits, which is exactly the drift the dashboard test exists to prevent.
@@ -843,7 +858,23 @@ this build emits, which is exactly the drift the dashboard test exists to preven
   p50/p95/p99 latency, byte throughput, ranked routes, plus when the configuration last changed,
   how many settings are away from stock, and worker uptime.
 * `docs/ops/matrixark-ingestion-dashboard.json` — bulk import progress and backlog.
-* `tools/temporalstore-prometheus/matrixark-gateway-alerts.yml` — alert rules.
+* `docs/ops/temporalstore-dashboard.json` — everything that is not the edge: Raft commit, apply and
+  lease; the metaserver scheduler and topology; proxy routing, admission and quarantine; object and
+  page store lifecycle; cache pressure; data node lifecycle; ingestion lag and dead letters; replica
+  replay; and the scale SLO. Reads from the engine job, not the gateway job.
+* `tools/temporalstore-prometheus/matrixark-gateway-alerts.yml` — gateway alert rules.
+* `docs/ops/temporalstore-alerts.yml` — engine alert rules: Raft majority loss and stalled applies,
+  scheduler backlog, proxy quarantine, cache miss pressure, replay failures and dead letters.
+
+The engine dashboard and its rules were in the tree from the start and served by nothing, so a
+customer setting up monitoring from the portal got the gateway and the importer and had no way to
+find out the rest was monitorable at all. `test_matrixark_dashboards` now asserts the other
+direction too — every monitoring asset in `docs/ops` is offered — because the forward check, that
+every named asset resolves, passes perfectly while an asset is missing from the registry.
+
+The shipped Prometheus stack (`tools/temporalstore-prometheus/`) loads the engine rules and scrapes
+the engine job that feeds them. A rule file with no job behind it is not an error; it is permanent
+silence, which reads as a healthy cluster.
 
 Half of "it started behaving differently on Tuesday" is answered by knowing whether anyone changed
 the configuration on Tuesday. The change timestamp puts that on the same dashboard as the effect;

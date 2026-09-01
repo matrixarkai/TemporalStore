@@ -1326,6 +1326,11 @@ def _model_config_snapshot() -> Json:
         "skills": skills,
         "warnings": warnings,
         "encoders": encoder_catalog(),
+        # Listed from here rather than hard-coded into the page, so an asset added to the registry
+        # shows up on the portal without a matching edit to the page it is rendered on.
+        "monitoring": monitoring_catalogue(_env("MATRIXARK_DATANODE_BLOB_URL")
+                                           or _env("MATRIXARK_DATANODE_URL")
+                                           or _DEFAULTS["datanode_url"]),
     }
 
 
@@ -1881,8 +1886,80 @@ _GRAFANA_ASSETS = {
     "gateway": ("../docs/ops/matrixark-gateway-dashboard.json", "application/json"),
     "ingestion": ("../docs/ops/matrixark-ingestion-dashboard.json", "application/json"),
     "alerts": ("temporalstore-prometheus/matrixark-gateway-alerts.yml", "text/yaml; charset=utf-8"),
+    # Everything that is not the edge. Both files have been in docs/ops all along and were served
+    # by nothing, so a customer monitoring from the portal watched the gateway and the importer and
+    # had no way to find out the engine was monitorable at all.
+    "engine": ("../docs/ops/temporalstore-dashboard.json", "application/json"),
+    "engine-alerts": ("../docs/ops/temporalstore-alerts.yml", "text/yaml; charset=utf-8"),
 }
 _GRAFANA_CACHE: dict[str, Optional[bytes]] = {}
+
+# What each asset covers and -- the part that decides whether it works at all -- which process
+# exports the series it queries. The gateway publishes at /v1/metrics; the data node, the metaserver
+# and each raft node publish at /metrics on their own listeners. Import the engine dashboard against
+# the gateway and all twelve panels come up empty, which reads as an idle deployment rather than as
+# a query aimed at the wrong target -- the exact failure these dashboards were shipped to prevent.
+_MONITORING_ASSETS: tuple = (
+    {"asset": "gateway", "kind": "dashboard", "label": "Gateway",
+     "filename": "matrixark-gateway-dashboard.json", "scrape": "gateway",
+     "covers": "Edge traffic by route, latency and errors, and whether extraction and retrieval "
+               "are really using the models you configured."},
+    {"asset": "ingestion", "kind": "dashboard", "label": "Ingestion",
+     "filename": "matrixark-ingestion-dashboard.json", "scrape": "gateway",
+     "covers": "Import jobs, documents finished and failed, and the failures worth retrying."},
+    {"asset": "engine", "kind": "dashboard", "label": "Engine and storage",
+     "filename": "temporalstore-dashboard.json", "scrape": "engine",
+     "covers": "Raft commit, apply and lease; metaserver scheduler and topology; proxy routing, "
+               "admission and quarantine; object and page store lifecycle; cache pressure; data "
+               "node lifecycle; ingestion lag and dead letters; replica replay; and the scale SLO."},
+    {"asset": "alerts", "kind": "rules", "label": "Gateway alert rules",
+     "filename": "matrixark-gateway-alerts.yml", "scrape": "gateway",
+     "covers": "Retrieval running on hash vectors, extraction with no model call, live "
+               "configuration warnings, and imports left sitting for a retry."},
+    {"asset": "engine-alerts", "kind": "rules", "label": "Engine alert rules",
+     "filename": "temporalstore-alerts.yml", "scrape": "engine",
+     "covers": "Raft majority loss and stalled applies, scheduler backlog, proxy quarantine, "
+               "cache miss pressure, replay failures and dead letters."},
+)
+
+
+def monitoring_catalogue(datanode_url: str = "") -> Json:
+    """The downloadable assets, and the scrape target each one's series actually come from.
+
+    The engine target is taken from the configured datanode URL rather than left as a placeholder:
+    the data node serves `/metrics` on the same listener as `/blob`, so this deployment already
+    knows the host, and a customer copying the scrape config gets one that resolves.
+    """
+    engine_host = ""
+    try:
+        parsed = urlparse(str(datanode_url or ""))
+        engine_host = parsed.netloc
+    except Exception:  # pragma: no cover - a malformed override falls back to the placeholder
+        engine_host = ""
+    return {
+        "assets": [dict(asset) for asset in _MONITORING_ASSETS
+                   if _grafana_asset(asset["asset"])[0] is not None],
+        "targets": {
+            "gateway": {
+                "label": "this gateway",
+                "job": "matrixark_gateway",
+                "metrics_path": "/v1/metrics",
+                "host": "",
+                "note": "Aggregate counters only -- no keys and no tenant identifiers -- so it is "
+                        "safe to scrape without credentials.",
+            },
+            "engine": {
+                "label": "the engine processes",
+                "job": "matrixark_engine",
+                "metrics_path": "/metrics",
+                "host": engine_host,
+                "note": "The data node, the metaserver and every raft node each publish their own "
+                        "/metrics. Add each one to this job. Pointing it at the gateway instead "
+                        "leaves every engine panel blank, which looks like a quiet cluster rather "
+                        "than a query sent to the wrong process.",
+            },
+        },
+    }
 
 
 def _grafana_asset(name: str) -> Tuple[Optional[bytes], str]:

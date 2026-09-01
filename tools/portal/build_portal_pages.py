@@ -621,12 +621,12 @@ SETUP_BODY = """
       into Grafana, and load the alert rules. The dashboards are served by this gateway rather than
       named as a file path, so the panels match the metrics this build actually emits — a panel
       querying a series nobody emits is a blank one, and a blank panel reads as “no traffic”.</p>
-    <div class="actions">
-      <button class="ghost" id="dlGateway" type="button">Gateway dashboard</button>
-      <button class="ghost" id="dlIngestion" type="button">Ingestion dashboard</button>
-      <button class="ghost" id="dlAlerts" type="button">Alert rules</button>
-      <span class="hint" style="margin:0">Grafana → Dashboards → New → Import → Upload JSON.</span>
-    </div>
+    <p class="hint">Check the <b>scraped from</b> column before importing. The gateway and the
+      engine publish on different endpoints, and an engine dashboard pointed at the gateway shows
+      twelve empty panels — which looks like an idle cluster, not a misdirected query.</p>
+    <div id="monitoring"><div class="empty">Enter an admin key to list the dashboards.</div></div>
+    <p class="hint">Grafana → Dashboards → New → Import → Upload JSON. The alert rules are
+      Prometheus rule files, not Grafana imports.</p>
     <div id="grafanaMsg" role="status" aria-live="polite"></div>
     <table>
       <tr><td class="mono">matrixark_gateway_embedding_semantic</td><td>0 means retrieval is running on hash
@@ -1504,6 +1504,7 @@ function liveStream(options) {
         renderPresets((d.settings || {}).presets);
         renderHistory(d.settings);
         renderInventory(d.settings);
+        renderMonitoring(d);
         loadEncoding();
         loadModels(false);
         startLive();
@@ -1652,12 +1653,53 @@ function liveStream(options) {
       });
   }
 
+  /* Set once the config lands. Until then only the gateway job is knowable, and printing a
+     placeholder engine host would be worse than printing nothing. */
+  var monitoringTargets = null;
+
   function scrapeConfig() {
-    return "scrape_configs:\n" +
-      "  - job_name: matrixark_gateway\n" +
-      "    metrics_path: /v1/metrics\n" +
-      "    static_configs:\n" +
-      "      - targets: ['" + location.host + "']\n";
+    var targets = monitoringTargets || {
+      gateway: { job: "matrixark_gateway", metrics_path: "/v1/metrics", host: "" }
+    };
+    return "scrape_configs:\n" + Object.keys(targets).map(function (name) {
+      var t = targets[name];
+      /* The engine host comes from this deployment's own datanode setting, so the config that is
+         copied out resolves instead of carrying a placeholder to be edited by hand. */
+      var host = t.host || (name === "gateway" ? location.host : "");
+      return (t.note ? "  # " + t.note + "\n" : "") +
+        "  - job_name: " + t.job + "\n" +
+        "    metrics_path: " + t.metrics_path + "\n" +
+        "    static_configs:\n" +
+        "      - targets: [" + (host ? "'" + host + "'" : "") + "]" +
+        (host ? "" : "  # add each " + name + " process here") + "\n";
+    }).join("\n");
+  }
+
+  /* One row per asset the gateway actually ships, listed by the server rather than hard-coded
+     here, so adding an asset to the registry needs no matching edit on this page -- and so an
+     asset a build omits is never offered as a download that 404s. */
+  function renderMonitoring(d) {
+    var monitoring = (d || {}).monitoring || {};
+    var assets = monitoring.assets || [];
+    monitoringTargets = monitoring.targets || null;
+    $("scrape").textContent = scrapeConfig();
+    if (!assets.length) {
+      $("monitoring").innerHTML = '<div class="empty">This deployment does not bundle the ' +
+        "monitoring assets.</div>";
+      return;
+    }
+    var targets = monitoringTargets || {};
+    $("monitoring").innerHTML = "<table><thead><tr><th>Download</th><th>Covers</th>" +
+      "<th>Scraped from</th></tr></thead><tbody>" + assets.map(function (a) {
+        var target = targets[a.scrape] || {};
+        return "<tr><td><button class='link' type='button' data-asset='" + esc(a.asset) +
+          "' data-filename='" + esc(a.filename) + "'>" + esc(a.label) + "</button>" +
+          "<div class='hint' style='margin:2px 0 0'>" +
+          (a.kind === "rules" ? "Prometheus rules" : "Grafana dashboard") + "</div></td>" +
+          "<td>" + esc(a.covers) + "</td>" +
+          "<td>" + esc(target.label || a.scrape) + "<div class='hint mono' style='margin:2px 0 0'>" +
+          esc(target.metrics_path || "") + "</div></td></tr>";
+      }).join("") + "</tbody></table>";
   }
 
   /* ---------- wiring ---------- */
@@ -1832,14 +1874,15 @@ function liveStream(options) {
       });
   }
 
-  $("dlGateway").addEventListener("click", function () {
-    downloadAsset("gateway", "matrixark-gateway-dashboard.json");
-  });
-  $("dlIngestion").addEventListener("click", function () {
-    downloadAsset("ingestion", "matrixark-ingestion-dashboard.json");
-  });
-  $("dlAlerts").addEventListener("click", function () {
-    downloadAsset("alerts", "matrixark-gateway-alerts.yml");
+  /* Delegated, because the rows do not exist until the config lands. */
+  $("monitoring").addEventListener("click", function (ev) {
+    var node = ev.target;
+    while (node && node !== $("monitoring") && !(node.getAttribute && node.getAttribute("data-asset"))) {
+      node = node.parentNode;
+    }
+    if (node && node.getAttribute && node.getAttribute("data-asset")) {
+      downloadAsset(node.getAttribute("data-asset"), node.getAttribute("data-filename"));
+    }
   });
 
   $("copyScrape").addEventListener("click", function () {
