@@ -179,7 +179,17 @@ def append_resource_chunk_records(
         chunk_debug_metadata = debug_resource_metadata(chunk.metadata)
         chunk_resource_hash = resource_manifest_hash if skill_hash is None else skill_hash
         if skill_hash is not None:
+            section_heading = str(chunk_metadata.get("heading", ""))
+            section_metadata = (
+                {key: value for key, value in chunk_metadata.items() if key != "heading"}
+                if section_heading
+                else chunk_metadata
+            )
             pending_records.append(
+                # The record carries `heading` at the top level, so the copy inside its own
+                # metadata restates it on every chunk. Dropped only when the top-level field
+                # actually received the value, so a chunk without a heading is untouched.
+                # `heading_slug` stays: it is the only source of the heading_slug: index terms.
                 resource_record_builders.skill_section_record(
                     import_task_hash=resource_import_task_hash,
                     skill_hash=skill_hash,
@@ -188,10 +198,10 @@ def append_resource_chunk_records(
                     node_path=node_path,
                     raw_uri_hash=raw_uri_hash,
                     source_locator=source_locator,
-                    heading=str(chunk_metadata.get("heading", "")),
+                    heading=section_heading,
                     text=chunk.text,
                     token_estimate=chunk.token_estimate,
-                    metadata=chunk_metadata,
+                    metadata=section_metadata,
                     access_scope=access_scope,
                     deployment_scope=deployment_scope,
                     scope=resource_record_scope,
