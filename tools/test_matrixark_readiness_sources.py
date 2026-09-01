@@ -32,9 +32,23 @@ _BACKEND_METRICS = (
 )
 
 
+def _app_with(factory):
+    """Build the app from a plain dict rather than a constructed GatewayConfig.
+
+    Under `unittest discover` the gateway module is imported under two names in one process, so a
+    GatewayConfig built from one copy of the class fails the `isinstance` check in the other and
+    `_coerce_config` falls through to `dict(overrides)` on it. Passing a dict lets whichever copy
+    is live build its own, which is what the app does with a fresh deployment anyway.
+    """
+    return gw.make_v1_app(_FakeServer(), {
+        "api_keys": {"k-acme": "acme", "k-globex": "globex"},
+        "require_auth": True,
+        "blob_connection_factory": factory,
+    })
+
+
 def _overview(response=None):
-    cfg = _cfg(blob_connection_factory=_factory_for(response or _FakeResponse(200, _BACKEND_METRICS)))
-    app = gw.make_v1_app(_FakeServer(), cfg)
+    app = _app_with(_factory_for(response or _FakeResponse(200, _BACKEND_METRICS)))
     status, _headers, body = drive(app, method="GET", path="/v1/admin/overview", headers=ADMIN)
     return status, json.loads(body)
 
@@ -109,7 +123,7 @@ class TheEngineRowReportsTheEngineTest(unittest.TestCase):
     def test_the_overview_still_answers_when_the_datanode_raises(self) -> None:
         def explode(_cfg_arg):
             raise OSError("connection refused")
-        app = gw.make_v1_app(_FakeServer(), _cfg(blob_connection_factory=explode))
+        app = _app_with(explode)
         status, _h, body = drive(app, method="GET", path="/v1/admin/overview", headers=ADMIN)
         self.assertEqual(200, status, "the page that reports on the deployment fell over")
         row = {r["id"]: r for r in _rows(json.loads(body))}["storage_backend"]
@@ -203,9 +217,7 @@ class TheEngineSaysWhyTest(unittest.TestCase):
         self.assertEqual({"backend": "raft", "replication": "raft"}, labels)
 
     def test_the_deployment_route_stops_saying_the_reason_is_unavailable(self) -> None:
-        cfg = _cfg(blob_connection_factory=_factory_for(
-            _FakeResponse(200, _BACKEND_WITH_REASON)))
-        app = gw.make_v1_app(_FakeServer(), cfg)
+        app = _app_with(_factory_for(_FakeResponse(200, _BACKEND_WITH_REASON)))
         _st, _h, body = drive(app, method="GET", path="/v1/admin/deployment", headers=ADMIN)
         detail = json.loads(body)["live_detail"]
         self.assertIn("forced shared-path", detail)
