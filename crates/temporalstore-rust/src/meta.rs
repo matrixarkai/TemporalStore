@@ -2474,12 +2474,15 @@ mod tests {
                 ],
                 shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
-                // "serving" scores 0 and "failed" scores 3, so the worst is 3 --
-                // a max, not a sum, which is the one of the five that would not
-                // survive being folded the wrong way.
+                // "serving" scores 0, "loading" 1 and "failed" 3. The worst is
+                // 3 and the total is 4, which is what makes this tell a max from
+                // a sum -- the one of the five that would not survive being
+                // folded the wrong way. Two states scoring 0 and 3 could not:
+                // both give 3, and the assertion passed either way.
                 shard_states: vec![
                     state_for(1, "serving", 40, 4_000),
                     state_for(2, "failed", 2, 500),
+                    state_for(3, "loading", 1, 100),
                 ],
             })
             .status
@@ -2493,8 +2496,8 @@ mod tests {
             .expect("registered");
         assert_eq!(server.load_key_count, 17);
         assert_eq!(server.load_memory_bytes, 350);
-        assert_eq!(server.reported_record_count, 42);
-        assert_eq!(server.reported_storage_bytes, 4_500);
+        assert_eq!(server.reported_record_count, 43);
+        assert_eq!(server.reported_storage_bytes, 4_600);
         assert_eq!(server.worst_shard_state_penalty, 3);
 
         // And a later heartbeat replaces them rather than accumulating.
