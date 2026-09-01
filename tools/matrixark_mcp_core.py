@@ -1997,7 +1997,15 @@ SERVING_RESOURCE_METADATA_FIELDS = {
     "heading",
     "heading_slug",
     "heading_path",
-    "source_locator",
+    # `source_locator` is deliberately absent: every chunk record carries it at the TOP level
+    # (both resource_chunk_record and skill_section_record set it unconditionally), and storing
+    # it here as well cost 290.8 KB per 1 MB skill -- 3.7% of the ingest -- byte-identical to the
+    # copy beside it. Readers of the metadata copy are all fallbacks of the form
+    # `record.get("source_locator") or metadata.get("source_locator")`, which cannot fire while
+    # the top-level field is present.
+    #
+    # `heading` stays: skill_section_record sets it at the top level but resource_chunk_record
+    # does not, so for a resource chunk this is the only copy.
     "content_hash",
     "token_estimate",
     "row_start",
