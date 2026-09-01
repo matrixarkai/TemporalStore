@@ -368,6 +368,9 @@ mod tests {
                         vector: Vec::new(),
                         embedding_model_hash: 0,
                         embedding_updated_at_ms: 0,
+                        summary_vector: Vec::new(),
+                        summary_vector_valid_from_ms: 0,
+                        summary_vector_model_hash: 0,
                     },
                 },
             })
@@ -609,6 +612,9 @@ mod tests {
                         vector: Vec::new(),
                         embedding_model_hash: 0,
                         embedding_updated_at_ms: 0,
+                        summary_vector: Vec::new(),
+                        summary_vector_valid_from_ms: 0,
+                        summary_vector_model_hash: 0,
                     },
                 },
             });

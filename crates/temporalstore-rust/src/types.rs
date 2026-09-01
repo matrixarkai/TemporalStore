@@ -253,8 +253,6 @@ pub struct ContextNode {
     // is one-way: given a node there is no way back to its vector except by recomputing
     // that hash, and given the record no way back to the node at all.
     //
-    // A node's L1 vector is NOT here -- it belongs to that node's level-1 ContextSummary,
-    // which carries its own vector field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
     // Model that produced `vector`, and when. Both were carried by the separate record;
@@ -264,6 +262,61 @@ pub struct ContextNode {
     pub embedding_model_hash: u64,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub embedding_updated_at_ms: u64,
+    // A COPY of the vector on this node's level-2 (L1) ContextSummary. That summary record is
+    // still the only owner; this is a cache, and every reader of it must be able to fall back
+    // to the summary when it is absent.
+    //
+    // It is here because scoring needs both vectors for every candidate, and without it the
+    // second one costs a second per-candidate engine call: format an object key, walk the
+    // node's summary series, read a page and decode a whole ContextSummary -- text included --
+    // to keep one field. The node fetch that scoring already makes for `vector` can hand back
+    // both instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summary_vector: Vec<f32>,
+    // `valid_from_ms` of the summary `summary_vector` was copied from, and the whole of what
+    // makes the copy usable: scoring asks for the newest summary at or before an `as_of_ms`,
+    // and only this timestamp says whether the copy is that summary. A query reaching further
+    // back than this must consult the summaries, because the copy is the newest one and cannot
+    // speak for an earlier point in time.
+    //
+    // Zero means there is no copy, so every record written before this field existed falls back
+    // to the summary lookup exactly as it does today.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub summary_vector_valid_from_ms: u64,
+    // Which encoder produced `summary_vector`, copied from the same summary record. Its own
+    // field and not `embedding_model_hash` above: the two vectors on this record can have been
+    // written by different encoders, and a re-embed replaces one without touching the other.
+    //
+    // Without it the copy would be the one route into the ranking that skips the encoder check
+    // -- and two encoders truncated to the same width produce no length error and no complaint,
+    // only a cosine taken across two vector spaces.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub summary_vector_model_hash: u64,
+}
+
+/// Summary level carrying the L1 text, i.e. `ContextSummary::level` for an L1 record.
+///
+/// `ContextQuerySummaries` numbers levels 1 = L0 and 2 = L1, so the L1 summary is level TWO and
+/// the off-by-one is easy to write and impossible to see: level 1 exists and returns records, so
+/// reading it produces summaries that are simply the wrong ones.
+pub const CONTEXT_SUMMARY_LEVEL_L1: u32 = 2;
+
+impl ContextNode {
+    /// This node's cached L1 summary vector, when it can answer a query as of `as_of_ms`.
+    ///
+    /// `None` means the caller must go to the summary records: either nothing has been copied
+    /// here yet, or the copy is NEWER than the point in time being asked about. The second case
+    /// is not a miss to paper over -- returning the copy anyway would answer a historical query
+    /// with a summary written after it.
+    pub fn summary_vector_as_of(&self, as_of_ms: u64) -> Option<&[f32]> {
+        if self.summary_vector_valid_from_ms == 0
+            || self.summary_vector_valid_from_ms > as_of_ms
+            || self.summary_vector.is_empty()
+        {
+            return None;
+        }
+        Some(&self.summary_vector)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -694,6 +747,28 @@ impl ContextWire for ContextNode {
                 self.embedding_updated_at_ms,
             );
         }
+        if self.summary_vector_valid_from_ms != 0 && !self.summary_vector.is_empty() {
+            // The timestamp and the vector are written together or not at all: a vector with no
+            // timestamp cannot be used by anything (it does not say which query it answers), and
+            // a timestamp with no vector claims a copy that is not there.
+            if self.summary_vector == self.vector {
+                encode_varint_field(&mut out, CONTEXT_SUMMARY_VECTOR_SAME_FIELD, 1);
+            } else {
+                encode_vector_field_as(&mut out, &NODE_SUMMARY_VECTOR_FIELDS, &self.summary_vector);
+            }
+            encode_varint_field(
+                &mut out,
+                CONTEXT_SUMMARY_VECTOR_VALID_FROM_FIELD,
+                self.summary_vector_valid_from_ms,
+            );
+            if self.summary_vector_model_hash != 0 {
+                encode_varint_field(
+                    &mut out,
+                    CONTEXT_SUMMARY_VECTOR_MODEL_FIELD,
+                    self.summary_vector_model_hash,
+                );
+            }
+        }
         out
     }
 
@@ -712,7 +787,11 @@ impl ContextWire for ContextNode {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
         };
+        let mut summary_vector_is_own_vector = false;
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
             match (tag >> 3, tag & 0x7) {
@@ -741,8 +820,33 @@ impl ContextWire for ContextNode {
                 (CONTEXT_EMBEDDING_UPDATED_FIELD, 0) => {
                     value.embedding_updated_at_ms = decode_varint(bytes, &mut cursor)?
                 }
+                (CONTEXT_SUMMARY_VECTOR_FIELD, 2) => {
+                    value.summary_vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_SUMMARY_VECTOR_INT8_FIELD, 2) => {
+                    value.summary_vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_SUMMARY_VECTOR_SCALED_FIELD, 2) => {
+                    value.summary_vector = unpack_scaled_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_SUMMARY_VECTOR_VALID_FROM_FIELD, 0) => {
+                    value.summary_vector_valid_from_ms = decode_varint(bytes, &mut cursor)?
+                }
+                (CONTEXT_SUMMARY_VECTOR_SAME_FIELD, 0) => {
+                    summary_vector_is_own_vector = decode_varint(bytes, &mut cursor)? != 0
+                }
+                (CONTEXT_SUMMARY_VECTOR_MODEL_FIELD, 0) => {
+                    value.summary_vector_model_hash = decode_varint(bytes, &mut cursor)?
+                }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
+        }
+        if summary_vector_is_own_vector {
+            // Resolved here rather than in the arm above: the marker names the record's own
+            // vector, and protobuf gives no ordering guarantee, so inside the loop it would
+            // copy whatever had been decoded so far -- nothing at all, whenever the writer put
+            // the marker first.
+            value.summary_vector = value.vector.clone();
         }
         Some(value)
     }
@@ -1895,6 +1999,49 @@ const VECTOR_SCALE: f32 = 1.0e4;
 /// A record carries EITHER this or `CONTEXT_VECTOR_FIELD`, never both.
 const CONTEXT_VECTOR_INT8_FIELD: u64 = 23;
 
+/// The node's copy of its L1 summary vector, in the same three representations the record's own
+/// vector has. Its own field numbers rather than a second use of 20/23/24, because a node now
+/// carries TWO vectors and protobuf tells one value from another only by its tag -- reusing the
+/// tag would make the second write overwrite the first on decode, with no error and no length
+/// mismatch to notice.
+const CONTEXT_SUMMARY_VECTOR_FIELD: u64 = 25;
+const CONTEXT_SUMMARY_VECTOR_INT8_FIELD: u64 = 26;
+const CONTEXT_SUMMARY_VECTOR_SCALED_FIELD: u64 = 27;
+/// `valid_from_ms` of the summary the copy came from, without which the copy cannot be used at
+/// all: it says which point in time the vector is the newest summary FOR.
+const CONTEXT_SUMMARY_VECTOR_VALID_FROM_FIELD: u64 = 28;
+/// Written in place of 25/26/27 when the copy is byte-equal to the record's own vector, which is
+/// what the current ingest produces: it embeds ONE text and gives the result to both the node and
+/// its L1 summary. Storing the duplicate would add a whole vector -- 4 KB at 1024 f32 dimensions,
+/// on every node -- to say something a single varint says.
+///
+/// Resolved after the decode loop, not inside it: protobuf does not order fields, so the marker
+/// can arrive before the vector it points at.
+const CONTEXT_SUMMARY_VECTOR_SAME_FIELD: u64 = 29;
+/// Which encoder produced the copy. Travels with it or the copy is the one scored vector nothing
+/// checks the encoder of.
+const CONTEXT_SUMMARY_VECTOR_MODEL_FIELD: u64 = 30;
+
+/// The three tags one vector may be written under, so a record carrying two vectors can encode
+/// and decode both through one implementation instead of two that drift apart.
+struct VectorFieldSet {
+    plain: u64,
+    int8: u64,
+    scaled: u64,
+}
+
+const OWN_VECTOR_FIELDS: VectorFieldSet = VectorFieldSet {
+    plain: CONTEXT_VECTOR_FIELD,
+    int8: CONTEXT_VECTOR_INT8_FIELD,
+    scaled: CONTEXT_VECTOR_SCALED_FIELD,
+};
+
+const NODE_SUMMARY_VECTOR_FIELDS: VectorFieldSet = VectorFieldSet {
+    plain: CONTEXT_SUMMARY_VECTOR_FIELD,
+    int8: CONTEXT_SUMMARY_VECTOR_INT8_FIELD,
+    scaled: CONTEXT_SUMMARY_VECTOR_SCALED_FIELD,
+};
+
 /// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
 /// architecture decodes on another.
 fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
@@ -1915,6 +2062,46 @@ fn vector_int8_enabled() -> bool {
             .to_ascii_lowercase()
             .as_str(),
         "1" | "true" | "yes" | "on"
+    )
+}
+
+/// A vector as it will read back once it has been through a page.
+///
+/// Both stored forms round -- the int8 one to a per-vector scale, the uniformly-scaled one to four
+/// decimal places -- so a vector just computed is never equal to the same vector read back. Any
+/// "has this changed?" test written against the raw value answers YES every time, and any "are
+/// these two the same vector?" test answers NO, which here would mean a second node page written
+/// on every ingest and the equal-copy marker never firing.
+///
+/// Idempotent: rounding an already-rounded value changes nothing, so this can be applied to a
+/// value of either origin.
+pub(crate) fn context_vector_as_stored(vector: &[f32]) -> Vec<f32> {
+    if vector.is_empty() {
+        return Vec::new();
+    }
+    if vector_int8_enabled() {
+        return unpack_i8_vector(&pack_i8_vector(vector));
+    }
+    if vector_scaled_enabled() {
+        return unpack_scaled_vector(&pack_scaled_vector(vector));
+    }
+    vector.to_vec()
+}
+
+/// Whether a node record carries a copy of its L1 summary's vector.
+///
+/// Default ON, and only writes consult it: a node either carries a copy or it does not, and one
+/// that does not is looked up from the summary records exactly as before. So turning this off
+/// strands nothing already written, and turning it back on needs no backfill -- the copy reappears
+/// as each node's summary is next written.
+pub(crate) fn context_node_summary_vector_enabled() -> bool {
+    !matches!(
+        std::env::var("TS_NODE_SUMMARY_VECTOR")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -2020,19 +2207,23 @@ fn unpack_scaled_vector(bytes: &[u8]) -> Vec<f32> {
     out
 }
 
-fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
+fn encode_vector_field_as(out: &mut Vec<u8>, fields: &VectorFieldSet, vector: &[f32]) {
     if vector.is_empty() {
         return;
     }
     if vector_int8_enabled() {
-        encode_bytes_field(out, CONTEXT_VECTOR_INT8_FIELD, &pack_i8_vector(vector));
+        encode_bytes_field(out, fields.int8, &pack_i8_vector(vector));
         return;
     }
     if vector_scaled_enabled() {
-        encode_bytes_field(out, CONTEXT_VECTOR_SCALED_FIELD, &pack_scaled_vector(vector));
+        encode_bytes_field(out, fields.scaled, &pack_scaled_vector(vector));
         return;
     }
-    encode_bytes_field(out, CONTEXT_VECTOR_FIELD, &pack_f32_vector(vector));
+    encode_bytes_field(out, fields.plain, &pack_f32_vector(vector));
+}
+
+fn encode_vector_field(out: &mut Vec<u8>, vector: &[f32]) {
+    encode_vector_field_as(out, &OWN_VECTOR_FIELDS, vector);
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
@@ -2436,6 +2627,9 @@ mod tests {
             vector,
             embedding_model_hash: 0xABCD,
             embedding_updated_at_ms: 1_780_000_000_001,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
             status: 0,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
@@ -2571,6 +2765,9 @@ mod tests {
             vector: vec![0.5, -0.25, 0.125, 1.0],
             embedding_model_hash: 0xDEAD_BEEF,
             embedding_updated_at_ms: 1_780_000_000_777,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
             status: 0,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
@@ -2582,6 +2779,197 @@ mod tests {
         assert_eq!(node.embedding_updated_at_ms, decoded.embedding_updated_at_ms);
         assert_eq!(node.node_hash, decoded.node_hash);
         assert_eq!(node.l0, decoded.l0);
+    }
+
+    /// A node carrying a summary copy that is NOT its own vector -- an older store, whose node
+    /// was embedded from the L0 preview while its L1 summary was embedded from the fuller text.
+    fn node_with_summary_copy() -> ContextNode {
+        ContextNode {
+            node_hash: 4242,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: "session/beta".to_string(),
+            l0: "the node summary text".to_string(),
+            last_event_time_ms: 1_780_000_000_000,
+            vector: vec![0.5, -0.25, 0.125, 1.0],
+            embedding_model_hash: 0xABCD,
+            embedding_updated_at_ms: 1_780_000_000_777,
+            summary_vector: vec![-0.75, 0.375, 1.0, -0.5],
+            summary_vector_valid_from_ms: 1_780_000_000_500,
+            summary_vector_model_hash: 0x1234_5678,
+            status: 0,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+        }
+    }
+
+    #[test]
+    fn node_carries_its_summary_vector_copy_through_the_wire_codec() {
+        // Two vectors on one record, so the copy needs field numbers of its own. Reusing the
+        // record's own tags would make whichever value decoded last win, with no length mismatch
+        // and no error -- the node's L0 vector would silently become its summary's, which still
+        // scores a plausible cosine.
+        let node = node_with_summary_copy();
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("a node this codec just encoded must decode");
+        assert_eq!(
+            node.summary_vector, decoded.summary_vector,
+            "the summary copy did not survive the codec"
+        );
+        assert_eq!(
+            node.vector, decoded.vector,
+            "the node's own vector must not be overwritten by the copy"
+        );
+        assert_eq!(
+            node.summary_vector_valid_from_ms, decoded.summary_vector_valid_from_ms,
+            "without its timestamp the copy cannot answer any query"
+        );
+        assert_eq!(
+            node.summary_vector_model_hash, decoded.summary_vector_model_hash,
+            "without its encoder stamp the copy is the one scored vector nothing checks"
+        );
+        assert_ne!(
+            decoded.summary_vector_model_hash, decoded.embedding_model_hash,
+            "the two vectors on this record carry separate stamps, not one shared field"
+        );
+    }
+
+    #[test]
+    fn a_summary_copy_without_a_timestamp_is_not_written() {
+        // A vector with no `valid_from_ms` says nothing about WHICH summary it is, so no reader
+        // can use it. Writing it would cost a whole vector per node to store an unusable value.
+        let node = ContextNode {
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+            ..node_with_summary_copy()
+        };
+        let bare = ContextNode {
+            summary_vector: Vec::new(),
+            ..node.clone()
+        };
+        assert_eq!(
+            bare.encode_context_proto_value().len(),
+            node.encode_context_proto_value().len(),
+            "a copy with no timestamp must cost exactly what no copy costs"
+        );
+        let decoded = ContextNode::decode_context_proto_value(&node.encode_context_proto_value())
+            .expect("decodes");
+        assert!(decoded.summary_vector.is_empty());
+    }
+
+    #[test]
+    fn a_summary_copy_equal_to_the_node_vector_is_not_stored_twice() {
+        // What the current ingest produces: it embeds ONE text and hands the result to both the
+        // node and its L1 summary, so the copy is byte-equal to the node's own vector. Writing
+        // it out would add a second whole vector -- 4 KB at 1024 f32 dimensions, on every node --
+        // to say something a single varint says.
+        //
+        // Asserted as a property rather than a byte budget: the cost of an equal copy must not
+        // GROW with the vector. A budget generous enough to pass at four dimensions would also
+        // pass an encoding that writes the whole thing at four dimensions and 4 KB at a
+        // production width, which is the only width that matters.
+        let mut overheads = Vec::new();
+        for width in [4usize, 256, 1024] {
+            let shared: Vec<f32> = (0..width).map(|index| (index % 8) as f32 / 8.0).collect();
+            let same = ContextNode {
+                vector: shared.clone(),
+                summary_vector: shared.clone(),
+                ..node_with_summary_copy()
+            };
+            let no_copy = ContextNode {
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+                ..same.clone()
+            };
+            let mut differs = same.clone();
+            differs.summary_vector[0] += 0.5;
+            let same_len = same.encode_context_proto_value().len();
+            let differs_len = differs.encode_context_proto_value().len();
+            let no_copy_len = no_copy.encode_context_proto_value().len();
+            assert!(
+                same_len < differs_len,
+                "width {width}: an equal copy must not be written out in full, {same_len} vs \
+                 {differs_len} bytes"
+            );
+            // ...and it must still come back. A cheaper encoding that loses the value is not
+            // cheaper, it is broken.
+            let bytes = same.encode_context_proto_value();
+            let decoded = ContextNode::decode_context_proto_value(&bytes).expect("decodes");
+            assert_eq!(
+                shared, decoded.summary_vector,
+                "width {width}: the marker must restore the copy, not leave it empty"
+            );
+            assert_eq!(
+                same.summary_vector_valid_from_ms,
+                decoded.summary_vector_valid_from_ms
+            );
+            overheads.push(same_len - no_copy_len);
+        }
+        assert!(
+            overheads.windows(2).all(|pair| pair[0] == pair[1]),
+            "an equal copy must cost the same at every width -- got {overheads:?} bytes for \
+             4, 256 and 1024 dimensions"
+        );
+    }
+
+    #[test]
+    fn the_equal_copy_marker_decodes_before_the_vector_it_names() {
+        // Protobuf does not order fields. The marker names the record's own vector, so a decoder
+        // that resolves it where it sits produces an EMPTY copy for any writer that emitted the
+        // marker first -- and an empty copy is not an error, it is a silent return to the
+        // per-node summary lookup this exists to avoid.
+        let vector = vec![0.5_f32, -0.25, 0.125, 1.0];
+        let mut bytes = Vec::new();
+        encode_varint_field(&mut bytes, 1, 4242);
+        encode_varint_field(&mut bytes, CONTEXT_SUMMARY_VECTOR_SAME_FIELD, 1);
+        encode_varint_field(
+            &mut bytes,
+            CONTEXT_SUMMARY_VECTOR_VALID_FROM_FIELD,
+            1_780_000_000_500,
+        );
+        encode_bytes_field(&mut bytes, CONTEXT_VECTOR_FIELD, &pack_f32_vector(&vector));
+        let decoded = ContextNode::decode_context_proto_value(&bytes).expect("decodes");
+        assert_eq!(
+            vector, decoded.summary_vector,
+            "the marker must be resolved after the whole record is read"
+        );
+    }
+
+    #[test]
+    fn a_summary_copy_only_answers_a_query_that_reaches_it() {
+        // The copy is the NEWEST summary. A query asking about an earlier point in time is not a
+        // miss to paper over: answering it from the copy would hand back a summary written after
+        // the moment being asked about.
+        let node = node_with_summary_copy();
+        let valid_from = node.summary_vector_valid_from_ms;
+        assert!(
+            node.summary_vector_as_of(valid_from - 1).is_none(),
+            "a query predating the copy must fall back to the summaries"
+        );
+        assert_eq!(
+            Some(node.summary_vector.as_slice()),
+            node.summary_vector_as_of(valid_from),
+            "the copy answers the instant it becomes valid"
+        );
+        assert_eq!(
+            Some(node.summary_vector.as_slice()),
+            node.summary_vector_as_of(u64::MAX)
+        );
+        // No copy at all, and a vector with no timestamp, are both "ask the summaries".
+        assert!(ContextNode {
+            summary_vector: Vec::new(),
+            ..node.clone()
+        }
+        .summary_vector_as_of(u64::MAX)
+        .is_none());
+        assert!(ContextNode {
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+            ..node.clone()
+        }
+        .summary_vector_as_of(u64::MAX)
+        .is_none());
     }
 
     #[test]
@@ -2598,6 +2986,9 @@ mod tests {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
             status: 0,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
@@ -2631,6 +3022,9 @@ mod tests {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
             status: 0,
             l1_ref: String::new(),
             raw_metadata_ref: String::new(),
@@ -2828,6 +3222,9 @@ mod tests {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
         };
         let native_node = ContextNode {
             status: 0,
@@ -2836,6 +3233,9 @@ mod tests {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
             ..node.clone()
         };
         assert_eq!(

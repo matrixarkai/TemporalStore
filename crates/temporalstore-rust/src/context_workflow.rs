@@ -103,7 +103,8 @@ use self::resource::{
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::types::{
-    context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextChildRef,
+    context_model_descriptors, context_node_summary_vector_enabled, Command, CommandResponse,
+    ContextAuditRef, ContextChildRef, CONTEXT_SUMMARY_LEVEL_L1,
     ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
     ContextModelDescriptor, ContextNode, ContextPackAudit, ContextSummary,
     ContextDirtyNode, ExecuteRequest, ShardId, Status,
@@ -1108,6 +1109,12 @@ pub struct ContextFanoutPlanReport {
     // counted; the rows are gone, so any nonzero here means the backfill has work to do.)
     #[serde(default)]
     pub l0_row_fallback_nodes: usize,
+    /// Candidates whose L1 summary vector the node fetch could NOT supply, and which therefore
+    /// still cost a per-node summary lookup. Zero is the steady state once summaries have been
+    /// written by a build that copies the vector onto the node; anything else names how much of
+    /// the second pass is still being paid for, which nothing else here would show.
+    #[serde(default)]
+    pub summary_lookup_nodes: usize,
     // Candidate vectors declined because their width did not match the query's, i.e. they were
     // written in a different embedding space. Counted separately from the un-embedded ones above
     // because the two ask for different repairs: an un-embedded node needs the backfill to run,
@@ -1601,6 +1608,9 @@ pub(crate) fn extract_context_gated(
         vector: Vec::new(),
         embedding_model_hash: 0,
         embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
     };
     let mut event = context_event_with_storage_keys(
         node_hash,
@@ -1774,6 +1784,15 @@ pub(crate) fn extract_context_gated(
             // The one summary vector retrieval actually scores: level 2 is the only level the
             // retrieve pass queries for vectors, so this stamp is what the guard there reads.
             summary.embedding_model_hash = embedding_model_hash;
+            // The node carries a COPY of that same vector, so the scoring pass gets both vectors
+            // out of the one node fetch it already makes. The engine keeps this copy current on
+            // every later summary write; setting it here as well is what stops the node written
+            // moments ago from being read back and rewritten by the summary upsert that follows.
+            if context_node_summary_vector_enabled() {
+                node.summary_vector = vector.clone();
+                node.summary_vector_valid_from_ms = summary.valid_from_ms;
+                node.summary_vector_model_hash = summary.embedding_model_hash;
+            }
         }
         // The event is at index 1 either way, because the node now contributes exactly one text
         // to the batch whether or not L1 was emitted.
@@ -1984,6 +2003,14 @@ pub fn retrieve_context(
     let mut l0_row_fallback: Vec<u64> = Vec::new();
     let mut width_conflict_nodes = 0usize;
     let mut model_conflict_nodes = 0usize;
+    // The point in time the L1 summary vectors are wanted as of, hoisted because the node pass
+    // below needs it too: a node's copy of that vector can only answer a query at or after the
+    // summary it was copied from.
+    let summary_as_of_ms = request.end_time_ms.max(1);
+    // Candidates whose summary vector the node fetch did NOT supply, and which therefore still
+    // need the per-node summary lookup. Every candidate is on this list until its node carries a
+    // copy, so a store written before the copy existed behaves exactly as it does today.
+    let mut summary_lookup_nodes: Vec<u64> = Vec::new();
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
@@ -1999,6 +2026,38 @@ pub fn retrieve_context(
         if let CommandResponse::ContextNodes { nodes } = response.response {
             for node in nodes {
                 returned.insert(node.node_hash);
+                // The node's own copy of its L1 summary vector, when it has one that covers this
+                // query's point in time. Taking it here is the whole saving: this fetch was going
+                // to happen anyway, and the second per-candidate pass below now has nothing to
+                // ask for. A node without a usable copy joins `summary_lookup_nodes` and is
+                // scored by that pass exactly as before.
+                match node.summary_vector_as_of(summary_as_of_ms) {
+                    Some(summary_vector) => {
+                        if context_embedding_width_conflicts(&query_embedding, summary_vector) {
+                            // Same reasoning as everywhere else here: skip without recording, so
+                            // the score count stays at zero and the lexical pass still owns it.
+                            width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                        } else if context_embedding_model_conflicts(
+                            node.summary_vector_model_hash,
+                            active_embedding_model_hash,
+                        ) {
+                            // Declined here rather than sent to the lookup below. The lookup
+                            // would read the same summary, reach the same verdict and count it
+                            // twice, having paid for the read to learn what the copy already
+                            // said.
+                            model_conflict_nodes = model_conflict_nodes.saturating_add(1);
+                        } else {
+                            let score = context_embedding_similarity_micros(
+                                &query_embedding,
+                                summary_vector,
+                            );
+                            let entry = summary_scores_by_node.entry(node.node_hash).or_default();
+                            entry.0 = entry.0.max(score);
+                            entry.1 = entry.1.saturating_add(1);
+                        }
+                    }
+                    None => summary_lookup_nodes.push(node.node_hash),
+                }
                 if node.vector.is_empty() {
                     l0_row_fallback.push(node.node_hash);
                 } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
@@ -2031,15 +2090,25 @@ pub fn retrieve_context(
         for node_hash in chunk {
             if !returned.contains(node_hash) {
                 l0_row_fallback.push(*node_hash);
+                // ...and it cannot have supplied a summary vector copy either, so it keeps the
+                // lookup it has always had. A node record can be missing while its summaries are
+                // not: the summary series lives in its own keyspace.
+                summary_lookup_nodes.push(*node_hash);
             }
         }
     }
     // Diagnostic only now: candidates whose node carries no vector at all (un-embedded).
     fanout_plan.l0_row_fallback_nodes = l0_row_fallback.len();
-    // node_l1 comes from the L1 summaries' own vectors -- the ingest has filled them since the
-    // fold, and the summary is addressable by the node hash already in hand. Level 2 here is
-    // the summary-record level for L1 (ContextQuerySummaries uses 1 = L0, 2 = L1).
-    for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+    // node_l1 comes from the L1 summaries' own vectors -- the summary record owns them, and it is
+    // addressable by the node hash already in hand. Level 2 here is the summary-record level for
+    // L1 (ContextQuerySummaries uses 1 = L0, 2 = L1).
+    //
+    // Only for the candidates the node fetch could not answer for. Each one costs a formatted
+    // object key, a walk of that node's summary series, a page read and the decode of a whole
+    // ContextSummary -- text and all -- to keep one field, so the list being empty is the point
+    // rather than a happy accident.
+    fanout_plan.summary_lookup_nodes = summary_lookup_nodes.len();
+    for chunk in summary_lookup_nodes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
         }
@@ -2048,8 +2117,8 @@ pub fn retrieve_context(
             command: Command::ContextQuerySummaryVectors {
                 tenant_hash: request.tenant_hash,
                 node_hashes: chunk.to_vec(),
-                level: 2,
-                as_of_ms: request.end_time_ms.max(1),
+                level: CONTEXT_SUMMARY_LEVEL_L1,
+                as_of_ms: summary_as_of_ms,
             },
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
@@ -2760,6 +2829,9 @@ fn empty_node() -> ContextNode {
         vector: Vec::new(),
         embedding_model_hash: 0,
         embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
     }
 }
 

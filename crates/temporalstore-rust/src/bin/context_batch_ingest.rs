@@ -393,6 +393,9 @@ fn write_raw_sources(
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
         };
         let event = ContextEvent {
             event_id_hash,

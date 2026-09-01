@@ -307,6 +307,9 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
         vector: Vec::new(),
         embedding_model_hash: 0,
         embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
     };
     assert_ok(engine.execute(ExecuteRequest {
         shard_id: SHARD_ID,
@@ -476,6 +479,9 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
                 vector: Vec::new(),
                 embedding_model_hash: 0,
                 embedding_updated_at_ms: 0,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
             },
         },
     }));

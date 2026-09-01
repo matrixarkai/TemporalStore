@@ -53,6 +53,9 @@ fn context_get_nodes_batches_summary_lookup_for_retrieval() {
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         });
@@ -2077,6 +2080,9 @@ fn upsert_raw_context_node(
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         })
@@ -3105,6 +3111,9 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         });
@@ -3224,6 +3233,9 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         });
@@ -3377,7 +3389,7 @@ fn what_a_retrieve_allocates() {
     );
     drop(sink);
 
-    fn run(adds: usize) -> (u64, u64, usize, u64, u64) {
+    fn run(adds: usize) -> (u64, u64, usize, u64, usize) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
@@ -3471,65 +3483,57 @@ fn what_a_retrieve_allocates() {
         }
         let fetch = fetch_probe.stop();
 
-        // The scoring stage makes a SECOND per-candidate engine call, for the summary vectors, and
-        // it is over the same candidate list. Probe it too rather than attributing everything the
-        // node fetch does not explain to "the rest".
-        let summary_probe = crate::alloc_probe::Probe::start();
-        for _ in 0..5 {
-            let response = engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::ContextQuerySummaryVectors {
-                    tenant_hash: 4242,
-                    node_hashes: node_hashes.clone(),
-                    level: 2,
-                    as_of_ms: u64::MAX,
-                },
-            });
-            assert!(
-                matches!(response.response, CommandResponse::ContextSummaryVectors { .. }),
-                "expected summary vectors"
-            );
-        }
-        let summary = summary_probe.stop();
-
+        // Scoring used to make a SECOND per-candidate engine call, for the summary vectors, over
+        // the same candidate list -- 21 of the 36.5 allocations an extra candidate cost. It now
+        // makes that call only for candidates whose node did not carry the vector, so what is
+        // worth reporting is no longer a probe of the command but how many candidates still
+        // reach it. Probing the command over every candidate would price a call the retrieve
+        // does not make and leave "everything else" absorbing the difference as a negative.
         (
             counts.allocs / 5,
             counts.alloc_bytes / 5,
             node_hashes.len(),
             fetch.allocs / 5,
-            summary.allocs / 5,
+            warm.fanout_plan.summary_lookup_nodes,
         )
     }
 
     println!(
         "
-  cands   allocs/retr   bytes/retr   node-fetch   summary-vectors
+  cands   allocs/retr   bytes/retr   node-fetch   summary lookups
 "
     );
     let mut rows = Vec::new();
     for adds in [40usize, 80, 160] {
-        let (allocs, bytes, candidates, fetch_allocs, summary_allocs) = run(adds);
+        let (allocs, bytes, candidates, fetch_allocs, summary_lookups) = run(adds);
         println!(
-            "  {candidates:>5}   {allocs:>11}   {bytes:>10}   {fetch_allocs:>10}   {summary_allocs:>15}",
+            "  {candidates:>5}   {allocs:>11}   {bytes:>10}   {fetch_allocs:>10}   {summary_lookups:>15}",
         );
-        rows.push((candidates, allocs, fetch_allocs, summary_allocs));
+        rows.push((candidates, allocs, fetch_allocs, summary_lookups));
     }
     // The marginal cost is the honest per-candidate number: the "per candidate" ratio falls as the
     // corpus grows purely because a fixed per-call overhead is being divided by more candidates,
     // which reads as an improvement that is not there.
     println!();
     for pair in rows.windows(2) {
-        let (c0, a0, f0, s0) = pair[0];
-        let (c1, a1, f1, s1) = pair[1];
+        let (c0, a0, f0, _) = pair[0];
+        let (c1, a1, f1, _) = pair[1];
         let dc = (c1 - c0).max(1) as f64;
         let total = (a1 - a0) as f64 / dc;
         let fetch = (f1 - f0) as f64 / dc;
-        let summary = (s1 - s0) as f64 / dc;
         println!(
-            "  marginal {c0}->{c1}: {total:.1} per extra candidate = {fetch:.1} node fetch + {summary:.1} summary vectors + {:.1} everything else",
-            total - fetch - summary,
+            "  marginal {c0}->{c1}: {total:.1} per extra candidate = {fetch:.1} node fetch + {:.1} everything else",
+            total - fetch,
         );
     }
+    // A nonzero lookup count means the corpus is not being scored from the node records, and the
+    // per-candidate figure above is being paid twice over. Said here rather than left to be
+    // noticed, because a column of zeros and a column of 160s print the same width.
+    assert!(
+        rows.iter().all(|(_, _, _, lookups)| *lookups == 0),
+        "candidates still reaching the per-node summary lookup: {:?}",
+        rows.iter().map(|row| row.3).collect::<Vec<_>>()
+    );
 }
 
 /// What does the retrieve path actually decode per candidate?
@@ -3836,6 +3840,9 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         });
@@ -3941,6 +3948,9 @@ fn seed_summary_only_vector_node(
                 vector: Vec::new(),
                 embedding_model_hash: 0,
                 embedding_updated_at_ms: 0,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
             },
         },
     });
@@ -4145,5 +4155,382 @@ fn a_summary_vector_with_no_recorded_encoder_is_still_scored() {
     assert_eq!(
         0, retrieve.fanout_plan.embedding_model_conflict_nodes,
         "a zero hash is not a conflict and must not be counted as one"
+    );
+}
+
+/// Restores `TS_NODE_SUMMARY_VECTOR` on the way out, so a test that turns the copy off cannot
+/// leave every later test in the process running the old path.
+struct NodeSummaryVectorFlag(Option<String>);
+
+impl NodeSummaryVectorFlag {
+    fn off() -> Self {
+        let previous = std::env::var("TS_NODE_SUMMARY_VECTOR").ok();
+        std::env::set_var("TS_NODE_SUMMARY_VECTOR", "0");
+        Self(previous)
+    }
+}
+
+impl Drop for NodeSummaryVectorFlag {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("TS_NODE_SUMMARY_VECTOR", value),
+            None => std::env::remove_var("TS_NODE_SUMMARY_VECTOR"),
+        }
+    }
+}
+
+fn ingest_scoring_corpus(engine: &TemporalEngine, tenant_hash: u64, count: usize) -> Vec<u64> {
+    let provider = ContextModelProviderConfig::default();
+    let topics = [
+        "deploy the ingest service",
+        "rotate the storage credentials",
+        "page cache eviction tuning",
+        "replica failover during upgrade",
+    ];
+    let mut node_hashes = Vec::new();
+    for index in 0..count {
+        let topic = topics[index % topics.len()];
+        let report = ingest_extract_context(
+            engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("COPY-{index:06}"),
+                    title: format!("{topic} {index}"),
+                    body: format!(
+                        "{topic} incident {index}. {}",
+                        "operators reviewed the runbook and recorded the outcome. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: provider.clone(),
+                }],
+                provider: provider.clone(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "ingest {index} failed: {:?}", report.status);
+        node_hashes.extend(report.node_hashes.iter().copied());
+    }
+    node_hashes.sort_unstable();
+    node_hashes.dedup();
+    node_hashes
+}
+
+fn scoring_request(
+    tenant_hash: u64,
+    node_hashes: &[u64],
+    query: &str,
+    end_time_ms: u64,
+) -> ContextRetrieveRequest {
+    ContextRetrieveRequest {
+        shard_id: 1,
+        tenant_hash,
+        node_hashes: node_hashes.to_vec(),
+        query: query.to_string(),
+        start_time_ms: 0,
+        end_time_ms,
+        max_events: 8,
+        min_confidence: 0.0,
+        min_importance: 0.0,
+        tiers: default_tiers(),
+        max_summary_nodes: 4,
+        max_event_nodes: 4,
+        prefer_current_agent: false,
+        current_agent_scope_key: "agent:test".to_string(),
+        provider: ContextModelProviderConfig::default(),
+    }
+}
+
+#[test]
+fn scoring_takes_the_summary_vector_from_the_node_it_already_fetched() {
+    // The whole point of the copy: the node fetch scoring already makes for every candidate now
+    // yields BOTH vectors, so the second per-candidate engine call has nothing left to ask for.
+    // `summary_lookup_nodes` is what says so -- a retrieve that quietly kept making the call
+    // would still return the right answer, and nothing else here would show the difference.
+    let engine = test_engine();
+    const TENANT: u64 = 7311;
+    let node_hashes = ingest_scoring_corpus(&engine, TENANT, 12);
+    assert!(node_hashes.len() >= 12, "corpus too small to be interesting");
+
+    let nodes_response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNodes {
+            tenant_hash: TENANT,
+            node_hashes: node_hashes.clone(),
+        },
+    });
+    let CommandResponse::ContextNodes { nodes } = nodes_response.response else {
+        panic!("expected nodes");
+    };
+    let vectors_response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQuerySummaryVectors {
+            tenant_hash: TENANT,
+            node_hashes: node_hashes.clone(),
+            level: CONTEXT_SUMMARY_LEVEL_L1,
+            as_of_ms: u64::MAX,
+        },
+    });
+    let CommandResponse::ContextSummaryVectors { vectors } = vectors_response.response else {
+        panic!("expected summary vectors");
+    };
+    let owned: BTreeMap<u64, Vec<f32>> = vectors
+        .into_iter()
+        .map(|entry| (entry.node_hash, entry.vector))
+        .collect();
+    assert!(!owned.is_empty(), "the corpus produced no L1 summary vectors");
+    // The copy must equal what the summary record holds. A copy that merely EXISTS would pass a
+    // "is it populated" check while scoring something else entirely.
+    for node in &nodes {
+        let Some(summary_vector) = owned.get(&node.node_hash) else {
+            continue;
+        };
+        assert_eq!(
+            Some(summary_vector.as_slice()),
+            node.summary_vector_as_of(u64::MAX),
+            "node {} carries a copy that is not its summary's vector",
+            node.node_hash
+        );
+    }
+
+    let report = retrieve_context(
+        &engine,
+        scoring_request(TENANT, &node_hashes, "how do we deploy the ingest service", u64::MAX),
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(
+        0, report.fanout_plan.summary_lookup_nodes,
+        "every candidate carries its summary vector, so the second pass must fetch nothing"
+    );
+}
+
+#[test]
+fn the_node_copy_ranks_exactly_as_the_summary_lookup_does() {
+    // The copy is a cache, so it must not change a single answer. Two stores, same corpus, same
+    // queries: one where the node carries the copy and one where it does not and the per-node
+    // summary lookup runs as it always has.
+    const TENANT: u64 = 7312;
+    let with_copy = test_engine();
+    let copied_nodes = ingest_scoring_corpus(&with_copy, TENANT, 12);
+
+    let without_copy = test_engine();
+    let looked_up_nodes = {
+        let _flag = NodeSummaryVectorFlag::off();
+        ingest_scoring_corpus(&without_copy, TENANT, 12)
+    };
+    assert_eq!(
+        copied_nodes, looked_up_nodes,
+        "the two stores must hold the same candidates for the comparison to mean anything"
+    );
+
+    for query in [
+        "how do we deploy the ingest service",
+        "what happens when a replica fails over",
+        "who rotates the storage credentials",
+        "page cache eviction",
+    ] {
+        let copied = retrieve_context(
+            &with_copy,
+            scoring_request(TENANT, &copied_nodes, query, u64::MAX),
+        );
+        let looked_up = retrieve_context(
+            &without_copy,
+            scoring_request(TENANT, &looked_up_nodes, query, u64::MAX),
+        );
+        assert!(copied.status.ok && looked_up.status.ok);
+        // Guard against the comparison passing for the wrong reason: if the second store were
+        // also serving from copies, this would be two identical code paths agreeing.
+        assert_eq!(
+            looked_up_nodes.len(),
+            looked_up.fanout_plan.summary_lookup_nodes,
+            "the control run must actually be using the per-node summary lookup"
+        );
+        assert_eq!(0, copied.fanout_plan.summary_lookup_nodes);
+        assert_eq!(
+            looked_up.fanout_plan.selected_node_hashes, copied.fanout_plan.selected_node_hashes,
+            "query {query:?} selected different nodes once the copy was used"
+        );
+        assert_eq!(
+            looked_up.blocks.len(),
+            copied.blocks.len(),
+            "query {query:?} returned a different number of blocks"
+        );
+    }
+}
+
+#[test]
+fn a_query_reaching_back_before_the_copy_still_reads_the_summaries() {
+    // The copy is the NEWEST summary. Serving it to a query about an earlier point in time would
+    // answer with a summary written after the moment being asked about -- a wrong answer that
+    // looks exactly like a right one, because the vector is the right width and scores fine.
+    let engine = test_engine();
+    const TENANT: u64 = 7313;
+    let node_hashes = ingest_scoring_corpus(&engine, TENANT, 8);
+
+    let now = retrieve_context(
+        &engine,
+        scoring_request(TENANT, &node_hashes, "how do we deploy the ingest service", u64::MAX),
+    );
+    assert!(now.status.ok, "{:?}", now.status);
+    assert_eq!(0, now.fanout_plan.summary_lookup_nodes);
+
+    // Every summary in this corpus is stamped at or after 1_000, so as_of 999 predates all of
+    // them and no copy may be used.
+    let historical = retrieve_context(
+        &engine,
+        scoring_request(TENANT, &node_hashes, "how do we deploy the ingest service", 999),
+    );
+    assert!(historical.status.ok, "{:?}", historical.status);
+    assert_eq!(
+        node_hashes.len(),
+        historical.fanout_plan.summary_lookup_nodes,
+        "a query predating every copy must consult the summaries for every candidate"
+    );
+}
+
+#[test]
+fn an_older_summary_write_does_not_displace_a_newer_copy() {
+    // Summaries do not only arrive in time order: a backfill, a replay or a correction writes an
+    // OLDER `valid_from_ms` after a newer one is already stored. Taking it would leave the node
+    // claiming a superseded vector is the newest -- the exact read the copy exists to answer,
+    // and one that scores a perfectly plausible cosine while being wrong.
+    let engine = test_engine();
+    const TENANT: u64 = 7314;
+    const NODE: u64 = 55;
+    let newest = vec![1.0_f32, 0.0, 0.0, 0.0];
+    let older = vec![0.0_f32, 1.0, 0.0, 0.0];
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash: TENANT,
+            node: ContextNode {
+                node_hash: NODE,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: "node/fifty-five".to_string(),
+                l0: "a node with summaries out of order".to_string(),
+                status: 0,
+                last_event_time_ms: 2_000,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+            },
+        },
+    });
+    assert!(response.status.ok);
+
+    for (valid_from_ms, vector) in [(2_000_u64, newest.clone()), (1_000, older.clone())] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertSummary {
+                tenant_hash: TENANT,
+                summary: ContextSummary {
+                    node_hash: NODE,
+                    level: CONTEXT_SUMMARY_LEVEL_L1,
+                    text: format!("summary valid from {valid_from_ms}"),
+                    valid_from_ms,
+                    vector,
+                    embedding_model_hash: 0,
+                },
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+        },
+    });
+    let CommandResponse::ContextNode { node: Some(node), .. } = response.response else {
+        panic!("expected the node back");
+    };
+    assert_eq!(
+        Some(newest.as_slice()),
+        node.summary_vector_as_of(u64::MAX),
+        "the older summary overwrote the copy of the newer one"
+    );
+    assert_eq!(2_000, node.summary_vector_valid_from_ms);
+}
+
+#[test]
+fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
+    // The copy must carry its own encoder stamp, or it becomes the one scored vector nothing
+    // checks the encoder of: the node's own vector is declined when the model changes, and
+    // scoring the copy anyway would rank the node on a cosine taken across two vector spaces
+    // AND mark it scored, withdrawing the lexical fallback the other guard handed it to.
+    //
+    // Two encoders of the same width raise no length error and log nothing. The stamp is the
+    // only thing that separates them.
+    let engine = test_engine();
+    const TENANT: u64 = 7315;
+    const NODE: u64 = 77;
+    let provider = ContextModelProviderConfig::default();
+    let vector = query::context_query_embedding(&provider, "deploy the ingest service").unwrap();
+    let stale_encoder = context_embedding_model_hash("an-encoder-since-replaced");
+    assert_ne!(
+        stale_encoder,
+        context_embedding_model_hash(provider.embedding_model.trim()),
+        "the stamps have to differ or this test asserts nothing"
+    );
+
+    seed_summary_only_vector_node(
+        &engine,
+        TENANT,
+        NODE,
+        "node/seventy-seven",
+        "totally unrelated wording",
+        1_000,
+        vector,
+        stale_encoder,
+    );
+    let node_response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNode {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+        },
+    });
+    let CommandResponse::ContextNode { node: Some(node), .. } = node_response.response else {
+        panic!("expected the node back");
+    };
+    assert_eq!(
+        stale_encoder, node.summary_vector_model_hash,
+        "the copy must carry the stamp of the encoder that wrote the summary, not the node's"
+    );
+
+    let retrieve = retrieve_context(
+        &engine,
+        scoring_request(TENANT, &[NODE], "how do we deploy the ingest service", u64::MAX),
+    );
+    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    assert_eq!(
+        1, retrieve.fanout_plan.embedding_model_conflict_nodes,
+        "the declined copy has to be COUNTED, and counted as a MODEL conflict"
+    );
+    assert_eq!(
+        0, retrieve.fanout_plan.embedding_width_conflict_nodes,
+        "this vector is the query's own width -- charging it to the width counter would send an \
+         operator looking for a provider outage that did not happen"
+    );
+    assert_eq!(
+        0, retrieve.fanout_plan.summary_lookup_nodes,
+        "the copy already answered; reading the summary again would reach the same verdict and \
+         count it twice"
     );
 }
