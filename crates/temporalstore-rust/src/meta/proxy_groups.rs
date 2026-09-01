@@ -215,18 +215,41 @@ pub fn plan_proxy_calibration(
         }
     }
 
+    // Everything below is asked once per group, and none of it changes with
+    // the group being asked.
+    //
+    // Each proxy's location was parsed, and allocated, again for every group in
+    // the tier. Its group membership was found by walking every proxy again for
+    // every group. Both are properties of the proxy.
+    let proxy_locations = sorted_proxies
+        .iter()
+        .map(|proxy| Location::parse(&proxy.location))
+        .collect::<Vec<_>>();
+    let mut attached_by_group: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for proxy in &sorted_proxies {
+        // A frozen proxy is attached but not serving, so it does not count
+        // toward the target -- otherwise a group silently runs short every time
+        // the failure detector freezes one of its members.
+        if proxy.group.is_empty() || proxy.state != MetaEntityState::Normal {
+            continue;
+        }
+        attached_by_group
+            .entry(proxy.group.as_str())
+            .or_default()
+            .push(proxy.proxy_addr.clone());
+    }
+
     // 2. Per group, compare the target against what is actually serving.
     let mut wanted_attach = Vec::new();
+    // Which proxies this round has already promised to a group. Asked once per
+    // eligible proxy per group, which is why it is a set and not a scan of the
+    // attachments planned so far.
+    let mut claimed: BTreeSet<String> = BTreeSet::new();
     for (name, group) in &live_groups {
-        let mut attached = sorted_proxies
-            .iter()
-            .filter(|proxy| proxy.group == **name)
-            // A frozen proxy is attached but not serving, so it does not count
-            // toward the target -- otherwise a group silently runs short every
-            // time the failure detector freezes one of its members.
-            .filter(|proxy| proxy.state == MetaEntityState::Normal)
-            .map(|proxy| proxy.proxy_addr.clone())
-            .collect::<Vec<_>>();
+        let mut attached = attached_by_group
+            .get(*name)
+            .cloned()
+            .unwrap_or_default();
         attached.sort();
 
         let target = group.instance_num as usize;
@@ -249,17 +272,15 @@ pub fn plan_proxy_calibration(
         let pattern = Location::parse(&group.location);
         let eligible = sorted_proxies
             .iter()
-            .filter(|proxy| is_idle_candidate(proxy))
-            .filter(|proxy| Location::parse(&proxy.location).belongs_to(&pattern))
-            .filter(|proxy| {
-                !wanted_attach
-                    .iter()
-                    .any(|a: &ProxyAttachment| a.proxy_addr == proxy.proxy_addr)
-            })
-            .map(|proxy| proxy.proxy_addr.clone())
+            .enumerate()
+            .filter(|(_, proxy)| is_idle_candidate(proxy))
+            .filter(|(index, _)| proxy_locations[*index].belongs_to(&pattern))
+            .filter(|(_, proxy)| !claimed.contains(proxy.proxy_addr.as_str()))
+            .map(|(_, proxy)| proxy.proxy_addr.clone())
             .collect::<Vec<_>>();
 
         for addr in eligible.iter().take(short) {
+            claimed.insert(addr.clone());
             wanted_attach.push(ProxyAttachment {
                 proxy_addr: addr.clone(),
                 group: (*name).to_string(),
