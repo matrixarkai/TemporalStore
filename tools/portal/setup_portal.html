@@ -556,6 +556,45 @@
   </section>
 
   <section>
+    <h2>Deployment <span class="aux"><button class="link" id="copyEnv" type="button">copy env file</button></span></h2>
+    <p class="hint" style="margin-top:0">The storage directories, the metaserver address and the
+      topology are not editable above, and that is deliberate — repointing a running deployment's
+      storage from a browser does not reconfigure it, it strands its data. They are chosen when a
+      deployment is <em>launched</em>, which is what this composes.</p>
+    <div id="liveShape" class="hint"></div>
+    <div class="grid2">
+      <label class="field"><span>Shape</span>
+        <select id="depShape"></select>
+        <span class="hint" id="depShapeWhen"></span>
+      </label>
+      <label class="field"><span>Storage</span>
+        <select id="depStorage"></select>
+        <span class="hint" id="depStorageNote"></span>
+      </label>
+      <label class="field"><span>Nodes</span>
+        <input id="depNodes" type="number" min="1" max="99" step="1" value="1">
+        <span class="hint">Raft needs an odd count so a majority exists.</span>
+      </label>
+      <label class="field"><span>Data root</span>
+        <input id="depRoot" type="text" placeholder="/var/lib/temporalstore">
+        <span class="hint">Where pages, blobs, index and cache go.</span>
+      </label>
+      <label class="field" id="depSharedField" hidden><span>Shared directory</span>
+        <input id="depShared" type="text" placeholder="/srv/temporalstore/shared">
+        <span class="hint">Must be the same storage seen by every node, not a per-node path of
+          the same name.</span>
+      </label>
+      <label class="field"><span>Key variables</span>
+        <input id="depKeys" type="text" placeholder="DEEPSEEK_API_KEY, OPENAI_API_KEY">
+        <span class="hint">Names only. Values are entered above and never appear in a plan.</span>
+      </label>
+    </div>
+    <div id="depMsg" role="status" aria-live="polite"></div>
+    <div id="depVerdict"></div>
+    <pre id="depEnv"></pre>
+  </section>
+
+  <section>
     <h2>Grafana <span class="aux"><button class="link" id="copyScrape" type="button">copy scrape config</button></span></h2>
     <p class="hint" style="margin-top:0">Everything on this page is also exported at
       <span class="mono">/v1/metrics</span> in Prometheus text format — aggregate counters only, no
@@ -1447,6 +1486,7 @@ function liveStream(options) {
         renderHistory(d.settings);
         renderInventory(d.settings);
         renderMonitoring(d);
+        loadDeployment();
         loadEncoding();
         loadModels(false);
         startLive();
@@ -1594,6 +1634,136 @@ function liveStream(options) {
         $("traffic").innerHTML = '<div class="msg err">Could not read /v1/metrics.</div>';
       });
   }
+
+  /* ---------- deployment chooser ---------- */
+  var depCatalogue = null;
+  var depPlanDoc = null;
+
+  function depShape() {
+    if (!depCatalogue) { return null; }
+    var want = $("depShape").value;
+    var found = depCatalogue.shapes.filter(function (s) { return s.id === want; });
+    return found.length ? found[0] : depCatalogue.shapes[0];
+  }
+
+  function renderDeploymentChoices() {
+    if (!depCatalogue) { return; }
+    $("depShape").innerHTML = depCatalogue.shapes.map(function (s) {
+      return "<option value='" + esc(s.id) + "'>" + esc(s.label) + " — " + esc(s.summary) +
+        "</option>";
+    }).join("");
+    $("depShape").value = depCatalogue.default_shape;
+    renderShapeDetail();
+  }
+
+  function renderShapeDetail() {
+    var shape = depShape();
+    if (!shape) { return; }
+    $("depShapeWhen").textContent = shape.when;
+    $("depNodes").value = shape.nodes;
+    $("depStorage").innerHTML = shape.storage.map(function (s) {
+      /* An option that cannot be honoured is still listed rather than hidden: the customer needs
+         to know the choice exists and why this build cannot take it. */
+      var suffix = s.available === false ? " (not in this build)" : "";
+      return "<option value='" + esc(s.id) + "'>" + esc(s.label) + suffix + "</option>";
+    }).join("");
+    if (!$("depRoot").value) {
+      $("depRoot").value = shape.storage[0].default_root || "";
+    }
+    $("depSharedField").hidden = shape.id !== "shared";
+    renderStorageNote();
+  }
+
+  function renderStorageNote() {
+    var shape = depShape();
+    if (!shape) { return; }
+    var want = $("depStorage").value;
+    var found = shape.storage.filter(function (s) { return s.id === want; });
+    $("depStorageNote").textContent = found.length ? found[0].note : "";
+    $("depSharedField").hidden = !(shape.id === "shared" && want === "path");
+  }
+
+  function previewPlan() {
+    if (!depCatalogue) { return; }
+    var keys = $("depKeys").value.split(",").map(function (k) { return k.trim(); })
+      .filter(function (k) { return k.length; });
+    fetch("/v1/admin/deployment/plan", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({
+        shape: $("depShape").value,
+        storage: $("depStorage").value,
+        nodes: parseInt($("depNodes").value, 10) || 0,
+        root: $("depRoot").value,
+        shared_dir: $("depShared").value,
+        key_envs: keys
+      })
+    })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (plan) {
+        depPlanDoc = plan;
+        /* The requested backend and the resolved one are shown together, because they differ
+           silently: a shared request with no directory, or MatrixObject on a build without it,
+           both fall through to auto-detection and start a deployment nobody chose. */
+        var rows = [];
+        rows.push("<tr><td>Resolves to</td><td><span class='mono'>" +
+          esc(plan.resolved_backend) + "</span><div class='hint' style='margin:2px 0 0'>" +
+          esc(plan.backend_reason) + "</div></td></tr>");
+        (plan.blocking || []).forEach(function (b) {
+          rows.push("<tr><td>Blocked</td><td>" + esc(b) + "</td></tr>");
+        });
+        (plan.warnings || []).forEach(function (w) {
+          rows.push("<tr><td>Warning</td><td>" + esc(w) + "</td></tr>");
+        });
+        (plan.notes || []).forEach(function (n) {
+          rows.push("<tr><td>Note</td><td>" + esc(n) + "</td></tr>");
+        });
+        $("depVerdict").innerHTML = "<table><tbody>" + rows.join("") + "</tbody></table>";
+        $("depEnv").textContent = plan.env_file || "";
+        say($("depMsg"), plan.ok
+          ? "This plan is launchable."
+          : "This plan cannot produce the deployment described. See Blocked above.",
+          plan.ok ? "ok" : "err");
+      })
+      .catch(function (e) {
+        say($("depMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+            "err");
+      });
+  }
+
+  function loadDeployment() {
+    fetch("/v1/admin/deployment", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        depCatalogue = d.catalogue;
+        renderDeploymentChoices();
+        $("liveShape").textContent = d.live
+          ? ("Running now: the " + d.live.backend + " backend (" + d.live.replication +
+             "). " + d.live_detail)
+          : d.live_detail;
+        previewPlan();
+      })
+      .catch(function (e) {
+        if (e !== 401 && e !== 403) {
+          say($("depMsg"), "Could not load the deployment shapes.", "err");
+        }
+      });
+  }
+
+  ["depShape", "depStorage", "depNodes", "depRoot", "depShared", "depKeys"].forEach(function (id) {
+    $(id).addEventListener("change", function () {
+      if (id === "depShape") { renderShapeDetail(); }
+      if (id === "depStorage") { renderStorageNote(); }
+      previewPlan();
+    });
+  });
+
+  $("copyEnv").addEventListener("click", function () {
+    var text = $("depEnv").textContent;
+    if (navigator.clipboard) { navigator.clipboard.writeText(text); }
+    $("copyEnv").textContent = "copied";
+    setTimeout(function () { $("copyEnv").textContent = "copy env file"; }, 1400);
+  });
 
   /* Set once the config lands. Until then only the gateway job is knowable, and printing a
      placeholder engine host would be worse than printing nothing. */

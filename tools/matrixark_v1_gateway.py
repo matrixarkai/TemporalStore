@@ -53,9 +53,11 @@ except ImportError:  # Direct script execution from tools/.
 # edge request metrics. Both are self-contained stdlib modules; a deployment missing them degrades to
 # the previous read-only config surface rather than failing to import.
 try:
+    from tools import matrixark_deployment_plan as _deployment_plan  # type: ignore
     from tools import matrixark_gateway_config as _gwconfig  # type: ignore
     from tools import matrixark_gateway_metrics as _gwmetrics  # type: ignore
 except ImportError:  # Direct script execution from tools/.
+    import matrixark_deployment_plan as _deployment_plan  # type: ignore
     import matrixark_gateway_config as _gwconfig  # type: ignore
     import matrixark_gateway_metrics as _gwmetrics  # type: ignore
 
@@ -1685,6 +1687,21 @@ ROUTE_DOCS: List[Json] = [
                                   "first and last use."},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/ingestion/jobs",
      "scope": "admin", "summary": "Bulk import jobs on this worker."},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/deployment",
+     "scope": "admin",
+     "summary": "The deployment shapes that can be launched -- one box, replicated with Raft, or "
+                "nodes in front of shared storage -- with the storage each supports, plus the "
+                "backend this deployment is running right now, read from the datanode rather than "
+                "inferred from configuration."},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/deployment/plan",
+     "scope": "admin",
+     "summary": "Compose a deployment and report what the engine will actually do with it. "
+                "Several choices resolve to something other than what was asked with no error: "
+                "shared storage with no directory, and MatrixObject on a build without it, both "
+                "fall through to auto-detection. Returns the environment, an env file, what is "
+                "blocked, and what will differ from the request. Changes nothing.",
+     "body": {"shape": "raft", "storage": "ebs", "nodes": 3,
+              "root": "/var/lib/temporalstore", "key_envs": ["DEEPSEEK_API_KEY"]}},
     {"group": "Administration", "method": "POST", "path": "/v1/admin/ingestion/jobs",
      "scope": "admin",
      "summary": "Start a bulk import. Every path resolves inside MATRIXARK_INGESTION_ROOT; pass "
@@ -2922,6 +2939,49 @@ def _build_direct_client(cfg: GatewayConfig) -> DirectBackendClient:
     )
 
 
+def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
+    """Which storage backend the datanode actually resolved. None => could not determine.
+
+    Read from the engine instead of re-derived here, because the two can disagree and the engine is
+    the one that is right: `TS_STORAGE_BACKEND=shared` with no directory, or `matrixobject` on a
+    build without the feature, both fall through to auto-detection without erroring, so a
+    deployment routinely runs a backend nobody selected. The engine publishes what it chose as
+    `temporalstore_storage_backend{backend=...}`; the *reason* it chose it exists only in a startup
+    log line, so this reports the outcome and the portal says plainly that the reason is not
+    available over HTTP.
+    """
+    try:
+        conn = cfg.blob_connection_factory(cfg)
+        conn.putrequest("GET", "/metrics")
+        conn.endheaders()
+        resp = conn.getresponse()
+        body = b""
+        try:
+            body = resp.read() or b""
+        except Exception:
+            pass
+        status = int(getattr(resp, "status", 0) or 0)
+        _safe_close(conn)
+        if status >= 400:
+            return None
+        for line in body.decode("utf-8", "replace").splitlines():
+            if not line.startswith("temporalstore_storage_backend{"):
+                continue
+            labels = line[line.find("{") + 1:line.find("}")]
+            parsed: Json = {}
+            for pair in labels.split(","):
+                if "=" in pair:
+                    key, _, value = pair.partition("=")
+                    parsed[key.strip()] = value.strip().strip('"')
+            if parsed.get("backend"):
+                return {"backend": parsed["backend"],
+                        "replication": parsed.get("replication", ""),
+                        "source": "datanode /metrics"}
+        return None
+    except Exception:
+        return None
+
+
 def _probe_datanode(cfg: GatewayConfig) -> Optional[bool]:
     """Best-effort readiness probe against the datanode. None => could not determine (never fatal)."""
     try:
@@ -3179,6 +3239,72 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             except Exception as exc:  # never let the write-side registry break the read
                 snapshot["settings"] = {"status": "unavailable", "detail": str(exc)}
             return await _json(send, 200, snapshot)
+
+        # ---- the deployment chooser (auth + admin scope) --------------------------------------
+        # Separate from the settings registry on purpose. The storage directory, the metaserver
+        # address and the topology are deliberately NOT writable there -- repointing a running
+        # deployment's storage from a browser does not reconfigure it, it strands its data. But
+        # "cannot be changed here" and "cannot be chosen at all" are different, and only the first
+        # was ever true. Choosing happens when a deployment is launched, so this composes a plan and
+        # reports what the engine will actually do with it, without touching this process.
+        if method == "GET" and path == "/v1/admin/deployment":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            live = _probe_storage_backend(cfg)
+            # Only a live backend of matrixobject PROVES the feature is compiled in. Anything else
+            # is silence: auto may have picked another backend on a build that has it. So this
+            # reports confirmation, never absence, and the plan preview stays conditional.
+            confirmed = bool(live and live.get("backend") == "matrixobject")
+            catalogue = _deployment_plan.catalogue(matrixobject_available=True)
+            catalogue["matrixobject_confirmed"] = confirmed
+            return await _json(send, 200, {
+                "status": "ok",
+                "catalogue": catalogue,
+                "live": live,
+                "live_detail": (
+                    "This deployment resolved the %s backend. The engine records WHY in a startup "
+                    "log line only, so the reason is not readable over HTTP."
+                    % live["backend"] if live else
+                    "Could not read the datanode's backend. It publishes "
+                    "temporalstore_storage_backend on /metrics; an unreachable datanode or a "
+                    "gateway pointed at the wrong address both look like this."),
+            })
+
+        if method == "POST" and path == "/v1/admin/deployment/plan":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            raw, too_big = await _read_body_capped(receive, 1 << 16)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            live = _probe_storage_backend(cfg)
+            try:
+                plan = _deployment_plan.plan(
+                    shape=str((payload or {}).get("shape", "")),
+                    storage=str((payload or {}).get("storage", "")),
+                    nodes=int((payload or {}).get("nodes", 0) or 0),
+                    root=str((payload or {}).get("root", "")),
+                    shared_dir=str((payload or {}).get("shared_dir", "")),
+                    key_envs=list((payload or {}).get("key_envs", []) or []),
+                    matrixobject_available=bool(
+                        (payload or {}).get("matrixobject_available", True)),
+                )
+            except (TypeError, ValueError) as exc:
+                return await _json(send, 400, {"error": "invalid_plan", "detail": str(exc)})
+            plan["env_file"] = _deployment_plan.as_env_file(plan)
+            plan["live"] = live
+            return await _json(send, 200, plan)
 
         # ---- write the model configuration (auth + admin scope) ------------------------------
         # The customer-facing half of the same surface: a closed registry of settings (see
