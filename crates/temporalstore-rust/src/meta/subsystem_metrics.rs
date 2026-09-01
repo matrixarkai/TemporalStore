@@ -50,6 +50,11 @@ struct SubsystemMetricsState {
     divergences_total: u64,
     /// Bytes of topology handed out, as encoded on the wire.
     topology_query_bytes_total: u64,
+    /// Shards a topology answer placed on fewer servers than their table asks
+    /// for, counted as the answers go out, and how many the last answer was
+    /// short of.
+    placement_short_total: u64,
+    placement_short_now: u64,
     reassigned_total: BTreeMap<String, u64>,
     purged_total: BTreeMap<String, u64>,
     aged_total: BTreeMap<String, u64>,
@@ -122,6 +127,19 @@ impl SubsystemMetrics {
     /// Record the encoded size of one topology answer.
     pub fn record_topology_bytes(&self, bytes: usize) {
         self.with(|state| state.topology_query_bytes_total += bytes as u64);
+    }
+
+    /// Record what one topology answer could not place.
+    ///
+    /// `short` counts the shards in that answer which are serving but hold
+    /// fewer replicas than their table asks for. Recorded where the answer is
+    /// built, because placement is worked out per request and there is no
+    /// round anywhere that would otherwise notice.
+    pub fn record_placement(&self, short: usize) {
+        self.with(|state| {
+            state.placement_short_total += short as u64;
+            state.placement_short_now = short as u64;
+        });
     }
 
     pub fn record_divergence(&self, report: &ShardCheckReport) {
@@ -413,6 +431,26 @@ fn render(state: &SubsystemMetricsState) -> String {
         "temporalstore_meta_topology_query_bytes_total",
         &[],
         state.topology_query_bytes_total,
+    );
+    out.push_str(
+        "# HELP temporalstore_meta_placement_short_total Shards served with fewer replicas than their table asks for.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_placement_short_total counter\n");
+    push(
+        &mut out,
+        "temporalstore_meta_placement_short_total",
+        &[],
+        state.placement_short_total,
+    );
+    out.push_str(
+        "# HELP temporalstore_meta_placement_short Shards the last topology answer could not fill.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_placement_short gauge\n");
+    push(
+        &mut out,
+        "temporalstore_meta_placement_short",
+        &[],
+        state.placement_short_now,
     );
 
     out.push_str("# HELP temporalstore_meta_shard_divergence_total Shards found routed to a server not serving them.\n");

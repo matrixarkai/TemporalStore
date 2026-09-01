@@ -93,6 +93,18 @@ impl SingleNodeMeta {
             };
         }
         let shards = build_shards(&state, &table.info, &request.client_location);
+        // A shard that is serving but holds fewer servers than the table asks
+        // for is under-replicated, and the answer goes out saying so without
+        // anything noticing. A shard with no primary is out of service on
+        // purpose and is not short, it is stopped.
+        let short = shards
+            .iter()
+            .filter(|shard| {
+                shard.primary.is_some()
+                    && (shard.replicas.len() as u64) < table.info.replica_count
+            })
+            .count();
+        self.metrics.record_placement(short);
         TableTopologyResponse {
             status: Status::ok(),
             table: Some(table.info.clone()),
