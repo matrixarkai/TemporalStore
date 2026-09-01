@@ -2697,9 +2697,15 @@ function liveStream(options) {
           c.how.map(function (step) { return "<li>" + esc(step) + "</li>"; }).join("") +
           "</ol></details>";
       }
+      /* Where the answer came from, next to the answer. "ok" on a configured encoder and "ok" on
+         a counted record are different claims: the first survives the encoder being unreachable,
+         and that is precisely the failure this page exists to surface. */
+      var src = c.source_label
+        ? "<span class='hint' style='margin:2px 0 0'>" + esc(c.source_label) + "</span>"
+        : "";
       return '<div class="checkrow"><span class="mark ' + esc(c.status) + '">' +
         (MARK[c.status] || "") + '</span><span class="body"><b>' + esc(c.title) +
-        "</b><span>" + esc(c.detail) + "</span>" + how + "</span>" + go + "</div>";
+        "</b><span>" + esc(c.detail) + "</span>" + src + how + "</span>" + go + "</div>";
     }).join("") || '<div class="empty">Nothing to check.</div>';
 
     var pct = d.total ? Math.round((d.done / d.total) * 100) : 0;
