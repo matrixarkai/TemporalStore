@@ -304,7 +304,13 @@ fn control_api_reads_and_scans_index_log_stream() {
         .get("address")
         .or_else(|| hash_page.get("a"))
         .expect("the recorded page carries its address");
-    assert_eq!(address["page_segment_id"], serde_json::json!(0));
+    // Either spelling: the field is written short now and the long name is kept as a read alias,
+    // which is exactly how this test already reads `object_key` and `component` above.
+    let page_slab = address
+        .get("ps")
+        .or_else(|| address.get("page_segment_id"))
+        .expect("the address carries its page slab id");
+    assert_eq!(page_slab, &serde_json::json!(0));
     assert!(served["strings"].get("k1").is_some());
 }
 
