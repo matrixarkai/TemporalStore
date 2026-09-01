@@ -3425,3 +3425,260 @@ fn what_reading_one_summary_actually_costs() {
 "
     );
 }
+
+
+/// How many distinct pages do the nodes a retrieve scores actually span?
+///
+/// The node fetch is now nearly all of a retrieve's per-candidate cost, and with the discarded
+/// text measured at 1 allocation of 16 it is essentially one page read per candidate. Clustering
+/// the nodes a traversal co-selects would only help if they currently sit on DIFFERENT pages.
+///
+/// candidates-per-extent is the ceiling: 1.0 means every candidate costs its own page read and
+/// clustering could remove nearly all of them; a high number means they already share and there is
+/// nothing here worth a storage-layout change.
+///
+///   cargo test -p temporalstore-rust --lib how_many_pages_do_a_retrieves_candidates_span -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn how_many_pages_do_a_retrieves_candidates_span() {
+    println!(
+        "
+  nodes   distinct extents   nodes/extent   distinct slabs   bytes addressed
+"
+    );
+    for count in [40_u64, 120, 360] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let tenant = 7401_u64;
+        for node_hash in 1..=count {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode {
+                    tenant_hash: tenant,
+                    node: crate::types::ContextNode {
+                        node_hash,
+                        parent_hash: 0,
+                        kind: 1,
+                        canonical_name: format!("session/node-{node_hash}"),
+                        l0: "a summary of roughly the length a real extract produces for one turn"
+                            .to_string(),
+                        status: 0,
+                        last_event_time_ms: 1_781_700_000_000,
+                        l1_ref: String::new(),
+                        raw_metadata_ref: String::new(),
+                        vector: vec![0.25_f32; 16],
+                        embedding_model_hash: 7,
+                        embedding_updated_at_ms: 1,
+                        summary_vector: vec![0.5_f32; 16],
+                        summary_vector_valid_from_ms: 1_781_700_000_000,
+                        summary_vector_model_hash: 7,
+                    },
+                },
+            });
+            assert!(response.status.ok, "upsert {node_hash}: {:?}", response.status);
+        }
+
+        // The addresses the scoring pass would read, straight from the shard's own map.
+        let (extents, slabs, bytes) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let mut extents: std::collections::BTreeSet<(u64, u64, u64)> =
+                std::collections::BTreeSet::new();
+            let mut slabs: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+            let mut bytes = 0_u64;
+            for node_hash in 1..=count {
+                let key = super::context::context_node_key(tenant, node_hash);
+                let address = shard
+                    .hashes
+                    .get(&key)
+                    .and_then(|fields| fields.values().next())
+                    .or_else(|| shard.context_nodes.get(&key));
+                if let Some(address) = address {
+                    if extents.insert((address.page_slab_id, address.offset, address.length)) {
+                        bytes += address.length;
+                    }
+                    slabs.insert(address.page_slab_id);
+                }
+            }
+            (extents.len(), slabs.len(), bytes)
+        };
+        assert!(extents > 0, "no node addresses resolved -- this measures nothing");
+        println!(
+            "  {count:>5}   {extents:>16}   {:>12.2}   {slabs:>14}   {bytes:>15}",
+            count as f64 / extents as f64,
+        );
+
+        // Span versus payload: if these extents are adjacent, `read_range` can fetch many nodes in
+        // one read and slice them apart, which needs no durable format change. If they are spread
+        // through the slab, only a real re-layout helps.
+        let (span, largest_gap, ordered) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let mut ranges: Vec<(u64, u64)> = Vec::new();
+            for node_hash in 1..=count {
+                let key = super::context::context_node_key(tenant, node_hash);
+                if let Some(address) = shard
+                    .hashes
+                    .get(&key)
+                    .and_then(|fields| fields.values().next())
+                    .or_else(|| shard.context_nodes.get(&key))
+                {
+                    ranges.push((address.offset, address.length));
+                }
+            }
+            ranges.sort_unstable();
+            let ordered = ranges.len();
+            let span = match (ranges.first(), ranges.last()) {
+                (Some(first), Some(last)) => (last.0 + last.1).saturating_sub(first.0),
+                _ => 0,
+            };
+            let mut largest_gap = 0_u64;
+            for pair in ranges.windows(2) {
+                let end_of_first = pair[0].0 + pair[0].1;
+                largest_gap = largest_gap.max(pair[1].0.saturating_sub(end_of_first));
+            }
+            (span, largest_gap, ordered)
+        };
+        println!(
+            "          span {span} bytes over {ordered} extents holding {bytes} bytes  \
+({:.2}x the payload), largest gap {largest_gap}",
+            span as f64 / bytes.max(1) as f64,
+        );
+    }
+    println!(
+        "
+  nodes/extent near 1.0  => every candidate costs its own page read; clustering is the lever.
+  nodes/extent high      => candidates already share pages and a layout change wins nothing.
+"
+    );
+}
+
+
+/// The same contiguity question, but after a REAL ingest rather than a node-only fixture.
+///
+/// Writing only nodes packs them perfectly (span == payload, zero gaps) and that is not the shape
+/// a deployment has: an ingest writes events, summaries, entities and index rows in between, so the
+/// nodes a retrieve scores are separated by records it does not want.
+///
+/// Reports the contiguous RUNS the node extents form. Reads per retrieve fall from one-per-candidate
+/// to one-per-run if the fetch coalesces, and the foreign bytes column says what that costs.
+///
+///   cargo test -p temporalstore-rust --lib how_scattered_are_node_extents_after_a_real_ingest -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn how_scattered_are_node_extents_after_a_real_ingest() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    println!(
+        "
+  adds   node extents   runs   extents/run   node bytes   span bytes   foreign bytes dragged
+"
+    );
+    for adds in [40_usize, 120] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let tenant = 7501_u64;
+        let mut node_hashes: Vec<u64> = Vec::new();
+        for index in 0..adds {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: tenant,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: tenant,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("LOC-{index:06}"),
+                        title: format!("locality {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} about the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "ingest {index}: {:?}", report.status);
+            node_hashes.extend(report.node_hashes.iter().copied());
+        }
+        node_hashes.sort_unstable();
+        node_hashes.dedup();
+        assert!(!node_hashes.is_empty(), "no nodes ingested -- nothing to measure");
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let mut ranges: Vec<(u64, u64, u64)> = Vec::new(); // (slab, offset, length)
+        for node_hash in &node_hashes {
+            let key = super::context::context_node_key(tenant, *node_hash);
+            if let Some(address) = shard
+                .hashes
+                .get(&key)
+                .and_then(|fields| fields.values().next())
+                .or_else(|| shard.context_nodes.get(&key))
+            {
+                ranges.push((address.page_slab_id, address.offset, address.length));
+            }
+        }
+        ranges.sort_unstable();
+        let node_bytes: u64 = ranges.iter().map(|r| r.2).sum();
+
+        // A run is a maximal group of extents that a single range read could cover: same slab, and
+        // each starting where the previous ended.
+        let mut runs = 0_usize;
+        let mut span = 0_u64;
+        let mut previous: Option<(u64, u64)> = None; // (slab, end offset)
+        let mut run_start: Option<(u64, u64)> = None;
+        for (slab, offset, length) in &ranges {
+            match previous {
+                Some((prev_slab, prev_end)) if prev_slab == *slab && prev_end == *offset => {}
+                _ => {
+                    if let (Some((_, start)), Some((_, end))) = (run_start, previous) {
+                        span += end.saturating_sub(start);
+                    }
+                    runs += 1;
+                    run_start = Some((*slab, *offset));
+                }
+            }
+            previous = Some((*slab, offset + length));
+        }
+        if let (Some((_, start)), Some((_, end))) = (run_start, previous) {
+            span += end.saturating_sub(start);
+        }
+
+        println!(
+            "  {adds:>4}   {:>12}   {runs:>4}   {:>11.2}   {node_bytes:>10}   {span:>10}   {:>21}",
+            ranges.len(),
+            ranges.len() as f64 / runs.max(1) as f64,
+            span.saturating_sub(node_bytes),
+        );
+    }
+    println!(
+        "
+  extents/run near 1  => nodes are isolated between other records; only a re-layout helps.
+  extents/run high    => a coalescing fetch cuts reads by that factor with no format change.
+"
+    );
+}
