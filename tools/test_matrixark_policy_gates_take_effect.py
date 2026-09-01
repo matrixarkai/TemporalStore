@@ -300,5 +300,46 @@ class TheBoundaryPolicyTest(unittest.TestCase):
                          self.adapter.drop_vectors_for_opted_out_tenants(records))
 
 
+class TurningSegmentsOffDoesNotLoseTheAnswerTest(unittest.TestCase):
+    """`extract_segments` defaults OFF, so wiring it stops segments for unconfigured deployments.
+
+    The justification is that a segment restates its event -- same text up to a role prefix -- so
+    the event still carries the answer. That is a claim about RETRIEVAL, and the rest of this file
+    only counts what was stored, which cannot tell "redundant" from "lost".
+
+    So it is checked the way a customer would notice: ingest, ask, and see whether the answer comes
+    back. Storing less is only acceptable while this passes.
+    """
+
+    def _ask(self, tenant, knobs, query):
+        import matrixark_mcp_server as mcp
+        policy.set_tenant_policy(tenant, knobs)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
+            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+            scope = {"tenant_id": tenant, "user_id": "u1", "session_id": "s1"}
+            for message in ("I am allergic to peanuts and I live in Kyoto.",
+                            "My favourite drink is matcha, and I bike to work."):
+                server.call_tool("matrixark_ingest", {
+                    "scope": scope, "finalize": True,
+                    "messages": [{"role": "user", "content": message}]})
+            server.call_tool("matrixark_session_commit", {"scope": scope})
+            return str(server.call_tool("matrixark_retrieve",
+                                        {"scope": scope, "query": query})).lower()
+
+    def test_the_answer_survives_with_segments_off(self) -> None:
+        with_segments = self._ask("q_on", {"extract_segments": True},
+                                  "what am I allergic to?")
+        without = self._ask("q_off", {"extract_segments": False},
+                            "what am I allergic to?")
+        # Asserted on BOTH: if the query stopped working for everyone the comparison would still
+        # hold and would prove nothing.
+        self.assertIn("peanut", with_segments,
+                      "the query does not work even WITH segments, so this test is vacuous")
+        self.assertIn("peanut", without,
+                      "turning segments off lost the answer -- they are not redundant after all, "
+                      "and the default-OFF behaviour change is not safe")
+
+
 if __name__ == "__main__":
     unittest.main()
