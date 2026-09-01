@@ -48,6 +48,15 @@ struct SubsystemMetricsState {
     held_total: BTreeMap<(String, String), u64>,
     reboots_detected_total: u64,
     divergences_total: u64,
+    /// How long topology queries took, in microseconds.
+    ///
+    /// Counts per bucket, not cumulative -- the rendering adds them up, because
+    /// that is the shape Prometheus wants and this is the shape that is cheap to
+    /// record.
+    topology_latency_us: [u64; TOPOLOGY_LATENCY_BUCKETS_US.len()],
+    topology_latency_over: u64,
+    topology_latency_sum_us: u64,
+    topology_latency_count: u64,
     /// Bytes of topology handed out, as encoded on the wire.
     topology_query_bytes_total: u64,
     /// Shards a topology answer placed on fewer servers than their table asks
@@ -88,6 +97,14 @@ pub struct SubsystemMetrics {
     inner: Arc<Mutex<SubsystemMetricsState>>,
 }
 
+/// Where the topology-query latency histogram puts things, in microseconds.
+///
+/// An answer served from the metadata already in memory lands in the first few;
+/// the wide ones at the top are there so an answer that waited on the write lock
+/// is visible as itself rather than lost in an overflow bucket.
+const TOPOLOGY_LATENCY_BUCKETS_US: [u64; 9] =
+    [50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 50_000];
+
 impl SubsystemMetrics {
     pub fn new() -> Self {
         Self::default()
@@ -124,6 +141,21 @@ impl SubsystemMetrics {
     }
 
     /// Record one shard-divergence reconciliation round.
+    /// Record how long one topology query took.
+    pub fn record_topology_latency(&self, elapsed_us: u64) {
+        self.with(|state| {
+            state.topology_latency_count += 1;
+            state.topology_latency_sum_us += elapsed_us;
+            match TOPOLOGY_LATENCY_BUCKETS_US
+                .iter()
+                .position(|bound| elapsed_us <= *bound)
+            {
+                Some(index) => state.topology_latency_us[index] += 1,
+                None => state.topology_latency_over += 1,
+            }
+        });
+    }
+
     /// Record the encoded size of one topology answer.
     pub fn record_topology_bytes(&self, bytes: usize) {
         self.with(|state| state.topology_query_bytes_total += bytes as u64);
@@ -451,6 +483,39 @@ fn render(state: &SubsystemMetricsState) -> String {
         "temporalstore_meta_placement_short",
         &[],
         state.placement_short_now,
+    );
+
+    out.push_str(
+        "# HELP temporalstore_meta_topology_query_latency_us How long answering a table topology query took.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_topology_query_latency_us histogram\n");
+    let mut cumulative = 0_u64;
+    for (index, bound) in TOPOLOGY_LATENCY_BUCKETS_US.iter().enumerate() {
+        cumulative += state.topology_latency_us[index];
+        push(
+            &mut out,
+            "temporalstore_meta_topology_query_latency_us_bucket",
+            &[("le", &bound.to_string())],
+            cumulative,
+        );
+    }
+    push(
+        &mut out,
+        "temporalstore_meta_topology_query_latency_us_bucket",
+        &[("le", "+Inf")],
+        state.topology_latency_count,
+    );
+    push(
+        &mut out,
+        "temporalstore_meta_topology_query_latency_us_sum",
+        &[],
+        state.topology_latency_sum_us,
+    );
+    push(
+        &mut out,
+        "temporalstore_meta_topology_query_latency_us_count",
+        &[],
+        state.topology_latency_count,
     );
 
     out.push_str("# HELP temporalstore_meta_shard_divergence_total Shards found routed to a server not serving them.\n");
