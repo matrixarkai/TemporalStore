@@ -376,6 +376,24 @@ class PickerPageTest(_ModelTest):
         self.assertIn('=== "__other__"', handler)
         self.assertIn("return;", handler)
 
+    def test_the_risk_check_uses_the_same_name_rule_as_the_guard(self) -> None:
+        # The backend stopped treating a repository prefix as a different model. The page's own
+        # check still compared exactly, so re-spelling the encoder a store already holds raised
+        # "changing this strands what is already stored" -- which strands nothing, and teaches the
+        # reader to click past the warning on the change that would.
+        source = _read_text(os.path.join(HERE, "portal", "build_portal_pages.py"))
+        start = source.index("function embeddingRisk(")
+        block = source[start:source.index("function renderModels()", start)]
+        self.assertIn("sameModel(", block)
+        self.assertNotIn("models[0] === chosen", block)
+        self.assertNotIn('chosen === (d.current', block)
+
+    def test_the_name_rule_is_declared_before_the_checks_that_use_it(self) -> None:
+        # Declarations hoist, so this is about the page reading in the order it runs.
+        source = _read_text(os.path.join(HERE, "portal", "build_portal_pages.py"))
+        self.assertLess(source.index("function sameModel("),
+                        source.index("function embeddingRisk("))
+
     def test_the_picker_does_not_save_on_its_own(self) -> None:
         # Choosing a model has to land in the pending-changes set, not go straight to the server:
         # an encoder change saved on click is one nobody reviewed.

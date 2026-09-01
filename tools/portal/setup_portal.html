@@ -903,6 +903,17 @@ function liveStream(options) {
     return out;
   }
 
+  /* Same rule the backend uses: a repository prefix is not part of the model's identity. Without
+     it the table highlights nothing whenever the deployment names the model in the shorter form,
+     which reads as "you are on something exotic" while sitting on a listed model. */
+  function sameModel(left, right) {
+    left = String(left || "").trim().replace(/\/+$/, "");
+    right = String(right || "").trim().replace(/\/+$/, "");
+    if (!left || !right) { return false; }
+    if (left === right) { return true; }
+    return left.split("/").pop() === right.split("/").pop();
+  }
+
   /* The backend reports models and widths as {model, count} / {dim, count} rows, not bare names. */
   function storedModelNames(s) {
     return (s.models || []).map(function (m) {
@@ -939,9 +950,14 @@ function liveStream(options) {
     if (!chosen) { return ""; }
     if (s.known && !s.total) { return ""; }
     var models = storedModelNames(s);
-    if (s.known && models.length === 1 && models[0] === chosen) { return ""; }
+    /* Compared with the same rule the backend uses. A repository prefix is not part of the model's
+       identity, and warning that a store will be stranded by re-spelling the encoder it already
+       holds is how the warning gets clicked past on the change that would strand it. */
+    if (s.known && models.length === 1 && sameModel(models[0], chosen)) { return ""; }
+    if (s.known && models.length > 1 &&
+        models.every(function (m) { return sameModel(m, chosen); })) { return ""; }
     if (!s.known || !models.length) {
-      if (chosen === (d.current || "")) { return ""; }
+      if (sameModel(chosen, d.current || "")) { return ""; }
     }
     return '<div class="mwarn"><b>Changing this strands what is already stored</b>' +
       esc(d.change_warning || "") + "</div>";
@@ -993,17 +1009,6 @@ function liveStream(options) {
   /* The measurement, as a table rather than as prose in six option labels. Sorted by the number
      a customer is actually choosing on, with the best in each column marked -- otherwise every row
      reads as equally reasonable and the default wins by being first. */
-  /* Same rule the backend uses: a repository prefix is not part of the model's identity. Without
-     it the table highlights nothing whenever the deployment names the model in the shorter form,
-     which reads as "you are on something exotic" while sitting on a listed model. */
-  function sameModel(left, right) {
-    left = String(left || "").trim().replace(/\/+$/, "");
-    right = String(right || "").trim().replace(/\/+$/, "");
-    if (!left || !right) { return false; }
-    if (left === right) { return true; }
-    return left.split("/").pop() === right.split("/").pop();
-  }
-
   function measuredTable(d, chosen) {
     var rows = (d.catalogue || []).filter(function (c) { return c.hit_at_1 != null; });
     if (!rows.length) { return ""; }
