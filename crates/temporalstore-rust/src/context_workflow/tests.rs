@@ -407,7 +407,9 @@ fn context_extract_gates_l1_for_thin_sources() {
     assert!(thin.node.l1_ref.is_empty());
     assert_eq!(thin.embedding_generation.requested_vector_count, 2);
 
-    // Richer multi-sentence source: L1 is warranted -> L0 + L1, 3 embeddings.
+    // Richer multi-sentence source: L1 is warranted -> L0 + L1, still 2 embeddings. The node
+    // embeds `l1` and the level-2 summary IS `l1`, so that string is encoded once and shared;
+    // the vector count is the same as the thin path and only the summaries differ.
     let rich = extract_context(
         &engine,
         ContextExtractRequest {
@@ -424,7 +426,10 @@ fn context_extract_gates_l1_for_thin_sources() {
     );
     assert!(rich.status.ok, "{:?}", rich.status);
     assert!(!rich.l1.is_empty());
-    assert_eq!(rich.embedding_generation.requested_vector_count, 3);
+    assert_eq!(
+        rich.embedding_generation.requested_vector_count, 2,
+        "emitting L1 must not cost a second encode of the same string"
+    );
 }
 
 #[test]
@@ -449,8 +454,9 @@ fn context_extract_stores_embedding_vectors_on_the_records_themselves() {
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
-    // Rich body -> L1 is warranted, so all three vectors exist: node_l0, node_l1, event_text.
-    assert_eq!(report.embedding_generation.requested_vector_count, 3);
+    // Rich body -> L1 is warranted, so both vectors exist: node text and event text. The L1
+    // summary takes the node's vector rather than asking for one of its own.
+    assert_eq!(report.embedding_generation.requested_vector_count, 2);
 
     let events = match engine
         .execute(ExecuteRequest {
@@ -508,6 +514,68 @@ fn context_extract_stores_embedding_vectors_on_the_records_themselves() {
 }
 
 #[test]
+fn a_node_and_its_level_two_summary_share_one_embedding() {
+    // The node is embedded from `l1`, and the level-2 summary's text IS `l1`. One string, so one
+    // request to the encoder, and both owners take the vector it returns.
+    //
+    // The count is the load-bearing half. Comparing the two vectors alone would pass just as
+    // happily if the provider had been asked twice and answered the same way both times, which is
+    // precisely the duplicate this removes -- so the request count is asserted first, and the
+    // equal vectors afterwards say the shared one actually reached both records.
+    let engine = test_engine();
+    let report = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 81,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "shared-vector".to_string(),
+            title: "note".to_string(),
+            body: "Checkout failed during payment. The risk score spiked sharply. The fraud team paused the account."
+                .to_string(),
+            timestamp_ms: 11,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert!(
+        !report.l1.is_empty(),
+        "this body must warrant L1 or the shared case is never reached"
+    );
+    assert_eq!(
+        report.embedding_generation.requested_vector_count, 2,
+        "the node text and the event body; `l1` is encoded once, not once per owner"
+    );
+
+    let summaries = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQuerySummaries {
+                tenant_hash: 81,
+                node_hash: report.node.node_hash,
+                level: 2,
+                as_of_ms: 4_000_000_000_000,
+                limit: None,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextSummaries { summaries, .. } => summaries,
+        other => panic!("expected summaries, got {other:?}"),
+    };
+    let summary = summaries.first().expect("the extract wrote a level-2 summary");
+    assert_eq!(summary.text, report.l1, "the summary that embeds the node's own text");
+    assert!(
+        !report.node.vector.is_empty(),
+        "an empty node vector would make the comparison below vacuous"
+    );
+    assert_eq!(
+        summary.vector, report.node.vector,
+        "the one vector `l1` produced belongs to both the node and its level-2 summary"
+    );
+}
+
+#[test]
 fn an_ingested_summary_records_the_encoder_that_embedded_it() {
     // The stamp the summary guard reads. Level 2 is the only summary level retrieval scores, so
     // a vector written there without its encoder recorded is one the guard must wave through --
@@ -543,8 +611,9 @@ fn an_ingested_summary_records_the_encoder_that_embedded_it() {
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
-    // Rich body -> L1 is warranted, so the level-2 summary exists and carries a vector.
-    assert_eq!(report.embedding_generation.requested_vector_count, 3);
+    // Rich body -> L1 is warranted, so the level-2 summary exists and carries a vector -- the
+    // node's own, shared rather than requested a second time.
+    assert_eq!(report.embedding_generation.requested_vector_count, 2);
 
     for level in [1u32, 2] {
         let summaries = match engine
@@ -1906,12 +1975,20 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                 .to_string()
             } else {
                 assert_eq!(request_body["model"], "context-embedding-live-test");
-                assert_eq!(request_body["input"].as_array().unwrap().len(), 3);
+                // What the provider is actually asked to encode, read off the wire. A rich source
+                // sends the node text and the event body -- two texts. The level-2 summary embeds
+                // the same string as the node, and a third slot repeating it is work and money
+                // spent on a vector the first slot already returns.
+                let inputs = request_body["input"].as_array().unwrap();
+                assert_eq!(inputs.len(), 2, "one text per distinct thing to encode: {inputs:?}");
+                assert_ne!(
+                    inputs[0], inputs[1],
+                    "no text may appear twice in one embedding batch: {inputs:?}"
+                );
                 serde_json::json!({
                     "data": [
                         {"embedding": [1.0, 0.0, 0.0, 0.0]},
-                        {"embedding": [0.0, 1.0, 0.0, 0.0]},
-                        {"embedding": [0.0, 0.0, 1.0, 0.0]}
+                        {"embedding": [0.0, 1.0, 0.0, 0.0]}
                     ]
                 })
                 .to_string()
@@ -1960,8 +2037,8 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
         "context-embedding-live-test"
     );
     assert_eq!(report.embedding_generation.vector_dimension, 4);
-    assert_eq!(report.embedding_generation.requested_vector_count, 3);
-    assert_eq!(report.embedding_generation.generated_vector_count, 3);
+    assert_eq!(report.embedding_generation.requested_vector_count, 2);
+    assert_eq!(report.embedding_generation.generated_vector_count, 2);
     assert_eq!(report.embedding_generation.batch_count, 1);
     assert_eq!(report.embedding_generation.live_call_count, 1);
     assert!(!report.embedding_generation.mock_mode);
@@ -2831,8 +2908,8 @@ fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert_eq!(report.embedding_evidence.extract_count, 1);
-    assert_eq!(report.embedding_evidence.requested_vector_count, 3);
-    assert_eq!(report.embedding_evidence.generated_vector_count, 3);
+    assert_eq!(report.embedding_evidence.requested_vector_count, 2);
+    assert_eq!(report.embedding_evidence.generated_vector_count, 2);
     assert_eq!(report.embedding_evidence.live_call_count, 1);
     assert_eq!(report.embedding_evidence.mock_generation_count, 0);
     assert!(report.embedding_evidence.production_evidence_ready);
