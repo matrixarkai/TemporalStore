@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """A tenant-policy gate that nothing calls is a knob that resolves correctly and changes nothing.
 
 This is the worst shape a configuration surface can take. The knob is in the registry, the portal
@@ -27,16 +28,35 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
 GATES_MODULE = os.path.join(TOOLS, "matrixark_index_growth_bound.py")
 
-# Known unwired as of 2026-09-01, verified three ways: no call to the gate, no direct
-# resolve_tenant_policy() for the knob, and no read of the knob's env var in any .py or .rs.
-# Shrink this list as they are wired -- the test fails if you forget to.
+# Known unwired, verified three ways: no call to the gate, no direct resolve_tenant_policy() for
+# the knob, and no read of the knob's env var in any .py or .rs. Shrink this list as they are
+# wired -- the test fails if you forget to.
+#
+# This was six until the caller check started requiring a real call rather than a mention of the
+# name; the true figure was twelve. `extract_segments` and `generate_embeddings` are now wired, so
+# ten remain. The wider surface is worse still: of 42 functions in the policy module, 3 are
+# reachable from production code.
 KNOWN_UNWIRED: Set[str] = {
+    "dedupe_index_postings_enabled",
+    # Wired and working, but held back to its own change: honouring its default (OFF) stops
+    # segment rows for every deployment that has set no policy, and six existing tests depend on
+    # them. Retrieval still returns the answer without them, but that is a decision on its own.
     "extract_segments_enabled",
-    "generate_embeddings_enabled",
-    "node_path_embeddings_enabled",
+    "embed_node_path_prefix_enabled",
+    "generate_l1_summaries_enabled",
+    "index_compact_on_summary_enabled",
+    "recall_reinforcement_enabled",
+    # `return_all_candidates` is NOT a wiring job, and calling it one would mislead whoever picks
+    # it up. It means "return every candidate, no prefilter and no scoring", and no such bypass
+    # exists in `retrieve()` -- nor does anything read its companion knob
+    # `return_all_candidate_threshold`. Connecting it therefore means BUILDING that path, which is
+    # a retrieval feature with quality consequences, not attaching a gate to an existing switch.
+    #
+    # Its default (False) is today's behaviour, so nothing regresses while it stays here. When it
+    # is built, the test has to be a recall comparison rather than a presence check: a knob that
+    # silently narrows or widens results looks like it works either way.
     "return_all_candidates_enabled",
-    "store_event_summary_text_enabled",
-    "traverse_sibling_sessions_enabled",
+    "summarize_aggregation_only_nodes_enabled",
 }
 
 # The census found 14. If a refactor moves gates elsewhere this number drops and every "no unwired
@@ -51,10 +71,18 @@ def _gates() -> List[str]:
 
 
 def _production_sources() -> List[str]:
+    """Production files that could consult a gate -- excluding the module that defines them.
+
+    A gate called only by its neighbours proves nothing: 3 of the 42 functions in that module are
+    reachable from production, so an internal caller is usually itself dead. "Wired" has to mean
+    reached from code that runs.
+    """
     listed = subprocess.run(["git", "ls-files", "*.py"], cwd=REPO,
                             capture_output=True, text=True).stdout.split()
+    defining = os.path.basename(GATES_MODULE)
     return [path for path in listed
-            if not os.path.basename(path).startswith("test_")]
+            if not os.path.basename(path).startswith("test_")
+            and os.path.basename(path) != defining]
 
 
 def _callers() -> Dict[str, List[str]]:
@@ -73,6 +101,16 @@ def _callers() -> Dict[str, List[str]]:
                 continue
             for gate in gates:
                 if gate not in line or stripped.startswith("def %s(" % gate):
+                    continue
+                # A CALL, not a mention. Matching the bare name counted
+                #     recall_reinforcement_enabled = bool(ranking.get(...))
+                # -- a local variable sharing the name and reading a different source entirely --
+                # as wiring, and reported 8 of 14 gates wired when the real number was 2.
+                if not re.search(r"(?<![\w.])%s\s*\(" % re.escape(gate), line):
+                    continue
+                # ...and not the assignment form, which contains a call on its right-hand side but
+                # is defining a look-alike rather than consulting the gate.
+                if re.search(r"(?<![\w.])%s\s*=" % re.escape(gate), line):
                     continue
                 found[gate].append("%s:%d" % (path, number))
     return found
