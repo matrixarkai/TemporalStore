@@ -649,6 +649,15 @@ SETUP_BODY = """
     <div id="depMsg" role="status" aria-live="polite"></div>
     <div id="depVerdict"></div>
     <pre id="depEnv"></pre>
+    <h3>Launch <span class="aux"><button class="link" id="copyUserData" type="button">copy
+      user-data</button></span></h3>
+    <p class="hint" style="margin-top:0">Nothing here runs from this page. The gateway holds no AWS
+      credentials, and creating billable infrastructure is not something a web page should do on a
+      click — so this produces exactly what to run, and the command that destroys it again.
+      Key <em>names</em> appear in the script; key <em>values</em> never do, because user-data is
+      readable from the instance metadata service by anything on the box.</p>
+    <pre id="depUserData"></pre>
+    <pre id="depCommands"></pre>
   </section>
 
   <section>
@@ -1778,6 +1787,10 @@ function liveStream(options) {
         });
         $("depVerdict").innerHTML = "<table><tbody>" + rows.join("") + "</tbody></table>";
         $("depEnv").textContent = plan.env_file || "";
+        $("depUserData").textContent = plan.cloud_init || "";
+        $("depCommands").textContent = plan.commands
+          ? (plan.commands.launch + "\n\n" + plan.commands.teardown)
+          : "";
         say($("depMsg"), plan.ok
           ? "This plan is launchable."
           : "This plan cannot produce the deployment described. See Blocked above.",
@@ -1814,6 +1827,13 @@ function liveStream(options) {
       if (id === "depStorage") { renderStorageNote(); }
       previewPlan();
     });
+  });
+
+  $("copyUserData").addEventListener("click", function () {
+    var text = $("depUserData").textContent;
+    if (navigator.clipboard) { navigator.clipboard.writeText(text); }
+    $("copyUserData").textContent = "copied";
+    setTimeout(function () { $("copyUserData").textContent = "copy user-data"; }, 1400);
   });
 
   $("copyEnv").addEventListener("click", function () {

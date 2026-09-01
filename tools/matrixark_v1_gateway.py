@@ -3304,6 +3304,22 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 400, {"error": "invalid_plan", "detail": str(exc)})
             plan["env_file"] = _deployment_plan.as_env_file(plan)
             plan["live"] = live
+            # The launch artifact rides with the plan rather than living behind a second call, so
+            # what a customer copies is always derived from the plan they are looking at. A blocked
+            # plan gets none: emitting a launch script for a configuration already known not to
+            # produce the requested deployment is how the warning gets stepped over.
+            if plan.get("ok"):
+                try:
+                    plan["cloud_init"] = _deployment_plan.cloud_init(plan)
+                    plan["commands"] = _deployment_plan.launch_commands(
+                        plan,
+                        region=str((payload or {}).get("region", "") or "us-east-1"),
+                        instance_type=str((payload or {}).get("instance_type", "")
+                                          or "m6i.xlarge"),
+                        ami=str((payload or {}).get("ami", "")))
+                except ValueError as exc:
+                    plan["cloud_init"] = ""
+                    plan["warnings"] = list(plan.get("warnings") or []) + [str(exc)]
             return await _json(send, 200, plan)
 
         # ---- write the model configuration (auth + admin scope) ------------------------------
