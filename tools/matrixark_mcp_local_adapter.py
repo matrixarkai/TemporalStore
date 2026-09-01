@@ -656,6 +656,11 @@ INLINE_VECTOR_OWNER_BY_REF_TYPE = {
 # budgeting and recovery need; a search for a read of the nested route or options finds none. The
 # record's own top-level `storage_route` is kept and already slimmed to its placement half by
 # `slim_persisted_storage_route`, which is where a reader that wants placement looks.
+# Fields the owner record carries in its own right. They are stripped from `embedding_meta` when
+# they match the owner's, which they do for every writer today -- an embedding is addressed by the
+# owner's hash, so it inherits the owner's node and timestamp. Kept when they differ.
+_EMBEDDING_META_SAME_AS_OWNER = ("node_path", "updated_at_ms", "node_hash")
+
 _EMBEDDING_META_SKIP = (
     "record_type",
     "ref_type",
@@ -744,6 +749,13 @@ def fold_embedding_records(
             if key not in _EMBEDDING_META_SKIP
             and value not in (None, "", [], {})
         }
+        # Three of what survives are fields the owner already carries itself, and the embedding is
+        # addressed by the owner's own hash, so they arrive identical: 137.2 KB per 1 MB skill
+        # restating the record the meta rides on. Dropped only where they MATCH -- a differing
+        # value is the interesting case and is kept.
+        for key in _EMBEDDING_META_SAME_AS_OWNER:
+            if key in meta and key in owner and owner[key] == meta[key]:
+                del meta[key]
         if meta:
             owner.setdefault("embedding_meta", meta)
         if index not in replace:
