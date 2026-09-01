@@ -42,18 +42,15 @@ KNOWN_UNWIRED: Set[str] = {
     "generate_l1_summaries_enabled",
     "index_compact_on_summary_enabled",
     "recall_reinforcement_enabled",
-    # The two below are READ path, and unlike the write-path knobs there is no single boundary
-    # every candidate crosses -- `retrieve()` in matrixark_local_adapter_retrieve.py is one entry
-    # point, but both knobs change the algorithm inside it rather than filtering its output.
+    # `return_all_candidates` is NOT a wiring job, and calling it one would mislead whoever picks
+    # it up. It means "return every candidate, no prefilter and no scoring", and no such bypass
+    # exists in `retrieve()` -- nor does anything read its companion knob
+    # `return_all_candidate_threshold`. Connecting it therefore means BUILDING that path, which is
+    # a retrieval feature with quality consequences, not attaching a gate to an existing switch.
     #
-    #   return_all_candidates      (default False = today's behaviour) means skipping the
-    #                              secondary-index prefilter AND the scoring pass entirely.
-    #   traverse_sibling_sessions  (default True  = today's behaviour) means the node walk stops
-    #                              at the current session instead of descending into others.
-    #
-    # Both defaults match what happens today, so wiring them is opt-in and cannot regress an
-    # unconfigured tenant. But each changes what retrieval RETURNS, so the test has to be a recall
-    # comparison, not a presence check -- a knob that silently narrows results looks like it works.
+    # Its default (False) is today's behaviour, so nothing regresses while it stays here. When it
+    # is built, the test has to be a recall comparison rather than a presence check: a knob that
+    # silently narrows or widens results looks like it works either way.
     "return_all_candidates_enabled",
     "summarize_aggregation_only_nodes_enabled",
 }
