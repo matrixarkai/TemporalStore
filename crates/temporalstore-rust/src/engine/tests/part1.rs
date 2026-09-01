@@ -4653,3 +4653,191 @@ fn how_much_resident_memory_is_the_allocator_holding() {
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     println!("    malloc_trim: not glibc on this target, so this half did not run\n");
 }
+
+
+/// Where do the decode's six allocations go?
+///
+/// A node fetch is ten allocations per retrieval candidate: ~3 building the cache key, 6 decoding
+/// the record, ~1 on the lookups. The key strings are a floor while `CacheKey` keeps its serialized
+/// shape. The six are the open question, and "the record's shape" is an assumption until counted.
+///
+/// Decoding the same record with one field emptied at a time names each allocation: what the count
+/// drops by is what that field costs. What does not move is not where the cost is.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_each_field_of_a_node_costs_to_decode -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_each_field_of_a_node_costs_to_decode() {
+    use crate::types::{ContextNode, ContextWire};
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let full = |mutate: fn(&mut ContextNode)| {
+        let mut node = ContextNode {
+            node_hash: 4242,
+            parent_hash: 7,
+            kind: 1,
+            canonical_name: "session/a-canonical-name-of-ordinary-length".to_string(),
+            l0: "the discarded text: a sentence of the length an extract actually produces, which \
+                 the scoring pass never reads and the pack only needs for the winners"
+                .to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: (0..384).map(|index| index as f32 / 1024.0).collect(),
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: (0..384).map(|index| index as f32 / 512.0).collect(),
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        };
+        mutate(&mut node);
+        node.encode_context_value()
+    };
+
+    let measure = |bytes: &[u8]| {
+        // Warm: the first decode of a shape touches one-off structures.
+        let _ = ContextNode::decode_context_value(bytes).expect("decodes");
+        let probe = crate::alloc_probe::Probe::start();
+        let node = ContextNode::decode_context_value(bytes).expect("decodes");
+        let counts = probe.stop();
+        (counts.allocs, counts.alloc_bytes, node)
+    };
+
+    let (base, base_bytes, decoded) = measure(&full(|_| {}));
+    assert!(
+        !decoded.vector.is_empty() && !decoded.canonical_name.is_empty(),
+        "the fixture must actually carry the fields whose cost is being attributed"
+    );
+
+    println!(
+        "
+  what a whole node decodes to: {base} allocations, {base_bytes} bytes
+
+  field emptied            allocs   saved   bytes saved
+"
+    );
+
+    for (label, mutate) in [
+        ("canonical_name  ", (|node: &mut ContextNode| node.canonical_name.clear()) as fn(&mut ContextNode)),
+        ("l0 (the text)   ", |node: &mut ContextNode| node.l0.clear()),
+        ("vector          ", |node: &mut ContextNode| node.vector.clear()),
+        ("summary_vector  ", |node: &mut ContextNode| node.summary_vector.clear()),
+    ] {
+        let (allocs, bytes, _) = measure(&full(mutate));
+        println!(
+            "  {label}       {allocs:>6}   {:>5}   {:>11}",
+            base.saturating_sub(allocs),
+            base_bytes.saturating_sub(bytes),
+        );
+    }
+
+    // The marker case: a summary vector equal to the node's own is written once and cloned on the
+    // way out, so it costs an allocation that no field of the encoding pays for.
+    let same = full(|node| node.summary_vector = node.vector.clone());
+    let (same_allocs, _, same_node) = measure(&same);
+    assert_eq!(
+        same_node.summary_vector, same_node.vector,
+        "the marker must still resolve to the node's own vector"
+    );
+    println!(
+        "
+  summary vector marked as the node's own: {same_allocs} allocations ({} vs a distinct one)
+  -- the clone the marker resolves to is an allocation the wire never carries.
+",
+        if same_allocs >= base { format!("+{}", same_allocs - base) } else { format!("-{}", base - same_allocs) },
+    );
+}
+
+
+/// A sized vector holds exactly what a grown one held.
+///
+/// `unpack_scaled_vector` now counts the varints and reserves before filling, instead of growing
+/// from empty -- eight reallocations at 384 dimensions, on the default storage form. That is only
+/// safe if the count agrees with the decode: too small and it grows anyway, too large and the slack
+/// is held for as long as the node is cached, and wrong in a way that stops early loses values with
+/// nothing to show for it.
+///
+/// Asserted across widths, and at the two edges where the counting walk and the decoding walk could
+/// disagree about where to stop: nothing to decode, and bytes that end mid-value.
+#[test]
+fn a_sized_vector_decodes_exactly_what_a_grown_one_did() {
+    use crate::types::{ContextNode, ContextWire};
+
+    for width in [0_usize, 1, 16, 384, 1024] {
+        let vector: Vec<f32> = (0..width).map(|index| (index as f32) / 97.0 - 3.0).collect();
+        let node = ContextNode {
+            node_hash: 11,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: "session/sized".to_string(),
+            l0: "text".to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vector.clone(),
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        };
+        let decoded = ContextNode::decode_context_value(&node.encode_context_value())
+            .expect("a node round-trips");
+        assert_eq!(decoded.vector.len(), width, "width {width}: length");
+        // The stored form rounds, so the values are compared as the encoding can represent them
+        // rather than bit for bit -- what must not move is which values are there and in what order.
+        for (index, (before, after)) in vector.iter().zip(decoded.vector.iter()).enumerate() {
+            assert!(
+                (before - after).abs() < 0.01,
+                "width {width}, position {index}: {before} decoded as {after}"
+            );
+        }
+        assert_eq!(
+            decoded.vector.capacity(),
+            decoded.vector.len(),
+            "width {width}: the vector must be sized exactly, or the slack is held while the node is \
+             cached"
+        );
+    }
+
+    // Bytes that end mid-value: the counting walk and the decoding walk must stop in the same
+    // place, or the reserve and the fill disagree.
+    let node = ContextNode {
+        node_hash: 12,
+        parent_hash: 0,
+        kind: 1,
+        canonical_name: String::new(),
+        l0: String::new(),
+        status: 0,
+        last_event_time_ms: 1,
+        l1_ref: String::new(),
+        raw_metadata_ref: String::new(),
+        vector: (0..64).map(|index| index as f32).collect(),
+        embedding_model_hash: 0,
+        embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
+    };
+    let encoded = node.encode_context_value();
+    for cut in [1_usize, encoded.len() / 3, encoded.len() / 2, encoded.len() - 1] {
+        // Whatever it makes of a truncated record, it must not panic and must not claim more values
+        // than it wrote.
+        if let Some(decoded) = ContextNode::decode_context_value(&encoded[..cut]) {
+            assert!(
+                decoded.vector.len() <= 64,
+                "a truncated record decoded {} values out of at most 64",
+                decoded.vector.len()
+            );
+        }
+    }
+}

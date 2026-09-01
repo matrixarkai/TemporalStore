@@ -2194,8 +2194,32 @@ fn pack_scaled_vector(vector: &[f32]) -> Vec<u8> {
     out
 }
 
+/// How many values the encoding holds, without decoding them.
+///
+/// The varints are variable-width, so the count cannot be had from `bytes.len()`. Walking them
+/// allocates nothing, and it is what lets the vector be sized exactly rather than grown.
+fn count_scaled_vector_values(bytes: &[u8]) -> usize {
+    let mut count = 0;
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if decode_varint(bytes, &mut cursor).is_none() {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
 fn unpack_scaled_vector(bytes: &[u8]) -> Vec<f32> {
-    let mut out = Vec::new();
+    // Sized before filling. Growing from empty costs a reallocation every time the capacity
+    // doubles -- eight of them at 384 dimensions, each copying everything written so far, and this
+    // is the default storage form, so it is what a decode actually does. Counting first is a scan
+    // and no allocation.
+    //
+    // Exactly, not generously: these vectors live on records the store keeps resident, so slack
+    // capacity would be paid in memory for as long as the node is cached, not just during the
+    // decode.
+    let mut out = Vec::with_capacity(count_scaled_vector_values(bytes));
     let mut cursor = 0;
     while cursor < bytes.len() {
         let Some(raw) = decode_varint(bytes, &mut cursor) else {
