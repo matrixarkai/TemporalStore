@@ -283,11 +283,13 @@ def plan(shape: str, storage: str = "", nodes: int = 0, root: str = "",
         else:
             blocking.append("Unknown shared store %r." % choice)
 
+    planned_keys: List[str] = []
     for name in (key_envs or []):
         clean = _clean(name)
         if not _KEY_NAME.match(clean):
             blocking.append("%r is not usable as an environment variable name for a key." % name)
         else:
+            planned_keys.append(clean)
             # The NAME is part of the plan; the value never is. Keys are written through the
             # existing write-only secret path, so a plan can be shown, exported and diffed without
             # carrying a credential into any of those.
@@ -318,11 +320,188 @@ def plan(shape: str, storage: str = "", nodes: int = 0, root: str = "",
         "nodes": count,
         "storage": choice,
         "env": env,
+        # Carried as data. Recovering these by reading the notes meant any note beginning with a
+        # capitalised token was mistaken for a key -- the one-box note starts "TS_STANDALONE is
+        # pinned...", so a pinned topology flag was being listed as a secret to go and fetch.
+        "key_envs": planned_keys,
         "resolved_backend": resolved["backend"],
         "backend_reason": resolved["reason"],
         "blocking": blocking,
         "warnings": warnings,
         "notes": notes,
+    }
+
+
+# ------------------------------------------------------------------------------------------------
+# Launch artifact
+#
+# The portal composes what to run; it never runs it. That keeps AWS credentials out of the gateway
+# and keeps a browser click from creating billable infrastructure, and it produces something equally
+# usable by hand, from Terraform, or in CI.
+#
+# Two properties are load-bearing rather than stylistic:
+#
+# * **No secret ever enters user-data.** Instance user-data is readable from the instance metadata
+#   service by anything running on the box, and it is visible in the console and in
+#   `describe-instance-attribute` to anyone with those permissions. A key pasted here is a key
+#   published. So the artifact names the variables and leaves them unset, and the box is expected to
+#   get their values from a secret store or an operator.
+# * **Ephemeral disks are prepared as ephemeral.** Instance SSD is erased on stop, so the artifact
+#   formats it on every boot; an EBS volume is formatted only if it has no filesystem, because
+#   formatting one that does is how a durable store is destroyed by a reboot.
+# ------------------------------------------------------------------------------------------------
+
+# Where the disk tiers land. Instance SSD is an NVMe device that is re-attached blank; EBS and a
+# plain local disk are expected to persist.
+_DEVICE = {
+    "ssd": {"device": "/dev/nvme1n1", "ephemeral": True},
+    "ebs": {"device": "/dev/xvdf", "ephemeral": False},
+    "local": {"device": "", "ephemeral": False},
+}
+
+PUBLIC_REPO = "https://github.com/matrixarkai/TemporalStore.git"
+
+
+def cloud_init(plan_doc: Json, repo: str = PUBLIC_REPO, ref: str = "main") -> str:
+    """The user-data script for a box running this plan.
+
+    Refuses to render a plan that is blocked: emitting a launch script for a configuration already
+    known not to produce the requested deployment is how the warning gets skipped.
+    """
+    if not plan_doc.get("ok", False):
+        raise ValueError("refusing to build a launch artifact for a blocked plan: %s"
+                         % "; ".join(plan_doc.get("blocking") or ["unknown"]))
+
+    env = plan_doc.get("env") or {}
+    storage = str(plan_doc.get("storage") or "")
+    disk = _DEVICE.get(storage, _DEVICE["local"])
+    root = ""
+    for name in ("TS_PAGE_STORE_DIR", "TS_BLOB_STORE_DIR"):
+        if env.get(name):
+            root = str(env[name]).rsplit("/", 1)[0]
+            break
+    root = root or "/var/lib/temporalstore"
+
+    lines = [
+        "#!/bin/bash",
+        "set -euxo pipefail",
+        "",
+        "# MatrixArk %s deployment, %s storage. Generated from a deployment plan."
+        % (plan_doc.get("shape"), storage or "local"),
+        "# Resolves to the %s backend: %s"
+        % (plan_doc.get("resolved_backend"), plan_doc.get("backend_reason")),
+        "",
+    ]
+    for warning in plan_doc.get("warnings") or []:
+        lines.append("# WARNING: " + warning)
+    if plan_doc.get("warnings"):
+        lines.append("")
+
+    lines += [
+        "export DEBIAN_FRONTEND=noninteractive",
+        "apt-get update -y",
+        "apt-get install -y git curl build-essential pkg-config libssl-dev",
+        "",
+    ]
+
+    if disk["device"]:
+        lines += ["# ---- data disk ----"]
+        if disk["ephemeral"]:
+            lines += [
+                "# Instance SSD is re-attached blank on every start, so it is formatted every boot.",
+                "mkfs.ext4 -F %s" % disk["device"],
+            ]
+        else:
+            lines += [
+                "# Formatted ONLY when it has no filesystem. Formatting a volume that already has",
+                "# one is how a durable store is destroyed by an ordinary reboot.",
+                "if ! blkid %s >/dev/null 2>&1; then mkfs.ext4 -F %s; fi"
+                % (disk["device"], disk["device"]),
+            ]
+        lines += [
+            "mkdir -p %s" % root,
+            "mount %s %s" % (disk["device"], root),
+            "",
+        ]
+
+    lines += ["mkdir -p %s" % root, "", "# ---- configuration ----",
+              "cat > /etc/temporalstore.env <<'MATRIXARK_ENV'"]
+    for name in sorted(env):
+        lines.append("%s=%s" % (name, env[name]))
+
+    key_names = sorted(_key_names(plan_doc))
+    if key_names:
+        lines += [
+            "",
+            "# Named, deliberately unset. User-data is readable from the instance metadata service",
+            "# by anything on this box and via describe-instance-attribute, so a key written here",
+            "# is a key published. Populate these from a secret store before starting the service.",
+        ]
+        for name in key_names:
+            lines.append("# %s=" % name)
+    lines += ["MATRIXARK_ENV", "chmod 0600 /etc/temporalstore.env", ""]
+
+    lines += [
+        "# ---- install ----",
+        "git clone --depth 1 --branch %s %s /opt/temporalstore-src" % (ref, repo),
+        "cd /opt/temporalstore-src",
+        "set -a; . /etc/temporalstore.env; set +a",
+        "bash tools/install_linux_temporalstore.sh",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _key_names(plan_doc: Json) -> List[str]:
+    """Key variable names carried by a plan, as data rather than scraped from its prose."""
+    return [str(name) for name in (plan_doc.get("key_envs") or [])]
+
+
+def launch_commands(plan_doc: Json, instance_type: str = "m6i.xlarge",
+                    region: str = "us-east-1", ami: str = "",
+                    key_name: str = "", subnet: str = "",
+                    security_group: str = "", tag: str = "matrixark-onebox") -> Json:
+    """The commands to create and to destroy this deployment.
+
+    Teardown is produced alongside launch, never as a follow-up: an instance whose termination
+    command has to be reconstructed later is one that stays running.
+    """
+    nodes = int(plan_doc.get("nodes", 1) or 1)
+    parts = [
+        "aws ec2 run-instances",
+        "  --region %s" % region,
+        "  --image-id %s" % (ami or "<AMI-ID>"),
+        "  --instance-type %s" % instance_type,
+        "  --count %d" % nodes,
+        "  --user-data file://user-data.sh",
+        "  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=%s}]'" % tag,
+    ]
+    if key_name:
+        parts.append("  --key-name %s" % key_name)
+    if subnet:
+        parts.append("  --subnet-id %s" % subnet)
+    if security_group:
+        parts.append("  --security-group-ids %s" % security_group)
+    if plan_doc.get("storage") == "ebs":
+        parts.append("  --block-device-mappings "
+                     "'[{\"DeviceName\":\"/dev/xvdf\",\"Ebs\":{\"VolumeSize\":200,"
+                     "\"VolumeType\":\"gp3\",\"DeleteOnTermination\":true}}]'")
+
+    teardown = (
+        "# Destroy everything this launched. Run it -- an idle instance bills until it is gone.\n"
+        "aws ec2 describe-instances --region %s \\\n"
+        "  --filters 'Name=tag:Name,Values=%s' 'Name=instance-state-name,Values=running,stopped' \\\n"
+        "  --query 'Reservations[].Instances[].InstanceId' --output text \\\n"
+        "  | xargs -r aws ec2 terminate-instances --region %s --instance-ids"
+        % (region, tag, region))
+
+    return {
+        "launch": " \\\n".join(parts),
+        "teardown": teardown,
+        "instances": nodes,
+        "note": "user-data.sh is the script above. Nothing here runs from the portal -- it holds no "
+                "AWS credentials and creating billable infrastructure is not something a page "
+                "should do on a click.",
     }
 
 

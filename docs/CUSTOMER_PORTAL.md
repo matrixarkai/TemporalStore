@@ -833,6 +833,32 @@ proves the feature is compiled in; anything else is silence, because auto reache
 several reasons on a build that has it. Turning a missing datanode into a claim about the build
 would print a false statement next to a storage choice.
 
+### Launching
+
+The portal produces the launch artifact; it never launches. `POST /v1/admin/deployment/plan`
+returns, alongside the plan, a cloud-init script and the `aws ec2 run-instances` command that runs
+it — plus the command that destroys it again. The gateway holds no cloud credentials, and creating
+billable infrastructure is not something a web page should do on a click. It also means the same
+artifact works by hand, from Terraform, or in CI, and that all of it is testable without an account.
+
+Two details in the generated script are load-bearing rather than cosmetic:
+
+* **No key value is ever written into user-data.** Instance user-data is readable from the instance
+  metadata service by anything running on the box, and through `describe-instance-attribute` by
+  anyone holding that permission. A key written there is a key published. The script names the
+  variables as commented, unset lines and expects them to be filled from a secret store.
+* **Ephemeral and durable disks are prepared differently.** Instance SSD comes back blank after a
+  stop, so it is formatted on every boot. An EBS volume is formatted *only* when `blkid` finds no
+  filesystem — formatting one that already holds a store is how a durable deployment is destroyed
+  by an ordinary reboot. The two scripts differ by one conditional, so the difference is tested
+  rather than trusted.
+
+A **blocked** plan produces no launch script at all. Handing over a script for a configuration
+already known not to produce the requested deployment is how the blocking message gets stepped over.
+
+The teardown command is returned with the launch, never as a follow-up: an instance whose
+termination command has to be reconstructed later is one that stays running and keeps billing.
+
 ### Keys
 
 Key **names** are part of a plan; key **values** never are. The plan document can be shown, copied,

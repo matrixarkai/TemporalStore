@@ -168,5 +168,88 @@ class ShapeTest(unittest.TestCase):
         self.assertEqual({}, plan["env"])
 
 
+class LaunchArtifactTest(unittest.TestCase):
+    """The script a customer will actually run on a machine that will actually bill them.
+
+    Two of these are security or data properties rather than formatting:
+
+    * Instance user-data is readable from the metadata service by anything running on the box, and
+      through `describe-instance-attribute` by anyone with the permission. A key written into it is
+      a key published, so the artifact names variables and never carries a value.
+    * An EBS volume that already holds a store must not be reformatted on boot. Instance SSD must
+      be, because it comes back blank. Getting these the wrong way round destroys a durable store
+      on an ordinary reboot, and the two scripts differ by one conditional.
+    """
+
+    def test_no_key_value_can_reach_user_data(self) -> None:
+        plan = dp.plan("onebox", "ebs", key_envs=["DEEPSEEK_API_KEY", "OPENAI_API_KEY"])
+        script = dp.cloud_init(plan)
+        for name in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+            with self.subTest(key=name):
+                # Named, and named only as a commented, unset line.
+                self.assertIn("# %s=" % name, script)
+                self.assertNotIn("\n%s=" % name, script,
+                                 "a key variable was written with a value in user-data")
+
+    def test_a_pinned_flag_is_not_listed_as_a_secret(self) -> None:
+        # Regression: key names were recovered by reading the first word of each note, and the
+        # one-box note opens "TS_STANDALONE is pinned to 1 ...", so a topology flag that is already
+        # set in the same file was listed among the secrets to go and fetch.
+        script = dp.cloud_init(dp.plan("onebox", "ebs", key_envs=["DEEPSEEK_API_KEY"]))
+        self.assertNotIn("# TS_STANDALONE=", script)
+        self.assertIn("TS_STANDALONE=1", script)
+
+    def test_ephemeral_and_durable_disks_are_prepared_differently(self) -> None:
+        ssd = dp.cloud_init(dp.plan("onebox", "ssd"))
+        ebs = dp.cloud_init(dp.plan("onebox", "ebs"))
+        # The ephemeral disk comes back blank, so it is formatted every boot.
+        self.assertIn("mkfs.ext4 -F /dev/nvme1n1", ssd)
+        self.assertNotIn("blkid", ssd)
+        # The durable one is formatted only when it has no filesystem.
+        self.assertIn("blkid", ebs)
+        self.assertNotIn("\nmkfs.ext4 -F /dev/xvdf", ebs,
+                         "an EBS volume is formatted unconditionally, which destroys the store "
+                         "it already holds on the next reboot")
+
+    def test_a_blocked_plan_produces_no_launch_script(self) -> None:
+        for bad in (dp.plan("raft", "ebs", nodes=4),
+                    dp.plan("shared", "path", nodes=3),
+                    dp.plan("wishful")):
+            with self.subTest(shape=bad["shape"], nodes=bad.get("nodes")):
+                with self.assertRaises(ValueError):
+                    dp.cloud_init(bad)
+
+    def test_the_script_carries_exactly_the_plan_environment(self) -> None:
+        plan = dp.plan("raft", "ebs", nodes=3, root="/data")
+        script = dp.cloud_init(plan)
+        for name, value in plan["env"].items():
+            with self.subTest(var=name):
+                self.assertIn("%s=%s" % (name, value), script)
+
+    def test_teardown_comes_with_the_launch_not_after_it(self) -> None:
+        # An instance whose termination command has to be reconstructed later is one that stays
+        # running and keeps billing.
+        commands = dp.launch_commands(dp.plan("onebox", "ebs"))
+        self.assertIn("run-instances", commands["launch"])
+        self.assertIn("terminate-instances", commands["teardown"])
+        self.assertIn("matrixark-onebox", commands["teardown"])
+
+    def test_a_durable_volume_is_requested_only_when_one_is_chosen(self) -> None:
+        ebs = dp.launch_commands(dp.plan("onebox", "ebs"))
+        ssd = dp.launch_commands(dp.plan("onebox", "ssd"))
+        self.assertIn("block-device-mappings", ebs["launch"])
+        self.assertNotIn("block-device-mappings", ssd["launch"])
+
+    def test_the_node_count_reaches_the_launch(self) -> None:
+        commands = dp.launch_commands(dp.plan("raft", "ebs", nodes=5))
+        self.assertIn("--count 5", commands["launch"])
+        self.assertEqual(5, commands["instances"])
+
+    def test_the_warnings_travel_with_the_script(self) -> None:
+        script = dp.cloud_init(dp.plan("onebox", "ssd"))
+        self.assertIn("erased", script,
+                      "the script that formats an ephemeral disk does not say it is ephemeral")
+
+
 if __name__ == "__main__":
     unittest.main()

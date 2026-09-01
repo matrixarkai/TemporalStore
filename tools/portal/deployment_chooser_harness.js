@@ -121,6 +121,8 @@ setTimeout(() => {
     process.stdout.write(JSON.stringify({
       errors,
       shapeOptions,
+      userData: get("depUserData").textContent,
+      commands: get("depCommands").textContent,
       postedOnLoad,
       verdictOnLoad,
       live: get("liveShape").textContent,
