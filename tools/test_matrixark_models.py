@@ -95,6 +95,12 @@ class ModelsRouteTest(_ModelTest):
                     self.assertTrue(entry["model"].strip())
                     self.assertTrue(entry["note"].strip())
 
+    def test_the_measured_table_reaches_the_page(self) -> None:
+        _st, _h, body = drive(self.app, method="GET", path="/v1/admin/setup")
+        text = body.decode("utf-8")
+        self.assertIn("measuredTable", text)
+        self.assertIn("hit@1", text)
+
     def test_every_embedding_in_the_catalogue_states_its_width(self) -> None:
         # Width is the one property that decides whether a switch is survivable, and it is the one
         # a customer cannot look up from inside the portal. A catalogue entry without it invites
@@ -127,27 +133,64 @@ class ModelsRouteTest(_ModelTest):
 
     def test_a_model_added_to_the_catalogue_annotates_itself(self) -> None:
         # The point of deriving it: nobody has to remember to update a second place.
-        added = dict(cfgmod.EMBEDDING_CATALOGUE[0])
-        added["model"] = "some-new-encoder"
-        cfgmod.EMBEDDING_CATALOGUE.append(added)
+        added = dict(gw._ENCODER_CATALOG[0])
+        added["id"] = "some-new-encoder"
+        gw._ENCODER_CATALOG.append(added)
         try:
-            rows = {row["model"]: row for row in cfgmod.model_catalogue("embedding")}
+            rows = {row["model"]: row for row in gw.embedding_picker_catalogue()}
         finally:
-            cfgmod.EMBEDDING_CATALOGUE.pop()
+            gw._ENCODER_CATALOG.pop()
+        twin = str(gw._ENCODER_CATALOG[0]["id"])
         self.assertIn("some-new-encoder", rows)
-        self.assertIn(cfgmod.EMBEDDING_CATALOGUE[0]["model"],
-                      rows["some-new-encoder"]["same_width_as"])
-        self.assertIn("some-new-encoder",
-                      rows[cfgmod.EMBEDDING_CATALOGUE[0]["model"]]["same_width_as"])
+        self.assertIn(twin, rows["some-new-encoder"]["same_width_as"])
+        self.assertIn("some-new-encoder", rows[twin]["same_width_as"])
 
     def test_the_catalogue_returned_is_a_copy(self) -> None:
         # It is annotated on the way out; handing back the module-level list would let one request's
         # annotation accumulate onto the next.
-        first = cfgmod.model_catalogue("embedding")
+        first = gw.embedding_picker_catalogue()
         first[0]["same_width_as"] = ["tampered"]
-        second = cfgmod.model_catalogue("embedding")
+        second = gw.embedding_picker_catalogue()
         self.assertNotEqual(["tampered"], second[0]["same_width_as"])
-        self.assertNotIn("same_width_as", cfgmod.EMBEDDING_CATALOGUE[0])
+        self.assertNotIn("same_width_as", gw._ENCODER_CATALOG[0])
+
+    def test_the_picker_serves_the_MEASURED_catalogue_not_a_second_list(self) -> None:
+        # Two lists of the same thing do not stay agreed. The one this replaced omitted the entire
+        # e5 family -- the models that measured best -- and recommended the encoder the measurement
+        # puts fifteen points of hit@1 behind e5-small at the same size. One list, or the picker
+        # argues against the evidence beside it.
+        served = {row["model"] for row in gw.embedding_picker_catalogue()}
+        measured = {str(row["id"]) for row in gw.encoder_catalog()}
+        self.assertEqual(measured, served)
+        with self.assertRaises(ValueError):
+            cfgmod.model_catalogue("embedding")
+
+    def test_every_encoder_carries_the_numbers_a_choice_is_made_on(self) -> None:
+        # Asserted on what the ROUTE serves, because that is what the picker reads. An earlier
+        # version checked the function instead, and a mutation that stripped the measurements from
+        # the route's answer left every test green.
+        status, body = self.get("/v1/admin/models?target=embedding&probe=0")
+        self.assertEqual(200, status)
+        self.assertTrue(body["catalogue"])
+        for row in body["catalogue"]:
+            with self.subTest(model=row["model"]):
+                for field in ("hit_at_1", "hit_at_5", "texts_per_s", "vectors_mb_per_doc"):
+                    self.assertIsInstance(row[field], (int, float),
+                                          "%s is missing from what the route serves" % field)
+                self.assertGreater(row["hit_at_1"], 0)
+
+    def test_the_route_serves_the_measured_rows_unchanged(self) -> None:
+        # The route may annotate; it must not invent or drop. Comparing the served rows against the
+        # measurement itself is what makes "the picker shows the measurement" checkable.
+        _status, body = self.get("/v1/admin/models?target=embedding&probe=0")
+        served = {row["model"]: row for row in body["catalogue"]}
+        for measured in gw.encoder_catalog():
+            model = str(measured["id"])
+            with self.subTest(model=model):
+                self.assertIn(model, served)
+                for field in ("hit_at_1", "hit_at_5", "texts_per_s", "vectors_mb_per_doc"):
+                    self.assertEqual(measured[field], served[model][field])
+                self.assertEqual(measured["dims"], served[model]["dim"])
 
     def test_the_picker_shows_the_collision_where_the_choice_is_made(self) -> None:
         _st, _h, page = drive(self.app, method="GET", path="/v1/admin/setup")

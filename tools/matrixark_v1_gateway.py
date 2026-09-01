@@ -1917,6 +1917,50 @@ async def _embedding_models_in_store(server: Any, cfg: GatewayConfig, key: Optio
     }
 
 
+def embedding_picker_catalogue() -> List[Json]:
+    """The measured encoder catalogue, shaped for the picker and annotated with width collisions.
+
+    Built from `encoder_catalog()` rather than from a second list. A hand-written catalogue beside a
+    measured one does not stay agreed with it: the one this replaced omitted the whole e5 family --
+    the models that actually scored best -- and recommended the encoder the measurement puts fifteen
+    points of hit@1 behind e5-small at the same size.
+
+    `same_width_as` is derived here rather than written into any note. Two encoders of the same width
+    are the case that raises no error anywhere, and a note only warns about the collisions whoever
+    wrote it thought of.
+    """
+    rows = encoder_catalog()
+    by_width: Dict[int, List[str]] = {}
+    for row in rows:
+        by_width.setdefault(int(row.get("dims") or 0), []).append(str(row.get("id") or ""))
+    out: List[Json] = []
+    for row in rows:
+        width = int(row.get("dims") or 0)
+        model = str(row.get("id") or "")
+        entry: Json = {
+            "model": model,
+            "label": row.get("label") or model,
+            "dim": width,
+            "note": row.get("note") or "",
+            "same_width_as": [name for name in by_width.get(width, []) if name != model],
+            # The measurement, carried through so the picker can show what a choice costs rather
+            # than describing it. A model with no numbers beside it is a name to guess at.
+            "hit_at_1": row.get("hit_at_1"),
+            "hit_at_5": row.get("hit_at_5"),
+            "texts_per_s": row.get("texts_per_s"),
+            "vectors_mb_per_doc": row.get("vectors_mb_per_doc"),
+            "params_m": row.get("params_m"),
+            "window": row.get("window"),
+            "recommended": bool(row.get("recommended")),
+            "active": bool(row.get("active")),
+            # e5 wants "query: " / "passage: " prefixes; the deployment applies them, and a
+            # customer comparing it against a model that needs none should know why.
+            "needs_prefix": bool(row.get("needs_prefix")),
+        }
+        out.append(entry)
+    return out
+
+
 def _encoder_summary() -> Json:
     """Which encoder the deployment is configured to use, next to the counts.
 
@@ -3158,7 +3202,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             body: Json = {
                 "status": "ok",
                 "target": target,
-                "catalogue": _gwconfig.model_catalogue(target),
+                "catalogue": (embedding_picker_catalogue() if target == "embedding"
+                              else _gwconfig.model_catalogue(target)),
                 "discovered": discovered,
                 "current": (os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
                             if target == "embedding"

@@ -484,6 +484,27 @@ def embedding_model_ref_for_name(model_name: str) -> str:
     return f"emb:{slug}:{suffix:04d}"
 
 
+def same_embedding_model(left: str, right: str) -> bool:
+    """Whether two names refer to one encoder.
+
+    A repository prefix is not part of the identity: `sentence-transformers/all-MiniLM-L6-v2` and
+    `all-MiniLM-L6-v2` are one model, and both forms occur in real configuration -- a store written
+    under one and queried under the other must not read as an encoder change. Getting this wrong is
+    worse than not checking at all, because it declines every stored vector over a rename that
+    changed nothing.
+
+    Compared on the final path segment, which is the model name; the prefix is where it was fetched
+    from. Case is significant -- these are identifiers, not prose.
+    """
+    left = str(left or "").strip().rstrip("/")
+    right = str(right or "").strip().rstrip("/")
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.rsplit("/", 1)[-1] == right.rsplit("/", 1)[-1]
+
+
 def embedding_model_conflicts(stored_model: str, active_model: str) -> bool:
     """Whether a stored vector was written by a different encoder than the one asking.
 
@@ -502,7 +523,9 @@ def embedding_model_conflicts(stored_model: str, active_model: str) -> bool:
     """
     stored = str(stored_model or "").strip()
     active = str(active_model or "").strip()
-    return bool(stored) and bool(active) and stored != active
+    if not stored or not active:
+        return False
+    return not same_embedding_model(stored, active)
 
 
 def context_model_registry_record(model_name: str, *, model_kind: str = "embedding", updated_at_ms: int | None = None) -> Json:

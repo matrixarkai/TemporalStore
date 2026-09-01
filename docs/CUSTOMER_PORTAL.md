@@ -79,7 +79,13 @@ loudly: extraction falls back to the local rules and embedding to hash vectors, 
 `200`. So the **Models** section offers a picker instead of a text box. `GET /v1/admin/models`
 (admin scope) returns three things per role:
 
-* a **catalogue** of models worth suggesting;
+* the **measured** encoder catalogue — hit@1, hit@5, texts/s, MB/doc, parameters and window, from
+  a run over a real corpus — rendered as a table sorted by hit@1 with the best in each column
+  marked. It replaced a list written from general knowledge, and the two disagreed about the thing
+  being chosen: the hand-written one omitted the whole e5 family, which measured best, and
+  recommended the encoder the measurement puts *fifteen points of hit@1* below e5-small at
+  identical size and memory. Two lists of one thing do not stay agreed, so there is one, and a test
+  asserts the picker serves it rather than a copy;
 * what the configured endpoint says it **actually serves** — an OpenAI-compatible server answers
   `GET <base>/models`, so asking it turns a guess into a choice. This runs only when asked
   (`probe=1`), because it is a request against the customer's own provider;
@@ -106,6 +112,15 @@ said nothing about the 1024 one.
 The warning is shown only when the choice would actually strand something: never when the store is
 empty, and never when you are picking the encoder the store was already written with. A warning on
 every render is one people learn to click past.
+
+**A repository prefix is not part of a model's identity.**
+`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` and
+`paraphrase-multilingual-MiniLM-L12-v2` are one encoder, and both forms occur in real configuration
+— a store written under the short name, a catalogue offering the full one. Comparing the strings
+exactly would decline every stored vector over a rename that changed nothing, which is the guard
+causing the outage it exists to prevent. Names are compared on their final path segment; case stays
+significant, because these are identifiers a loader resolves, not prose. Two genuinely different
+models still conflict, including two from the same publisher.
 
 #### The engine knew; nothing else did
 

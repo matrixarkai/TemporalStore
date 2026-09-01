@@ -85,6 +85,49 @@ class PredicateTest(unittest.TestCase):
         self.assertFalse(core.embedding_model_conflicts("   ", "e5-large"))
 
 
+class ModelNameTest(unittest.TestCase):
+    """A repository prefix is not part of the model's identity.
+
+    Both forms occur in real configuration -- the demo store was written under the short name while
+    the catalogue offers the full one. Comparing exactly would decline every stored vector over a
+    rename that changed nothing, which is the guard causing the outage it exists to prevent.
+    """
+
+    def test_a_repository_prefix_is_not_a_different_model(self) -> None:
+        self.assertTrue(core.same_embedding_model(
+            "sentence-transformers/all-MiniLM-L6-v2", "all-MiniLM-L6-v2"))
+        self.assertFalse(core.embedding_model_conflicts(
+            "paraphrase-multilingual-MiniLM-L12-v2",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
+        self.assertFalse(core.embedding_model_conflicts(
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            "paraphrase-multilingual-MiniLM-L12-v2"))
+
+    def test_a_trailing_slash_is_not_a_different_model(self) -> None:
+        self.assertTrue(core.same_embedding_model("intfloat/multilingual-e5-small/",
+                                                  "intfloat/multilingual-e5-small"))
+
+    def test_two_genuinely_different_models_still_conflict(self) -> None:
+        # The loosening must not swallow the case the guard exists for.
+        self.assertFalse(core.same_embedding_model(
+            "intfloat/multilingual-e5-small",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
+        self.assertTrue(core.embedding_model_conflicts(
+            "intfloat/multilingual-e5-small",
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"))
+        # Same publisher, different model.
+        self.assertTrue(core.embedding_model_conflicts(
+            "intfloat/multilingual-e5-small", "intfloat/multilingual-e5-large"))
+
+    def test_case_is_significant(self) -> None:
+        # These are identifiers a loader resolves, not prose.
+        self.assertFalse(core.same_embedding_model("BAAI/bge-m3", "baai/BGE-M3"))
+
+    def test_an_empty_name_is_not_the_same_as_anything(self) -> None:
+        self.assertFalse(core.same_embedding_model("", ""))
+        self.assertFalse(core.same_embedding_model("", "bge-m3"))
+
+
 class ServingPathTest(unittest.TestCase):
     def setUp(self) -> None:
         self._original = retrieve_mod.embedding_model_name

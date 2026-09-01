@@ -553,28 +553,9 @@ PRESETS: Dict[str, Json] = {
 }
 
 
-# Models worth suggesting, with the one property that decides whether a switch is safe. Dimensions
-# matter because two encoders are frequently the SAME width -- all-MiniLM-L6-v2 and BGE-M3
-# truncated to 384 are both 384 -- so a same-width swap mixes two incompatible vector spaces with
-# no length mismatch anywhere to raise an error.
-#
-# A catalogue, not a whitelist: the field stays free text, and an endpoint's own list wins over this
-# when one can be fetched.
-EMBEDDING_CATALOGUE: List[Json] = [
-    {"model": "paraphrase-multilingual-MiniLM-L12-v2", "dim": 384,
-     "note": "Multilingual, CPU-friendly. Holds up on mixed Chinese/English where an "
-             "English-only MiniLM does not."},
-    {"model": "all-MiniLM-L6-v2", "dim": 384,
-     "note": "English only, fastest of these."},
-    {"model": "BAAI/bge-m3", "dim": 1024,
-     "note": "Strong multilingual retrieval. Truncates cleanly to 384 at little cost at rank 1, "
-             "which is a storage lever rather than a compute one — the full forward pass still "
-             "runs."},
-    {"model": "text-embedding-3-small", "dim": 1536, "note": "OpenAI, inexpensive."},
-    {"model": "text-embedding-3-large", "dim": 3072, "note": "OpenAI, highest quality of the two."},
-    {"model": "voyage-3", "dim": 1024, "note": "Voyage; needs the voyage provider."},
-]
-
+# Extraction models worth suggesting. There is no measured catalogue for these -- unlike the
+# encoders, where `encoder_catalog()` in the gateway holds hit@1/throughput/footprint from a real
+# corpus and the picker serves THAT rather than a second list written from general knowledge.
 EXTRACTION_CATALOGUE: List[Json] = [
     {"model": "deepseek-chat", "note": "DeepSeek's general model. No embeddings API — pair it "
                                        "with a local encoder."},
@@ -644,24 +625,16 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
 
 
 def model_catalogue(target: str) -> List[Json]:
-    """The catalogue, with each encoder told which others it cannot be told apart from by width.
+    """Extraction models to suggest.
 
-    Derived rather than written down. A note only warns about the collisions whoever wrote it
-    happened to think of -- the widths are in the data, so the whole set falls out of them, and a
-    model added later annotates itself.
+    Embeddings are NOT served from here. The gateway builds that list from `encoder_catalog()`,
+    which carries a measurement over a real corpus; a second hand-written list beside it did not
+    stay agreed with it, and the disagreement was about which encoder to choose.
     """
-    if target != "embedding":
-        return [dict(entry) for entry in EXTRACTION_CATALOGUE]
-    by_width: Dict[int, List[str]] = {}
-    for entry in EMBEDDING_CATALOGUE:
-        by_width.setdefault(int(entry["dim"]), []).append(str(entry["model"]))
-    out: List[Json] = []
-    for entry in EMBEDDING_CATALOGUE:
-        row = dict(entry)
-        row["same_width_as"] = [name for name in by_width[int(entry["dim"])]
-                                if name != entry["model"]]
-        out.append(row)
-    return out
+    if target == "embedding":
+        raise ValueError(
+            "embedding models come from the gateway's measured encoder_catalog(), not from here")
+    return [dict(entry) for entry in EXTRACTION_CATALOGUE]
 
 
 # ================================================================================================

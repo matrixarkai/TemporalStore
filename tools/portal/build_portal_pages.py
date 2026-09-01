@@ -198,6 +198,16 @@ EXTRA_CSS = """
   .mrow select,.mrow input[type=text]{flex:1 1 240px;width:auto;margin:0}
   .mrow button{flex:0 0 auto}
   .mstore{font-size:12.5px;color:var(--faint);margin-top:9px;line-height:1.5}
+  .mmeas{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:11px}
+  .mmeas th{text-align:left;font-weight:600;color:var(--muted);padding:4px 10px 4px 0;
+            white-space:nowrap;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .mmeas td{padding:5px 10px 5px 0;border-top:1px solid var(--line);
+            font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mmeas td.name{font-family:"IBM Plex Mono",monospace;font-size:11.5px;white-space:normal;
+                 overflow-wrap:anywhere;width:99%}
+  .mmeas tr.chosen td{background:var(--accent-soft)}
+  .mmeas tr.chosen td.name{font-weight:650}
+  .mmeas .best{color:var(--ok);font-weight:650}
   .mstore b{color:var(--muted);font-weight:600}
   .mwarn{border:1px solid var(--crit);background:var(--crit-soft);border-radius:8px;
          padding:11px 13px;margin-top:11px;font-size:13px;line-height:1.55;max-width:78ch}
@@ -787,7 +797,12 @@ function liveStream(options) {
       var same = (c.same_width_as || []).length
         ? " — same width as " + (c.same_width_as || []).join(", ") + ", different space"
         : "";
-      push(c.model, c.note + (c.dim ? " (" + c.dim + " dimensions" + same + ")" : ""));
+      /* Lead with the measurement where there is one. "hit@1 76.2%" is the number a customer is
+         choosing on; the sentence is the explanation of it. */
+      var measured = c.hit_at_1 != null
+        ? "hit@1 " + c.hit_at_1 + "%, " + c.texts_per_s + " texts/s, " + c.dim + " dims" + same
+        : (c.dim ? c.dim + " dimensions" + same : "");
+      push(c.model, measured || c.note);
     });
     return out;
   }
@@ -848,7 +863,7 @@ function liveStream(options) {
         : ((Object.prototype.hasOwnProperty.call(edits, t.key) && edits[t.key] !== null)
             ? edits[t.key] : (d.current || ""));
       var options = modelOptions(t.target);
-      var known = options.some(function (o) { return o.model === chosen; });
+      var known = options.some(function (o) { return sameModel(o.model, chosen); });
       var disc = d.discovered || {};
       var discLine = disc.available
         ? "The endpoint lists " + disc.count + " model" + (disc.count === 1 ? "" : "s") + "."
@@ -872,9 +887,58 @@ function liveStream(options) {
         '<button type="button" class="ghost" data-use="' + esc(t.target) + '">Use this</button>' +
         "</div>" +
         '<div class="mnote" style="margin-top:7px">' + discLine + "</div>" +
-        (t.target === "embedding" ? storedModelLine(d) + embeddingRisk(d, chosen) : "") +
+        (t.target === "embedding"
+          ? measuredTable(d, chosen) + storedModelLine(d) + embeddingRisk(d, chosen)
+          : "") +
         "</div>";
     }).join("");
+  }
+
+  /* The measurement, as a table rather than as prose in six option labels. Sorted by the number
+     a customer is actually choosing on, with the best in each column marked -- otherwise every row
+     reads as equally reasonable and the default wins by being first. */
+  /* Same rule the backend uses: a repository prefix is not part of the model's identity. Without
+     it the table highlights nothing whenever the deployment names the model in the shorter form,
+     which reads as "you are on something exotic" while sitting on a listed model. */
+  function sameModel(left, right) {
+    left = String(left || "").trim().replace(/\/+$/, "");
+    right = String(right || "").trim().replace(/\/+$/, "");
+    if (!left || !right) { return false; }
+    if (left === right) { return true; }
+    return left.split("/").pop() === right.split("/").pop();
+  }
+
+  function measuredTable(d, chosen) {
+    var rows = (d.catalogue || []).filter(function (c) { return c.hit_at_1 != null; });
+    if (!rows.length) { return ""; }
+    rows = rows.slice().sort(function (a, b) { return b.hit_at_1 - a.hit_at_1; });
+    var best = {
+      hit_at_1: Math.max.apply(null, rows.map(function (c) { return c.hit_at_1; })),
+      texts_per_s: Math.max.apply(null, rows.map(function (c) { return c.texts_per_s; })),
+      vectors_mb_per_doc: Math.min.apply(null, rows.map(function (c) {
+        return c.vectors_mb_per_doc;
+      }))
+    };
+    function cell(value, key, suffix) {
+      return "<td" + (value === best[key] ? ' class="best"' : "") + ">" +
+        esc(value) + (suffix || "") + "</td>";
+    }
+    return '<table class="mmeas"><thead><tr><th>Encoder</th><th>hit@1</th><th>hit@5</th>' +
+      "<th>speed</th><th>storage</th><th>dims</th></tr></thead><tbody>" +
+      rows.map(function (c) {
+        return "<tr" + (sameModel(c.model, chosen) ? ' class="chosen"' : "") + '><td class="name">' +
+          esc(c.model) + (c.recommended ? ' <span class="badge portal">recommended</span>' : "") +
+          (c.needs_prefix ? ' <span class="tag">needs query/passage prefixes</span>' : "") +
+          "</td>" +
+          cell(c.hit_at_1, "hit_at_1", "%") +
+          "<td>" + esc(c.hit_at_5) + "%</td>" +
+          cell(c.texts_per_s, "texts_per_s", "/s") +
+          cell(c.vectors_mb_per_doc, "vectors_mb_per_doc", " MB/doc") +
+          "<td>" + esc(c.dim) + "</td></tr>";
+      }).join("") + "</tbody></table>" +
+      '<div class="hint" style="margin-top:6px">Measured on this deployment\'s own corpus. ' +
+      "Storage is per document at that model\'s window — a wider window needs fewer vectors, " +
+      "which is why the slowest model here is also the smallest.</div>";
   }
 
   function pickedModel(target) {
