@@ -2194,6 +2194,37 @@ def _import_progress() -> Json:
     return result
 
 
+# What each readiness answer is derived from. The labels are what the page prints, because "ok"
+# means something different in each case: a configured encoder can still be serving hash vectors,
+# while a counted record is a record.
+_CHECK_SOURCE_LABELS: Json = {
+    "configuration": "what you configured",
+    "measured": "measured in this deployment",
+    "engine": "reported by the engine",
+}
+
+# Declared per check rather than defaulted, so a check added later has to say which kind of claim it
+# is making instead of inheriting the one that looks authoritative.
+_CHECK_SOURCES: Json = {
+    "extraction": "configuration",
+    "extraction_key": "configuration",
+    "embedding": "configuration",
+    "fail_closed": "configuration",
+    "config_warnings": "configuration",
+    "ingestion_root": "configuration",
+    "content": "measured",
+    # Counts of what is actually there, and traffic actually observed -- these survive a
+    # deployment being misconfigured, which is the whole reason the distinction is printed.
+    "memory": "measured",
+    "metrics": "measured",
+    "import_retries": "measured",
+    # Settings. "ok" here means the setting is set, not that the thing it configures works.
+    "auth": "configuration",
+    "single_writer": "configuration",
+    "storage_backend": "engine",
+}
+
+
 def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
                       request_total: float = 0.0,
                       imports: Optional[Json] = None) -> List[Json]:
@@ -2220,8 +2251,16 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
             href: str = "", action: str = "", how: Optional[List[str]] = None) -> None:
         # `how` is the steps, in order, for the state the check is IN -- an item that is already ok
         # carries none, because the useful thing there is that there is nothing to do.
+        source = _CHECK_SOURCES.get(check_id)
+        if source is None:
+            raise ValueError(
+                "readiness check %r has no entry in _CHECK_SOURCES. Every check has to say whether "
+                "it measured something or read a setting: a row that read the configuration and a "
+                "row that counted records both print as 'ok', and only one of them survives a "
+                "deployment that is misconfigured in a way that still answers 200." % check_id)
         checks.append({"id": check_id, "title": title, "status": status, "detail": detail,
                        "href": href, "action": action,
+                       "source": source, "source_label": _CHECK_SOURCE_LABELS[source],
                        "how": list(how or []) if status != "ok" else []})
 
     model_on = str(extraction.get("provider", "")).lower() not in deterministic
@@ -2288,6 +2327,24 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
                 "The trade is real: an encoder outage becomes failed requests instead of silently "
                 "worse retrieval. Failed requests are the ones you find out about.",
             ])
+
+    # The one thing here that is neither a setting nor a count: what the datanode says it actually
+    # resolved. Worth its own row because the configured backend and the running one differ silently
+    # -- a shared backend with no directory, or MatrixObject on a build without it, both fall
+    # through to auto-detection without erroring.
+    live_backend = config_snapshot.get("live_storage_backend")
+    if live_backend:
+        add("storage_backend", "Storage backend", "ok",
+            "The datanode resolved the " + str(live_backend) + " backend. This is what it is "
+            "running, not what was requested; the engine records why only in a startup log line.")
+    else:
+        add("storage_backend", "Storage backend", "warn",
+            "Could not read the datanode's backend, so what this deployment is storing to is "
+            "unknown from here. An unreachable datanode and a gateway pointed at the wrong "
+            "address look identical at this distance.",
+            "/v1/admin/setup", "Check the datanode URL",
+            how=["Confirm MATRIXARK_DATANODE_URL points at a datanode that is up.",
+                 "That process publishes temporalstore_storage_backend on its own /metrics."])
 
     warnings = config_snapshot.get("warnings") or []
     add("config_warnings", "Configuration warnings", "ok" if not warnings else "warn",
@@ -3467,6 +3524,12 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             except Exception:
                 traffic = {"total_requests": 0}
             imports = _import_progress()
+            # Asked once per overview. Best-effort: an unreachable datanode leaves the row
+            # saying so rather than failing the page that exists to report on the deployment.
+            live = _probe_storage_backend(cfg)
+            if live:
+                config_snapshot = dict(config_snapshot)
+                config_snapshot["live_storage_backend"] = live.get("backend")
             checks = _readiness_checks(config_snapshot, counts, cfg,
                                        float(traffic.get("total_requests") or 0), imports)
             done = sum(1 for c in checks if c["status"] == "ok")
