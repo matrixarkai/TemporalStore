@@ -185,6 +185,7 @@
   .badge.essential{background:var(--crit-soft);color:var(--crit)}
   .badge.portal{background:var(--accent-soft);color:var(--accent)}
   .badge.environment{background:var(--line);color:var(--muted)}
+  .badge.override{background:var(--panel-2);color:var(--muted);border:1px solid var(--line)}
   select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
          background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
   .presets{display:flex;gap:8px;flex-wrap:wrap}
@@ -470,12 +471,19 @@
   </form>
 
   <section>
-    <h2>Per-user settings <span class="aux" id="polAux"></span></h2>
-    <p class="hint" style="margin-top:0">What one person's retrieval does, without changing anyone
-      else's. Each row says where its current value came from — this user, the tenant, the
+    <h2>Retrieval settings <span class="aux" id="polAux"></span></h2>
+    <p class="hint" style="margin-top:0">Tune retrieval for everyone in this tenant, or for one
+      person. Each row says where its current value came from — that user, the tenant, the
       environment, or the built-in default — so a setting that looks wrong can be traced to the
       layer that set it. Changes apply to the next request; no restart.</p>
     <div class="grid2">
+      <div>
+        <label for="polLevel">Applies to</label>
+        <select id="polLevel">
+          <option value="tenant">Everyone in this tenant</option>
+          <option value="user">One user</option>
+        </select>
+      </div>
       <div>
         <label for="polUser">User</label>
         <input id="polUser" type="text" placeholder="alice" spellcheck="false" autocomplete="off">
@@ -486,9 +494,9 @@
       </div>
     </div>
     <div class="actions">
-      <button id="polLoad" class="ghost" type="button">Load this user</button>
-      <label class="check"><input type="checkbox" id="polOnlySettable" checked> only what a user
-        can set</label>
+      <button id="polLoad" class="ghost" type="button">Load settings</button>
+      <label class="check"><input type="checkbox" id="polOnlySettable" checked> only what this
+        level can set</label>
     </div>
     <div id="polMsg" role="status" aria-live="polite"></div>
     <div id="polWhy" class="hint" hidden></div>
@@ -756,6 +764,14 @@ function liveStream(options) {
     var badges = "";
     if (f.essential) { badges += '<span class="badge essential">required</span>'; }
     if (f.applies === "restart") { badges += '<span class="badge restart">needs restart</span>'; }
+    /* What is set here is the fallback. Without this the field reads as the final answer, and a
+       customer whose tenant or user override says otherwise has no way to know from this screen. */
+    if ((f.overridable_by || []).length) {
+      badges += '<span class="badge override" title="What you set here is the fallback. A ' +
+        (f.overridable_by || []).join(" or ") +
+        ' setting wins where one exists — set those under Retrieval settings.">' +
+        esc((f.overridable_by || []).join("/")) + " can override</span>";
+    }
     if (f.source && f.source !== "default") {
       badges += '<span class="badge ' + esc(f.source) + '">' + esc(f.source) + "</span>";
     }
@@ -1163,10 +1179,27 @@ function liveStream(options) {
   /* ---------- per-user settings ---------- */
   var policyView = null;
 
+  function polLevel() { return $("polLevel").value; }
+
+  /* At tenant level every knob is settable; at user level only the ones that decide how one
+     request's results are selected. The backend is the authority on which -- the page asks rather
+     than keeping its own copy of the list. */
+  function settableHere(name) {
+    var d = policyView;
+    if (!d) { return false; }
+    if (polLevel() === "tenant") {
+      return (d.settable_per_tenant || []).indexOf(name) >= 0;
+    }
+    return (d.settable_per_user || []).indexOf(name) >= 0;
+  }
+
   function loadPolicy() {
     var user = $("polUser").value.trim();
     if (!$("key").value.trim()) { say($("polMsg"), "Enter an admin key first.", "info"); return; }
-    if (!user) { say($("polMsg"), "Name a user first.", "info"); return; }
+    if (polLevel() === "user" && !user) {
+      say($("polMsg"), "Name a user, or switch to the whole tenant.", "info");
+      return;
+    }
     say($("polMsg"), "");
     fetch("/v1/admin/policy?user_id=" + encodeURIComponent(user), { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
@@ -1180,10 +1213,10 @@ function liveStream(options) {
 
   function policyControl(name, knob) {
     var id = "pol_" + name;
-    if (!knob.settable_per_user) {
+    if (!settableHere(name)) {
       /* Shown, not hidden: a customer looking for a setting needs to find it and learn where it
          lives, rather than conclude it does not exist. */
-      return '<span class="hint" style="margin:0">tenant-level</span>';
+      return '<span class="hint" style="margin:0">set it for the whole tenant</span>';
     }
     if (knob.kind === "bool") {
       return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
@@ -1214,20 +1247,26 @@ function liveStream(options) {
     var names = Object.keys(d.knobs).sort();
     var rows = names.filter(function (name) {
       var knob = d.knobs[name];
-      if (onlySettable && !knob.settable_per_user) { return false; }
+      if (onlySettable && !settableHere(name)) { return false; }
       if (!query) { return true; }
       return (name + " " + knob.description).toLowerCase().indexOf(query) >= 0;
     }).map(function (name) {
       var knob = d.knobs[name];
-      return '<div class="polrow' + (knob.settable_per_user ? "" : " locked") + '">' +
+      return '<div class="polrow' + (settableHere(name) ? "" : " locked") + '">' +
         '<span class="n">' + esc(name) + "</span>" +
         '<span class="src ' + esc(knob.source) + '">' + esc(knob.source) + "</span>" +
         policyControl(name, knob) +
         '<span class="d">' + esc(knob.description) + "</span></div>";
     }).join("");
+    /* The name comes from the field, not from the last loaded view: switching level does not
+       reload, so the view still remembers whoever was loaded before -- and this is the label on
+       the button that commits the change. */
+    var typed = $("polUser").value.trim();
+    var who = polLevel() === "tenant"
+      ? "everyone in " + esc(d.tenant || "this tenant")
+      : esc(typed || d.user || "this user");
     $("policy").innerHTML = (rows || '<div class="empty">Nothing matches.</div>') +
-      '<div class="actions"><button id="polSave" type="button">Save for ' +
-      esc(d.user || "this user") + "</button></div>";
+      '<div class="actions"><button id="polSave" type="button">Save for ' + who + "</button></div>";
   }
 
   function savePolicy() {
@@ -1251,7 +1290,8 @@ function liveStream(options) {
     fetch("/v1/admin/policy", {
       method: "POST",
       headers: Object.assign({ "Content-Type": "application/json" }, auth()),
-      body: JSON.stringify({ user_id: $("polUser").value.trim(), settings: settings })
+      body: JSON.stringify({ level: polLevel(), user_id: $("polUser").value.trim(),
+                             settings: settings })
     })
       .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
       .then(function (res) {
@@ -1266,15 +1306,36 @@ function liveStream(options) {
         var note = applied + " setting" + (applied === 1 ? "" : "s") + " applied" +
           (res.body.persisted ? " and saved." : ".");
         if (refused.length) {
-          note += " Refused, because these decide what is written into the store your whole " +
-            "tenant shares: " + refused.join(", ") + ".";
+          note += " Refused for one user, because these decide what is written into the store " +
+            "the whole tenant shares — set them for the tenant instead: " +
+            refused.join(", ") + ".";
         }
+        if (res.body.already_written_note) { note += " " + res.body.already_written_note; }
         if (!res.body.persisted && res.body.persist_note) { note += " " + res.body.persist_note; }
         say($("polMsg"), note, refused.length || !res.body.persisted ? "warn" : "ok");
       })
       .catch(function () { say($("polMsg"), "Could not reach the gateway.", "err"); });
   }
 
+  function polLevelHint() {
+    /* The field stays usable at both levels: at tenant level it picks whose effective values are
+       shown, which is worth seeing while deciding a change for everyone. */
+    $("polUser").placeholder = polLevel() === "tenant"
+      ? "alice — optional, to see one person's effective values"
+      : "alice";
+  }
+
+  $("polLevel").addEventListener("change", function () {
+    /* The set of settable knobs changes with the level, so re-render rather than leave controls
+       from the other one on screen. */
+    polLevelHint();
+    if (policyView) { renderPolicy(); }
+  });
+  $("polUser").addEventListener("input", function () {
+    /* Keeps the save button naming the person it will actually save for. */
+    if (policyView && polLevel() === "user") { renderPolicy(); }
+  });
+  polLevelHint();
   $("polLoad").addEventListener("click", loadPolicy);
   $("polUser").addEventListener("keydown", function (ev) {
     if (ev.key === "Enter") { ev.preventDefault(); loadPolicy(); }

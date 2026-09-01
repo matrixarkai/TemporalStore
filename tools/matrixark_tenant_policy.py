@@ -691,6 +691,77 @@ def policy_file_path() -> str:
     return os.environ.get("MATRIXARK_TENANT_POLICY_PATH", "").strip()
 
 
+def _write_policy_document(path: str, mutate) -> bool:
+    """Read the policy file, let `mutate` change it, write it back atomically.
+
+    Shared by the tenant and user writers so both get the same three properties: a temporary file
+    renamed into place, so a process dying mid-write cannot leave a fragment the loader would serve
+    as its last good copy; a missing file started fresh; and a CORRUPT file left alone, because the
+    loader is still serving its last good copy and overwriting it would destroy the only record of
+    what was configured.
+    """
+    with _LOCK:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                document = json.load(handle)
+            if not isinstance(document, dict):
+                document = {}
+        except (OSError, ValueError):
+            if os.path.exists(path):
+                LOGGER.warning("policy_file_unparsable path=%s (refusing to overwrite)", path)
+                return False
+            document = {}
+        if not mutate(document):
+            return False
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(document, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _FILE_CACHE["mtime_ns"] = -1  # force the next read to pick this up
+    return True
+
+
+def persist_tenant_policy(tenant_id: str, policy: Json, *, merge: bool = True) -> bool:
+    """Write one tenant's policy into the policy file. Returns False when there is no file.
+
+    Unlike the per-user layer this accepts write-path knobs: a tenant owns its whole store, so
+    deciding there is coherent in a way deciding per user is not. What it cannot do is undo the
+    effect on records already written under the old value -- that is the nature of the setting, not
+    of this call, and the portal says so where the choice is made.
+    """
+    path = policy_file_path()
+    if not path:
+        return False
+    tenant = str(tenant_id or "").strip()
+    if not tenant:
+        raise ValueError("persist_tenant_policy requires a tenant id")
+    clean = _validated(policy, source="portal", tenant=tenant)
+
+    def mutate(document: Json) -> bool:
+        tenants = document.setdefault("tenants", {})
+        if not isinstance(tenants, dict):
+            LOGGER.warning("policy_file_tenants_not_an_object path=%s (refusing to overwrite)",
+                           path)
+            return False
+        current = tenants.get(tenant)
+        if merge and isinstance(current, dict):
+            merged = dict(current)
+            merged.update(clean)
+        else:
+            merged = clean
+        tenants[tenant] = merged
+        return True
+
+    written = _write_policy_document(path, mutate)
+    if written:
+        LOGGER.info("tenant_policy_persisted path=%s tenant=%s knobs=%s",
+                    path, tenant, sorted(clean))
+    return written
+
+
 def persist_user_policy(tenant_id: str, user_id: str, policy: Json, *,
                         merge: bool = True) -> bool:
     """Write one user's overrides into the policy file. Returns False when there is no file.
@@ -711,20 +782,8 @@ def persist_user_policy(tenant_id: str, user_id: str, policy: Json, *,
     if not tenant or not user:
         raise ValueError("persist_user_policy requires both a tenant id and a user id")
     clean = _validated_user(policy, source="portal", tenant=tenant, user=user)
-    with _LOCK:
-        try:
-            with open(path, encoding="utf-8") as handle:
-                document = json.load(handle)
-            if not isinstance(document, dict):
-                document = {}
-        except (OSError, ValueError):
-            # A file that is missing or unreadable is started fresh; a file that is CORRUPT is not
-            # silently replaced -- the loader is still serving its last good copy and overwriting it
-            # here would destroy the only record of what was configured.
-            if os.path.exists(path):
-                LOGGER.warning("policy_file_unparsable path=%s (refusing to overwrite)", path)
-                return False
-            document = {}
+
+    def mutate(document: Json) -> bool:
         users = document.setdefault("users", {})
         if not isinstance(users, dict):
             LOGGER.warning("policy_file_users_not_an_object path=%s (refusing to overwrite)", path)
@@ -733,23 +792,20 @@ def persist_user_policy(tenant_id: str, user_id: str, policy: Json, *,
         if not isinstance(by_user, dict):
             by_user = {}
             users[tenant] = by_user
-        if merge and isinstance(by_user.get(user), dict):
-            merged = dict(by_user[user])
+        current = by_user.get(user)
+        if merge and isinstance(current, dict):
+            merged = dict(current)
             merged.update(clean)
         else:
             merged = clean
         by_user[user] = merged
-        temporary = path + ".tmp"
-        with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(document, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        _FILE_CACHE["mtime_ns"] = -1  # force the next read to pick this up
-    LOGGER.info("user_policy_persisted path=%s tenant=%s user=%s knobs=%s",
-                path, tenant, user, sorted(clean))
-    return True
+        return True
+
+    written = _write_policy_document(path, mutate)
+    if written:
+        LOGGER.info("user_policy_persisted path=%s tenant=%s user=%s knobs=%s",
+                    path, tenant, user, sorted(clean))
+    return written
 
 
 def clear_user_policy_cache() -> None:

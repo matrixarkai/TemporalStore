@@ -428,12 +428,15 @@ class PolicyPageTest(unittest.TestCase):
         self.assertIn('id="polUser"', page)
         self.assertIn("/v1/admin/policy", page)
 
-    def test_it_shows_tenant_level_knobs_rather_than_hiding_them(self) -> None:
-        # A customer looking for a setting has to be able to find it and learn where it lives.
+    def test_a_knob_this_level_cannot_set_is_shown_and_says_where_to_set_it(self) -> None:
+        # A customer looking for a setting has to find it and learn where it lives, rather than
+        # conclude it does not exist. Asserted on the behaviour, not on one phrasing of it: the
+        # control is replaced by text that names the other level.
         source = _read_builder()
         block = source[source.index("function policyControl("):
                        source.index("function renderPolicy(")]
-        self.assertIn("tenant-level", block)
+        self.assertIn("if (!settableHere(name))", block)
+        self.assertIn("tenant", block.split("if (!settableHere(name))")[1][:400])
 
     def test_it_sends_only_what_changed(self) -> None:
         # Sending the whole set would write a user override for every knob, and a later tenant
@@ -470,6 +473,236 @@ class OneRegistryTest(_PolicyTest):
         self.assertIs(tp, dotted, "the module exists twice, so its registries do too")
         tp.set_user_policy("acme", "alice", {"top_k_per_layer": 17})
         self.assertEqual(17, dotted.resolve("top_k_per_layer", ACME_ALICE))
+
+
+class TenantLevelTest(_PolicyTest):
+    """Setting for the whole tenant -- the layer nothing could reach from the portal."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.app = gw.make_v1_app(_FakeServer(), _cfg())
+
+    def post(self, payload):
+        import json as _json
+
+        status, _h, body = drive(self.app, method="POST", path="/v1/admin/policy",
+                                 headers={"Authorization": "Bearer k-acme"}, body=payload)
+        try:
+            return status, _json.loads(body.decode("utf-8"))
+        except ValueError:
+            return status, {}
+
+    def test_a_tenant_may_set_a_write_path_knob(self) -> None:
+        # A tenant owns its whole store, so deciding there is a decision somebody can make. The
+        # same setting is refused for one user because two users writing one store under different
+        # rules leave records of two shapes behind.
+        status, body = self.post({"level": "tenant",
+                                  "settings": {"generate_embeddings": False}})
+        self.assertEqual(200, status)
+        self.assertEqual(["generate_embeddings"], body["applied"])
+        self.assertEqual([], body["refused"])
+        self.assertFalse(tp.resolve("generate_embeddings", ACME_ALICE))
+
+    def test_a_tenant_change_reaches_every_user_who_has_not_overridden_it(self) -> None:
+        self.post({"level": "tenant", "settings": {"top_k_per_layer": 50}})
+        self.assertEqual(50, tp.resolve("top_k_per_layer", ACME_ALICE))
+        self.assertEqual(50, tp.resolve("top_k_per_layer", ACME_BOB))
+
+    def test_a_user_override_still_wins_after_a_tenant_change(self) -> None:
+        self.post({"level": "user", "user_id": "alice", "settings": {"top_k_per_layer": 9}})
+        self.post({"level": "tenant", "settings": {"top_k_per_layer": 50}})
+        self.assertEqual(9, tp.resolve("top_k_per_layer", ACME_ALICE))
+        self.assertEqual(50, tp.resolve("top_k_per_layer", ACME_BOB))
+
+    def test_a_tenant_change_needs_no_user(self) -> None:
+        status, _body = self.post({"level": "tenant", "settings": {"top_k_per_layer": 50}})
+        self.assertEqual(200, status)
+
+    def test_an_unknown_level_is_refused(self) -> None:
+        status, body = self.post({"level": "everyone", "settings": {"top_k_per_layer": 50}})
+        self.assertEqual(400, status)
+        self.assertEqual("bad_level", body["error"])
+
+    def test_changing_a_write_path_knob_says_what_it_does_not_undo(self) -> None:
+        # A setting can be put back; the records written under the old one keep their shape. Said
+        # on the change that has that property, not on every change.
+        _status, body = self.post({"level": "tenant",
+                                   "settings": {"generate_embeddings": False}})
+        self.assertIn("already_written_note", body)
+        self.assertIn("re-ingesting", body["already_written_note"])
+
+    def test_a_read_path_only_change_does_not_carry_that_note(self) -> None:
+        # It would be false, and a note that appears on everything is one nobody reads.
+        _status, body = self.post({"level": "tenant", "settings": {"top_k_per_layer": 50}})
+        self.assertNotIn("already_written_note", body)
+
+    def test_the_view_says_what_each_level_can_set(self) -> None:
+        import json as _json
+
+        status, _h, raw = drive(self.app, method="GET",
+                                path="/v1/admin/policy?user_id=alice",
+                                headers={"Authorization": "Bearer k-acme"})
+        self.assertEqual(200, status)
+        body = _json.loads(raw.decode("utf-8"))
+        self.assertEqual(sorted(tp.KNOBS), body["settable_per_tenant"])
+        self.assertEqual(sorted(tp.READ_PATH_KNOBS), body["settable_per_user"])
+        self.assertLess(len(body["settable_per_user"]), len(body["settable_per_tenant"]))
+
+    def test_a_tenant_change_is_persisted(self) -> None:
+        import json as _json
+        import tempfile
+
+        path = os.path.join(tempfile.mkdtemp(), "policy.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        os.environ["MATRIXARK_TENANT_POLICY_PATH"] = path
+        self.addCleanup(os.environ.pop, "MATRIXARK_TENANT_POLICY_PATH", None)
+        tp.clear_tenant_policy_cache()
+        _status, body = self.post({"level": "tenant", "settings": {"top_k_per_layer": 50}})
+        self.assertTrue(body["persisted"])
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(50, _json.load(handle)["tenants"]["acme"]["top_k_per_layer"])
+
+    def test_both_levels_share_one_file_without_overwriting_each_other(self) -> None:
+        import json as _json
+        import tempfile
+
+        path = os.path.join(tempfile.mkdtemp(), "policy.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
+        os.environ["MATRIXARK_TENANT_POLICY_PATH"] = path
+        self.addCleanup(os.environ.pop, "MATRIXARK_TENANT_POLICY_PATH", None)
+        tp.clear_tenant_policy_cache()
+        self.post({"level": "tenant", "settings": {"top_k_per_layer": 50}})
+        self.post({"level": "user", "user_id": "alice", "settings": {"max_selected_refs": 4}})
+        with open(path, encoding="utf-8") as handle:
+            document = _json.load(handle)
+        self.assertEqual(50, document["tenants"]["acme"]["top_k_per_layer"])
+        self.assertEqual(4, document["users"]["acme"]["alice"]["max_selected_refs"])
+
+
+class PolicyPagePolishTest(unittest.TestCase):
+    """Two things the page got wrong that only showed by driving it."""
+
+    def test_the_save_button_names_the_person_typed_not_the_one_last_loaded(self) -> None:
+        # Switching level does not reload, so the view still remembers whoever was loaded before --
+        # and this is the label on the button that commits the change.
+        source = _read_builder()
+        block = source[source.index("var typed = "):source.index("$(\"policy\").innerHTML = (rows")]
+        self.assertIn('$("polUser").value.trim()', block)
+        self.assertIn("typed ||", block)
+
+    def test_the_user_field_is_not_disabled_at_tenant_level(self) -> None:
+        # It was disabled by a handler that only ran on change, so on first load it looked editable
+        # and was ignored. It stays usable instead: at tenant level it chooses whose effective
+        # values are shown, which is worth seeing while deciding a change for everyone.
+        source = _read_builder()
+        self.assertNotIn('$("polUser").disabled', source)
+        self.assertIn("polLevelHint", source)
+
+    def test_the_placeholder_says_what_the_field_is_for_at_each_level(self) -> None:
+        source = _read_builder()
+        block = source[source.index("function polLevelHint("):
+                       source.index('$("polLevel").addEventListener')]
+        self.assertIn("optional", block)
+
+
+class PolicyPageLevelTest(unittest.TestCase):
+    def test_the_page_offers_both_levels(self) -> None:
+        app = gw.make_v1_app(_FakeServer(), _cfg())
+        _st, _h, body = drive(app, method="GET", path="/v1/admin/setup")
+        page = body.decode("utf-8")
+        self.assertIn('id="polLevel"', page)
+        self.assertIn("Everyone in this tenant", page)
+        self.assertIn("One user", page)
+
+    def test_the_page_asks_the_backend_which_knobs_this_level_can_set(self) -> None:
+        # Keeping its own copy of the list is how the two drift and a customer is offered a
+        # control that the backend then refuses.
+        source = _read_builder()
+        block = source[source.index("function settableHere("):
+                       source.index("function loadPolicy(")]
+        self.assertIn("settable_per_tenant", block)
+        self.assertIn("settable_per_user", block)
+
+
+class OverrideBadgeTest(_PolicyTest):
+    """A deployment setting says when a tenant or user setting can win over it.
+
+    It was said once, as a note on the `behaviour` group. The policy knobs are spread across TWO
+    settings groups, so the three in `skills` said nothing -- and those three are exactly the ones
+    a single user can set. The note also predated per-user overrides, so it named one of the two
+    layers that can win.
+    """
+
+    def snapshot(self) -> dict:
+        import matrixark_gateway_config as cfg
+
+        return cfg.snapshot()
+
+    def fields(self) -> dict:
+        out = {}
+        for _group, entries in (self.snapshot().get("groups") or {}).items():
+            for entry in entries:
+                out[entry["key"]] = entry
+        return out
+
+    def test_every_policy_knob_setting_says_a_tenant_can_override_it(self) -> None:
+        import matrixark_gateway_config as cfg
+
+        knob_envs = {k.env for k in tp.KNOBS.values()}
+        fields = self.fields()
+        checked = 0
+        for setting in cfg.SETTINGS:
+            if setting.env not in knob_envs:
+                continue
+            checked += 1
+            with self.subTest(setting=setting.key):
+                self.assertIn("tenant", fields[setting.key]["overridable_by"])
+        self.assertGreater(checked, 20, "almost nothing was checked, so this passed vacuously")
+
+    def test_a_read_path_knob_also_says_a_user_can(self) -> None:
+        fields = self.fields()
+        self.assertEqual(["tenant", "user"], fields["skills.chunks_per_skill"]["overridable_by"])
+
+    def test_a_write_path_knob_says_tenant_only(self) -> None:
+        import matrixark_gateway_config as cfg
+
+        write_env = tp.KNOBS["generate_embeddings"].env
+        key = next(s.key for s in cfg.SETTINGS if s.env == write_env)
+        self.assertEqual(["tenant"], self.fields()[key]["overridable_by"])
+
+    def test_a_setting_that_is_not_a_policy_knob_claims_nothing(self) -> None:
+        # Most of the 79 exist only at the deployment level, and a badge on those would be false.
+        self.assertEqual([], self.fields()["skills.discovery"]["overridable_by"])
+
+    def test_the_badge_reaches_both_groups_the_knobs_live_in(self) -> None:
+        # The bug in the group note, stated as a test: a knob in `skills` must carry it too.
+        groups_with_badge = set()
+        for group, entries in (self.snapshot().get("groups") or {}).items():
+            for entry in entries:
+                if entry.get("overridable_by"):
+                    groups_with_badge.add(group)
+        self.assertIn("skills", groups_with_badge)
+        self.assertIn("behaviour", groups_with_badge)
+
+    def test_it_is_derived_from_the_registry_not_written_per_group(self) -> None:
+        # So a knob that moves group keeps its badge, and one added later gets it.
+        source = _read_config_source()
+        self.assertIn("def _override_layers_by_env", source)
+        block = source[source.index("def _override_layers_by_env"):source.index("def snapshot(")]
+        self.assertIn("policy.KNOBS.values()", block)
+
+    def test_the_page_renders_it(self) -> None:
+        app = gw.make_v1_app(_FakeServer(), _cfg())
+        _st, _h, body = drive(app, method="GET", path="/v1/admin/setup")
+        self.assertIn("can override", body.decode("utf-8"))
+
+
+def _read_config_source() -> str:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "matrixark_gateway_config.py"), encoding="utf-8") as handle:
+        return handle.read()
 
 
 if __name__ == "__main__":

@@ -523,12 +523,37 @@ could resend them. A bulk import from a server directory is the retryable-after-
 
 ---
 
-## Per-user settings
+## Retrieval settings: three layers, all reachable
 
-A customer can tune retrieval for one person without changing it for anyone else. `GET
-/v1/admin/policy?user_id=alice` returns every knob with its effective value, **which layer supplied
-it**, and whether a user may set it; `POST` changes it. The tenant always comes from the key, never
-from the request — otherwise a caller reads or rewrites another tenant's settings by naming it.
+Configuration sits at three levels, and until now the portal could reach only the outer one.
+
+| level | what it covers | how many knobs |
+|---|---|---|
+| deployment | every tenant on this process | 79 settings, on Setup |
+| **tenant** | everyone in one customer | **all 32 policy knobs** |
+| **user** | one person | **12** — the read-path ones |
+
+Deployment-wide config was settable and per-user is now, but **per-tenant was reachable only by
+hand-editing the policy file** — so a multi-tenant deployment could not give one customer different
+retrieval behaviour from another through the portal at all. `POST /v1/admin/policy` takes a `level`
+of `tenant` or `user`; `GET /v1/admin/policy?user_id=alice` returns every knob with its effective
+value, **which layer supplied it**, and which levels may set it. The tenant always comes from the
+key, never from the request — otherwise a caller reads or rewrites another tenant's settings by
+naming it.
+
+Every deployment setting that a policy knob reads now says so on the field itself — *tenant can
+override* or *tenant/user can override* — derived from the knob registry rather than written into a
+group note. It was a note on one group, and the knobs are spread across two: the three skill knobs
+said nothing, and those three are exactly the ones a single user can set. A field that does not say
+it is a fallback reads as the final answer.
+
+**A tenant may set the write-path knobs; a user may not.** A tenant owns its whole store, so
+deciding there is a decision somebody can actually make. What no level can do is un-write records
+already stored under the old value, so a tenant-level change to one of those says so — once, on the
+change that has that property, rather than on every change.
+
+Both levels persist into the same file, through one writer, so the two cannot drift on the edge
+cases: temp file and rename, a missing file started fresh, a corrupt one left alone.
 
 Resolution is **user → tenant → environment → built-in default**, through the same typed registry
 all three already used. A second store keyed differently would be a second thing to keep correct,

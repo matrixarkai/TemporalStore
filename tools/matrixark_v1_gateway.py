@@ -1648,10 +1648,12 @@ ROUTE_DOCS: List[Json] = [
                 "tenant comes from the key. Query: user_id.",
      "query": "user_id=alice"},
     {"group": "Administration", "method": "POST", "path": "/v1/admin/policy", "scope": "admin",
-     "summary": "Change one user's settings. Applies to the next request with no restart, and is "
-                "written to the policy file when one is configured. Settings that decide what is "
-                "WRITTEN into the shared store are refused and named in the response.",
-     "body": {"user_id": "alice", "settings": {"top_k_per_layer": 24}}},
+     "summary": "Change settings for one user (level=user, the default) or for everyone in the "
+                "tenant (level=tenant). Applies to the next request with no restart, and is "
+                "written to the policy file when one is configured. At level=user, settings that "
+                "decide what is WRITTEN into the shared store are refused and named in the "
+                "response; at level=tenant they are accepted, because a tenant owns its store.",
+     "body": {"level": "user", "user_id": "alice", "settings": {"top_k_per_layer": 24}}},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/models", "scope": "admin",
      "summary": "Models to choose from: a curated catalogue, what the configured endpoint says it "
                 "serves, and — for embeddings — what the stored vectors were actually made with. "
@@ -2031,6 +2033,8 @@ def _policy_view(policy_mod: Any, tenant_id: str, user_id: str) -> Json:
         "user": described.get("user", user_id),
         "knobs": knobs,
         "settable_per_user": sorted(policy_mod.READ_PATH_KNOBS),
+        # Every knob can be set for the whole tenant; only the read-path ones for one user.
+        "settable_per_tenant": sorted(policy_mod.KNOBS),
         # Where a change would be written, so "saved" can be an honest word.
         "policy_file": policy_mod.policy_file_path(),
         # Said once, here, rather than repeated beside every refused knob.
@@ -3326,6 +3330,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 200,
                                    _policy_view(policy_mod, tenant_id, user_id))
 
+
             raw, too_big = await _read_body_capped(receive, 1 << 20)
             if too_big or raw is None:
                 return await _json(send, 413, {"error": "body_too_large"})
@@ -3333,8 +3338,14 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 payload = json.loads(raw.decode("utf-8") or "{}")
             except Exception:
                 return await _json(send, 400, {"error": "invalid_json"})
+            level = str(payload.get("level") or "user").strip().lower()
+            if level not in ("user", "tenant"):
+                return await _json(send, 400, {
+                    "error": "bad_level",
+                    "detail": "level must be user or tenant.",
+                })
             user_id = str(payload.get("user_id") or "").strip()
-            if not user_id:
+            if level == "user" and not user_id:
                 return await _json(send, 400, {
                     "error": "no_user",
                     "detail": "Name the user these settings belong to.",
@@ -3347,18 +3358,30 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 })
             asked = sorted(str(name) for name in settings)
             try:
-                kept = await asyncio.to_thread(
-                    policy_mod.set_user_policy, tenant_id, user_id, settings)
+                if level == "tenant":
+                    # A tenant owns its whole store, so write-path knobs are accepted here. They
+                    # are refused for a single user because two users writing one store under
+                    # different rules leave records of two shapes behind.
+                    kept = await asyncio.to_thread(
+                        policy_mod.set_tenant_policy, tenant_id, settings)
+                else:
+                    kept = await asyncio.to_thread(
+                        policy_mod.set_user_policy, tenant_id, user_id, settings)
             except ValueError as exc:
                 return await _json(send, 400, {"error": "bad_request", "detail": str(exc)})
             try:
-                persisted = await asyncio.to_thread(
-                    policy_mod.persist_user_policy, tenant_id, user_id, settings)
+                if level == "tenant":
+                    persisted = await asyncio.to_thread(
+                        policy_mod.persist_tenant_policy, tenant_id, settings)
+                else:
+                    persisted = await asyncio.to_thread(
+                        policy_mod.persist_user_policy, tenant_id, user_id, settings)
             except Exception as exc:  # a write failure must not be reported as a save
                 persisted = False
-                _LOG.warning("user policy persist failed: %s", exc)
+                _LOG.warning("%s policy persist failed: %s", level, exc)
             refused = [name for name in asked if name not in kept]
             body = _policy_view(policy_mod, tenant_id, user_id)
+            body["level"] = level
             body["applied"] = sorted(kept)
             # Named individually. "Some of your settings were refused" leaves a customer to work
             # out which, and the reason is the same for all of them.
@@ -3368,6 +3391,17 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 body["persist_note"] = (
                     "Applied now, but not written anywhere: no policy file is configured "
                     "(MATRIXARK_TENANT_POLICY_PATH), so this is lost when the service restarts.")
+            if level == "tenant" and kept:
+                # Said once, on the change that has it: a setting can be put back, and the records
+                # already written under the old one stay as they are.
+                written = [name for name in kept
+                           if policy_mod.KNOBS[name].layer == "write"]
+                if written:
+                    body["already_written_note"] = (
+                        "Applies to what happens from now on. Records already stored under the "
+                        "previous value keep the shape they were written with — putting the "
+                        "setting back does not change them, and re-ingesting is what does: "
+                        + ", ".join(sorted(written)) + ".")
             return await _json(send, 200, body)
 
         # ---- monitoring assets (auth + admin scope) -------------------------------------------

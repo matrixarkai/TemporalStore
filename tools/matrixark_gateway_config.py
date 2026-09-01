@@ -150,8 +150,9 @@ GROUPS: Dict[str, Json] = {
     },
     "behaviour": {
         "title": "Retrieval behaviour", "order": 70, "advanced": True,
-        "note": "Deployment-wide defaults for the tenant policy knobs. A per-tenant policy record "
-                "overrides any of these for that tenant; what you set here is the fallback.",
+        "note": "Deployment-wide defaults. A tenant policy -- or, for the ones marked, one "
+                "user's own setting -- overrides any of these; what you set here is the fallback. "
+                "Set those on the retrieval settings above.",
     },
 }
 
@@ -755,11 +756,34 @@ def _effective(setting: Setting, values: Dict[str, str]) -> Tuple[str, str]:
     return setting.default, "default"
 
 
+def _override_layers_by_env() -> Dict[str, List[str]]:
+    """For each env var that a policy knob reads, which layers can override what is set here.
+
+    Derived from the knob registry, not written into a group note. The knobs are spread across two
+    settings groups, so a note on one of them left the other three saying nothing -- and they are
+    the ones a user can set.
+    """
+    try:
+        from tools import matrixark_tenant_policy as policy  # type: ignore
+    except Exception:
+        try:
+            import matrixark_tenant_policy as policy  # type: ignore
+        except Exception:
+            return {}
+    out: Dict[str, List[str]] = {}
+    for knob in policy.KNOBS.values():
+        layers = ["tenant"] + (["user"] if knob.layer == "read" else [])
+        for name in (knob.env,) + tuple(knob.env_aliases):
+            out[name] = layers
+    return out
+
+
 def snapshot(include_catalog: bool = True) -> Json:
     """The full settable-config view for the portal: effective value, where it came from, and when
     a change takes effect. Secret VALUES are never present -- only ``configured``."""
     document = load()
     values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
+    override_layers = _override_layers_by_env()
     groups: Dict[str, List[Json]] = {}
     for setting in SETTINGS:
         value, source = _effective(setting, values)
@@ -777,6 +801,10 @@ def snapshot(include_catalog: bool = True) -> Json:
             # default" and show what a value is being changed FROM -- without that, a customer
             # editing a tuning knob has no way back short of remembering the number.
             "default": setting.default,
+            # Which layers can override this for a tenant or a person. Empty for a setting that
+            # only exists at the deployment level. What is set here is the fallback, and a field
+            # that does not say so reads as the final answer.
+            "overridable_by": override_layers.get(_env_name(setting, values), []),
         }
         if setting.secret:
             entry["configured"] = bool(value)
