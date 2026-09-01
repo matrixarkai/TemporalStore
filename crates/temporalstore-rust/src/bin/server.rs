@@ -134,6 +134,9 @@ fn main() {
     // used to sit) meant every deployment paid for a disk tier whether or not it could help.
     let storage_decision = temporalstore_rust::StorageBackendConfig::from_env().resolve_decision();
     let storage_backend = storage_decision.backend.clone();
+    // Kept alongside the backend so /metrics can publish why this node chose it. The log
+    // line below is not reachable from a portal, an operator's browser, or a dashboard.
+    let storage_reason = storage_decision.reason.clone();
     let disk_cache_tier = storage_backend.wants_disk_cache_tier();
     info!(
         backend = %storage_backend.describe(),
@@ -541,7 +544,7 @@ fn main() {
                 let mut metrics = engine.prometheus_metrics();
                 append_ingestion_metrics(&mut metrics, &engine);
                 append_runtime_metrics(&mut metrics, &runtime);
-                append_storage_backend_metric(&mut metrics, &storage_backend);
+                append_storage_backend_metric(&mut metrics, &storage_backend, &storage_reason);
                 if let Some(raft_state) = &raft_state {
                     metrics.push_str(&raft_state.runtime.cluster().prometheus_metrics());
                 }
@@ -2627,6 +2630,45 @@ fn send_heartbeat(
 
 #[cfg(test)]
 mod tests {
+    /// The reason is free text carrying paths and endpoint URLs, so it reaches this label with
+    /// quotes and backslashes in it. An unescaped one produces a line Prometheus rejects, which
+    /// takes down the WHOLE scrape rather than this one series -- strictly worse than publishing
+    /// nothing at all, which is why this is asserted rather than assumed.
+    #[test]
+    fn storage_backend_reason_is_escaped_for_a_prometheus_label() {
+        let mut out = String::new();
+        // Raw strings on both sides: exactly one level of escaping to reason about. The input is
+        // what the engine would hand over -- a reason containing a quote AND a backslash.
+        let reason = r#"auto: probe of "http://s\x" failed, degraded"#;
+        append_storage_backend_metric(
+            &mut out,
+            &temporalstore_rust::StorageBackend::RaftReplication,
+            reason,
+        );
+        let info = out
+            .lines()
+            .find(|line| line.starts_with("temporalstore_storage_backend_info{"))
+            .expect("no info series emitted");
+        assert!(info.contains(r#"backend="raft""#), "{info}");
+        // Both arrive escaped, so the line stays parseable: " becomes \" and \ becomes \\.
+        assert!(info.contains(r#"\"http://s\\x\""#), "{info}");
+        // Exactly one closing brace before the value: proof the value did not terminate early.
+        assert_eq!(1, info.matches("} 1").count(), "{info}");
+    }
+
+    /// The outcome series must keep its shape: the dashboards and the gateway probe both read it,
+    /// and adding a second series next to it is exactly how the first one gets broken.
+    #[test]
+    fn the_outcome_series_is_unchanged_by_the_reason_series() {
+        let mut out = String::new();
+        append_storage_backend_metric(
+            &mut out,
+            &temporalstore_rust::StorageBackend::RaftReplication,
+            "auto: nothing shared is reachable",
+        );
+        assert!(out.contains("temporalstore_storage_backend{backend=\"raft\",replication=\"raft\"} 1"));
+    }
+
     use std::net::TcpListener;
     use std::path::Path;
     use std::sync::{Arc, Mutex};

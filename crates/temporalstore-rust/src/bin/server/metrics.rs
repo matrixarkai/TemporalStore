@@ -4,9 +4,28 @@
 // Prometheus metrics appenders (runtime/storage-manager/ingestion), split from
 // server.rs (textual include!, shared flat scope + use-imports; no mod wrapper).
 
+/// Escape a string for use as a Prometheus label value.
+///
+/// The reason is free text assembled from paths and endpoint URLs, so it can contain a backslash or
+/// a quote. An unescaped one produces a line Prometheus rejects, which would take the whole scrape
+/// down rather than just this series -- a worse outcome than not publishing it at all.
+fn escape_label_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn append_storage_backend_metric(
     out: &mut String,
     backend: &temporalstore_rust::StorageBackend,
+    reason: &str,
 ) {
     use temporalstore_rust::StorageBackend;
     let (kind, replication) = match backend {
@@ -20,6 +39,17 @@ fn append_storage_backend_metric(
     out.push_str("# TYPE temporalstore_storage_backend gauge\n");
     out.push_str(&format!(
         "temporalstore_storage_backend{{backend=\"{kind}\",replication=\"{replication}\"}} 1\n"
+    ));
+    // Why, not just which. The outcome above cannot distinguish a backend that was asked for from
+    // one that was fallen back to, and those are the cases an operator is actually chasing.
+    out.push_str(
+        "# HELP temporalstore_storage_backend_info Why this node selected its storage backend.\n",
+    );
+    out.push_str("# TYPE temporalstore_storage_backend_info gauge\n");
+    out.push_str(&format!(
+        "temporalstore_storage_backend_info{{backend=\"{kind}\",reason=\"{reason}\"}} 1\n",
+        kind = kind,
+        reason = escape_label_value(reason)
     ));
 }
 
