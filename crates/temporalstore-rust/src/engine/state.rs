@@ -284,6 +284,20 @@ pub(super) struct CoreIndex {
     pub(super) bucket_map: BucketMap,
     #[serde(default)]
     pub(super) object_page_lookup: ObjectPageLookup,
+    /// One shared copy of each page kind, so a page holds a pointer rather than its own string.
+    ///
+    /// Measured over 2700 pages: `model_id` had 2 distinct values and 2700 copies -- 1350 copies
+    /// of each, and an allocation apiece. The object key, by contrast, had 1650 distinct values
+    /// for those same 2700 pages, which is why it is not interned here: sharing something that is
+    /// nearly unique saves nothing.
+    ///
+    /// Owned by the index rather than a global, so the write path interns through the `&mut` it
+    /// already holds and no lock appears on it. Capped, so being bounded is a property of this
+    /// code rather than a promise about every future caller: past the cap a kind still works, it
+    /// just allocates as it did before. Not serialized -- it is a sharing detail, not part of the
+    /// index.
+    #[serde(skip)]
+    pub(super) kind_pool: std::collections::HashSet<Arc<str>>,
     /// Running total of page refs across `object_component_lookup`, or `None` when not known.
     ///
     /// The stats path reports this number, and computing it as
@@ -365,6 +379,23 @@ impl ObjectPageRefs {
     pub(super) fn total_refs(&self) -> usize {
         self.by_component.iter().map(|entry| entry.refs.len()).sum()
     }
+}
+
+/// A kind is drawn from a fixed set of literals in the code, so a pool of them is bounded. The
+/// cap keeps that true even if some future caller passes something unbounded: it stops sharing
+/// rather than growing.
+const KIND_POOL_CAP: usize = 64;
+
+/// One shared copy of `kind`, taken from the pool or added to it.
+pub(super) fn intern_kind(pool: &mut std::collections::HashSet<Arc<str>>, kind: &str) -> Arc<str> {
+    if let Some(shared) = pool.get(kind) {
+        return Arc::clone(shared);
+    }
+    let shared: Arc<str> = Arc::from(kind);
+    if pool.len() < KIND_POOL_CAP {
+        pool.insert(Arc::clone(&shared));
+    }
+    shared
 }
 
 /// The pages holding one component, with the single-page case held inline.
@@ -512,7 +543,7 @@ pub(super) enum BucketLayoutState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PageIndex {
     pub(super) object_key: String,
-    pub(super) model_id: String,
+    pub(super) model_id: Arc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
     pub(super) object_id: u64,
@@ -650,7 +681,7 @@ impl CoreIndex {
                     .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
                     .map(|page| {
                         !page.deleted
-                            && page.model_id == model_id
+                            && page.model_id == Arc::from(model_id)
                             && page.object_key == object_key
                             && page.component.as_deref() == component
                             && same_page_address(&page.address, address)
@@ -666,7 +697,7 @@ impl CoreIndex {
         self.bucket_map.values().any(|bucket| {
             bucket.page_index.values().any(|page| {
                 !page.deleted
-                    && page.model_id == model_id
+                    && page.model_id == Arc::from(model_id)
                     && page.object_key == object_key
                     && page.component.as_deref() == component
                     && same_page_address(&page.address, address)
@@ -779,7 +810,7 @@ mod component_lookup_tests {
     fn page(object: &str, component: Option<&str>) -> PageIndex {
         PageIndex {
             object_key: object.to_string(),
-            model_id: "hash".to_string(),
+            model_id: Arc::from("hash".to_string()),
             component: component.map(str::to_string),
             object_id: 0,
             address: BlockAddress::from_parts(0, 0, 0, None, None, None, None, None, None),

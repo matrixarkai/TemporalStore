@@ -4080,6 +4080,194 @@ fn page_refs_serialize_as_a_sequence() {
     assert_eq!(round_tripped.len(), 2);
 }
 
+/// Pages of the same kind point at ONE string, not a copy each.
+///
+/// Changing the field's type to a shared pointer does not by itself share anything -- every page
+/// could still hold its own allocation and the type would look identical from outside, exactly as
+/// the measurement did before. So this compares pointers, not contents.
+#[test]
+fn pages_of_one_kind_share_a_single_kind_string() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..200 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("shared-kind-{index:05}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+    for index in 0..40 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("shared-kind-hash-{index:05}"),
+                field: "f".to_string(),
+                value: vec![b'h'; 32],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut first_of_kind: std::collections::HashMap<String, std::sync::Arc<str>> =
+        std::collections::HashMap::new();
+    let mut pages = 0usize;
+    let mut shared = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_ref_key, page) in bucket.page_index.iter() {
+            pages += 1;
+            match first_of_kind.get(page.model_id.as_ref()) {
+                None => {
+                    first_of_kind.insert(page.model_id.to_string(), page.model_id.clone());
+                }
+                Some(first) => {
+                    if std::sync::Arc::ptr_eq(first, &page.model_id) {
+                        shared += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // Anti-vacuity first: with no pages, or one page per kind, "everything is shared" is true for
+    // free and proves nothing.
+    assert!(pages > 0, "no pages were recorded; nothing was measured");
+    assert!(
+        pages > first_of_kind.len(),
+        "only {} pages for {} kinds -- no kind repeats, so sharing is untested",
+        pages,
+        first_of_kind.len()
+    );
+    assert_eq!(
+        shared,
+        pages - first_of_kind.len(),
+        "every page after the first of its kind should point at that first string; \
+         {} kinds over {} pages, {shared} shared",
+        first_of_kind.len(),
+        pages
+    );
+    assert!(
+        first_of_kind.len() >= 2,
+        "corpus produced one kind; a second is needed to show the pool distinguishes them"
+    );
+}
+
+/// How many distinct identity strings the page index holds, against how many copies of each.
+///
+/// Interning pays only where cardinality is low relative to the number of holders. The object key
+/// is unique per object, so sharing it saves copies but never collapses them -- established
+/// already, and not what this measures. The question here is the other two: `model_id` should be
+/// drawn from a small fixed set of model types, and `component` from a per-object field name.
+///
+/// Reported per field rather than as one identity-strings total, because the answer differs by
+/// field and a combined number would hide that.
+#[test]
+fn page_index_identity_string_cardinality() {
+    use std::collections::HashSet;
+
+    const STRING_OBJECTS: usize = 1_500;
+    const HASH_OBJECTS: usize = 150;
+    const FIELDS_PER_HASH: usize = 8;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..STRING_OBJECTS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("identity-string-{index:08}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    for object in 0..HASH_OBJECTS {
+        for field in 0..FIELDS_PER_HASH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("identity-hash-{object:08}"),
+                    field: format!("field-{field}"),
+                    value: vec![b'h'; 64],
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut pages = 0usize;
+    let mut distinct_models: HashSet<&str> = HashSet::new();
+    // Distinct ALLOCATIONS, not distinct values. Once the kind is shared, counting holders would
+    // report the cost as if nothing had changed -- every page still holds one, it just points at
+    // a string it does not own.
+    let mut model_allocations: HashSet<*const u8> = HashSet::new();
+    let mut distinct_components: HashSet<&str> = HashSet::new();
+    let mut distinct_keys: HashSet<&str> = HashSet::new();
+    let mut model_bytes = 0usize;
+    let mut component_bytes = 0usize;
+    let mut key_bytes = 0usize;
+    let mut components_present = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_ref_key, page) in bucket.page_index.iter() {
+            pages += 1;
+            distinct_models.insert(page.model_id.as_ref());
+            model_allocations.insert(std::sync::Arc::as_ptr(&page.model_id).cast::<u8>());
+            distinct_keys.insert(page.object_key.as_str());
+            model_bytes += page.model_id.len();
+            key_bytes += page.object_key.len();
+            if let Some(component) = page.component.as_deref() {
+                distinct_components.insert(component);
+                component_bytes += component.len();
+                components_present += 1;
+            }
+        }
+    }
+
+    // Anti-vacuity first: an empty index would make every ratio below true for free, and a
+    // corpus with no components would decide the component question by construction.
+    assert!(pages > 0, "the page index is empty; nothing was measured");
+    assert!(
+        components_present > 0,
+        "no page carries a component; the component question would be decided by construction"
+    );
+
+    let share = |distinct: usize, copies: usize| {
+        if distinct == 0 { 0.0 } else { copies as f64 / distinct as f64 }
+    };
+    println!(
+        "
+  page index identity strings over {pages} pages:
+    model_id    {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
+    component   {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
+    object_key  {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
+
+    PageIndex is {} B before its heap strings
+",
+        distinct_models.len(), pages, share(distinct_models.len(), pages),
+        model_allocations.len(), model_bytes,
+        distinct_components.len(), components_present,
+        share(distinct_components.len(), components_present), component_bytes,
+        distinct_keys.len(), pages, share(distinct_keys.len(), pages), key_bytes,
+        std::mem::size_of::<crate::engine::state::PageIndex>(),
+    );
+}
+
 /// How many components an object actually has, and how many refs a component actually holds.
 ///
 /// This decides whether an inline single-component shape is worth having. The inner `refs` vector
@@ -9970,7 +10158,7 @@ fn whether_a_context_page_reaches_the_bucket_index() {
     let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.page_index.values() {
-            *kinds.entry(page.model_id.clone()).or_insert(0) += 1;
+            *kinds.entry(page.model_id.clone().to_string()).or_insert(0) += 1;
         }
     }
     // And the context keys the model map holds, so the two can be compared.
@@ -10351,7 +10539,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                     (
                         (*bucket, ref_key.to_string()),
                         (
-                            page.model_id.clone(),
+                            page.model_id.to_string(),
                             page.object_key.clone(),
                             page.component.clone(),
                         ),
@@ -10385,7 +10573,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                     (
                         (*bucket, ref_key.to_string()),
                         (
-                            page.model_id.clone(),
+                            page.model_id.to_string(),
                             page.object_key.clone(),
                             page.component.clone(),
                         ),

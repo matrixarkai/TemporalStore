@@ -2186,7 +2186,7 @@ fn collect_command_index_items(
                 routing_bucket,
                 page_ref_key: page_ref_key.to_string(),
                 object_key: page.object_key.clone(),
-                model_id: page.model_id.clone(),
+                model_id: page.model_id.clone().to_string(),
                 component: page.component.clone(),
                 object_id: page.object_id,
                 page_id: page.address.page_id().unwrap_or(0),
@@ -2344,7 +2344,7 @@ fn fold_delta_page_items(
                 continue;
             };
             bucket.page_index.retain(|_, page| {
-                !(page.model_id == item.model_id
+                !(page.model_id.as_ref() == item.model_id
                     && page.object_key == item.object_key
                     && page.component == item.component)
             });
@@ -2379,7 +2379,7 @@ fn fold_delta_page_items(
             std::sync::Arc::from(item.page_ref_key.as_str()),
             PageIndex {
                 object_key: item.object_key.clone(),
-                model_id: item.model_id.clone(),
+                model_id: Arc::from(item.model_id.clone()),
                 component: item.component.clone(),
                 object_id: item.object_id,
                 address,
@@ -3119,7 +3119,7 @@ fn mark_bucket_index_page_deleted(
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         bucket.page_index.retain(|_, page| {
-            let matches = page.model_id == model_id
+            let matches = page.model_id.as_ref() == model_id
                 && page.object_key == key
                 && page.component.as_deref() == component;
             if matches {
@@ -3353,7 +3353,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                             .get(&page_ref.routing_bucket)
                             .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
                             .map(|page| {
-                                !page.deleted && page.model_id == *kind && page.object_key == key
+                                !page.deleted && page.model_id.as_ref() == *kind && page.object_key == key
                             })
                             .unwrap_or(false)
                     })
@@ -3534,9 +3534,9 @@ fn object_manager_stats(
                     .iter()
                     .map(|page| {
                         (
-                            page.model_id.as_str(),
+                            page.model_id.as_ref(),
                             page.object_key.as_str(),
-                            (page.model_id == "hash")
+                            (page.model_id.as_ref() == "hash")
                                 .then(|| page.component.as_deref())
                                 .flatten(),
                         )
@@ -3548,9 +3548,9 @@ fn object_manager_stats(
                     .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
                     .map(|page| {
                         (
-                            page.model_id.as_str(),
+                            page.model_id.as_ref(),
                             page.object_key.as_str(),
-                            (page.model_id == "hash")
+                            (page.model_id.as_ref() == "hash")
                                 .then(|| page.component.as_deref())
                                 .flatten(),
                         )

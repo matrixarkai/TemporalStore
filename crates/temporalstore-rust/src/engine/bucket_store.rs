@@ -173,7 +173,7 @@ pub(super) fn bucket_index_page_address(
                 continue;
             };
             if !page.deleted
-                && page.model_id == model_id
+                && page.model_id.as_ref() == model_id
                 && page.object_key == object_key
                 && page.component.as_deref() == component
             {
@@ -194,7 +194,7 @@ pub(super) fn bucket_index_page_address(
         .flat_map(|bucket| bucket.page_index.values())
         .filter(|page| {
             !page.deleted
-                && page.model_id == model_id
+                && page.model_id.as_ref() == model_id
                 && page.object_key == object_key
                 && page.component.as_deref() == component
         })
@@ -213,7 +213,7 @@ pub(super) fn bucket_index_component_page_addresses(
             .filter_map(|page_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&page_ref.routing_bucket)?;
                 let page = bucket.page_index.get(&page_ref.page_ref_key)?;
-                if !page.deleted && page.model_id == model_id && page.object_key == object_key {
+                if !page.deleted && page.model_id.as_ref() == model_id && page.object_key == object_key {
                     Some((page.component.clone(), page.address.clone()))
                 } else {
                     None
@@ -236,7 +236,7 @@ pub(super) fn bucket_index_component_page_addresses(
         .bucket_map
         .values()
         .flat_map(|bucket| bucket.page_index.values())
-        .filter(|page| !page.deleted && page.model_id == model_id && page.object_key == object_key)
+        .filter(|page| !page.deleted && page.model_id.as_ref() == model_id && page.object_key == object_key)
         .map(|page| (page.component.clone(), page.address.clone()))
         .collect::<Vec<_>>();
     refs.sort_by(|left, right| left.0.cmp(&right.0));
