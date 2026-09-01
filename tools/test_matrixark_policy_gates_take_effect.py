@@ -301,5 +301,96 @@ class TraverseSiblingSessionsTest(unittest.TestCase):
             "a tenant that declined sibling sessions still had another session searched")
 
 
+class ExtractSegmentsTest(unittest.TestCase):
+    """A segment restates its event, so a tenant can decline them.
+
+    Two things are checked, and the second is the one that matters. Counting stored records shows
+    the knob is consulted; it cannot tell "redundant" from "lost". The knob's whole justification is
+    that the event still carries the answer, which is a claim about RETRIEVAL -- so that is checked
+    the way a customer would notice.
+    """
+
+    def _stored(self, tenant, enabled):
+        import matrixark_mcp_server as mcp
+        policy.set_tenant_policy(tenant, {"extract_segments": enabled})
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
+            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+            scope = {"tenant_id": tenant, "user_id": "u1", "session_id": "s1"}
+            server.call_tool("matrixark_ingest", {
+                "scope": scope, "finalize": True,
+                "messages": [{"role": "user",
+                              "content": "I am allergic to peanuts and I live in Kyoto."}]})
+            server.call_tool("matrixark_session_commit", {"scope": scope})
+            records = adapter.read_all()
+        identities = {tenant, policy.tenant_hash_of(tenant)}
+        segments = total = 0
+        for record in records:
+            scope_value = (record.get("scope") or record.get("access_scope")
+                           or record.get("scope_key"))
+            if policy.tenant_of(scope_value) not in identities:
+                continue
+            total += 1
+            if str(record.get("record_type")) == "context_segment":
+                segments += 1
+        return segments, total
+
+    def test_the_knob_decides_whether_segments_are_written(self) -> None:
+        on_segments, on_total = self._stored("seg_on_case", True)
+        off_segments, off_total = self._stored("seg_off_case", False)
+        self.assertGreater(on_total, 0, "nothing was stored at all, so this proves nothing")
+        self.assertGreater(off_total, 0, "declining segments took the whole memory with it")
+        self.assertGreater(on_segments, 0, "a tenant that asked for segments got none")
+        self.assertEqual(0, off_segments, "a tenant that declined segments still got them")
+
+    def test_both_writers_honour_it(self) -> None:
+        # There are two segment writers. What must not drift between them is the outcome, so this
+        # asserts on the stored result rather than on a shared symbol.
+        import matrixark_mcp_local_adapter  # noqa: F401  (import order: adapter before submodule)
+        import matrixark_local_adapter_ingest as ingest
+        import matrixark_mcp_local_batch_extract_runtime as runtime
+        policy.set_tenant_policy("both_off", {"extract_segments": False})
+        policy.set_tenant_policy("both_on", {"extract_segments": True})
+        for module in (ingest, runtime):
+            with self.subTest(module=module.__name__):
+                self.assertFalse(module._segments_enabled({"tenant_id": "both_off"}))
+                self.assertTrue(module._segments_enabled({"tenant_id": "both_on"}))
+                # No tenant falls to the knob's own default, which for segments is OFF.
+                self.assertFalse(module._segments_enabled(None))
+
+
+class TurningSegmentsOffDoesNotLoseTheAnswerTest(unittest.TestCase):
+    """The claim that justifies the default, checked instead of trusted.
+
+    "A segment restates its event" means the event still answers the question. Counting records
+    cannot show that; asking can.
+    """
+
+    def _ask(self, tenant, enabled, query):
+        import matrixark_mcp_server as mcp
+        policy.set_tenant_policy(tenant, {"extract_segments": enabled})
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
+            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+            scope = {"tenant_id": tenant, "user_id": "u1", "session_id": "s1"}
+            for message in ("I am allergic to peanuts and I live in Kyoto.",
+                            "My favourite drink is matcha, and I bike to work."):
+                server.call_tool("matrixark_ingest", {
+                    "scope": scope, "finalize": True,
+                    "messages": [{"role": "user", "content": message}]})
+            server.call_tool("matrixark_session_commit", {"scope": scope})
+            return str(server.call_tool("matrixark_retrieve",
+                                        {"scope": scope, "query": query})).lower()
+
+    def test_the_answer_survives_without_segments(self) -> None:
+        with_them = self._ask("ans_on", True, "what am I allergic to?")
+        without = self._ask("ans_off", False, "what am I allergic to?")
+        self.assertIn("peanut", with_them,
+                      "the query does not work even WITH segments, so the check below is vacuous")
+        self.assertIn("peanut", without,
+                      "turning segments off lost the answer -- they are not redundant, and the "
+                      "default-OFF behaviour is not safe")
+
+
 if __name__ == "__main__":
     unittest.main()
