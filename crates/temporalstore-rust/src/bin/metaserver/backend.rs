@@ -44,6 +44,16 @@ impl MetaBackend {
         }
     }
 
+    /// Record the encoded size of a topology answer.
+    ///
+    /// Only the single-node backend keeps these: the raft backend drives none of
+    /// the subsystems this recorder belongs to, and reports nothing from it.
+    fn record_topology_bytes(&self, bytes: usize) {
+        if let Self::Single(meta) = self {
+            meta.subsystem_metrics().record_topology_bytes(bytes);
+        }
+    }
+
     fn raft_status(&self) -> Option<RaftClusterStatus> {
         match self {
             Self::Single(_) => None,
