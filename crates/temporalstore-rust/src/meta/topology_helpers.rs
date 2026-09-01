@@ -217,81 +217,90 @@ pub(super) fn stats_from_state(state: &MetaState, counters: &MetaCounters) -> Me
 
 pub(super) const TOPOLOGY_EVENT_HISTORY_LIMIT: usize = 256;
 
+/// How many of a collection are normal, frozen and dropped, in one walk.
+///
+/// The report wants all three, and asking for them separately walked the
+/// collection three times. They are disjoint, so one walk answers all of them.
+fn tally_states(states: impl Iterator<Item = MetaEntityState>) -> (usize, usize, usize) {
+    let mut normal = 0;
+    let mut frozen = 0;
+    let mut dropped = 0;
+    for state in states {
+        match state {
+            MetaEntityState::Normal => normal += 1,
+            MetaEntityState::Frozen => frozen += 1,
+            MetaEntityState::Dropped => dropped += 1,
+            // Any other state is counted by none of the three, exactly as the
+            // separate filters counted it by none of them.
+            _ => {}
+        }
+    }
+    (normal, frozen, dropped)
+}
+
 pub(super) fn topology_version_report_from_state(
     state: &MetaState,
     old_topology_version: u64,
 ) -> TopologyVersionReport {
-    let changed_tables = state
-        .tables
-        .values()
-        .filter(|table| table.info.topology_version > old_topology_version)
-        .map(|table| table.info.clone())
-        .collect::<Vec<_>>();
-    let events = state
-        .topology_events
-        .iter()
-        .filter(|event| event.topology_version > old_topology_version)
-        .cloned()
-        .collect::<Vec<_>>();
+    // Nothing can be newer than a caller who is already current, so there is
+    // nothing to look for. Every table and every event carries a version that
+    // `record_topology_event` returned, which is the global version as it stood
+    // when it was bumped -- so none of them can be above it.
+    //
+    // This is the answer almost every check gets: callers ask whether the
+    // topology moved far more often than it moves, and producing this answer
+    // used to walk every table and every recorded event to conclude that none
+    // of them qualified.
+    let unchanged = old_topology_version >= state.topology_version;
+    let changed_tables = if unchanged {
+        Vec::new()
+    } else {
+        state
+            .tables
+            .values()
+            .filter(|table| table.info.topology_version > old_topology_version)
+            .map(|table| table.info.clone())
+            .collect::<Vec<_>>()
+    };
+    let events = if unchanged {
+        Vec::new()
+    } else {
+        state
+            .topology_events
+            .iter()
+            .filter(|event| event.topology_version > old_topology_version)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
     let event_history_truncated = old_topology_version < state.topology_version
         && state
             .topology_events
             .front()
             .is_some_and(|event| old_topology_version < event.topology_version.saturating_sub(1));
+    let (normal_servers, frozen_servers, dropped_servers) =
+        tally_states(state.servers.values().map(|server| server.state));
+    let (normal_proxies, frozen_proxies, dropped_proxies) =
+        tally_states(state.proxies.values().map(|proxy| proxy.state));
+    let (normal_tables, frozen_tables, dropped_tables) =
+        tally_states(state.tables.values().map(|table| table.info.state));
     TopologyVersionReport {
         status: Status::ok(),
         current_topology_version: state.topology_version,
         old_topology_version,
-        unchanged: old_topology_version >= state.topology_version,
+        unchanged,
         server_count: state.servers.len(),
         proxy_count: state.proxies.len(),
         table_count: state.tables.len(),
         shard_route_count: state.shards.len(),
-        normal_servers: state
-            .servers
-            .values()
-            .filter(|server| server.state == MetaEntityState::Normal)
-            .count(),
-        frozen_servers: state
-            .servers
-            .values()
-            .filter(|server| server.state == MetaEntityState::Frozen)
-            .count(),
-        dropped_servers: state
-            .servers
-            .values()
-            .filter(|server| server.state == MetaEntityState::Dropped)
-            .count(),
-        normal_proxies: state
-            .proxies
-            .values()
-            .filter(|proxy| proxy.state == MetaEntityState::Normal)
-            .count(),
-        frozen_proxies: state
-            .proxies
-            .values()
-            .filter(|proxy| proxy.state == MetaEntityState::Frozen)
-            .count(),
-        dropped_proxies: state
-            .proxies
-            .values()
-            .filter(|proxy| proxy.state == MetaEntityState::Dropped)
-            .count(),
-        normal_tables: state
-            .tables
-            .values()
-            .filter(|table| table.info.state == MetaEntityState::Normal)
-            .count(),
-        frozen_tables: state
-            .tables
-            .values()
-            .filter(|table| table.info.state == MetaEntityState::Frozen)
-            .count(),
-        dropped_tables: state
-            .tables
-            .values()
-            .filter(|table| table.info.state == MetaEntityState::Dropped)
-            .count(),
+        normal_servers,
+        frozen_servers,
+        dropped_servers,
+        normal_proxies,
+        frozen_proxies,
+        dropped_proxies,
+        normal_tables,
+        frozen_tables,
+        dropped_tables,
         changed_tables,
         events,
         event_history_truncated,

@@ -8114,6 +8114,97 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
+    fn the_version_report_counts_each_state_of_each_resource() {
+        // Nine numbers, and nothing checked any of them. They were nine
+        // separate walks of three collections; they are now one walk each, and
+        // a walk that tallies has to put every resource in the same place the
+        // separate filters did.
+        let meta = SingleNodeMeta::default();
+        for (i, want) in ["normal", "frozen", "dropped"].iter().enumerate() {
+            let addr = format!("node-{i}");
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
+                    numa_nodes: Vec::new(),
+                    server_addr: addr.clone(),
+                    node_id: i as u64 + 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .register_proxy(RegisterProxyRequest {
+                    registered_at_ms: 0,
+                    proxy_addr: format!("proxy-{i}"),
+                    namespace: String::new(),
+                    location: "rack-1".to_string(),
+                    config_version: 0,
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            let change = |endpoint: String| StateChangeRequest {
+                endpoint,
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unspecified,
+            };
+            if *want == "frozen" {
+                assert!(meta.freeze_server(change(addr.clone())).status.ok);
+                assert!(meta.freeze_proxy(change(format!("proxy-{i}"))).status.ok);
+            }
+            if *want == "dropped" {
+                assert!(meta.drop_server(change(addr)).status.ok);
+                assert!(meta.drop_proxy(change(format!("proxy-{i}"))).status.ok);
+            }
+        }
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for (i, want) in ["normal", "frozen", "dropped"].iter().enumerate() {
+            let name = format!("t{i}");
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.clone(),
+                    first_shard_id: (i as u64 + 1) * 100,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+            let request = DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: name,
+            };
+            if *want == "frozen" {
+                assert!(meta.freeze_table(request).status.ok);
+            } else if *want == "dropped" {
+                assert!(meta.delete_table(request).status.ok);
+            }
+        }
+
+        let report = meta.topology_version_report(TopologyVersionRequest::default());
+        assert_eq!(report.normal_servers, 1, "servers: normal");
+        assert_eq!(report.frozen_servers, 1, "servers: frozen");
+        assert_eq!(report.dropped_servers, 1, "servers: dropped");
+        assert_eq!(report.normal_proxies, 1, "proxies: normal");
+        assert_eq!(report.frozen_proxies, 1, "proxies: frozen");
+        assert_eq!(report.dropped_proxies, 1, "proxies: dropped");
+        assert_eq!(report.normal_tables, 1, "tables: normal");
+        assert_eq!(report.frozen_tables, 1, "tables: frozen");
+        assert_eq!(report.dropped_tables, 1, "tables: dropped");
+        assert_eq!(report.server_count, 3);
+        assert_eq!(report.proxy_count, 3);
+        assert_eq!(report.table_count, 3);
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
