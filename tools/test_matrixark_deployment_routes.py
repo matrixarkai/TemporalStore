@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import unittest
 
@@ -162,13 +163,11 @@ class DeploymentPlanRouteTest(unittest.TestCase):
         self.assertEqual({}, plan["env"])
 
 
-class ChooserRendersTest(unittest.TestCase):
-    """The page, run against the real route bodies.
+class _PageHarness:
+    """Drives the built Setup page against real route bodies.
 
-    A request and its outcome differ here on purpose, and in page source the two are the same shape
-    of string concatenation. Rendering the resolved backend and rendering the requested one look
-    identical to a grep, so the only way to tell them apart is to run the page and read what landed
-    in the DOM.
+    A mixin rather than a base test class: subclassing a TestCase to reuse one helper also inherits
+    and re-runs every one of its test methods.
     """
 
     def setUp(self) -> None:
@@ -206,6 +205,16 @@ class ChooserRendersTest(unittest.TestCase):
             os.unlink(fixture)
         self.assertEqual(0, proc.returncode, proc.stderr)
         return json.loads(proc.stdout)
+
+
+class ChooserRendersTest(_PageHarness, unittest.TestCase):
+    """The page, run against the real route bodies.
+
+    A request and its outcome differ here on purpose, and in page source the two are the same shape
+    of string concatenation. Rendering the resolved backend and rendering the requested one look
+    identical to a grep, so the only way to tell them apart is to run the page and read what landed
+    in the DOM.
+    """
 
     def test_every_shape_is_offered_and_the_plan_is_previewed(self) -> None:
         result = self._run({"shape": "onebox", "storage": "ebs"})
@@ -219,156 +228,6 @@ class ChooserRendersTest(unittest.TestCase):
             any("/v1/admin/deployment/plan" in url for url in result["postedOnLoad"]),
             "no plan was previewed until something was touched")
         self.assertIn("Resolves to", result["verdictOnLoad"])
-
-    def test_the_page_shows_what_the_plan_resolves_to_not_what_was_asked(self) -> None:
-        result = self._run({"shape": "onebox", "storage": "ebs"})
-        self.assertIn("Resolves to", result["verdict"])
-        # The live backend read from the engine is stated, not inferred from the form.
-        self.assertIn("matrixobject", result["live"])
-
-    def test_a_blocked_plan_is_shown_as_blocked(self) -> None:
-        result = self._run({"shape": "shared", "storage": "path", "nodes": 3})
-        self.assertIn("Blocked", result["verdict"])
-        self.assertIn("TS_SHARED_STORE_DIR", result["verdict"])
-
-    def test_the_shared_directory_field_follows_the_storage_choice(self) -> None:
-        # It is required for a shared filesystem and meaningless for the object store, and the
-        # difference is a live DOM change no source read can confirm.
-        result = self._run({"shape": "onebox", "storage": "ebs"})
-        self.assertIn("MatrixObject", result["storageAfterShared"])
-        self.assertTrue(result["sharedFieldShownForPath"],
-                        "a shared filesystem was offered with nowhere to put the directory")
-        self.assertTrue(result["sharedFieldHiddenForObject"],
-                        "a directory field was left showing for the object store")
-
-
-class ChooserRendersTest(unittest.TestCase):
-    """The page, run against the real route bodies.
-
-    A request and its outcome differ here on purpose, and in page source the two are the same shape
-    of string concatenation. Rendering the resolved backend and rendering the requested one look
-    identical to a grep, so the only way to tell them apart is to run the page and read what landed
-    in the DOM.
-    """
-
-    def setUp(self) -> None:
-        import shutil
-        if not shutil.which("node"):
-            self.skipTest("node is not installed")
-        self.app = _app()
-
-    def _routes(self, plan_payload) -> dict:
-        _st, _h, config = drive(self.app, method="GET", path="/v1/admin/config", headers=ADMIN)
-        _st, _h, deployment = drive(self.app, method="GET", path="/v1/admin/deployment",
-                                    headers=ADMIN)
-        _st, _h, plan = drive(self.app, method="POST", path="/v1/admin/deployment/plan",
-                              body=plan_payload, headers=ADMIN)
-        return {
-            "config": json.loads(config),
-            "deployment": json.loads(deployment),
-            "plan": json.loads(plan),
-        }
-
-    def _run(self, plan_payload) -> dict:
-        import subprocess
-        import tempfile
-        page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "portal", "setup_portal.html")
-        harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "portal", "deployment_chooser_harness.js")
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-            json.dump(self._routes(plan_payload), handle)
-            fixture = handle.name
-        try:
-            proc = subprocess.run(["node", harness, page, fixture],
-                                  capture_output=True, text=True, timeout=60)
-        finally:
-            os.unlink(fixture)
-        self.assertEqual(0, proc.returncode, proc.stderr)
-        return json.loads(proc.stdout)
-
-    def test_every_shape_is_offered_and_the_plan_is_previewed(self) -> None:
-        result = self._run({"shape": "onebox", "storage": "ebs"})
-        self.assertEqual([], result["errors"], "the page's scripts threw")
-        self.assertEqual(3, result["shapeOptions"])
-        self.assertIn("TS_STANDALONE=1", result["envFile"])
-        # The preview happens without the customer pressing anything.
-        self.assertTrue(any("/v1/admin/deployment/plan" in p["url"] for p in result["posted"]))
-
-    def test_the_page_shows_what_the_plan_resolves_to_not_what_was_asked(self) -> None:
-        result = self._run({"shape": "onebox", "storage": "ebs"})
-        self.assertIn("Resolves to", result["verdict"])
-        # The live backend read from the engine is stated, not inferred from the form.
-        self.assertIn("matrixobject", result["live"])
-
-    def test_a_blocked_plan_is_shown_as_blocked(self) -> None:
-        result = self._run({"shape": "shared", "storage": "path", "nodes": 3})
-        self.assertIn("Blocked", result["verdict"])
-        self.assertIn("TS_SHARED_STORE_DIR", result["verdict"])
-
-    def test_the_shared_directory_field_follows_the_storage_choice(self) -> None:
-        # It is required for a shared filesystem and meaningless for the object store, and the
-        # difference is a live DOM change no source read can confirm.
-        result = self._run({"shape": "onebox", "storage": "ebs"})
-        self.assertIn("MatrixObject", result["storageAfterShared"])
-        self.assertTrue(result["sharedFieldShownForPath"],
-                        "a shared filesystem was offered with nowhere to put the directory")
-        self.assertTrue(result["sharedFieldHiddenForObject"],
-                        "a directory field was left showing for the object store")
-
-
-class ChooserRendersTest(unittest.TestCase):
-    """The page, run against the real route bodies.
-
-    A request and its outcome differ here on purpose, and in page source the two are the same shape
-    of string concatenation. Rendering the resolved backend and rendering the requested one look
-    identical to a grep, so the only way to tell them apart is to run the page and read what landed
-    in the DOM.
-    """
-
-    def setUp(self) -> None:
-        import shutil
-        if not shutil.which("node"):
-            self.skipTest("node is not installed")
-        self.app = _app()
-
-    def _routes(self, plan_payload) -> dict:
-        _st, _h, config = drive(self.app, method="GET", path="/v1/admin/config", headers=ADMIN)
-        _st, _h, deployment = drive(self.app, method="GET", path="/v1/admin/deployment",
-                                    headers=ADMIN)
-        _st, _h, plan = drive(self.app, method="POST", path="/v1/admin/deployment/plan",
-                              body=plan_payload, headers=ADMIN)
-        return {
-            "config": json.loads(config),
-            "deployment": json.loads(deployment),
-            "plan": json.loads(plan),
-        }
-
-    def _run(self, plan_payload) -> dict:
-        import subprocess
-        import tempfile
-        page = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "portal", "setup_portal.html")
-        harness = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "portal", "deployment_chooser_harness.js")
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
-            json.dump(self._routes(plan_payload), handle)
-            fixture = handle.name
-        try:
-            proc = subprocess.run(["node", harness, page, fixture],
-                                  capture_output=True, text=True, timeout=60)
-        finally:
-            os.unlink(fixture)
-        self.assertEqual(0, proc.returncode, proc.stderr)
-        return json.loads(proc.stdout)
-
-    def test_every_shape_is_offered_and_the_plan_is_previewed(self) -> None:
-        result = self._run({"shape": "onebox", "storage": "ebs"})
-        self.assertEqual([], result["errors"], "the page's scripts threw")
-        self.assertEqual(3, result["shapeOptions"])
-        self.assertIn("TS_STANDALONE=1", result["envFile"])
-        # The preview happens without the customer pressing anything.
-        self.assertTrue(any("/v1/admin/deployment/plan" in p["url"] for p in result["posted"]))
 
     def test_the_page_shows_what_the_plan_resolves_to_not_what_was_asked(self) -> None:
         result = self._run({"shape": "onebox", "storage": "ebs"})
@@ -423,7 +282,7 @@ class LaunchArtifactRouteTest(unittest.TestCase):
         self.assertNotIn("\nDEEPSEEK_API_KEY=", plan["cloud_init"])
 
 
-class LaunchArtifactRendersTest(ChooserRendersTest):
+class LaunchArtifactRendersTest(_PageHarness, unittest.TestCase):
     """The page's copy of the same guarantee, read out of the DOM after running it."""
 
     def test_the_page_shows_the_script_and_the_teardown(self) -> None:
@@ -438,6 +297,28 @@ class LaunchArtifactRendersTest(ChooserRendersTest):
                             "key_envs": ["DEEPSEEK_API_KEY"]})
         self.assertIn("# DEEPSEEK_API_KEY=", result["userData"])
         self.assertNotIn("\nDEEPSEEK_API_KEY=", result["userData"])
+
+
+class ThisFileDefinesEachClassOnceTest(unittest.TestCase):
+    """A class defined twice silently shadows the first, and nothing anywhere reports it.
+
+    Four copies of one test class accumulated here from a re-run patch script. Python binds the
+    name to the last definition, so unittest collected 26 of the 34 test methods present and eight
+    could never fail -- while the file imported cleanly, the suite passed, and the count looked
+    entirely plausible. That is the same shape of vacuous test the rest of this file exists to rule
+    out, so it is worth one assertion.
+    """
+
+    def test_no_class_is_defined_twice(self) -> None:
+        import collections
+        with open(os.path.abspath(__file__), encoding="utf-8") as handle:
+            names = re.findall(r"^class ([A-Za-z_][A-Za-z0-9_]*)", handle.read(), re.M)
+        self.assertTrue(names, "found no class definitions -- this check is looking in the wrong "
+                               "place and would pass no matter what")
+        repeated = sorted(n for n, count in collections.Counter(names).items() if count > 1)
+        self.assertEqual([], repeated,
+                         "these classes are defined more than once, so the earlier definitions are "
+                         "dead code that can never fail: %s" % repeated)
 
 
 if __name__ == "__main__":
