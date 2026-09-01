@@ -69,6 +69,80 @@ fn stage_meta_outcome(
     });
 }
 
+/// Read a node record back, by the same two lookups every node reader here uses.
+fn load_context_node(
+    cache: &MultiLayerCache,
+    page_store: &LocalBlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+) -> Option<ContextNode> {
+    shard
+        .hashes
+        .get(object_key)
+        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+        .or_else(|| shard.context_nodes.get(object_key))
+        .and_then(|address| {
+            read_page_bytes(cache, page_store, shard_id, address)
+                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+        })
+}
+
+/// Persist a node record: the one producer of a node page.
+///
+/// Three commands now write a node -- the upsert, the embedding attach, and the summary upsert
+/// keeping the node's copy of its summary vector current -- and each needs the page appended,
+/// the outcome staged, the hash field pointed at the new address and the record invalidated, in
+/// that order. Held apart, the third copy is where one of those four steps goes missing.
+///
+/// Returns whether a page was written, which is what the caller records as `mutated`.
+#[allow(clippy::too_many_arguments)]
+fn write_context_node(
+    cache: &MultiLayerCache,
+    page_store: &LocalBlockStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    object_key: &str,
+    node: &ContextNode,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    async_storage: bool,
+) -> bool {
+    let object_id = stable_page_object_id(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD));
+    let routing_bucket = page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    let mut wrote = false;
+    if let Ok(address) = append_value(
+        cache,
+        page_store,
+        shard_id,
+        &context_bytes(node),
+        Some(object_id),
+        Some(routing_bucket),
+        async_storage,
+    ) {
+        // Its own kind, deliberately: this writes a hash page and -- unlike HashSet --
+        // never registers it in the bucket index, so recording it as a "hash" would have
+        // a rebuild add an entry the write never made.
+        stage_component_outcome(
+            shard_id,
+            "context_node",
+            object_key,
+            Some(CONTEXT_NODE_FIELD.to_string()),
+            routing_bucket,
+            Some(address.clone()),
+            None,
+        );
+        shard
+            .hashes
+            .entry(object_key.to_string())
+            .or_default()
+            .insert(CONTEXT_NODE_FIELD.to_string(), address);
+        wrote = true;
+    }
+    invalidate_record_all(cache, shard_id, object_key);
+    wrote
+}
+
 pub(crate) fn execute_on_shard(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -2347,15 +2421,7 @@ pub(crate) fn execute_on_shard(
             // here on, so a reader that has fetched the node has already paid for the vector --
             // no second key, no second block, and no hash to invert.
             let object_key = context_node_key(tenant_hash, node_hash);
-            let existing = shard
-                .hashes
-                .get(&object_key)
-                .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                .or_else(|| shard.context_nodes.get(&object_key))
-                .and_then(|address| {
-                    read_page_bytes(cache, page_store, shard_id, address)
-                        .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
-                });
+            let existing = load_context_node(cache, page_store, shard_id, shard, &object_key);
             match existing {
                 // No node to attach to. Writing a placeholder here would invent a node that
                 // ingest never created, so report it rather than fabricate one.
@@ -2366,80 +2432,39 @@ pub(crate) fn execute_on_shard(
                     node.vector = vector;
                     node.embedding_model_hash = model_hash;
                     node.embedding_updated_at_ms = updated_at_ms;
-                    let object_id = stable_page_object_id(
-                        shard_id,
-                        "hash",
-                        &object_key,
-                        Some(CONTEXT_NODE_FIELD),
-                    );
-                    let routing_bucket =
-                        page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
-                    if let Ok(address) = append_value(
+                    // `summary_vector` is left exactly as it was read. It is a copy of the L1
+                    // SUMMARY's vector, and re-embedding the node does not re-embed the summary,
+                    // so the copy is still the summary's current vector. Clearing it here would
+                    // throw away a valid copy; overwriting it with the new node vector would
+                    // claim the summary says something it does not.
+                    mutated |= write_context_node(
                         cache,
                         page_store,
                         shard_id,
-                        &context_bytes(&node),
-                        Some(object_id),
-                        Some(routing_bucket),
+                        shard,
+                        &object_key,
+                        &node,
+                        start_routing_bucket,
+                        end_routing_bucket,
                         async_storage,
-                    ) {
-                        stage_component_outcome(
-                            shard_id,
-                            "context_node",
-                            &object_key,
-                            Some(CONTEXT_NODE_FIELD.to_string()),
-                            routing_bucket,
-                            Some(address.clone()),
-                            None,
-                        );
-                        shard
-                            .hashes
-                            .entry(object_key.clone())
-                            .or_default()
-                            .insert(CONTEXT_NODE_FIELD.to_string(), address);
-                        mutated = true;
-                    }
-                    invalidate_record_all(cache, shard_id, &object_key);
+                    );
                     CommandResponse::ContextObjectKey { object_key }
                 }
             }
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
             let object_key = context_node_key(tenant_hash, node.node_hash);
-            let object_id =
-                stable_page_object_id(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD));
-            let routing_bucket =
-                page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
-            let bytes = context_bytes(&node);
-            if let Ok(address) = append_value(
+            mutated |= write_context_node(
                 cache,
                 page_store,
                 shard_id,
-                &bytes,
-                Some(object_id),
-                Some(routing_bucket),
+                shard,
+                &object_key,
+                &node,
+                start_routing_bucket,
+                end_routing_bucket,
                 async_storage,
-            ) {
-                // Its own kind, deliberately: this writes a hash page and -- unlike HashSet --
-                // never registers it in the bucket index, so recording it as a "hash" would have
-                // a rebuild add an entry the write never made.
-                stage_component_outcome(
-                    shard_id,
-                    "context_node",
-                    &object_key,
-                    Some(CONTEXT_NODE_FIELD.to_string()),
-                    routing_bucket,
-                    Some(address.clone()),
-                    None,
-                );
-                shard
-                    .hashes
-                    .entry(object_key.clone())
-                    .or_default()
-                    .insert(CONTEXT_NODE_FIELD.to_string(), address);
-                mutated = true;
-            }
-            invalidate_record_all(cache, shard_id, &object_key);
+            );
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextGetNode {
@@ -3329,6 +3354,55 @@ pub(crate) fn execute_on_shard(
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
+            // Keep the node's copy of this vector current. The summary record just written
+            // remains the owner; the copy exists so the scoring pass, which fetches the node
+            // anyway, does not have to come back here for one field.
+            //
+            // Only the L1 level: that is the only level scoring reads a vector from, and the
+            // node has one slot, so copying L0 here would overwrite the answer with a summary
+            // nothing asks for.
+            if context_node_summary_vector_enabled()
+                && summary.level == CONTEXT_SUMMARY_LEVEL_L1
+                && !summary.vector.is_empty()
+            {
+                let node_key = context_node_key(tenant_hash, summary.node_hash);
+                if let Some(node) =
+                    load_context_node(cache, page_store, shard_id, shard, &node_key)
+                {
+                    // Never move the copy BACKWARDS. A summary can be written with an older
+                    // `valid_from_ms` than one already stored -- a backfill, a replay, a
+                    // correction -- and taking it would leave the node claiming a superseded
+                    // vector is the newest, which is precisely the read the copy answers.
+                    if node.summary_vector_valid_from_ms <= summary.valid_from_ms {
+                        let mut updated = node.clone();
+                        // Stored form, not the value as computed. The node being compared
+                        // against came off a page, and both stored vector forms round, so a raw
+                        // vector differs from its own round trip -- which would call every
+                        // ingest a change and append a second node page for each one.
+                        updated.summary_vector = context_vector_as_stored(&summary.vector);
+                        updated.summary_vector_valid_from_ms = summary.valid_from_ms;
+                        // The encoder stamp travels with the vector, or the copy becomes the one
+                        // scored vector whose encoder nothing checks.
+                        updated.summary_vector_model_hash = summary.embedding_model_hash;
+                        // Write only when the record would actually change. The ingest already
+                        // wrote the node carrying this copy, moments before the summary write
+                        // that lands here.
+                        if context_bytes(&updated) != context_bytes(&node) {
+                            mutated |= write_context_node(
+                                cache,
+                                page_store,
+                                shard_id,
+                                shard,
+                                &node_key,
+                                &updated,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                                async_storage,
+                            );
+                        }
+                    }
+                }
+            }
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextQuerySummaries {

@@ -133,6 +133,9 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         vector: Vec::new(),
         embedding_model_hash: 0,
         embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
     };
     let native_node = ContextNode {
         status: 0,
@@ -141,6 +144,9 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         vector: Vec::new(),
         embedding_model_hash: 0,
         embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
         ..node.clone()
     };
     let upsert = engine.execute(ExecuteRequest {
@@ -712,6 +718,9 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
         },
         ContextNode {
             node_hash: GPU,
@@ -726,6 +735,9 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             vector: Vec::new(),
             embedding_model_hash: 0,
             embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
         },
     ] {
         let response = engine.execute(ExecuteRequest {
@@ -2738,6 +2750,9 @@ fn a_node_embedding_lands_on_the_node_itself() {
         vector: Vec::new(),
         embedding_model_hash: 0,
         embedding_updated_at_ms: 0,
+        summary_vector: Vec::new(),
+        summary_vector_valid_from_ms: 0,
+        summary_vector_model_hash: 0,
     };
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2809,6 +2824,9 @@ fn re_embedding_a_node_replaces_the_vector_rather_than_accumulating() {
                 vector: Vec::new(),
                 embedding_model_hash: 0,
                 embedding_updated_at_ms: 0,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
             },
         },
     });
@@ -2919,6 +2937,9 @@ fn node_vectors_can_be_asked_for_by_owner() {
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         });
@@ -2997,6 +3018,9 @@ fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
                     vector: Vec::new(),
                     embedding_model_hash: 0,
                     embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
                 },
             },
         });

@@ -96,7 +96,8 @@ use crate::block_store::{LocalBlockStore, BlockAddress, BlockStoreError, BlockSt
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextCompressionEvent,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
-    ContextSummaryVector,
+    context_node_summary_vector_enabled, context_vector_as_stored, ContextSummaryVector,
+    CONTEXT_SUMMARY_LEVEL_L1,
     ContextDirtyNode, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
     ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
