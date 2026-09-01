@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """A readiness row that read a setting and one that counted records both print "ok".
 
 Only one of them survives the deployment being misconfigured in a way that still answers 200, and
