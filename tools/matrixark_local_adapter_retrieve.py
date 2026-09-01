@@ -3750,6 +3750,14 @@ class _LocalAdapterRetrieveMixin:
                 "vector_width": embedding_width_conflict_records,
                 "active_embedding_model": active_embedding_model,
             },
+            # Stated by the path that did it. The other implementation over this same store ranks
+            # by term overlap and reads no vector, and a caller cannot tell the two apart from the
+            # results alone.
+            "served_by": {
+                "assembly": "python_local_adapter",
+                "ranking": "dense_cosine_blended_with_lexical",
+                "ranking_uses_vectors": True,
+            },
             "insufficient_context": not selected,
             "partial_context_pack": partial_context_pack,
             "context_pack_payload_policy": {

@@ -2523,6 +2523,7 @@ EXPLORE_BODY = """
     <div class="actions"><button id="ask" type="button">Retrieve</button>
       <span class="hint" style="margin:0">Calls <span class="mono">POST /v1/retrieve</span> exactly as an agent would.</span></div>
     <div id="askMsg" role="status" aria-live="polite"></div>
+    <div id="askServed" class="hint" hidden></div>
     <div id="askWarnings"></div>
     <div id="pack"><div class="empty">Nothing retrieved yet.</div></div>
   </section>
@@ -2724,9 +2725,42 @@ EXPLORE_JS = r"""
   /* The backend explains a thin answer; this is where a person sees it. Without this the pack
      arrives shorter than it should be with nothing saying why, which reads as bad retrieval -- and
      the fix for bad retrieval is not the fix for a changed encoder. */
+  var ASSEMBLY_LABELS = {
+    python_local_adapter: "the Python adapter",
+    native_rust_proxy: "the native Rust pack",
+    native_backend: "the native backend",
+    rust_proxy_native_context_pack: "the native Rust pack"
+  };
+
   function renderAskWarnings(d) {
     var conflicts = d.embedding_conflicts || {};
     var blocks = [];
+
+    /* Which implementation answered, and whether it consulted the encoder. Two implementations rank
+       this same store differently, and the results alone do not say which one ran. */
+    var served = d.served_by || {};
+    if (served.assembly) {
+      var who = ASSEMBLY_LABELS[served.assembly] || served.assembly;
+      var how = served.ranking
+        ? " · ranked by " + esc(String(served.ranking).replace(/_/g, " "))
+        : "";
+      $("askServed").innerHTML = "Answered by " + esc(who) + how;
+      $("askServed").hidden = false;
+    } else {
+      $("askServed").hidden = true;
+    }
+    if (served.ranking_uses_vectors === false) {
+      /* The sentence that matters: an encoder is configured, the encoding panel shows vectors
+         stored, and this answer was ordered without reading one of them. */
+      /* Kept as one literal. Split across a concatenation the sentence stops being greppable in
+         the built page, which is how a test asserting the customer can read it passed on a page
+         where they could not. */
+      blocks.push('<div class="note"><b>These results were ranked without using the embedding model.</b> ' +
+        esc(ASSEMBLY_LABELS[served.assembly] || served.assembly) +
+        " orders candidates by how many of your query's words appear in the text, not by meaning. " +
+        "Stored vectors are not consulted on this path, so a paraphrase that shares no words with " +
+        "the original will not match however well the encoder is configured.</div>");
+    }
     if (conflicts.encoder_change) {
       blocks.push('<div class="mwarn"><b>' + esc(conflicts.encoder_change) + " stored memor" +
         (conflicts.encoder_change === 1 ? "y was" : "ies were") + " not searched</b>" +

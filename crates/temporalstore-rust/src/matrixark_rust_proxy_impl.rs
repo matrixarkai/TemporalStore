@@ -1406,6 +1406,25 @@ fn record_ref_hash(record: &Value) -> Option<String> {
             }
         }
     }
+    // `ref_hashes` fallback, last so nothing that resolves today changes branch.
+    //
+    // The posting builder writes the singular `ref_hash` ONLY when the posting carries exactly one
+    // ref; a multi-ref posting has the array and no singular field. Without this a posting like
+    // that returns None here, and two serving sites drop the record outright rather than score it
+    // (`let Some(profile_hash) = record_ref_hash(..) else { continue; }`), with nothing logged.
+    //
+    // No caller passes more than one ref today, which is precisely why the day one does the loss
+    // would be silent.
+    if let Some(Value::Array(refs)) = record.get("ref_hashes") {
+        for value in refs {
+            if let Some(number) = value.as_u64() {
+                return Some(number.to_string());
+            }
+            if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+                return Some(text.to_string());
+            }
+        }
+    }
     None
 }
 
@@ -4437,14 +4456,20 @@ fn retrieve_context_pack_output(
                 "placement_key_candidate_fetch",
                 "native_score_rerank_pack"
             ],
-            "correctness_evidence": {
-                "scope_filtering": correctness,
-                "placement_filtering": correctness,
-                "compact_secondary_index_prefilter": correctness,
-                "stale_superseded_exclusion": correctness,
-                "shared_resource_skill_quota": correctness,
-                "cross_session_quota_rerank": correctness
-            },
+            // How this pack was ranked. Stated rather than left to be inferred: a caller that
+            // knows an encoder is configured still cannot tell whether the path that answered
+            // consulted it, and this one does not -- candidates are ordered by
+            // `score_lowered_text` over the query terms, and no vector is read anywhere on it.
+            "ranking": "lexical_term_overlap_and_boosts",
+            "ranking_uses_vectors": false,
+            "correctness_evidence": native_correctness_evidence(
+                scope.is_some(),
+                snapshot.placement_partitions_touched,
+                !secondary_groups.is_empty(),
+                current_state_query,
+                dropped_stale_ref,
+                correctness,
+            ),
             "source": "rust_proxy_native_context_pack"
         }
     });
@@ -4614,6 +4639,40 @@ fn query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+/// What this path actually did, one field per property.
+///
+/// These were six fields all reading `selected_count > 0`: one condition wearing six hats, so a
+/// non-empty pack marked every property verified and an empty one marked every property failed.
+/// Written as a function so that wiring two of them to the same input is visible in the signature
+/// rather than buried four hundred lines into the caller.
+///
+/// Two are `false` and stay `false` here: the shared resource/skill quota and the cross-session
+/// quota rerank belong to the full-scan assembly, not to this one. A caller comparing the two paths
+/// needs to see that difference, and reporting them as done because the pack was non-empty is how
+/// it stayed invisible.
+fn native_correctness_evidence(
+    scope_applied: bool,
+    placement_partitions_touched: usize,
+    secondary_index_applied: bool,
+    current_state_query: bool,
+    stale_superseded_dropped: u64,
+    selected_any: bool,
+) -> Value {
+    json!({
+        "scope_filtering": scope_applied,
+        "placement_filtering": placement_partitions_touched > 0,
+        "compact_secondary_index_prefilter": secondary_index_applied,
+        // The supersede pass runs only for a current-state question. For anything else there is
+        // nothing to supersede, and saying the pass ran would claim a check nobody made.
+        "stale_superseded_exclusion": current_state_query,
+        "stale_superseded_dropped": stale_superseded_dropped,
+        "shared_resource_skill_quota": false,
+        "cross_session_quota_rerank": false,
+        // Kept, but named for what it is. This is the one thing the old six all measured.
+        "selected_any": selected_any
+    })
+}
+
 fn score_lowered_text(lowered: &str, query_terms: &[String]) -> f64 {
     if query_terms.is_empty() {
         return 0.0;
@@ -4773,6 +4832,108 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::compare_scored_candidate;
+
+    use super::native_correctness_evidence;
+
+    /// Each field must move for its own reason. The six this replaced were one condition wearing
+    /// six hats: a non-empty pack marked every property verified, an empty one marked every
+    /// property failed, and nothing in between could ever be observed.
+    #[test]
+    fn correctness_evidence_fields_are_independent() {
+        let all_off = native_correctness_evidence(false, 0, false, false, 0, false);
+        let all_on = native_correctness_evidence(true, 3, true, true, 7, true);
+        for field in [
+            "scope_filtering",
+            "placement_filtering",
+            "compact_secondary_index_prefilter",
+            "stale_superseded_exclusion",
+            "selected_any",
+        ] {
+            assert_eq!(
+                Some(false),
+                all_off.get(field).and_then(Value::as_bool),
+                "{field} did not follow its own input"
+            );
+            assert_eq!(
+                Some(true),
+                all_on.get(field).and_then(Value::as_bool),
+                "{field} did not follow its own input"
+            );
+        }
+    }
+
+    #[test]
+    fn one_property_moving_does_not_move_the_others() {
+        // The shape of the bug: flip a single input and exactly one field may change.
+        let base = native_correctness_evidence(false, 0, false, false, 0, false);
+        let scoped = native_correctness_evidence(true, 0, false, false, 0, false);
+        assert_eq!(Some(true), scoped.get("scope_filtering").and_then(Value::as_bool));
+        for field in [
+            "placement_filtering",
+            "compact_secondary_index_prefilter",
+            "stale_superseded_exclusion",
+            "selected_any",
+        ] {
+            assert_eq!(
+                base.get(field),
+                scoped.get(field),
+                "{field} moved when only the scope changed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_selected_pack_does_not_certify_checks_that_did_not_run() {
+        // The old behaviour exactly: something was selected, therefore everything was verified.
+        let evidence = native_correctness_evidence(false, 0, false, false, 0, true);
+        assert_eq!(Some(true), evidence.get("selected_any").and_then(Value::as_bool));
+        assert_eq!(
+            Some(false),
+            evidence.get("scope_filtering").and_then(Value::as_bool),
+            "a non-empty pack certified a scope filter that was never applied"
+        );
+        assert_eq!(
+            Some(false),
+            evidence.get("placement_filtering").and_then(Value::as_bool)
+        );
+    }
+
+    #[test]
+    fn an_empty_pack_does_not_fail_checks_that_did_run() {
+        // The other direction, which the old code got wrong just as badly.
+        let evidence = native_correctness_evidence(true, 4, true, true, 0, false);
+        assert_eq!(Some(false), evidence.get("selected_any").and_then(Value::as_bool));
+        for field in [
+            "scope_filtering",
+            "placement_filtering",
+            "compact_secondary_index_prefilter",
+            "stale_superseded_exclusion",
+        ] {
+            assert_eq!(
+                Some(true),
+                evidence.get(field).and_then(Value::as_bool),
+                "{field} was reported as failed because the pack happened to be empty"
+            );
+        }
+    }
+
+    #[test]
+    fn the_quotas_this_path_does_not_perform_are_reported_as_not_performed() {
+        let evidence = native_correctness_evidence(true, 9, true, true, 3, true);
+        assert_eq!(
+            Some(false),
+            evidence.get("shared_resource_skill_quota").and_then(Value::as_bool)
+        );
+        assert_eq!(
+            Some(false),
+            evidence.get("cross_session_quota_rerank").and_then(Value::as_bool)
+        );
+        assert_eq!(
+            Some(3),
+            evidence.get("stale_superseded_dropped").and_then(Value::as_u64)
+        );
+    }
+
     use std::cmp::Ordering;
 
     /// Stamping a cache hit must not reach for the scan-cache lock.
@@ -7113,6 +7274,40 @@ mod tests {
             Some(7),
             "sibling bundle metadata is preserved on rewrite"
         );
+    }
+
+
+    /// A posting carrying SEVERAL refs has no singular `ref_hash` -- the builder only writes that
+    /// when there is exactly one -- so before the `ref_hashes` fallback this returned None and two
+    /// serving sites dropped the record instead of scoring it.
+    #[test]
+    fn a_multi_ref_posting_still_has_an_identity() {
+        let single = json!({
+            "record_type": "context_index",
+            "ref_hash": 4242_u64,
+            "ref_hashes": [4242_u64],
+        });
+        assert_eq!(record_ref_hash(&single).as_deref(), Some("4242"),
+                   "a single-ref posting keeps resolving through the singular field");
+
+        let multi = json!({
+            "record_type": "context_index",
+            "ref_hashes": [7001_u64, 7002_u64, 7003_u64],
+        });
+        assert_eq!(record_ref_hash(&multi).as_deref(), Some("7001"),
+                   "a multi-ref posting resolves through the array");
+
+        let identity_wins = json!({
+            "record_type": "context_entity",
+            "entity_hash": 900_u64,
+            "ref_hashes": [111_u64],
+        });
+        assert_eq!(record_ref_hash(&identity_wins).as_deref(), Some("900"),
+                   "an identity field still takes precedence over the array");
+
+        let neither = json!({"record_type": "context_index"});
+        assert_eq!(record_ref_hash(&neither), None,
+                   "a record with no identity at all is still unidentified");
     }
 
     #[test]

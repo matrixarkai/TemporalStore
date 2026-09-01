@@ -523,6 +523,50 @@ could resend them. A bulk import from a server directory is the retryable-after-
 
 ---
 
+## Which engine answered, and how it ranked
+
+One store, two implementations that rank differently:
+
+| path | when it serves | how it orders results |
+|---|---|---|
+| Python local adapter | the local backend — the default `MatrixArkLocalAdapter`, what an OSS install runs | dense cosine blended with lexical overlap |
+| native Rust pack | a TemporalStore backend, where Python packing is refused outright | term overlap plus boosts — **no vector is read** |
+
+Nothing in the response used to say which one answered, so the same query against two deployments
+gave materially different results with no way to tell why. Worse, the Setup summary card described
+retrieval as *semantic* or *hash vectors* from the embedding **provider** — a configuration value.
+Whether an encoder is configured and whether the path that answers consults it are different
+questions, and on one of these paths the answer is no.
+
+Every pack now carries `served_by`: which assembly built it, how it ranked, and whether that ranking
+read vectors. Each producer states its own; the shape is identical either way, and a producer that
+says nothing is reported as unknown rather than guessed at — silence about the ranking is not
+evidence of either answer. `ranking_uses_vectors: false` survives compaction specifically because a
+filter that drops falsey values would delete exactly the case worth reporting.
+
+**Explore → Ask** shows *"Answered by …"* under the result count, and when the answering path did not
+consult vectors it says so plainly: those results were ordered by how many of the query's words
+appear in the text, so a paraphrase sharing no words will not match however well the encoder is
+configured. That sentence is driven by what the backend reported, never by what is configured.
+
+### Six checks that were one flag
+
+The native pack also reported a `correctness_evidence` block — scope filtering, placement filtering,
+the secondary-index prefilter, stale exclusion, a shared resource/skill quota, a cross-session quota
+rerank — with **all six set from `selected_count > 0`**. One condition wearing six hats: a non-empty
+pack marked every property verified, an empty one marked every property failed, and two of them are
+not performed on that path at all.
+
+Each field now comes from its own observation, and the counter that the six actually measured is
+kept under its own name, `selected_any`. The derivation moved into a function taking one argument
+per property, so a future edit wiring two fields to one input shows up in the signature rather than
+four hundred lines into the caller. Five tests hold it: that each field follows its own input, that
+flipping one input moves exactly one field, that a non-empty pack does not certify checks that never
+ran, that an empty one does not fail checks that did, and that the two quotas this path does not
+perform stay reported as not performed.
+
+---
+
 ## The status strip
 
 Every page carries a live strip in the nav: what is waiting to be encoded, the import that is
