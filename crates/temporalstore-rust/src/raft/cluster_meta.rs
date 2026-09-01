@@ -226,6 +226,15 @@ impl MetaRaftCluster {
     }
 
     /// Mute or resume metadata change across the raft group.
+    /// Whether metadata change is muted, or `None` when no quorum can answer.
+    ///
+    /// The mute could be set through this backend but never read back through
+    /// it. Reporting `false` when the cluster cannot be read would claim
+    /// changes are flowing at exactly the moment nothing can be known.
+    pub fn meta_change_muted(&self) -> Option<bool> {
+        self.read_meta().ok().map(|meta| meta.is_meta_change_muted())
+    }
+
     pub fn set_meta_change_muted(&self, muted: bool) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::SetMetaChangeMuted(muted)),

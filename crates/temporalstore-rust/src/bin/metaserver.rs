@@ -1958,6 +1958,26 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
         stats.topology_version,
     );
 
+    // Muting metadata change is the widest switch on the metaserver: besides
+    // refusing every mutation, it parks the retention sweep, freeze aging, and
+    // both failure detectors -- so while it is set, a dead server is never
+    // detected and never frozen, and the cluster keeps routing to it.
+    //
+    // None of that was visible. Metrics keep flowing while muted and
+    // temporalstore_meta_topology_version simply stops advancing, which looks
+    // exactly like a quiet cluster. Exported so it can be alerted on; the
+    // recorded change history answers when it was set.
+    // Emitted only when the answer is known. An unreadable cluster leaves the
+    // series absent, which an alert can catch, rather than reporting a zero
+    // that would read as "changes are flowing".
+    if let Some(muted) = backend_call!(meta, meta_change_muted) {
+        out.push_str(
+            "# HELP temporalstore_meta_change_muted Whether metadata change is muted (1) or flowing (0).\n",
+        );
+        out.push_str("# TYPE temporalstore_meta_change_muted gauge\n");
+        push_meta_metric(&mut out, "temporalstore_meta_change_muted", &[], u64::from(muted));
+    }
+
     out.push_str("# HELP temporalstore_meta_scheduler_queue_depth Current metaserver scheduler queue depth.\n");
     out.push_str("# TYPE temporalstore_meta_scheduler_queue_depth gauge\n");
     push_meta_metric(
@@ -3201,6 +3221,83 @@ mod tests {
             .contains("temporalstore_meta_resource_state{resource=\"proxy\",state=\"frozen\"} 1"));
         assert!(metrics.contains("temporalstore_meta_scheduler_queue_depth 1"));
         assert!(metrics.contains("temporalstore_meta_topology_version"));
+    }
+
+    #[test]
+    fn the_widest_switch_on_the_metaserver_is_visible_on_the_dashboard() {
+        // Muting metadata change refuses every mutation and parks the retention
+        // sweep, freeze aging and both failure detectors -- so a dead server is
+        // never detected while it is set. Nothing exported it, and metrics keep
+        // flowing while muted, so the only symptom was a topology version that
+        // stopped advancing: indistinguishable from a quiet cluster.
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+
+        let flowing = metaserver_prometheus_metrics(&backend, &scheduler);
+        assert!(flowing.contains("# TYPE temporalstore_meta_change_muted gauge"));
+        assert!(flowing.contains("temporalstore_meta_change_muted 0"));
+
+        let (code, _) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/mute".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+
+        let muted = metaserver_prometheus_metrics(&backend, &scheduler);
+        assert!(
+            muted.contains("temporalstore_meta_change_muted 1"),
+            "the cluster was muted and the dashboard could not tell"
+        );
+    }
+
+    #[test]
+    fn a_raft_backed_metaserver_can_read_its_own_mute_back() {
+        // The mute could be set through the raft backend but never read back
+        // through it: there was no read path for it at all, so the metric would
+        // have reported on a value this backend could not reach.
+        let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            snapshot_check_interval_ms: 0,
+            engine: ProductionRaftEngineKind::TemporalRaft,
+            local_node_id: 1,
+            nodes: vec![ProductionRaftNode {
+                node_id: 1,
+                addr: "127.0.0.1:18131".to_string(),
+            }],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 100,
+            election_tick_ms: 50,
+            failure_detector_interval_ms: 1_000,
+            stale_server_after_ms: 30_000,
+            forbid_self_clearing_conviction: false,
+        })
+        .unwrap();
+        let backend = MetaBackend::Raft(runtime);
+        let scheduler = MetaTaskScheduler::default();
+
+        assert!(metaserver_prometheus_metrics(&backend, &scheduler)
+            .contains("temporalstore_meta_change_muted 0"));
+
+        let (code, _) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/mute".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+
+        assert!(
+            metaserver_prometheus_metrics(&backend, &scheduler)
+                .contains("temporalstore_meta_change_muted 1"),
+            "the raft backend set the mute and could not read it back"
+        );
     }
 
     #[test]

@@ -1949,6 +1949,13 @@ impl SingleNodeMeta {
 
 
     /// True while recorded metadata mutations are being refused.
+    /// Whether metadata change is muted, phrased so both backends answer the
+    /// same shape. A single-node metaserver always knows; a raft-backed one may
+    /// not, and `None` is the difference between "not muted" and "cannot say".
+    pub fn meta_change_muted(&self) -> Option<bool> {
+        Some(self.is_meta_change_muted())
+    }
+
     pub fn is_meta_change_muted(&self) -> bool {
         self.inner
             .read()
