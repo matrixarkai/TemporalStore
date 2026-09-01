@@ -490,27 +490,36 @@ impl SingleNodeMeta {
         options: ProxyCalibrationOptions,
     ) -> ProxyCalibrationReport {
         let plan = self.plan_proxy_calibration_now(options);
+        // What the round actually changed, which stops matching the plan as
+        // soon as one change is refused: it returns there and leaves the rest
+        // of the plan standing.
+        let mut applied = ProxyCalibrationPlan::default();
         for item in plan.detach.iter() {
             let response = self.set_proxy_group(ProxyAttachment {
                 proxy_addr: item.proxy_addr.clone(),
                 group: String::new(),
             });
             if !response.status.ok {
+                self.metrics.record_calibration(&plan, &applied);
                 return ProxyCalibrationReport {
                     status: response.status,
                     plan,
                 };
             }
+            applied.detach.push(item.clone());
         }
         for item in plan.attach.iter() {
             let response = self.set_proxy_group(item.clone());
             if !response.status.ok {
+                self.metrics.record_calibration(&plan, &applied);
                 return ProxyCalibrationReport {
                     status: response.status,
                     plan,
                 };
             }
+            applied.attach.push(item.clone());
         }
+        self.metrics.record_calibration(&plan, &applied);
         ProxyCalibrationReport {
             status: Status::ok(),
             plan,
@@ -582,6 +591,107 @@ impl SingleNodeMeta {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_group_short_of_proxies_is_reported() {
+        // Calibration attaches and detaches through `set_proxy_group`, so those
+        // land in the change history. A group left short did not: it existed
+        // only in the returned plan, which the loop dropped. That is the number
+        // an operator needs -- the shortfall type says as much about itself.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "g1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 3,
+                drop_percent: 0,
+            })
+            .status
+            .ok);
+        // One idle proxy for a group that wants three.
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+                boot_time_ms: 0,
+            })
+            .status
+            .ok);
+
+        let report = meta.calibrate_proxy_groups(ProxyCalibrationOptions::default());
+        assert!(report.status.ok, "{report:?}");
+        assert_eq!(report.plan.shortfalls.len(), 1, "{:?}", report.plan);
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_calibration_shortfall_groups 1"),
+            "a group short of capacity was not reported:\n{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_calibration_shortfall_proxies 2"),
+            "wanted 3 and attached 1, so two are missing:\n{exported}"
+        );
+    }
+
+    #[test]
+    fn a_group_at_its_target_reports_no_shortfall() {
+        // The guard: a healthy round must not look like a capacity problem.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "g1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 1,
+                drop_percent: 0,
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+                boot_time_ms: 0,
+            })
+            .status
+            .ok);
+
+        assert!(meta
+            .calibrate_proxy_groups(ProxyCalibrationOptions::default())
+            .status
+            .ok);
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_calibration_shortfall_groups 0"),
+            "a satisfied group was reported as short:\n{exported}"
+        );
+    }
+
     use super::*;
 
     fn group(name: &str, ns: &str, location: &str, want: u64) -> ProxyGroupInfo {
@@ -986,6 +1096,126 @@ mod tests {
             })
             .status
             .ok);
+    }
+
+    #[test]
+    fn a_round_that_stops_early_does_not_count_attachments_it_never_made() {
+        // Two things this pins down.
+        //
+        // The counts came off the plan, before a single `set_proxy_group` had
+        // run -- and calibration returns on the first one that is refused, so
+        // the round could report attaching proxies it never touched.
+        //
+        // They also went onto `shards_reassigned_total`, which is documented as
+        // "Shard ownership changes, by cause". A proxy joining a group is not a
+        // shard moving, and folding it in there inflates the number an operator
+        // watches for rebalance churn.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: String::new(),
+                location: "rack-1".to_string(),
+                config_version: 0,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: String::new(),
+                config_version: 0,
+                binary_version: "v1".to_string(),
+                boot_time_ms: 1,
+            })
+            .status
+            .ok);
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "orders".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 1,
+                drop_percent: 0,
+            })
+            .status
+            .ok);
+
+        // The round would attach p1 -- but every change it attempts is refused.
+        assert!(meta.set_meta_change_muted(true).status.ok);
+        let report = meta.calibrate_proxy_groups(ProxyCalibrationOptions::default());
+        assert!(
+            !report.status.ok,
+            "the round should have been refused: {report:?}"
+        );
+        assert_eq!(attached(&report.plan), vec![("p1", "orders")], "it planned one");
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_proxy_attachments_total{kind=\"attach\"} 0"),
+            "counted an attachment the round never made:\n{exported}"
+        );
+        assert!(
+            !exported.contains("temporalstore_meta_shards_reassigned_total{reason=\"proxy_attach\"}"),
+            "a proxy attaching is still counted as a shard moving:\n{exported}"
+        );
+        // The round, its shortfall and its cap are planning facts and stay.
+        assert!(
+            exported.contains(
+                "temporalstore_meta_detector_rounds_total{subsystem=\"proxy_calibration\"} 1"
+            ),
+            "{exported}"
+        );
+    }
+
+    #[test]
+    fn a_round_that_finishes_counts_every_attachment() {
+        // The other side of it: when the round runs to the end the count is the
+        // whole plan, so the fix cannot have simply stopped counting.
+        let meta = SingleNodeMeta::default();
+        for addr in ["p1", "p2"] {
+            assert!(meta
+                .register_proxy(RegisterProxyRequest {
+                    proxy_addr: addr.to_string(),
+                    namespace: String::new(),
+                    location: "rack-1".to_string(),
+                    config_version: 0,
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .proxy_heartbeat(ProxyHeartbeatRequest {
+                    proxy_addr: addr.to_string(),
+                    namespace: String::new(),
+                    config_version: 0,
+                    binary_version: "v1".to_string(),
+                    boot_time_ms: 1,
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "orders".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 2,
+                drop_percent: 0,
+            })
+            .status
+            .ok);
+
+        let report = meta.calibrate_proxy_groups(ProxyCalibrationOptions::default());
+        assert!(report.status.ok);
+        assert_eq!(report.plan.attach.len(), 2);
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_proxy_attachments_total{kind=\"attach\"} 2"),
+            "a completed round undercounted:\n{exported}"
+        );
     }
 
     #[test]
