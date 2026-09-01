@@ -1719,6 +1719,24 @@ EVENT_TICK_S = 2.0
 # The embedding count walks the record log, so it rides the stream at its own much slower cadence
 # rather than every tick. Everything else in a frame is read from memory.
 EVENT_EMBEDDING_REFRESH_S = 30.0
+# While something is waiting to be encoded the number is the thing being watched, so it is read
+# often enough to be seen moving. Answering it walks the record log, which is why the idle case is
+# not this: for a store with nothing pending the figure is a constant, and re-deriving a constant
+# every few seconds is a standing load on every connected browser.
+EVENT_EMBEDDING_REFRESH_DRAINING_S = 4.0
+
+
+def _embedding_refresh_interval(embedding: Optional[Json]) -> float:
+    """How long before the encoding figures are worth reading again.
+
+    Unknown counts as draining: if the backend could not be asked, the next answer matters sooner
+    than in half a minute, and it is the case where a customer is most likely to be watching.
+    """
+    if not isinstance(embedding, dict):
+        return EVENT_EMBEDDING_REFRESH_DRAINING_S
+    waiting = int(embedding.get("pending") or 0) + int(embedding.get("deferred_tasks") or 0)
+    return (EVENT_EMBEDDING_REFRESH_DRAINING_S if waiting
+            else EVENT_EMBEDDING_REFRESH_S)
 # A stream is closed after this long and the browser reconnects. Bounded on purpose: an abandoned
 # tab should not hold a connection for the life of the worker, and a reconnect is one request.
 EVENT_STREAM_MAX_S = 600.0
@@ -1819,7 +1837,7 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
         await emit(b"retry: 3000\n\n")
         while not disconnected.is_set():
             now = time.time()
-            if embedding is None or (now - embedding_at) >= EVENT_EMBEDDING_REFRESH_S:
+            if embedding is None or (now - embedding_at) >= _embedding_refresh_interval(embedding):
                 embedding = await _read_embedding(server, cfg, key, tenant, account)
                 embedding_at = now
             frame = await _event_frame(server, cfg, key, tenant, account, embedding)

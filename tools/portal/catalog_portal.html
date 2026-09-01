@@ -162,6 +162,19 @@
                margin-bottom:-1px}
   .portalnav a:hover{color:var(--accent)}
   .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .livestrip{display:flex;gap:14px;align-items:center;margin-left:auto;padding-bottom:7px;
+             flex-wrap:wrap}
+  .live-seg{display:inline-flex;gap:5px;align-items:baseline;font-size:12.5px;color:var(--muted);
+            text-decoration:none;border-bottom:0;padding:0;font-weight:400;
+            font-variant-numeric:tabular-nums}
+  .live-seg:hover{color:var(--accent)}
+  .live-seg b{font-weight:650;color:var(--ink)}
+  .live-seg.warn b{color:var(--warn)}
+  .live-seg.busy b{color:var(--accent)}
+  .live-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .live-dot.stale{background:var(--warn)}
+  .live-dot.down{background:var(--crit)}
+  @media (max-width:820px){ .livestrip{margin-left:0;width:100%;padding-top:6px} }
 
   /* setup + catalog additions */
   .field{margin-bottom:2px}
@@ -381,6 +394,13 @@
     <a href="/v1/admin/ingestion">Ingestion</a>
     <a href="/v1/admin/portal">API keys</a>
     <a href="/v1/admin/api">API</a>
+    <div class="livestrip" id="liveStrip" hidden>
+      <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
+      <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
+      <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <span class="live-dot" id="liveDot" title="live"></span>
+    </div>
   </nav>
   <p class="lede">What this deployment actually holds: every governed skill and resource visible to a
     scope, and the stored text behind any one of them.</p>
@@ -665,6 +685,149 @@
   } catch (e) { /* ignore */ }
   conn("live", "ready");
   load();
+}());
+</script>
+<script>
+/* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
+   window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
+(function () {
+  "use strict";
+  var strip = document.getElementById("liveStrip");
+  if (!strip) { return; }
+  var seg = {
+    enc: document.getElementById("liveEnc"),
+    imp: document.getElementById("liveImp"),
+    req: document.getElementById("liveReq"),
+    warn: document.getElementById("liveWarn")
+  };
+  var dot = document.getElementById("liveDot");
+  /* Any page can watch the frames this page is already receiving. The alternative -- each panel
+     opening its own stream -- costs the gateway a task per panel to show one deployment's state. */
+  var watchers = [];
+  window.__matrixarkOnFrame = function (callback) {
+    if (typeof callback === "function") { watchers.push(callback); }
+  };
+
+  function n(value) {
+    return Number(value || 0).toLocaleString();
+  }
+  function show(el, html, cls) {
+    if (!el) { return; }
+    /* Reset the class on the way out too: a segment hidden while it was warning would come back
+       still coloured for a state that has passed. */
+    el.className = "live-seg" + (html != null && cls ? " " + cls : "");
+    if (html == null) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = html;
+  }
+
+  function plural(count, word) {
+    return "<b>" + n(count) + "</b> " + word + (Number(count) === 1 ? "" : "s");
+  }
+
+  /* Rendered only from a frame that arrived. Zeros drawn before the first frame would describe a
+     quiet healthy deployment for one that is not answering. */
+  function render(frame) {
+    strip.hidden = false;
+    var e = frame.embedding || null;
+    if (e && e.total) {
+      show(seg.enc, e.pending
+        ? "<b>" + n(e.pending) + "</b> waiting to embed"
+        : "<b>" + n(e.total) + "</b> embedded",
+        e.pending ? "busy" : "");
+    } else if (e) {
+      show(seg.enc, "<b>0</b> stored");
+    } else {
+      /* Absent, not zero: the backend could not be asked. "0 waiting" here would be the
+         reassuring answer to a question nobody managed to ask. */
+      show(seg.enc, "encoding <b>unknown</b>", "warn");
+    }
+
+    var imports = frame.imports || {};
+    var active = (imports.active || [])[0];
+    if (active) {
+      var done = (active.done || 0) + (active.failed || 0);
+      show(seg.imp, "importing <b>" + n(done) + "</b> of " + n(active.total || 0), "busy");
+    } else if (imports.retryable) {
+      show(seg.imp, "<b>" + n(imports.retryable) + "</b> to retry", "warn");
+    } else {
+      show(seg.imp, null);
+    }
+
+    var t = frame.traffic || {};
+    show(seg.req, plural(t.total_requests, "request") +
+      (t.total_errors ? ", <b>" + n(t.total_errors) + "</b> failed" : ""),
+      t.total_errors ? "warn" : "");
+
+    show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    watchers.forEach(function (callback) {
+      /* One panel throwing must not stop the others, or the strip, from updating. */
+      try { callback(frame); } catch (err) { /* a watcher's problem, not the strip's */ }
+    });
+  }
+
+  window.__matrixarkLiveFrame = function (frame) {
+    if (frame) { render(frame); dot.className = "live-dot"; }
+  };
+  window.__matrixarkLiveState = function (state) {
+    dot.className = "live-dot" + (state === "live" ? "" : (state === "down" ? " down" : " stale"));
+  };
+
+  /* A page with its own stream feeds the strip; only pages without one connect here. */
+  if (window.__matrixarkLive) { return; }
+  window.__matrixarkLive = "strip";
+
+  function key() {
+    var el = document.getElementById("key");
+    if (el && el.value.trim()) { return el.value.trim(); }
+    try { return sessionStorage.getItem("matrixark_admin_key") || ""; } catch (e) { return ""; }
+  }
+
+  var controller = null, backoff = 1000, buffer = "";
+
+  function open() {
+    var k = key();
+    if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
+    controller = new AbortController();
+    fetch("/v1/admin/events", {
+      headers: { Authorization: "Bearer " + k },
+      signal: controller.signal
+    }).then(function (r) {
+      if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
+      dot.className = "live-dot";
+      backoff = 1000;
+      var reader = r.body.getReader(), decoder = new TextDecoder();
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { throw new Error("stream ended"); }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          parts.forEach(function (block) {
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data:") !== 0) { return; }
+              try { render(JSON.parse(line.slice(5).trim())); } catch (err) { /* ignore */ }
+            });
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () {
+      dot.className = "live-dot stale";
+      setTimeout(open, backoff);
+      backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down must not be hammered */
+    });
+  }
+
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && controller) { controller.abort(); controller = null; }
+    else if (!document.hidden && !controller) { open(); }
+  });
+  window.addEventListener("pagehide", function () { if (controller) { controller.abort(); } });
+  open();
 }());
 </script>
 </body>

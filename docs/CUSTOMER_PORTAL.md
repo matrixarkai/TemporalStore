@@ -523,6 +523,43 @@ could resend them. A bulk import from a server directory is the retryable-after-
 
 ---
 
+## The status strip
+
+Every page carries a live strip in the nav: what is waiting to be encoded, the import that is
+running, requests and failures, and how many configuration warnings are live. Each segment links to
+the page that owns it, so it is a way in as well as a readout.
+
+It exists because status used to be per-page. The stream already carried all of this, and two of the
+seven pages subscribed — so *"is my upload done"* depended on being on the right page, and the page
+you upload from was not one of them.
+
+**One connection per page.** The gateway holds a task per stream, so a page opening a second to draw
+one strip costs twice the server work for nothing on screen. A page that already runs its own stream
+(Setup, Overview) claims it synchronously and hands frames to the strip; only pages without one
+connect. The claim has to be synchronous — the page's script runs before the strip's, but its stream
+starts when a fetch resolves, and claiming there would be too late for both to avoid connecting. A
+hidden tab drops its connection and reconnects on return.
+
+**Absent is not zero.** The frame omits `embedding` when the backend could not be asked, and the
+strip says *encoding unknown* rather than *0 waiting* — the second is the reassuring answer to a
+question nobody managed to ask. An empty store and an unreachable one both have nothing to report
+about a backlog and mean opposite things, so they read differently. Nothing is drawn at all before
+the first frame arrives.
+
+**Read at the pace it is changing.** The encoding figures are refreshed every four seconds while
+anything is waiting and every thirty when nothing is — the answer requires walking the record log,
+so the slow case avoids re-deriving a constant for every connected browser, and the fast case is
+what makes a draining backlog look like it is draining rather than stuck. Deferred work counts as
+draining, and so does *unknown*.
+
+The strip's script is tested by running it: the page as shipped, through a small DOM stub, against
+real frames. A strip whose source contains the word "unknown" and never reaches that branch greps
+identically and is a different product. Four deliberate breakages — rendering unknown as zero,
+drawing before the first frame, dropping the retry count, keeping a stale colour on a hidden
+segment — each turn tests red.
+
+---
+
 ## Live updates
 
 `GET /v1/admin/events` (admin scope) is a server-sent event stream carrying this deployment's live

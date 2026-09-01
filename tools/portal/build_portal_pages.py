@@ -40,6 +40,19 @@ NAV_CSS = """
                margin-bottom:-1px}
   .portalnav a:hover{color:var(--accent)}
   .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .livestrip{display:flex;gap:14px;align-items:center;margin-left:auto;padding-bottom:7px;
+             flex-wrap:wrap}
+  .live-seg{display:inline-flex;gap:5px;align-items:baseline;font-size:12.5px;color:var(--muted);
+            text-decoration:none;border-bottom:0;padding:0;font-weight:400;
+            font-variant-numeric:tabular-nums}
+  .live-seg:hover{color:var(--accent)}
+  .live-seg b{font-weight:650;color:var(--ink)}
+  .live-seg.warn b{color:var(--warn)}
+  .live-seg.busy b{color:var(--accent)}
+  .live-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .live-dot.stale{background:var(--warn)}
+  .live-dot.down{background:var(--crit)}
+  @media (max-width:820px){ .livestrip{margin-left:0;width:100%;padding-top:6px} }
 """
 
 EXTRA_CSS = """
@@ -245,6 +258,154 @@ EXTRA_CSS = """
                    clip:rect(0 0 0 0);white-space:nowrap;border:0}
 """
 
+# The shared live strip's script, placed on every page: the generated ones through TAIL, the two
+# hand-maintained ones through `_with_nav_js`. It is deliberately self-contained -- no helper from
+# any page's own script -- because it has to run identically on pages that share nothing else.
+NAV_JS = r'''<script>
+/* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
+   window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
+(function () {
+  "use strict";
+  var strip = document.getElementById("liveStrip");
+  if (!strip) { return; }
+  var seg = {
+    enc: document.getElementById("liveEnc"),
+    imp: document.getElementById("liveImp"),
+    req: document.getElementById("liveReq"),
+    warn: document.getElementById("liveWarn")
+  };
+  var dot = document.getElementById("liveDot");
+  /* Any page can watch the frames this page is already receiving. The alternative -- each panel
+     opening its own stream -- costs the gateway a task per panel to show one deployment's state. */
+  var watchers = [];
+  window.__matrixarkOnFrame = function (callback) {
+    if (typeof callback === "function") { watchers.push(callback); }
+  };
+
+  function n(value) {
+    return Number(value || 0).toLocaleString();
+  }
+  function show(el, html, cls) {
+    if (!el) { return; }
+    /* Reset the class on the way out too: a segment hidden while it was warning would come back
+       still coloured for a state that has passed. */
+    el.className = "live-seg" + (html != null && cls ? " " + cls : "");
+    if (html == null) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = html;
+  }
+
+  function plural(count, word) {
+    return "<b>" + n(count) + "</b> " + word + (Number(count) === 1 ? "" : "s");
+  }
+
+  /* Rendered only from a frame that arrived. Zeros drawn before the first frame would describe a
+     quiet healthy deployment for one that is not answering. */
+  function render(frame) {
+    strip.hidden = false;
+    var e = frame.embedding || null;
+    if (e && e.total) {
+      show(seg.enc, e.pending
+        ? "<b>" + n(e.pending) + "</b> waiting to embed"
+        : "<b>" + n(e.total) + "</b> embedded",
+        e.pending ? "busy" : "");
+    } else if (e) {
+      show(seg.enc, "<b>0</b> stored");
+    } else {
+      /* Absent, not zero: the backend could not be asked. "0 waiting" here would be the
+         reassuring answer to a question nobody managed to ask. */
+      show(seg.enc, "encoding <b>unknown</b>", "warn");
+    }
+
+    var imports = frame.imports || {};
+    var active = (imports.active || [])[0];
+    if (active) {
+      var done = (active.done || 0) + (active.failed || 0);
+      show(seg.imp, "importing <b>" + n(done) + "</b> of " + n(active.total || 0), "busy");
+    } else if (imports.retryable) {
+      show(seg.imp, "<b>" + n(imports.retryable) + "</b> to retry", "warn");
+    } else {
+      show(seg.imp, null);
+    }
+
+    var t = frame.traffic || {};
+    show(seg.req, plural(t.total_requests, "request") +
+      (t.total_errors ? ", <b>" + n(t.total_errors) + "</b> failed" : ""),
+      t.total_errors ? "warn" : "");
+
+    show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    watchers.forEach(function (callback) {
+      /* One panel throwing must not stop the others, or the strip, from updating. */
+      try { callback(frame); } catch (err) { /* a watcher's problem, not the strip's */ }
+    });
+  }
+
+  window.__matrixarkLiveFrame = function (frame) {
+    if (frame) { render(frame); dot.className = "live-dot"; }
+  };
+  window.__matrixarkLiveState = function (state) {
+    dot.className = "live-dot" + (state === "live" ? "" : (state === "down" ? " down" : " stale"));
+  };
+
+  /* A page with its own stream feeds the strip; only pages without one connect here. */
+  if (window.__matrixarkLive) { return; }
+  window.__matrixarkLive = "strip";
+
+  function key() {
+    var el = document.getElementById("key");
+    if (el && el.value.trim()) { return el.value.trim(); }
+    try { return sessionStorage.getItem("matrixark_admin_key") || ""; } catch (e) { return ""; }
+  }
+
+  var controller = null, backoff = 1000, buffer = "";
+
+  function open() {
+    var k = key();
+    if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
+    controller = new AbortController();
+    fetch("/v1/admin/events", {
+      headers: { Authorization: "Bearer " + k },
+      signal: controller.signal
+    }).then(function (r) {
+      if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
+      dot.className = "live-dot";
+      backoff = 1000;
+      var reader = r.body.getReader(), decoder = new TextDecoder();
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { throw new Error("stream ended"); }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          parts.forEach(function (block) {
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data:") !== 0) { return; }
+              try { render(JSON.parse(line.slice(5).trim())); } catch (err) { /* ignore */ }
+            });
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () {
+      dot.className = "live-dot stale";
+      setTimeout(open, backoff);
+      backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down must not be hammered */
+    });
+  }
+
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && controller) { controller.abort(); controller = null; }
+    else if (!document.hidden && !controller) { open(); }
+  });
+  window.addEventListener("pagehide", function () { if (controller) { controller.abort(); } });
+  open();
+}());
+</script>
+'''
+
 NAV_LINKS = [
     ("/v1/admin", "Overview"),
     ("/v1/admin/setup", "Setup &amp; metrics"),
@@ -256,12 +417,25 @@ NAV_LINKS = [
 ]
 
 
+# Rendered inside the nav element so `inject()`'s nav-replacing regex carries it to the two
+# hand-maintained pages too. Empty until a frame arrives: a strip showing zeros before it has heard
+# anything would report a healthy idle deployment for one that is unreachable.
+LIVE_STRIP = """
+    <div class="livestrip" id="liveStrip" hidden>
+      <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
+      <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
+      <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <span class="live-dot" id="liveDot" title="live"></span>
+    </div>"""
+
+
 def nav(active):
     parts = []
     for href, label in NAV_LINKS:
         current = ' aria-current="page"' if href == active else ""
         parts.append('    <a href="%s"%s>%s</a>' % (href, current, label))
-    return '  <nav class="portalnav">\n' + "\n".join(parts) + "\n  </nav>"
+    return ('  <nav class="portalnav">\n' + "\n".join(parts) + LIVE_STRIP + "\n  </nav>")
 
 
 HEAD = """<!doctype html>
@@ -433,6 +607,10 @@ SETUP_JS = r"""
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+
+  /* Claimed before the strip's own script runs, so it feeds from this connection instead of
+     opening a second one to the same endpoint. */
+  window.__matrixarkLive = "page";
 
 /* ---------- the live stream ---------- */
 /* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
@@ -1468,10 +1646,15 @@ function liveStream(options) {
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
         else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+        if (window.__matrixarkLiveState) {
+          window.__matrixarkLiveState(state === "live" ? "live"
+            : (state === "retrying" ? "down" : "stale"));
+        }
       },
       onFrame: function (frame) {
         renderLiveTraffic(frame.traffic);
         if (frame.embedding) { renderEncoding(frame.embedding); }
+        if (window.__matrixarkLiveFrame) { window.__matrixarkLiveFrame(frame); }
       }
     });
   }
@@ -1873,6 +2056,10 @@ OVERVIEW_JS = r"""
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
 
+  /* Claimed before the strip's own script runs, so it feeds from this connection instead of
+     opening a second one to the same endpoint. */
+  window.__matrixarkLive = "page";
+
 /* ---------- the live stream ---------- */
 /* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
    the alternative is the key in a query string, and a credential in a URL ends up in every access
@@ -2174,8 +2361,13 @@ function liveStream(options) {
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
         else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+        if (window.__matrixarkLiveState) {
+          window.__matrixarkLiveState(state === "live" ? "live"
+            : (state === "retrying" ? "down" : "stale"));
+        }
       },
       onFrame: function (frame) {
+        if (window.__matrixarkLiveFrame) { window.__matrixarkLiveFrame(frame); }
         renderImports(frame.imports);
         if (frame.embedding) { renderEncoding(frame.embedding); }
         if (lastReport) {
@@ -3250,10 +3442,71 @@ EXPLORE_JS = r"""
         }
         say($("batchMsg"), "Started job " + res.body.job_id + " over " + res.body.total +
           " records. It runs on the server — this tab can be closed.", "ok");
-        $("batchResult").innerHTML = '<p class="hint">Watch it, and retry any failures, on ' +
-          '<a href="/v1/admin/ingestion">Ingestion</a>.</p>';
+        watchBatch(res.body.job_id, res.body.total);
       })
       .catch(function () { say($("batchMsg"), "Could not reach the gateway.", "err"); });
+  }
+
+  /* Watched from the shared stream rather than a timer of its own: the job's progress is already
+     being pushed to this page for the strip. */
+  var watchedJob = null;
+
+  function watchBatch(jobId, total) {
+    watchedJob = { id: jobId, total: total, seen: false };
+    renderBatchJob({ job_id: jobId, total: total, done: 0, failed: 0, state: "queued" });
+  }
+
+  function renderBatchJob(job) {
+    var done = (job.done || 0) + (job.failed || 0);
+    var total = job.total || 0;
+    var pct = total ? Math.round((done / total) * 1000) / 10 : 0;
+    var eta = job.eta_s ? " · about " + Math.round(job.eta_s) + "s left" : "";
+    $("batchResult").innerHTML =
+      '<div class="upl"><div class="upl-head"><span class="upl-name">job ' + esc(job.job_id) +
+      '</span><span class="upl-size">' + esc(job.state || "running") + eta + "</span></div>" +
+      '<div class="upl-bar"><i style="width:' + pct + '%"></i></div>' +
+      '<div class="hint" style="margin-top:6px">' + done + " of " + total + " records" +
+      (job.failed ? " · <b>" + job.failed + "</b> failed" : "") +
+      (job.current ? " · " + esc(String(job.current).slice(0, 80)) : "") + "</div></div>";
+  }
+
+  function finishBatchJob() {
+    /* One request when it leaves the running set, rather than polling to find out how it ended.
+       The frame says a job is no longer active; it does not say whether it succeeded. */
+    fetch("/v1/admin/ingestion/jobs", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        var job = (d.jobs || []).filter(function (j) {
+          return j.job_id === (watchedJob || {}).id;
+        })[0];
+        watchedJob = null;
+        if (!job) { return; }
+        renderBatchJob(job);
+        var failed = job.failed || 0;
+        say($("batchMsg"), failed
+          ? job.done + " stored, " + failed + " failed" +
+            (job.retryable_failures
+              ? " — " + job.retryable_failures + " worth retrying on Ingestion." : ".")
+          : "All " + job.done + " records stored.", failed ? "warn" : "ok");
+        if (failed) {
+          $("batchResult").innerHTML += '<p class="hint">Retry the failures on ' +
+            '<a href="/v1/admin/ingestion">Ingestion</a>.</p>';
+        }
+      })
+      .catch(function () { watchedJob = null; });
+  }
+
+  if (window.__matrixarkOnFrame) {
+    window.__matrixarkOnFrame(function (frame) {
+      if (!watchedJob) { return; }
+      var active = ((frame.imports || {}).active || []).filter(function (j) {
+        return j.job_id === watchedJob.id;
+      })[0];
+      if (active) { watchedJob.seen = true; renderBatchJob(active); return; }
+      /* Absent from one frame is not proof it finished: a job can be submitted and not yet appear.
+         Only conclude it ended once it has actually been seen running. */
+      if (watchedJob.seen) { finishBatchJob(); }
+    });
   }
 
   $("batchPreview").addEventListener("click", function () { submitBatch(true); });
@@ -3594,6 +3847,7 @@ API_JS = r"""
 TAIL = """
 </div>
 %(js)s
+%(navjs)s
 </body>
 </html>
 """
@@ -3603,7 +3857,7 @@ def emit(filename, title, body, js, active):
     css = BASE_CSS + NAV_CSS + EXTRA_CSS
     html = (HEAD % {"title": title, "css": css}
             + (body % {"nav": nav(active)})
-            + (TAIL % {"js": js.strip()}))
+            + (TAIL % {"js": js.strip(), "navjs": NAV_JS.strip()}))
     path = os.path.join(PORTAL, filename)
     io.open(path, "w", encoding="utf-8", newline="\n").write(html)
     print("wrote %s (%d bytes)" % (path, len(html)))
@@ -3618,6 +3872,25 @@ emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CA
 
 
 # ---- add the nav to the two existing pages ------------------------------------------------------
+NAV_JS_MARKER = "/* The shared live strip."
+
+
+def _with_nav_js(text):
+    """Put the shared strip script in, replacing any copy already there.
+
+    Replaced rather than appended: the builder runs repeatedly over these two files, and a script
+    that stacks would open one stream per build.
+    """
+    if NAV_JS_MARKER in text:
+        start = text.index("<script>", text.index(NAV_JS_MARKER) - 200)
+        end = text.index("</script>", start) + len("</script>")
+        return text[:start] + NAV_JS.strip() + text[end:]
+    if "</body>" not in text:
+        print("no </body> to place the live strip script before")
+        sys.exit(1)
+    return text.replace("</body>", NAV_JS.strip() + "\n</body>", 1)
+
+
 def inject(filename, anchor, active):
     """Add the shared nav, or replace the one already there.
 
@@ -3633,7 +3906,7 @@ def inject(filename, anchor, active):
         if not count:
             print("nav present but unrecognised in %s" % filename)
             sys.exit(1)
-        io.open(path, "w", encoding="utf-8", newline="\n").write(replaced)
+        io.open(path, "w", encoding="utf-8", newline="\n").write(_with_nav_js(replaced))
         print("nav refreshed in %s" % filename)
         return
     if anchor not in text:
@@ -3641,6 +3914,7 @@ def inject(filename, anchor, active):
         sys.exit(1)
     text = text.replace("</style>", NAV_CSS + "</style>", 1)
     text = text.replace(anchor, anchor + "\n" + nav(active), 1)
+    text = _with_nav_js(text)
     io.open(path, "w", encoding="utf-8", newline="\n").write(text)
     print("nav added to %s" % filename)
 
