@@ -2338,6 +2338,20 @@ struct ForgetScopeStats {
     fields_deleted: usize,
     fields_rewritten: usize,
     shards_scanned: u64,
+    /// Fields whose payload was decoded. `records_scanned` alone cannot say whether a wide purge
+    /// opened many fields or a few dense ones, and those have opposite fixes: too many fields
+    /// opened is a question about where records live, too many records per field is a question
+    /// about how they are packed.
+    fields_visited: usize,
+    /// Of those, the ones that held nothing to remove -- decoded, then discarded. A purge whose
+    /// opened fields all match is reading a precise set of locations; a large count here means the
+    /// locations being handed to it do not hold the ids it was asked for.
+    fields_without_match: usize,
+    /// Of the fields that held nothing to remove, the ones that still hold a record POINTING at a
+    /// wanted id. Those locations are correctly filed and cannot be dropped -- deletion reaches a
+    /// derivative through exactly that link. The remainder, `fields_without_match` minus this, is
+    /// the part where nothing in the field relates to the ids at all.
+    fields_pointed_only: usize,
 }
 
 /// A forget query must actually CONSTRAIN which subject's records it removes. Because
@@ -2450,6 +2464,7 @@ fn forget_scope_records(
                 continue;
             }
             stats.records_scanned += records.len();
+            stats.fields_visited += 1;
             let mut survivors = Vec::with_capacity(records.len());
             let mut removed_here = 0_usize;
             for record in records {
@@ -2460,6 +2475,7 @@ fn forget_scope_records(
                 }
             }
             if removed_here == 0 {
+                stats.fields_without_match += 1;
                 continue;
             }
             stats.records_removed += removed_here;
@@ -2573,6 +2589,52 @@ fn record_carries_wanted_id(record: &Value, contains: impl Fn(&str) -> bool) -> 
         for item in refs {
             if hit(Some(item)) {
                 return true;
+            }
+        }
+    }
+    false
+}
+
+/// Does `record` merely POINT AT one of the wanted ids, without carrying it?
+///
+/// The located set is built from both kinds of relationship: a record is filed under the ids it
+/// carries AND under the ids it names as sources or targets. Deletion needs both filed -- a
+/// derivative is only findable through its source event, because it is not filed under its own
+/// identity hash -- but deletion only REMOVES the carriers. So a located field can be perfectly
+/// legitimate and still hold nothing to remove.
+///
+/// That makes two very different situations look identical in `fields_without_match`, and they
+/// have different fixes: a field still holding records that point at these ids is a location the
+/// index is right to keep, while a field where nothing so much as mentions them is an entry that
+/// has gone stale and could be dropped. This tells them apart. Mirrors the writer's pointed-id
+/// fields exactly; a field the writer files under and this misses would misreport a live location
+/// as stale.
+fn record_points_at_wanted_id(record: &Value, contains: impl Fn(&str) -> bool) -> bool {
+    let mut hit = |value: Option<&Value>| -> bool {
+        match value {
+            Some(Value::String(text)) if !text.is_empty() => contains(text.as_str()),
+            Some(Value::Number(number)) => {
+                if let Some(unsigned) = number.as_u64() {
+                    let mut buf = [0_u8; 20];
+                    contains(u64_into(&mut buf, unsigned))
+                } else {
+                    contains(number.to_string().as_str())
+                }
+            }
+            _ => false,
+        }
+    };
+    for field in ["source_event_hash", "target_memory_id", "superseded_by"] {
+        if hit(record.get(field)) {
+            return true;
+        }
+    }
+    for field in ["source_event_ids", "source_refs"] {
+        if let Some(Value::Array(values)) = record.get(field) {
+            for item in values {
+                if hit(Some(item)) {
+                    return true;
+                }
             }
         }
     }
@@ -2712,6 +2774,7 @@ fn delete_records_by_ids(
                 continue;
             }
             stats.records_scanned += records.len();
+            stats.fields_visited += 1;
             let mut survivors = Vec::with_capacity(records.len());
             let mut removed_here = 0_usize;
             for record in records {
@@ -2722,6 +2785,14 @@ fn delete_records_by_ids(
                 }
             }
             if removed_here == 0 {
+                stats.fields_without_match += 1;
+                // Nothing was removed, so `survivors` is still every record this field holds.
+                if survivors
+                    .iter()
+                    .any(|record| record_points_at_wanted_id(record, |id| wanted.contains(id)))
+                {
+                    stats.fields_pointed_only += 1;
+                }
                 continue;
             }
             stats.records_removed += removed_here;
@@ -3369,6 +3440,14 @@ fn execute_record_log_request(
                 json!(stats.fields_rewritten),
             );
             output.extra.insert(
+                "matrixark_forget_fields_visited".to_string(),
+                json!(stats.fields_visited),
+            );
+            output.extra.insert(
+                "matrixark_forget_fields_without_match".to_string(),
+                json!(stats.fields_without_match),
+            );
+            output.extra.insert(
                 "matrixark_forget_shards_scanned".to_string(),
                 json!(stats.shards_scanned),
             );
@@ -3404,6 +3483,18 @@ fn execute_record_log_request(
             output.extra.insert(
                 "matrixark_delete_fields_rewritten".to_string(),
                 json!(stats.fields_rewritten),
+            );
+            output.extra.insert(
+                "matrixark_delete_fields_visited".to_string(),
+                json!(stats.fields_visited),
+            );
+            output.extra.insert(
+                "matrixark_delete_fields_without_match".to_string(),
+                json!(stats.fields_without_match),
+            );
+            output.extra.insert(
+                "matrixark_delete_fields_pointed_only".to_string(),
+                json!(stats.fields_pointed_only),
             );
             output.extra.insert(
                 "matrixark_delete_ids_requested".to_string(),
@@ -7338,6 +7429,61 @@ mod tests {
         );
     }
 
+
+    /// An id purge opens a field for every location filed under the ids, and most of those turn
+    /// out to hold nothing to remove. `records_scanned` cannot say why, and the two reasons want
+    /// opposite fixes, so the counters have to separate three outcomes per field: it held a
+    /// carrier and was rewritten; it held no carrier but still points at the ids, so the location
+    /// is correctly filed; or it relates to the ids not at all.
+    #[test]
+    fn an_id_purge_separates_carrying_pointing_and_unrelated_fields() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "primary");
+        let hash_key = "matrixark:mcp:idpurge:records";
+        let count_key = "matrixark:mcp:idpurge:record_count";
+        seed_records(
+            &engine,
+            hash_key,
+            count_key,
+            &[
+                // Carries the wanted id: this is what a purge removes.
+                ("f-carries", json!({ "record_type": "context_entity", "entity_hash": 4242 })),
+                // Names it as a source but carries its own identity: a derivative reached THROUGH
+                // the wanted id, deliberately left in place.
+                ("f-points", json!({
+                    "record_type": "context_summary",
+                    "summary_hash": 99,
+                    "source_event_ids": [4242, 777],
+                })),
+                // Mentions the wanted id nowhere.
+                ("f-unrelated", json!({ "record_type": "context_event", "event_id_hash": 31337 })),
+            ],
+        );
+
+        let ids = vec!["4242".to_string()];
+        let stats = delete_records_by_ids(&engine, hash_key, count_key, 1024, &ids)
+            .expect("purge by id");
+
+        assert_eq!(stats.records_removed, 1, "only the carrier is removed");
+        assert_eq!(stats.fields_visited, 3, "every seeded field is opened and decoded");
+        assert_eq!(
+            stats.fields_without_match, 2,
+            "the pointing field and the unrelated one both yield nothing to remove"
+        );
+        assert_eq!(
+            stats.fields_pointed_only, 1,
+            "exactly one of those still points at the id -- the unrelated field does not"
+        );
+
+        // The distinction is about what was READ, not what was written: the pointing record and
+        // the unrelated record must both still be there afterwards.
+        let remaining = shard_fields(&engine, hash_key);
+        assert!(remaining.contains_key("f-points"), "a pointing record is not a carrier");
+        assert!(remaining.contains_key("f-unrelated"), "an unrelated record is untouched");
+        assert!(!remaining.contains_key("f-carries"), "the carrier is gone");
+    }
 
     /// A posting carrying SEVERAL refs has no singular `ref_hash` -- the builder only writes that
     /// when there is exactly one -- so before the `ref_hashes` fallback this returned None and two
