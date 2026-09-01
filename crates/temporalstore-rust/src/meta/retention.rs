@@ -355,6 +355,10 @@ impl SingleNodeMeta {
             state.shards.remove(shard_id);
         }
         for key in &plan.tables {
+            if let Some(record) = state.tables.get(key) {
+                let info = record.info.clone();
+                state.forget_table_range(key, &info);
+            }
             state.tables.remove(key);
             state.dropped_since_ms.remove(&dropped_key("table", key));
             record_topology_event(

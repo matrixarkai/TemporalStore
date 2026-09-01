@@ -89,6 +89,7 @@ impl SingleNodeMeta {
             partition_version: request.partition_version,
             serving_options: request.serving_options,
         };
+        state.note_table_range(&key, &info);
         state.tables.insert(key, TableRecord { info });
         AckResponse {
             status: Status::ok(),
@@ -303,6 +304,12 @@ impl SingleNodeMeta {
         table.info.replica_count = new_replica_count;
         table.info.serving_options = new_serving_options;
         table.info.topology_version = topology_version;
+        // A shard count that grew extends this table's range, and it can now
+        // reach into one it did not reach before. Where the table starts is
+        // pinned, so its index entry is unchanged -- but whether the ranges
+        // overlap is not, and that is what decides who answers.
+        let info = table.info.clone();
+        state.note_table_range(&key, &info);
         AckResponse {
             status: Status::ok(),
         }

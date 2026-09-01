@@ -55,7 +55,7 @@ impl SingleNodeMeta {
                 ));
             }
         }
-        Ok(MetaState {
+        let mut restored = MetaState {
             shards: snapshot.shards,
             servers: snapshot.servers,
             proxies: snapshot.proxies,
@@ -74,7 +74,14 @@ impl SingleNodeMeta {
             meta_change_muted: snapshot.meta_change_muted,
             frozen_since_ms: snapshot.frozen_since_ms,
             reserved_names: snapshot.reserved_names,
-        })
+            // Derived from the tables above rather than carried in the
+            // snapshot, so a snapshot written before this existed still
+            // restores with an index rather than an empty one.
+            table_starts: BTreeMap::new(),
+            table_ranges_overlap: false,
+        };
+        restored.reindex_table_ranges();
+        Ok(restored)
     }
 
     pub fn install_snapshot(&self, snapshot: MetaSnapshot) -> AckResponse {
