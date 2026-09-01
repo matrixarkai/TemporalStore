@@ -2255,6 +2255,18 @@ impl SingleNodeMeta {
     }
 
     pub(crate) fn apply_mutation_at(&self, mutation: MetaMutation, at_ms: u64) -> Status {
+        let status = self.apply_mutation_at_inner(mutation, at_ms);
+        if !status.ok {
+            // Worth counting wherever it happens, but it is replay this is for:
+            // there, a mutation that will not apply means the recorded history
+            // and the state it should have produced have parted company, and
+            // nothing else would say so.
+            self.metrics.record_mutation_apply_failed();
+        }
+        status
+    }
+
+    fn apply_mutation_at_inner(&self, mutation: MetaMutation, at_ms: u64) -> Status {
         match mutation {
             MetaMutation::RegisterShard(request) => self.apply_register(request).status,
             MetaMutation::PublishShardSnapshot(request) => {
@@ -8030,6 +8042,75 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             "a refused answer was not timed:
 {exported}"
         );
+    }
+
+    #[test]
+    fn a_refused_answer_and_a_change_that_would_not_apply_are_counted() {
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+
+        // A query for a table that is not there is refused. The request counter
+        // counts it as a query like any other, so without this a client looping
+        // against a name that does not exist looks like one being served.
+        let missing = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "absent".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        assert!(!missing.status.ok);
+
+        // A recorded change that will not apply: dropping a table that was
+        // never created. During replay this is the log and the state parting
+        // company, and nothing else would say so.
+        let failed = meta.apply_mutation(MetaMutation::DeleteTable(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "never-existed".to_string(),
+        }));
+        assert!(!failed.ok, "the apply should have been refused");
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_topology_query_failed_total 1"),
+            "a refused answer was not counted:
+{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_mutation_apply_failed_total 1"),
+            "a change that would not apply was not counted:
+{exported}"
+        );
+
+        // And an answer that succeeds does not move either of them.
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "real".to_string(),
+                first_shard_id: 800,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "real".to_string(),
+                old_topology_version: 0,
+                client_location: String::new(),
+            })
+            .status
+            .ok);
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(exported.contains("temporalstore_meta_topology_query_failed_total 1"), "{exported}");
+        assert!(exported.contains("temporalstore_meta_mutation_apply_failed_total 1"), "{exported}");
     }
 
     #[test]

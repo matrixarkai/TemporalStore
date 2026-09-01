@@ -48,6 +48,11 @@ struct SubsystemMetricsState {
     held_total: BTreeMap<(String, String), u64>,
     reboots_detected_total: u64,
     divergences_total: u64,
+    /// Topology queries answered with an error rather than a topology.
+    topology_query_failed_total: u64,
+    /// Recorded mutations that would not apply. During replay this means the
+    /// log and the state have parted company.
+    mutation_apply_failed_total: u64,
     /// How long topology queries took, in microseconds.
     ///
     /// Counts per bucket, not cumulative -- the rendering adds them up, because
@@ -108,6 +113,16 @@ const TOPOLOGY_LATENCY_BUCKETS_US: [u64; 9] =
 impl SubsystemMetrics {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Record a topology query that was refused rather than answered.
+    pub fn record_topology_query_failed(&self) {
+        self.with(|state| state.topology_query_failed_total += 1);
+    }
+
+    /// Record a recorded mutation that would not apply.
+    pub fn record_mutation_apply_failed(&self) {
+        self.with(|state| state.mutation_apply_failed_total += 1);
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut SubsystemMetricsState) -> R) -> R {
@@ -516,6 +531,27 @@ fn render(state: &SubsystemMetricsState) -> String {
         "temporalstore_meta_topology_query_latency_us_count",
         &[],
         state.topology_latency_count,
+    );
+
+    out.push_str(
+        "# HELP temporalstore_meta_topology_query_failed_total Topology queries answered with an error.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_topology_query_failed_total counter\n");
+    push(
+        &mut out,
+        "temporalstore_meta_topology_query_failed_total",
+        &[],
+        state.topology_query_failed_total,
+    );
+    out.push_str(
+        "# HELP temporalstore_meta_mutation_apply_failed_total Recorded mutations that would not apply.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_mutation_apply_failed_total counter\n");
+    push(
+        &mut out,
+        "temporalstore_meta_mutation_apply_failed_total",
+        &[],
+        state.mutation_apply_failed_total,
     );
 
     out.push_str("# HELP temporalstore_meta_shard_divergence_total Shards found routed to a server not serving them.\n");

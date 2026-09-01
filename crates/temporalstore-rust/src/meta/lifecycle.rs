@@ -30,6 +30,20 @@ fn simple_conviction_round(
 
 impl SingleNodeMeta {
     pub fn get_table_topology(&self, request: GetTableTopologyRequest) -> TableTopologyResponse {
+        let response = self.get_table_topology_answered(request);
+        if !response.status.ok {
+            // The request counter counts a refusal as a query like any other, so
+            // a client looping against a name that is not there looked exactly
+            // like one being served.
+            self.metrics.record_topology_query_failed();
+        }
+        response
+    }
+
+    fn get_table_topology_answered(
+        &self,
+        request: GetTableTopologyRequest,
+    ) -> TableTopologyResponse {
         // Timed around the whole answer, lock included: a client waiting on a
         // metaserver that is busy waits for the lock as surely as for the work,
         // and timing only the work would report the metaserver as fast while
