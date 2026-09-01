@@ -40,10 +40,8 @@ KNOWN_UNWIRED: Set[str] = {
     "embed_node_path_prefix_enabled",
     "generate_l1_summaries_enabled",
     "index_compact_on_summary_enabled",
-    "node_path_embeddings_enabled",
     "recall_reinforcement_enabled",
     "return_all_candidates_enabled",
-    "store_event_summary_text_enabled",
     "summarize_aggregation_only_nodes_enabled",
     "traverse_sibling_sessions_enabled",
 }

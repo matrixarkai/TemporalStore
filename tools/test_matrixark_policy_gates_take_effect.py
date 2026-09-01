@@ -205,5 +205,99 @@ class BothSegmentWritersConsultTheKnobTest(unittest.TestCase):
             {"record_type": "context_node", "scope": {"tenant_id": "never_configured"}}))
 
 
+class TheBoundaryPolicyTest(unittest.TestCase):
+    """Three knobs enforced in one place, because gating the writers does not scale.
+
+    `context_event` is built in eight places and node-path vectors in at least two. A per-writer
+    gate has to find them all and stay found, and a knob that half-works looks like it works -- an
+    earlier attempt gated one writer of each and moved the counts 4 -> 3 and not at all. Every
+    record from every writer crosses the adapter's append path, so the policy is applied there,
+    where a new writer cannot bypass it by existing.
+    """
+
+    def setUp(self) -> None:
+        import matrixark_mcp_local_adapter as adapter
+        self.adapter = adapter
+
+    def _batch(self, tenant):
+        scope = {"tenant_id": tenant}
+        return [
+            {"record_type": "context_embedding", "embedding_type": "context_node",
+             "scope": scope, "vector": [0.1]},
+            {"record_type": "context_embedding", "embedding_type": "event_text",
+             "scope": scope, "vector": [0.2]},
+            {"record_type": "context_node", "scope": scope, "vector": [0.3]},
+            {"record_type": "context_event", "scope": scope,
+             "text": "t", "summary_text": "t"},
+        ]
+
+    def test_node_path_embeddings_off_drops_only_the_path_vectors(self) -> None:
+        # The knob is specifically about vectorising a synthetic path string. It must not touch the
+        # event-text embedding, nor the node's own vector, which is the L1 summary vector and
+        # belongs to generate_embeddings.
+        policy.set_tenant_policy("np_off", {"generate_embeddings": True,
+                                            "node_path_embeddings": False})
+        out = self.adapter.apply_storage_policy(self._batch("np_off"))
+        kinds = [(r.get("record_type"), r.get("embedding_type")) for r in out]
+        self.assertNotIn(("context_embedding", "context_node"), kinds)
+        self.assertIn(("context_embedding", "event_text"), kinds)
+        self.assertTrue(any(r.get("record_type") == "context_node" and r.get("vector")
+                            for r in out), "the node's own summary vector was taken too")
+
+    def test_an_embedding_with_no_type_is_not_swept_up_as_a_path_vector(self) -> None:
+        # The knob is about ONE embedding_type. A record that does not declare one is not a
+        # node-path vector, and matching it would quietly delete embeddings the tenant still wants
+        # -- a widened condition here is indistinguishable from the knob working.
+        policy.set_tenant_policy("np_off2", {"generate_embeddings": True,
+                                             "node_path_embeddings": False})
+        records = [{"record_type": "context_embedding", "scope": {"tenant_id": "np_off2"},
+                    "vector": [0.4]}]
+        self.assertEqual(1, len(self.adapter.apply_storage_policy(records)),
+                         "an untyped embedding was dropped by the node-path knob")
+
+    def test_node_path_embeddings_on_keeps_them(self) -> None:
+        policy.set_tenant_policy("np_on", {"generate_embeddings": True,
+                                           "node_path_embeddings": True})
+        out = self.adapter.apply_storage_policy(self._batch("np_on"))
+        self.assertIn(("context_embedding", "context_node"),
+                      [(r.get("record_type"), r.get("embedding_type")) for r in out])
+
+    def test_store_event_summary_text_off_omits_the_field(self) -> None:
+        # Omitted rather than emptied: readers are written as `summary_text or text`, so absent
+        # falls back to the text it copied while "" would read as "summarised to nothing".
+        policy.set_tenant_policy("st_off", {"store_event_summary_text": False})
+        out = self.adapter.apply_storage_policy(self._batch("st_off"))
+        event = [r for r in out if r.get("record_type") == "context_event"][0]
+        self.assertNotIn("summary_text", event)
+        self.assertEqual("t", event["text"], "the text itself must survive")
+
+    def test_store_event_summary_text_on_keeps_it(self) -> None:
+        policy.set_tenant_policy("st_on", {"store_event_summary_text": True})
+        out = self.adapter.apply_storage_policy(self._batch("st_on"))
+        event = [r for r in out if r.get("record_type") == "context_event"][0]
+        self.assertEqual("t", event["summary_text"])
+
+    def test_embeddings_off_takes_every_vector_by_either_route(self) -> None:
+        policy.set_tenant_policy("em_off", {"generate_embeddings": False})
+        out = self.adapter.apply_storage_policy(self._batch("em_off"))
+        self.assertEqual([], [r for r in out if r.get("record_type") == "context_embedding"])
+        self.assertFalse(any(r.get("vector") for r in out))
+
+    def test_a_batch_nothing_applies_to_is_returned_unchanged(self) -> None:
+        policy.set_tenant_policy("all_on", {"generate_embeddings": True,
+                                            "node_path_embeddings": True,
+                                            "store_event_summary_text": True})
+        records = self._batch("all_on")
+        self.assertIs(records, self.adapter.apply_storage_policy(records),
+                      "an unaffected batch should not even be copied")
+
+    def test_the_old_entry_point_delegates_rather_than_reimplementing(self) -> None:
+        # Two copies of a storage gate is how one of them drifts and silently stops enforcing.
+        policy.set_tenant_policy("delegate", {"generate_embeddings": False})
+        records = self._batch("delegate")
+        self.assertEqual(self.adapter.apply_storage_policy(records),
+                         self.adapter.drop_vectors_for_opted_out_tenants(records))
+
+
 if __name__ == "__main__":
     unittest.main()
