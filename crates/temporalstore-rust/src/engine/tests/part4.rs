@@ -3983,6 +3983,213 @@ fn components_of_one_object_stay_separate() {
     );
 }
 
+/// The common case takes the inline arm, and the spilled arm still behaves.
+///
+/// Measuring that 100% of components hold one ref only justifies the shape; it does not show the
+/// shape is being used. A structure that silently spilled every time would measure identically
+/// from the outside and cost an allocation each, so the arm is asserted directly.
+#[test]
+fn single_page_components_are_held_inline() {
+    use crate::engine::state::{PageLookupRef, PageRefs};
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("inline-{index:04}"),
+                value: vec![b'v'; 48],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut inline = 0usize;
+    let mut spilled = 0usize;
+    for entry in shard.bucket_index.object_page_lookup.values() {
+        for component in &entry.by_component {
+            match component.refs {
+                PageRefs::One(_) => inline += 1,
+                PageRefs::Many(_) => spilled += 1,
+            }
+        }
+    }
+    assert!(inline + spilled > 0, "no components were recorded; nothing was measured");
+    assert_eq!(
+        spilled, 0,
+        "{spilled} of {} components allocated for a single ref",
+        inline + spilled
+    );
+
+    // The spilled arm has to keep working: sorted, deduplicated, and reporting what it added.
+    let first = PageLookupRef { routing_bucket: 7, page_ref_key: Arc::from("bbb") };
+    let second = PageLookupRef { routing_bucket: 7, page_ref_key: Arc::from("aaa") };
+    let mut refs = PageRefs::One(first.clone());
+    assert!(!refs.insert(first.clone()), "re-inserting the same ref adds nothing");
+    assert_eq!(refs.len(), 1);
+    assert!(refs.insert(second.clone()), "a second ref is an addition");
+    assert_eq!(refs.len(), 2);
+    assert_eq!(
+        refs.as_slice(),
+        &[second, first],
+        "promotion must land sorted -- removal binary-searches these"
+    );
+}
+
+/// The index on disk does not change shape.
+///
+/// This is held inline in memory but has to serialize as the sequence it always was, or an index
+/// written before this stops loading. Both directions are checked, including a spilled arm read
+/// back as an inline one.
+#[test]
+fn page_refs_serialize_as_a_sequence() {
+    use crate::engine::state::{PageLookupRef, PageRefs};
+
+    let single = PageRefs::One(PageLookupRef {
+        routing_bucket: 3,
+        page_ref_key: Arc::from("page-a"),
+    });
+    let json = serde_json::to_value(&single).unwrap();
+    assert!(json.is_array(), "must encode as a sequence, got {json}");
+    assert_eq!(json.as_array().unwrap().len(), 1);
+    assert_eq!(json[0]["routing_slot"], 3);
+
+    // A one-element sequence written by the previous shape comes back inline, not spilled.
+    let restored: PageRefs = serde_json::from_value(json).unwrap();
+    assert!(
+        matches!(restored, PageRefs::One(_)),
+        "a one-element sequence should load into the inline arm"
+    );
+    assert_eq!(restored, single);
+
+    let mut pair = single.clone();
+    pair.insert(PageLookupRef {
+        routing_bucket: 4,
+        page_ref_key: Arc::from("page-b"),
+    });
+    let round_tripped: PageRefs = serde_json::from_value(serde_json::to_value(&pair).unwrap()).unwrap();
+    assert_eq!(round_tripped, pair);
+    assert_eq!(round_tripped.len(), 2);
+}
+
+/// How many components an object actually has, and how many refs a component actually holds.
+///
+/// This decides whether an inline single-component shape is worth having. The inner `refs` vector
+/// already carries a measured note that 100% of them hold exactly one ref; the outer
+/// `by_component` vector has no such measurement, and it is the one that costs an allocation per
+/// object.
+///
+/// The corpus is deliberately mixed. A string object is one componentless entry and a hash object
+/// is one entry per field, so a corpus of only one kind would decide the question by construction
+/// rather than by measurement. Both kinds are asserted present before any number is read.
+#[test]
+fn object_page_lookup_occupancy_census() {
+    const STRING_OBJECTS: usize = 2_000;
+    const HASH_OBJECTS: usize = 200;
+    const FIELDS_PER_HASH: usize = 8;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..STRING_OBJECTS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("occupancy-string-{index:08}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+    for object in 0..HASH_OBJECTS {
+        for field in 0..FIELDS_PER_HASH {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("occupancy-hash-{object:08}"),
+                    field: format!("field-{field}"),
+                    value: vec![b'h'; 64],
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let lookup = &shard.bucket_index.object_page_lookup;
+
+    let mut single_component = 0usize;
+    let mut multi_component = 0usize;
+    let mut single_ref_components = 0usize;
+    let mut multi_ref_components = 0usize;
+    let mut components_total = 0usize;
+    let mut refs_total = 0usize;
+    for entry in lookup.values() {
+        if entry.by_component.len() == 1 {
+            single_component += 1;
+        } else {
+            multi_component += 1;
+        }
+        components_total += entry.by_component.len();
+        for component in &entry.by_component {
+            if component.refs.len() == 1 {
+                single_ref_components += 1;
+            } else {
+                multi_ref_components += 1;
+            }
+            refs_total += component.refs.len();
+        }
+    }
+    let objects = lookup.len();
+
+    // Anti-vacuity, asserted before any ratio is read: an empty or one-sided corpus would make
+    // every claim below true for free.
+    assert!(objects > 0, "the lookup is empty; nothing was measured");
+    assert!(refs_total > 0, "no refs were recorded; nothing was measured");
+    assert!(
+        single_component > 0 && multi_component > 0,
+        "corpus is one-sided ({single_component} single, {multi_component} multi) -- \
+         the occupancy question would be decided by construction, not measurement"
+    );
+
+    let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
+    println!(
+        "
+  object page lookup occupancy ({objects} objects, {components_total} components, {refs_total} refs):
+    objects with exactly one component  {single_component:>6}  ({:>5.1}%)
+    objects with more than one          {multi_component:>6}  ({:>5.1}%)
+    components holding exactly one ref  {single_ref_components:>6}  ({:>5.1}%)
+    components holding more             {multi_ref_components:>6}  ({:>5.1}%)
+
+    sizes: ObjectPageRefs {:>3} B, ComponentPages {:>3} B, PageRefs {:>3} B, PageLookupRef {:>3} B
+    a one-component one-ref object: {:>3} B inline + {:>3} B for the component vector,
+    and the ref itself rides inside the component rather than in an allocation of its own
+",
+        pct(single_component, objects),
+        pct(multi_component, objects),
+        pct(single_ref_components, components_total),
+        pct(multi_ref_components, components_total),
+        std::mem::size_of::<crate::engine::state::ObjectPageRefs>(),
+        std::mem::size_of::<crate::engine::state::ComponentPages>(),
+        std::mem::size_of::<crate::engine::state::PageRefs>(),
+        std::mem::size_of::<crate::engine::state::PageLookupRef>(),
+        std::mem::size_of::<crate::engine::state::ObjectPageRefs>(),
+        std::mem::size_of::<crate::engine::state::ComponentPages>(),
+    );
+}
+
 /// Which structures hold an entry per record, and how many.
 ///
 /// Resident memory is ~2.8-3.9 KB per record depending on key length, and a key byte costs 14.1

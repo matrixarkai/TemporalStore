@@ -337,14 +337,10 @@ pub(super) struct ObjectPageRefs {
 pub(super) struct ComponentPages {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
-    /// A sorted, deduplicated vector rather than a set: measured, 100% of these hold exactly one
-    /// ref, and a B-tree node costs its full size whether it holds one element or eleven.
-    /// Insertion goes through `insert_page_lookup_ref`, which keeps both invariants.
-    ///
-    /// Serializes identically -- a `Vec` and a `BTreeSet` both encode as a sequence -- which
-    /// matters because this is part of the serialized index.
+    /// Sorted and deduplicated, and held inline when there is only one -- which is all of them.
+    /// Insertion goes through `PageRefs::insert`, which keeps both invariants.
     #[serde(default)]
-    pub(super) refs: Vec<PageLookupRef>,
+    pub(super) refs: PageRefs,
 }
 
 impl ObjectPageRefs {
@@ -371,11 +367,103 @@ impl ObjectPageRefs {
     }
 }
 
-/// Insert keeping the vector sorted and free of duplicates, which is what the set it replaced did.
-pub(super) fn insert_page_lookup_ref(refs: &mut Vec<PageLookupRef>, value: PageLookupRef) {
-    match refs.binary_search(&value) {
-        Ok(_) => {}
-        Err(at) => refs.insert(at, value),
+/// The pages holding one component, with the single-page case held inline.
+///
+/// Measured over a corpus mixing single-value objects and multi-field ones: 3600 of 3600
+/// components hold exactly one ref. That is not a property of the workload mix the way the
+/// component count per object is -- it held for both object shapes -- so the single case is worth
+/// having a shape for.
+///
+/// A `Vec` for one element costs a 24-byte header and, more expensively, its own heap allocation
+/// to hold a single 24-byte value. Inline costs 8 bytes more inside the enclosing vector and no
+/// allocation at all. The spilled arm keeps the behaviour unchanged for a component that does span
+/// several pages -- nothing in the measured corpus does, but the format allows it, so it stays
+/// representable rather than being asserted away.
+///
+/// Serializes as a sequence exactly as the vector did, so the on-disk index is unchanged.
+#[derive(Debug, Clone, Eq, Serialize, Deserialize)]
+#[serde(from = "Vec<PageLookupRef>", into = "Vec<PageLookupRef>")]
+pub(super) enum PageRefs {
+    One(PageLookupRef),
+    Many(Vec<PageLookupRef>),
+}
+
+impl PageRefs {
+    pub(super) fn as_slice(&self) -> &[PageLookupRef] {
+        match self {
+            Self::One(value) => std::slice::from_ref(value),
+            Self::Many(values) => values.as_slice(),
+        }
+    }
+
+    pub(super) fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(values) => values.len(),
+        }
+    }
+
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, PageLookupRef> {
+        self.as_slice().iter()
+    }
+
+    /// Insert keeping the refs sorted and free of duplicates, which is what the set this replaced
+    /// did. Reports whether anything was added, which is what the ref counter is kept from.
+    pub(super) fn insert(&mut self, value: PageLookupRef) -> bool {
+        match self {
+            Self::One(existing) => match value.cmp(existing) {
+                std::cmp::Ordering::Equal => false,
+                std::cmp::Ordering::Less => {
+                    *self = Self::Many(vec![value, existing.clone()]);
+                    true
+                }
+                std::cmp::Ordering::Greater => {
+                    *self = Self::Many(vec![existing.clone(), value]);
+                    true
+                }
+            },
+            Self::Many(values) => match values.binary_search(&value) {
+                Ok(_) => false,
+                Err(at) => {
+                    values.insert(at, value);
+                    true
+                }
+            },
+        }
+    }
+}
+
+impl Default for PageRefs {
+    fn default() -> Self {
+        Self::Many(Vec::new())
+    }
+}
+
+/// Compared by contents, so a one-element spilled arm and an inline one are the same refs. Without
+/// this, a value read back from an index written before this change could compare unequal to the
+/// identical value built in memory.
+impl PartialEq for PageRefs {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl From<Vec<PageLookupRef>> for PageRefs {
+    fn from(mut refs: Vec<PageLookupRef>) -> Self {
+        if refs.len() == 1 {
+            Self::One(refs.pop().expect("length just checked"))
+        } else {
+            Self::Many(refs)
+        }
+    }
+}
+
+impl From<PageRefs> for Vec<PageLookupRef> {
+    fn from(refs: PageRefs) -> Self {
+        match refs {
+            PageRefs::One(value) => vec![value],
+            PageRefs::Many(values) => values,
+        }
     }
 }
 
@@ -470,29 +558,25 @@ impl CoreIndex {
                 .object_page_lookup
                 .entry(object_component_lookup_key(&page.model_id, &page.object_key))
                 .or_default();
-            let at = match entry.position(page.component.as_deref()) {
-                Ok(at) => at,
+            let value = PageLookupRef {
+                routing_bucket,
+                page_ref_key,
+            };
+            match entry.position(page.component.as_deref()) {
+                Ok(at) => entry.by_component[at].refs.insert(value),
                 Err(at) => {
+                    // A component's first page. Build the entry already holding it, so the common
+                    // case never allocates and there is no empty state in between.
                     entry.by_component.insert(
                         at,
                         ComponentPages {
                             component: page.component.clone(),
-                            refs: Vec::new(),
+                            refs: PageRefs::One(value),
                         },
                     );
-                    at
+                    true
                 }
-            };
-            let refs = &mut entry.by_component[at].refs;
-            let before = refs.len();
-            insert_page_lookup_ref(
-                refs,
-                PageLookupRef {
-                    routing_bucket,
-                    page_ref_key,
-                },
-            );
-            refs.len() != before
+            }
         };
         if added {
             if let Some(total) = self.object_component_page_refs.as_mut() {
