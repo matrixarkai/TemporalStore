@@ -127,6 +127,16 @@
   pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
       overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
   .empty{color:var(--faint);font-size:14px;padding:6px 0}
+  .enc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:9px;
+       background:var(--panel-2)}
+  .enc.active{border-color:var(--accent);background:var(--accent-soft)}
+  .enc-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+  .enc-name{font-weight:600}
+  .enc-nums{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .enc-nums b{color:var(--ink);font-weight:600}
+  .enc-note{font-size:13px;color:var(--faint);margin-top:7px;line-height:1.5}
+  .enc-cfg{margin-top:9px} .enc-cfg pre{margin:0;font-size:12px}
   a{color:var(--accent)}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 
@@ -416,6 +426,7 @@
     <div class="actions"><button id="ask" type="button">Retrieve</button>
       <span class="hint" style="margin:0">Calls <span class="mono">POST /v1/retrieve</span> exactly as an agent would.</span></div>
     <div id="askMsg" role="status" aria-live="polite"></div>
+    <div id="askWarnings"></div>
     <div id="pack"><div class="empty">Nothing retrieved yet.</div></div>
   </section>
 
@@ -612,6 +623,38 @@
     return bits.join(" · ");
   }
 
+  /* The backend explains a thin answer; this is where a person sees it. Without this the pack
+     arrives shorter than it should be with nothing saying why, which reads as bad retrieval -- and
+     the fix for bad retrieval is not the fix for a changed encoder. */
+  function renderAskWarnings(d) {
+    var conflicts = d.embedding_conflicts || {};
+    var blocks = [];
+    if (conflicts.encoder_change) {
+      blocks.push('<div class="mwarn"><b>' + esc(conflicts.encoder_change) + " stored memor" +
+        (conflicts.encoder_change === 1 ? "y was" : "ies were") + " not searched</b>" +
+        "Their vectors were made by a different embedding model than the one in use now" +
+        (conflicts.active_embedding_model
+          ? " (" + esc(conflicts.active_embedding_model) + ")" : "") +
+        ". Vectors from two models cannot be compared, so those memories cannot match any query " +
+        "until the store is re-embedded — or until you switch back to the model that wrote them. " +
+        'Nothing else reports this: the two are often the same width, so no error is raised.</div>');
+    }
+    if (conflicts.vector_width) {
+      blocks.push('<div class="note"><b>' + esc(conflicts.vector_width) + " stored memor" +
+        (conflicts.vector_width === 1 ? "y was" : "ies were") + " not searched.</b> Their vectors " +
+        "are a different width from this query's, which is what happens when the encoder was " +
+        "unavailable and fallback vectors were written in its place.</div>");
+    }
+    (d.warnings || []).forEach(function (w) {
+      /* The two above say the same thing with more room; do not say it twice. */
+      if (/embedded by a different model|different width from this query/.test(String(w))) {
+        return;
+      }
+      blocks.push('<div class="note">' + esc(w) + "</div>");
+    });
+    $("askWarnings").innerHTML = blocks.join("");
+  }
+
   function ask() {
     var q = $("query").value.trim();
     if (!q) { say($("askMsg"), "Type a question first.", "info"); return; }
@@ -633,10 +676,16 @@
         var ms = Date.now() - started;
         $("askStats").textContent = items.length + " item" + (items.length === 1 ? "" : "s") +
           (d.tokens ? " · " + d.tokens + " tokens" : "") + " · " + ms + " ms";
+        renderAskWarnings(d);
         if (!items.length) {
-          $("pack").innerHTML = '<div class="empty">Nothing matched. If the store is not empty, ' +
-            "the usual cause is an embedding provider that is still deterministic — hash vectors " +
-            "do not match on meaning.</div>";
+          /* Two causes look identical from here, and naming only one sends the reader to check a
+             setting that is already right. The backend says which it was when it knows. */
+          var conflicts = d.embedding_conflicts || {};
+          $("pack").innerHTML = '<div class="empty">Nothing matched. ' + (conflicts.encoder_change
+            ? "The stored vectors were made by a different embedding model than the one in use " +
+              "now, so they cannot be compared with this query — see above."
+            : "If the store is not empty, the usual cause is an embedding provider that is still " +
+              "deterministic — hash vectors do not match on meaning.") + "</div>";
           return;
         }
         $("pack").innerHTML = items.map(function (it) {

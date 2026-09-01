@@ -107,6 +107,46 @@ The warning is shown only when the choice would actually strand something: never
 empty, and never when you are picking the encoder the store was already written with. A warning on
 every render is one people learn to click past.
 
+#### The engine knew; nothing else did
+
+The guards above live in the Rust engine. The portal, the SDK and mem0 do not retrieve through it —
+they run the Python adapter, a second implementation over the same store — and that one never
+consulted the encoder at all. So an encoder swap stayed exactly as undetectable on the path that
+actually serves customers as it had been in the engine before it was fixed.
+
+Two things made it worse there than a plain zero would be. Python's `cosine` is a bare dot product,
+so a vector from another space returns a *plausible* number rather than nothing, and a plausible
+number ranks. And the blend is `0.72 × (dense + 1) / 2 + 0.28 × sparse`, so a dense score of 0.0 is
+worth 0.36 — a meaningless dense score is not neutral, it is a subsidy paid to the record for
+carrying a vector nobody can read.
+
+The identity was already there. Every vector-bearing record carries `embedding_meta` with the model
+that wrote it — 69 of 69 in a freshly built store — because the separate embedding row was folded
+into its owner and its fields ride along. Nothing read them. The retrieve path now declines a vector
+whose encoder is not the active one and does not consult it at all, so the record follows the same
+path a not-yet-embedded record follows. Counted separately from a width conflict, because two widths
+means a provider outage seeded fallback vectors and two encoders at one width means the model was
+changed: same symptom, different fix.
+
+The count leaves on the pack and as a quality warning, so **Explore → Ask** says why an answer is
+thin next to the thin answer, rather than leaving it to look like ordinary poor recall. When nothing
+matches at all, the empty state names the encoder change when that is the cause instead of blaming a
+deterministic provider — two causes that look identical from the outside, and naming only one sends
+the reader to check a setting that is already right.
+
+#### What the encoding panel was counting
+
+`embedding_status` — which the encoding panel and the model picker's change warning both read —
+skipped every record whose type was not `context_embedding`, and current ingest writes none of
+those. On a store holding 97 vectors it answered `total: 0`, no models, no dimensions. The panel
+renders that as *nothing stored yet*, and the picker turns it into *nothing a change could strand*:
+wrong in the reassuring direction, about the one operation that silently invalidates data.
+
+It now counts every record that carries a vector, keyed by what the vector belongs to so a log
+holding both the retired row and its owner counts it once. A test pins its list of record types to
+the retrieve path's, because a type in one and not the other means the panel describes a store
+retrieval does not search.
+
 Behind it, three guards in the engine make a change survivable rather than silent. All three were
 broken and none had a test, which is how they came to be broken; each now has one, and each test
 was checked by breaking its guard again on purpose:

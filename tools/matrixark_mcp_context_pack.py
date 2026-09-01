@@ -1549,6 +1549,15 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["tokens"] = pack.get("tokens", {})
     if pack.get("quality_warnings"):
         compact["warnings"] = pack.get("quality_warnings", [])
+    # Vectors the query could not compare against. Carried only when something was actually
+    # declined: a healthy deployment should not pay bytes on every pack to be told nothing
+    # happened, and a caller reading this key at all is reading about a real problem.
+    conflicts = pack.get("embedding_conflicts")
+    if isinstance(conflicts, dict) and (conflicts.get("encoder_change") or
+                                        conflicts.get("vector_width")):
+        compact["embedding_conflicts"] = {
+            key: value for key, value in conflicts.items() if value not in (None, "", 0)
+        }
     if debug_lineage_enabled(include_debug=include_debug) and isinstance(pack.get("memory_inventory"), dict):
         compact["memory_inventory"] = pack["memory_inventory"]
     if pack.get("partial_context_pack"):

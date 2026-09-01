@@ -127,6 +127,16 @@
   pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
       overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
   .empty{color:var(--faint);font-size:14px;padding:6px 0}
+  .enc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:9px;
+       background:var(--panel-2)}
+  .enc.active{border-color:var(--accent);background:var(--accent-soft)}
+  .enc-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+  .enc-name{font-weight:600}
+  .enc-nums{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .enc-nums b{color:var(--ink);font-weight:600}
+  .enc-note{font-size:13px;color:var(--faint);margin-top:7px;line-height:1.5}
+  .enc-cfg{margin-top:9px} .enc-cfg pre{margin:0;font-size:12px}
   a{color:var(--accent)}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 

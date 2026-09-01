@@ -962,7 +962,8 @@ class _LocalAdapterRetrieveMixin:
                 "Python reference packing is disabled unless explicitly overridden for local debug."
             )
         embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(retrieval_query)
+        # The query side takes the query prefix; every other call here embeds document text.
+        query_embedding = embedding_for_text(retrieval_query, role="query")
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
@@ -1254,6 +1255,51 @@ class _LocalAdapterRetrieveMixin:
             "fallback_when_no_index_matches": True,
             "strategy": "ContextIndex node hints boost L0/L1 traversal; leaf candidates still verify filters before embedding scoring",
         }
+        # The encoder this request is asking with. Read once: it is process configuration, and a
+        # value that changed mid-scan would decline some of a store and score the rest.
+        active_embedding_model = embedding_model_name()
+        embedding_model_conflict_records = 0
+        embedding_width_conflict_records = 0
+
+        def stored_encoder_name(record: Json) -> str:
+            """Which encoder wrote this record's vector.
+
+            Owner records carry it under `embedding_meta`, not at the top level: the separate
+            embedding row was folded into its owner and its fields ride along there. Reading only
+            the top level found nothing on every record a current ingest writes, so the check
+            silently never applied -- the shape of bug it exists to catch.
+            """
+            meta = record.get("embedding_meta")
+            if isinstance(meta, dict):
+                name = meta.get("model") or meta.get("model_ref") or ""
+                if name:
+                    return str(name)
+            return str(record.get("model") or record.get("model_ref") or "")
+
+        def usable_vector(record: Json) -> list:
+            """The record's vector, or nothing at all when it cannot be compared with the query's.
+
+            Nothing rather than a zero score. The blend maps a dense score of 0.0 to 0.5 before
+            weighting, so a meaningless dense value is not neutral -- it hands the record 0.36 of
+            the final score for having a vector nobody can read. Returning an empty vector puts the
+            record on the same footing as one that has not been embedded yet, which is what it is.
+            """
+            nonlocal embedding_model_conflict_records, embedding_width_conflict_records
+            vector = record.get("vector")
+            if not isinstance(vector, list) or not vector:
+                return []
+            stored_model = stored_encoder_name(record)
+            if embedding_model_conflicts(stored_model, active_embedding_model):
+                embedding_model_conflict_records += 1
+                return []
+            # Width is the coarser check and catches what the name cannot: a store written before
+            # the model was recorded carries no name, so nothing conflicts by name, and can still
+            # hold vectors of another width.
+            if query_embedding and len(vector) != len(query_embedding):
+                embedding_width_conflict_records += 1
+                return []
+            return vector
+
         for scan_index, record in enumerate(records, 1):
             if scan_index % 128 == 0 and deadline_exceeded():
                 return deadline_fallback("deadline_during_embedding_vector_scan")
@@ -1276,7 +1322,7 @@ class _LocalAdapterRetrieveMixin:
                             {**meta, "ref_type": ref_type, "ref_hash": ref_hash}
                         )
             if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1", "context_node"}:
-                dense_score = cosine(query_embedding, record.get("vector", []))
+                dense_score = cosine(query_embedding, usable_vector(record))
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
@@ -1298,24 +1344,24 @@ class _LocalAdapterRetrieveMixin:
                 # is the ONLY place a new log stores it. setdefault so a separate
                 # context_embedding record from an old log still wins when both exist; the two
                 # are identical by construction where both were written.
-                event_embedding_vectors.setdefault(record["event_id_hash"], record["vector"])
+                event_embedding_vectors.setdefault(record["event_id_hash"], usable_vector(record))
             elif record_type == "context_entity" and record.get("vector"):
-                entity_embedding_vectors.setdefault(record["entity_hash"], record["vector"])
+                entity_embedding_vectors.setdefault(record["entity_hash"], usable_vector(record))
             elif record_type == "context_segment" and record.get("vector"):
-                segment_embedding_vectors.setdefault(record["segment_hash"], record["vector"])
+                segment_embedding_vectors.setdefault(record["segment_hash"], usable_vector(record))
             elif record_type == "context_compression_event" and record.get("vector"):
                 compression_embedding_vectors.setdefault(
-                    record["compression_id_hash"], record["vector"]
+                    record["compression_id_hash"], usable_vector(record)
                 )
             elif record_type == "resource_chunk" and record.get("vector"):
-                resource_embedding_vectors.setdefault(record["chunk_hash"], record["vector"])
+                resource_embedding_vectors.setdefault(record["chunk_hash"], usable_vector(record))
             elif record_type == "skill_section" and record.get("vector"):
-                resource_embedding_vectors.setdefault(record["section_hash"], record["vector"])
+                resource_embedding_vectors.setdefault(record["section_hash"], usable_vector(record))
             elif record_type == "context_node" and record.get("vector"):
                 # Node scoring from the node's own vector, exactly the formula the separate
                 # records used; an old log's separate record wins via the earlier branch, so
                 # this only fills nodes nothing has scored yet.
-                dense_score = cosine(query_embedding, record.get("vector", []))
+                dense_score = cosine(query_embedding, usable_vector(record))
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
@@ -3491,6 +3537,26 @@ class _LocalAdapterRetrieveMixin:
         # back too sparse, re-admit the request's local context so the agent is never blind.
         if apply_remote_only_local_fallback(local_budget, used_context_tokens):
             local_tokens = int(local_budget.get("token_estimate", 0))
+        # Said where a person reads it, not only in an audit record. A pack that is thinner than
+        # it should be, with nothing explaining why, reads as bad retrieval -- and the fix for bad
+        # retrieval is not the fix for this.
+        if embedding_model_conflict_records:
+            quality_warnings.append(
+                "%d stored %s not searched: they were embedded by a different model than the one "
+                "in use now (%s). Re-embed the store, or switch back, or those memories stay "
+                "unsearchable."
+                % (embedding_model_conflict_records,
+                   "memory was" if embedding_model_conflict_records == 1 else "memories were",
+                   active_embedding_model or "unnamed")
+            )
+        if embedding_width_conflict_records:
+            quality_warnings.append(
+                "%d stored %s not searched: their vectors are a different width from this query's, "
+                "which happens when an encoder was unavailable and fallback vectors were written."
+                % (embedding_width_conflict_records,
+                   "memory was" if embedding_width_conflict_records == 1 else "memories were")
+            )
+
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -3612,6 +3678,11 @@ class _LocalAdapterRetrieveMixin:
                     "candidate_records_after_tree": len(tree_candidate_records),
                     "records_dropped_by_tree": tree_prefilter_dropped_count,
                     "records_dropped_by_node_fanout": fanout_dropped_count,
+                    # Kept apart on purpose. Two widths means a provider outage seeded fallback
+                    # vectors; two encoders at one width means the embedding model was changed.
+                    # Same symptom -- memories that stop matching -- and different fixes.
+                    "records_declined_by_encoder_change": embedding_model_conflict_records,
+                    "records_declined_by_vector_width": embedding_width_conflict_records,
                     "raw_events_dropped_by_time_window": raw_event_time_window_dropped_count,
                     "cold_events_represented_by_compression": raw_event_time_window_dropped_count > 0,
                     "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
@@ -3672,6 +3743,13 @@ class _LocalAdapterRetrieveMixin:
             },
             "dropped_refs": serving_dropped,
             "quality_warnings": quality_warnings,
+            # Vectors this query could not compare against. Reported even when zero, because the
+            # difference between "none were declined" and "nobody counted" is the whole point.
+            "embedding_conflicts": {
+                "encoder_change": embedding_model_conflict_records,
+                "vector_width": embedding_width_conflict_records,
+                "active_embedding_model": active_embedding_model,
+            },
             "insufficient_context": not selected,
             "partial_context_pack": partial_context_pack,
             "context_pack_payload_policy": {
@@ -3740,6 +3818,9 @@ class _LocalAdapterRetrieveMixin:
             "tree_candidate_records": len(tree_candidate_records),
             "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
             "fanout_dropped_count": fanout_dropped_count,
+            "records_declined_by_encoder_change": embedding_model_conflict_records,
+            "records_declined_by_vector_width": embedding_width_conflict_records,
+            "active_embedding_model": active_embedding_model,
             "max_candidates_per_node": max_candidates_per_node,
             "max_selected_refs": max_selected_refs,
             "created_at_ms": now_ms(),
