@@ -828,7 +828,9 @@ pub(super) fn load_context_node(
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .or_else(|| shard.context_nodes.get(&object_key))
         .and_then(|address| {
-            read_page_bytes(cache, page_store, shard_id, address)
+            // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
+            // page-sized memcpy and an allocation for nothing.
+            super::read_page_shared(cache, page_store, shard_id, address)
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
 }
