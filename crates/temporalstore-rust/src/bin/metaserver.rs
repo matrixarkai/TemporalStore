@@ -2650,6 +2650,7 @@ mod tests {
                 node_id: 1,
                 location: "rack-1".to_string(),
                 binary_version: "v1".to_string(),
+                registered_at_ms: 0,
             })
             .status
             .ok);

@@ -617,6 +617,7 @@ mod tests {
                 location: "rack-1".to_string(),
                 config_version: 1,
                 binary_version: "v1".to_string(),
+                registered_at_ms: 0,
             })
             .status
             .ok);
@@ -667,6 +668,7 @@ mod tests {
                 location: "rack-1".to_string(),
                 config_version: 1,
                 binary_version: "v1".to_string(),
+                registered_at_ms: 0,
             })
             .status
             .ok);
@@ -994,6 +996,7 @@ mod tests {
                 location: "us-east/dc1/az1".to_string(),
                 config_version: 0,
                 binary_version: "v1".to_string(),
+                registered_at_ms: 0,
             })
             .status
             .ok);
@@ -1118,6 +1121,7 @@ mod tests {
                 location: "rack-1".to_string(),
                 config_version: 0,
                 binary_version: "v1".to_string(),
+                registered_at_ms: 0,
             })
             .status
             .ok);
@@ -1182,6 +1186,7 @@ mod tests {
                     location: "rack-1".to_string(),
                     config_version: 0,
                     binary_version: "v1".to_string(),
+                    registered_at_ms: 0,
                 })
                 .status
                 .ok);
