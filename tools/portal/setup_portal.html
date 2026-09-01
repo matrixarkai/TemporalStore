@@ -1,0 +1,2049 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MatrixArk — Setup & Metrics</title>
+<style>
+  /* --faint carries the help text under every field, so it is body copy rather than
+     decoration: it is set to clear 4.5:1 against --panel in both schemes (measured 4.95
+     light / 5.76 dark). A lighter grey looks tidier and drops it to about 3:1. */
+  :root{
+    --bg:#f2f5f7; --panel:#fff; --panel-2:#f7f9fb;
+    --ink:#141a20; --muted:#5c6773; --faint:#667180; --line:#dce3ea;
+    --accent:#0d6b68; --accent-ink:#fff; --accent-soft:#d9ecea;
+    --ok:#1c7a58; --ok-soft:#dbeee5;
+    --warn:#93610f; --warn-soft:#f7ead2;
+    --crit:#a6423a; --crit-soft:#f7dfdc;
+    --shadow:0 1px 2px rgba(20,26,32,.05), 0 4px 14px rgba(20,26,32,.05);
+    --radius:10px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0d1115; --panel:#151b21; --panel-2:#1a212a;
+      --ink:#e4e9ef; --muted:#8d99a7; --faint:#8996a5; --line:#27303a;
+      --accent:#3fb3a8; --accent-ink:#06231f; --accent-soft:#11302e;
+      --ok:#4cb68b; --ok-soft:#113126;
+      --warn:#d9a441; --warn-soft:#31270f;
+      --crit:#d7756a; --crit-soft:#341e1b;
+      --shadow:0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.28);
+    }
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.55 "IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:28px 20px 72px}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+  /* header */
+  header{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:24px;margin:0;letter-spacing:-.015em;font-weight:650}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);display:inline-block;
+       margin-right:6px;vertical-align:middle}
+  .dot.live{background:var(--ok)} .dot.down{background:var(--crit)}
+  .conn{font-size:13px;color:var(--muted)}
+  .lede{color:var(--muted);margin:2px 0 22px;max-width:64ch}
+
+  /* summary */
+  .summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:14px 16px;box-shadow:var(--shadow)}
+  .stat b{display:block;font-size:26px;line-height:1.1;font-weight:650;
+          font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace}
+  .stat span{display:block;font-size:12.5px;color:var(--muted);margin-top:5px}
+  .stat.ok b{color:var(--ok)} .stat.warn b{color:var(--warn)} .stat.crit b{color:var(--crit)}
+
+  section{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+          padding:18px 20px;margin-bottom:16px;box-shadow:var(--shadow)}
+  h2{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);
+     margin:0 0 14px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .aux{margin-left:auto;text-transform:none;letter-spacing:0;font-size:12px;font-weight:400}
+
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px;font-weight:500}
+  input[type=text],input[type=password],textarea{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+    background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  textarea{min-height:74px;resize:vertical;font-family:"IBM Plex Mono",monospace;font-size:13px}
+  input:focus,textarea:focus,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media (max-width:620px){.grid2{grid-template-columns:1fr}}
+
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px;align-items:center}
+  button{background:var(--accent);color:var(--accent-ink);border:0;border-radius:7px;
+         padding:9px 16px;font:inherit;font-weight:600;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+  button.link{background:none;border:0;color:var(--accent);padding:4px 2px;font-weight:500;
+              text-decoration:underline;text-underline-offset:2px}
+  button.danger{background:transparent;color:var(--crit);border:1px solid var(--crit);
+                padding:5px 11px;font-size:13px}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .check{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
+
+  .msg{padding:10px 13px;border-radius:7px;font-size:14px;margin-top:14px;line-height:1.5}
+  .msg.err{background:var(--crit-soft);color:var(--crit)}
+  .msg.ok{background:var(--ok-soft);color:var(--ok)}
+  .msg.info{background:var(--accent-soft);color:var(--accent)}
+  .note{background:var(--warn-soft);color:var(--warn);padding:10px 13px;border-radius:7px;
+        font-size:13.5px;margin-bottom:9px;line-height:1.5}
+  /* Config warnings and errors quote long unbreakable tokens (env var names, endpoints, paths).
+     Without this they force the whole page to scroll sideways on a narrow viewport. */
+  .note,.msg,.hint,td,.job-stats,.lede{overflow-wrap:anywhere}
+  .hint{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5}
+
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  th{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);
+     font-weight:600;white-space:nowrap}
+  td.num{text-align:right;font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+
+  .job{border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-bottom:10px;
+       background:var(--panel-2)}
+  .job-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .job-id{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--muted)}
+  .pill{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+        padding:3px 9px;border-radius:20px;white-space:nowrap}
+  .pill.running{background:var(--accent-soft);color:var(--accent)}
+  .pill.completed{background:var(--ok-soft);color:var(--ok)}
+  .pill.queued{background:var(--line);color:var(--muted)}
+  .pill.failed,.pill.cancelled{background:var(--crit-soft);color:var(--crit)}
+  .job-meta{margin-left:auto;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .bar{height:7px;background:var(--line);border-radius:5px;overflow:hidden;margin:11px 0 8px}
+  .bar>i{display:block;height:100%;background:var(--accent);transition:width .45s ease}
+  .bar>i.done{background:var(--ok)} .bar>i.bad{background:var(--crit)}
+  .job-stats{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+             font-variant-numeric:tabular-nums}
+  .job-stats b{color:var(--ink);font-weight:600}
+  .current{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--faint);
+           margin-top:7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  details{margin-top:9px}
+  summary{cursor:pointer;font-size:13px;color:var(--crit)}
+  details ul{margin:7px 0 0;padding-left:18px;font-size:12.5px;color:var(--muted)}
+  details li{margin-bottom:3px;font-family:"IBM Plex Mono",monospace;word-break:break-all}
+
+  pre{background:var(--panel-2);border:1px solid var(--line);border-radius:7px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;margin:0;line-height:1.5}
+  .empty{color:var(--faint);font-size:14px;padding:6px 0}
+  .enc{border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin-bottom:9px;
+       background:var(--panel-2)}
+  .enc.active{border-color:var(--accent);background:var(--accent-soft)}
+  .enc-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:7px}
+  .enc-name{font-weight:600}
+  .enc-nums{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--muted);
+            font-variant-numeric:tabular-nums}
+  .enc-nums b{color:var(--ink);font-weight:600}
+  .enc-note{font-size:13px;color:var(--faint);margin-top:7px;line-height:1.5}
+  .enc-cfg{margin-top:9px} .enc-cfg pre{margin:0;font-size:12px}
+  a{color:var(--accent)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .lineage{font-size:12.5px;color:var(--muted);margin-top:7px}
+  .lineage .mono{font-family:"IBM Plex Mono",monospace}
+  table.failures{margin-top:8px;font-size:13px}
+  table.failures td{vertical-align:top;overflow-wrap:anywhere}
+  table.failures td.mono{font-family:"IBM Plex Mono",monospace;font-size:12px}
+  details ul li{list-style:none;margin-left:-18px}
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .livestrip{display:flex;gap:14px;align-items:center;margin-left:auto;padding-bottom:7px;
+             flex-wrap:wrap}
+  .live-seg{display:inline-flex;gap:5px;align-items:baseline;font-size:12.5px;color:var(--muted);
+            text-decoration:none;border-bottom:0;padding:0;font-weight:400;
+            font-variant-numeric:tabular-nums}
+  .live-seg:hover{color:var(--accent)}
+  .live-seg b{font-weight:650;color:var(--ink)}
+  .live-seg.warn b{color:var(--warn)}
+  .live-seg.busy b{color:var(--accent)}
+  .live-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:0 0 auto}
+  .live-dot.stale{background:var(--warn)}
+  .live-dot.down{background:var(--crit)}
+  @media (max-width:820px){ .livestrip{margin-left:0;width:100%;padding-top:6px} }
+
+  /* setup + catalog additions */
+  .field{margin-bottom:2px}
+  .field .env{font-size:11.5px;color:var(--faint);font-family:"IBM Plex Mono",monospace}
+  .badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+         padding:2px 7px;border-radius:20px;margin-left:7px;white-space:nowrap}
+  .badge.restart{background:var(--warn-soft);color:var(--warn)}
+  .badge.essential{background:var(--crit-soft);color:var(--crit)}
+  .badge.portal{background:var(--accent-soft);color:var(--accent)}
+  .badge.environment{background:var(--line);color:var(--muted)}
+  .badge.override{background:var(--panel-2);color:var(--muted);border:1px solid var(--line)}
+  select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+         background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
+  .presets{display:flex;gap:8px;flex-wrap:wrap}
+  .preset{flex:1 1 210px;text-align:left;background:var(--panel-2);color:var(--ink);
+          border:1px solid var(--line);border-radius:8px;padding:11px 13px;font-weight:500}
+  .preset b{display:block;font-weight:650;margin-bottom:3px}
+  .preset span{display:block;font-size:12.5px;color:var(--muted);font-weight:400;line-height:1.45}
+  .preset:hover{border-color:var(--accent)}
+  .probe{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+         background:var(--panel-2)}
+  .probe.ok{border-color:var(--ok)} .probe.bad{border-color:var(--crit)}
+  .probe h3{margin:0 0 5px;font-size:14px;font-weight:650;display:flex;gap:9px;align-items:center}
+  .probe p{margin:0;font-size:13px;color:var(--muted)}
+  tr.rowlink{cursor:pointer} tr.rowlink:hover td{background:var(--panel-2)}
+  .tag{font-size:11px;background:var(--line);color:var(--muted);border-radius:4px;padding:1px 6px;
+       margin-right:5px;white-space:nowrap}
+  /* setup page: grouped, filterable settings */
+  details.group{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+                padding:0;margin-bottom:12px;box-shadow:var(--shadow);overflow:hidden}
+  details.group>summary{list-style:none;cursor:pointer;padding:15px 20px;display:flex;
+                        align-items:baseline;gap:10px;flex-wrap:wrap}
+  details.group>summary::-webkit-details-marker{display:none}
+  details.group>summary::before{content:"B8";color:var(--faint);font-size:12px;
+                                transition:transform .15s ease;display:inline-block}
+  details.group[open]>summary::before{transform:rotate(90deg)}
+  details.group>summary b{font-size:15px;font-weight:650;letter-spacing:-.01em}
+  details.group>summary .n{font-size:11.5px;color:var(--faint);
+                           font-family:"IBM Plex Mono",monospace}
+  details.group>summary .adv{font-size:10px;font-weight:700;text-transform:uppercase;
+                             letter-spacing:.05em;color:var(--muted);background:var(--line);
+                             border-radius:20px;padding:2px 7px}
+  details.group>summary .dirty{font-size:10px;font-weight:700;text-transform:uppercase;
+                               letter-spacing:.05em;color:var(--warn);background:var(--warn-soft);
+                               border-radius:20px;padding:2px 7px}
+  .group-body{padding:0 20px 18px}
+  .group-note{color:var(--muted);font-size:13.5px;margin:0 0 14px;max-width:70ch;line-height:1.55}
+  .field.changed input,.field.changed select{border-color:var(--warn);
+                                             background:var(--warn-soft)}
+  .field .row{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .field .reset{margin-left:auto}
+  .field.hidden{display:none}
+  .helptext{font-size:13px;color:var(--faint);margin-top:9px;line-height:1.5;max-width:70ch}
+  .helptext.long{max-height:3.6em;overflow:hidden;position:relative;cursor:pointer}
+  .helptext.long::after{content:"more";position:absolute;right:0;bottom:0;background:var(--panel);
+                        padding-left:10px;color:var(--accent);font-weight:600}
+  .helptext.long.open{max-height:none}
+  .helptext.long.open::after{content:none}
+  .savebar{position:sticky;bottom:0;z-index:5;background:var(--panel);border:1px solid var(--line);
+           border-radius:var(--radius);box-shadow:var(--shadow);padding:12px 16px;margin:16px 0;
+           display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .savebar .count{font-size:13.5px;color:var(--muted);margin-right:auto}
+  .savebar .count b{color:var(--warn)}
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .toolbar input[type=text]{flex:1 1 240px;width:auto}
+  .inv{width:100%;border-collapse:collapse;font-size:13.5px;margin-bottom:16px}
+  .inv th{width:1%;white-space:nowrap;text-align:left;padding:6px 14px 6px 0;font-weight:500;
+          color:var(--muted);text-transform:none;letter-spacing:0;font-size:13.5px}
+  .inv td{padding:6px 0;border-bottom:1px solid var(--line);
+          font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere}
+  .inv td.unset{color:var(--faint);font-style:italic;font-family:inherit}
+  .inv .envname{display:block;font-size:11px;color:var(--faint);
+                font-family:"IBM Plex Mono",monospace}
+  #history td div{font-family:"IBM Plex Mono",monospace;font-size:12.5px;padding:1px 0;
+                  overflow-wrap:anywhere}
+  #history em{font-style:normal;color:var(--muted)}
+  /* overview checklist + explore */
+  .checkrow{display:flex;gap:13px;align-items:flex-start;padding:13px 0;
+            border-bottom:1px solid var(--line)}
+  .checkrow:last-child{border-bottom:0}
+  .checkrow .mark{flex:0 0 20px;height:20px;border-radius:50%;display:grid;place-items:center;
+                  font-size:12px;font-weight:800;margin-top:1px}
+  .checkrow .mark.ok{background:var(--ok-soft);color:var(--ok)}
+  .checkrow .mark.warn{background:var(--warn-soft);color:var(--warn)}
+  .checkrow .mark.todo{background:var(--crit-soft);color:var(--crit)}
+  .checkrow .body{flex:1 1 auto;min-width:0}
+  .checkrow .body b{display:block;font-size:14.5px;font-weight:650;margin-bottom:2px}
+  .checkrow .body span{font-size:13.5px;color:var(--muted);line-height:1.5;
+                       overflow-wrap:anywhere;display:block}
+  .checkrow .go{flex:0 0 auto;font-size:13px;white-space:nowrap}
+  .importrow{border:1px solid var(--line);border-radius:8px;padding:11px 13px;margin-bottom:9px;
+             background:var(--panel-2)}
+  .importhead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .importhead .mono{font-family:"IBM Plex Mono",monospace;font-size:12.5px}
+  .importmeta{margin-left:auto;font-size:12.5px;color:var(--muted);
+              font-variant-numeric:tabular-nums}
+  .importcur{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--faint);
+             margin-top:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .how{margin-top:8px}
+  .how>summary{cursor:pointer;font-size:12.5px;color:var(--accent);font-weight:550;
+               list-style:none;display:inline-block}
+  .how>summary::-webkit-details-marker{display:none}
+  .how>summary::before{content:"B8 ";font-size:10px}
+  .how[open]>summary::before{content:"BE "}
+  .how ol{margin:8px 0 0;padding-left:20px}
+  .how li{font-size:13px;color:var(--muted);line-height:1.55;margin-bottom:5px;
+          overflow-wrap:anywhere}
+  .progress{height:8px;border-radius:5px;background:var(--line);overflow:hidden;margin:4px 0 18px}
+  .progress>i{display:block;height:100%;background:var(--ok);transition:width .5s ease}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;
+         margin-bottom:6px}
+  .tile{display:block;text-decoration:none;color:inherit;background:var(--panel);
+        border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;
+        box-shadow:var(--shadow)}
+  .tile:hover{border-color:var(--accent)}
+  .tile b{display:block;font-size:14.5px;font-weight:650;margin-bottom:3px}
+  .tile span{font-size:12.5px;color:var(--muted);line-height:1.45;display:block}
+  .packitem{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:7px;
+            padding:11px 13px;margin-bottom:9px;background:var(--panel-2)}
+  .packitem .meta{font-size:11.5px;color:var(--faint);margin-bottom:5px;
+                  font-family:"IBM Plex Mono",monospace}
+  .packitem p{margin:0;font-size:13.5px;line-height:1.55;overflow-wrap:anywhere}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+  .tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--muted);
+               padding:8px 12px;font-weight:550;font-size:13.5px;margin-bottom:-1px;
+               border-radius:0}
+  .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  .pane[hidden]{display:none}
+  .polrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
+          padding:9px 0;border-bottom:1px solid var(--line)}
+  .polrow:last-child{border-bottom:0}
+  .polrow .n{font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere}
+  .polrow .d{grid-column:1/-1;font-size:12.5px;color:var(--faint);line-height:1.5;
+             margin-top:-4px;max-width:78ch}
+  .polrow input[type=text],.polrow select{width:120px;margin:0}
+  .polrow.locked{opacity:.72}
+  .src{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+       border-radius:4px;padding:2px 6px;background:var(--line);color:var(--muted)}
+  .src.user{background:var(--accent-soft);color:var(--accent)}
+  .src.tenant{background:var(--warn-soft);color:var(--warn)}
+  .opgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px;
+          margin-bottom:6px}
+  .opbtn{text-align:left;background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+         border-radius:7px;padding:8px 10px;cursor:pointer;font-size:13px;font-weight:550;
+         font-family:"IBM Plex Mono",monospace}
+  .opbtn:hover{border-color:var(--accent)}
+  .opbtn[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);
+                            color:var(--accent)}
+  .opbtn.danger[aria-pressed=true]{border-color:var(--crit);background:var(--crit-soft);
+                                   color:var(--crit)}
+  .opgroup{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+           color:var(--faint);margin:12px 0 6px}
+  .opform{border:1px solid var(--line);border-radius:9px;padding:14px 16px;margin-top:12px;
+          background:var(--panel-2)}
+  .opform h3{margin:0 0 4px;font-size:15px;font-weight:650}
+  .opform .route{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                 margin-bottom:8px}
+  .opform .route .scope{color:var(--faint)}
+  .mblock{border:1px solid var(--line);border-radius:9px;padding:13px 15px;margin-bottom:11px;
+          background:var(--panel-2)}
+  .mblock h3{margin:0 0 3px;font-size:14.5px;font-weight:650;display:flex;gap:9px;
+             align-items:baseline;flex-wrap:wrap}
+  .mblock h3 .cur{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);
+                  font-weight:400}
+  .mblock .mnote{font-size:13px;color:var(--muted);line-height:1.5;margin:9px 0 0;max-width:70ch}
+  .mrow{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .mrow select,.mrow input[type=text]{flex:1 1 240px;width:auto;margin:0}
+  .mrow button{flex:0 0 auto}
+  .mstore{font-size:12.5px;color:var(--faint);margin-top:9px;line-height:1.5}
+  .mmeas{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:11px}
+  .mmeas th{text-align:left;font-weight:600;color:var(--muted);padding:4px 10px 4px 0;
+            white-space:nowrap;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .mmeas td{padding:5px 10px 5px 0;border-top:1px solid var(--line);
+            font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mmeas td.name{font-family:"IBM Plex Mono",monospace;font-size:11.5px;white-space:normal;
+                 overflow-wrap:anywhere;width:99%}
+  .mmeas tr.chosen td{background:var(--accent-soft)}
+  .mmeas tr.chosen td.name{font-weight:650}
+  .mmeas .best{color:var(--ok);font-weight:650}
+  .mstore b{color:var(--muted);font-weight:600}
+  .mwarn{border:1px solid var(--crit);background:var(--crit-soft);border-radius:8px;
+         padding:11px 13px;margin-top:11px;font-size:13px;line-height:1.55;max-width:78ch}
+  .mwarn b{display:block;margin-bottom:4px;font-size:13.5px}
+  .upl{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-top:9px;
+       background:var(--panel-2)}
+  .upl-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .upl-name{font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere;
+            flex:1 1 auto;min-width:0}
+  .upl-size{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .upl-bar{height:5px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+  .upl-bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .2s linear}
+  .upl.done .upl-bar>i{background:var(--ok)}
+  .upl.failed .upl-bar>i{background:var(--crit)}
+  .upl-detail{font-size:12.5px;color:var(--muted);margin-top:7px;overflow-wrap:anywhere}
+  .upl-actions{margin-top:8px}
+  /* API page */
+  .route{border-bottom:1px solid var(--line);padding:14px 0}
+  .route:last-child{border-bottom:0}
+  .route-head{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+  .verb{font-family:"IBM Plex Mono",monospace;font-size:11px;font-weight:700;letter-spacing:.04em;
+        padding:2px 7px;border-radius:4px;background:var(--line);color:var(--muted)}
+  .verb.GET{background:var(--accent-soft);color:var(--accent)}
+  .verb.POST{background:var(--ok-soft);color:var(--ok)}
+  .verb.PUT{background:var(--warn-soft);color:var(--warn)}
+  .route-path{font-family:"IBM Plex Mono",monospace;font-size:13.5px;font-weight:600;
+              overflow-wrap:anywhere}
+  .route-scope{margin-left:auto;font-size:11.5px;font-family:"IBM Plex Mono",monospace;
+               color:var(--faint);white-space:nowrap}
+  .route p{margin:6px 0 0;font-size:13.5px;color:var(--muted);line-height:1.55;max-width:78ch}
+  .route .curl{margin-top:9px}
+  .route pre{margin-top:8px;display:none}
+  .route.open pre{display:block}
+  .visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+                   clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Setup &amp; metrics</h1>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  </header>
+  <nav class="portalnav">
+    <a href="/v1/admin">Overview</a>
+    <a href="/v1/admin/setup" aria-current="page">Setup &amp; metrics</a>
+    <a href="/v1/admin/catalog">Skills &amp; resources</a>
+    <a href="/v1/admin/explore">Explore</a>
+    <a href="/v1/admin/ingestion">Ingestion</a>
+    <a href="/v1/admin/portal">API keys</a>
+    <a href="/v1/admin/api">API</a>
+    <div class="livestrip" id="liveStrip" hidden>
+      <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
+      <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
+      <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <span class="live-dot" id="liveDot" title="live"></span>
+    </div>
+  </nav>
+  <p class="lede">Point this deployment at the models it should use, confirm the endpoints actually
+    answer, tune what it does with them, and see the traffic it is serving — without shell access
+    to the server.</p>
+
+  <div class="summary" id="summary"></div>
+
+  <section>
+    <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
+    <label for="key">Admin API key</label>
+    <input id="key" type="password" placeholder="Key carrying an admin scope" autocomplete="off" spellcheck="false">
+    <div class="hint">Reading this page needs nothing; every action calls an admin-gated endpoint, so
+      the page is inert without a key. “Remember” keeps it in this tab only and forgets it when the
+      tab closes — it is never written to disk or sent anywhere but this gateway.</div>
+  </section>
+
+  <div id="warnings"></div>
+
+  <section>
+    <h2>Start from a provider</h2>
+    <p class="hint" style="margin-top:0">A preset only fills the fields below — it writes nothing you
+      could not type by hand. Review, add your key, then save.</p>
+    <div class="presets" id="presets"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Models <span class="aux"><button class="link" id="probeModels" type="button">ask the
+      endpoints what they serve</button></span></h2>
+    <p class="hint" style="margin-top:0">Both of these are free text on the wire, and a name that is
+      merely misspelt does not fail loudly: extraction falls back to the local rules and embedding to
+      hash vectors, both answering 200. Pick from the catalogue, or ask the configured endpoint for
+      its own list. Choosing here fills the field below — nothing is written until you save.</p>
+    <div id="models"><div class="empty">Enter an admin key to choose models.</div></div>
+  </section>
+
+  <form id="settingsForm">
+    <div class="toolbar">
+      <label for="filter" class="visually-hidden">Filter settings</label>
+      <input id="filter" type="search" placeholder="Filter settings — name, help text, or variable" spellcheck="false" autocomplete="off">
+      <label class="check"><input type="checkbox" id="onlyEssential"> only what I must set</label>
+      <label class="check"><input type="checkbox" id="showAdvanced"> show advanced groups</label>
+      <label class="check"><input type="checkbox" id="onlyChanged"> only changed</label>
+    </div>
+    <div id="groups"><section><div class="empty">Enter an admin key to load this deployment’s
+      configuration.</div></section></div>
+
+    <div class="savebar">
+      <span class="count" id="dirtyCount">No unsaved changes</span>
+      <button id="save" type="submit">Save configuration</button>
+      <button id="test" class="ghost" type="button">Test endpoints</button>
+      <button id="reload" class="link" type="button">Discard changes</button>
+    </div>
+    <div id="saveMsg" role="status" aria-live="polite"></div>
+    <div class="hint" id="cfgTime"></div>
+  </form>
+
+  <section>
+    <h2>Retrieval settings <span class="aux" id="polAux"></span></h2>
+    <p class="hint" style="margin-top:0">Tune retrieval for everyone in this tenant, or for one
+      person. Each row says where its current value came from — that user, the tenant, the
+      environment, or the built-in default — so a setting that looks wrong can be traced to the
+      layer that set it. Changes apply to the next request; no restart.</p>
+    <div class="grid2">
+      <div>
+        <label for="polLevel">Applies to</label>
+        <select id="polLevel">
+          <option value="tenant">Everyone in this tenant</option>
+          <option value="user">One user</option>
+        </select>
+      </div>
+      <div>
+        <label for="polUser">User</label>
+        <input id="polUser" type="text" placeholder="alice" spellcheck="false" autocomplete="off">
+      </div>
+      <div>
+        <label for="polFilter">Filter</label>
+        <input id="polFilter" type="search" placeholder="name or description" spellcheck="false">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="polLoad" class="ghost" type="button">Load settings</button>
+      <label class="check"><input type="checkbox" id="polOnlySettable" checked> only what this
+        level can set</label>
+    </div>
+    <div id="polMsg" role="status" aria-live="polite"></div>
+    <div id="polWhy" class="hint" hidden></div>
+    <div id="policy"><div class="empty">Name a user and load their settings.</div></div>
+  </section>
+
+  <section>
+    <h2>Recent changes</h2>
+    <p class="hint" style="margin-top:0">The last writes to this deployment's configuration, newest
+      first. A key rotation is recorded as having happened; the key itself is never written down.</p>
+    <div id="history"><div class="empty">Nothing has been changed from the portal yet.</div></div>
+  </section>
+
+  <section>
+    <h2>Move this configuration <span class="aux">
+      <button class="link" id="exportCfg" type="button">export</button>
+      <button class="link" id="copyCfgCurl" type="button">copy as curl</button></span></h2>
+    <p class="hint" style="margin-top:0">Export emits exactly what the write endpoint accepts, so
+      making another deployment match this one is one request rather than 79 fields retyped.
+      Secrets are never exported — set the keys on the target afterwards.</p>
+    <label for="importText">Paste a configuration to apply</label>
+    <textarea id="importText" placeholder='{"settings": {"embedding.provider": "openai_compatible", ...}}' spellcheck="false"></textarea>
+    <div class="actions"><button id="importCfg" class="ghost" type="button">Apply pasted configuration</button></div>
+    <div id="importMsg" role="status" aria-live="polite"></div>
+  </section>
+
+  <section>
+    <h2>Encoding <span class="aux" id="encodeAux"></span></h2>
+    <p class="hint" style="margin-top:0">Ingest can defer encoding: chunking is synchronous and the
+      vector is filled in behind it. Until a chunk is encoded it exists and cannot be matched on
+      meaning, so a retrieve over that window returns less than it should and says nothing — which
+      reads as bad retrieval rather than unfinished retrieval.</p>
+    <div id="encoding"><div class="empty">Enter an admin key to read the encoding state.</div></div>
+  </section>
+
+  <section>
+    <h2>Endpoint test</h2>
+    <p class="hint" style="margin-top:0">Reading configuration back proves only that it was stored.
+      This calls the endpoints as configured. Both extraction and embedding fall back to a local
+      deterministic path when a call fails — that path answers 200, so a rejected key and a working
+      one are indistinguishable at the API surface until you probe them.</p>
+    <div id="probe" role="status" aria-live="polite"><div class="empty">Not run yet.</div></div>
+  </section>
+
+  <section>
+    <h2>Traffic <span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></h2>
+    <div id="traffic"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Deployment</h2>
+    <p class="hint" style="margin-top:0">Where this deployment lives and how it is reached. Read
+      only, deliberately: repointing a storage directory or a cluster address from a browser form
+      does not reconfigure a running deployment, it strands its data. Change these where the process
+      is started.</p>
+    <div id="inventory"><div class="empty">Enter an admin key to see the deployment.</div></div>
+  </section>
+
+  <section>
+    <h2>Grafana <span class="aux"><button class="link" id="copyScrape" type="button">copy scrape config</button></span></h2>
+    <p class="hint" style="margin-top:0">Everything on this page is also exported at
+      <span class="mono">/v1/metrics</span> in Prometheus text format — aggregate counters only, no
+      keys and no tenant identifiers, so it is safe to scrape without credentials.</p>
+    <p class="hint">Three steps: point Prometheus at the scrape config below, import the dashboards
+      into Grafana, and load the alert rules. The dashboards are served by this gateway rather than
+      named as a file path, so the panels match the metrics this build actually emits — a panel
+      querying a series nobody emits is a blank one, and a blank panel reads as “no traffic”.</p>
+    <p class="hint">Check the <b>scraped from</b> column before importing. The gateway and the
+      engine publish on different endpoints, and an engine dashboard pointed at the gateway shows
+      twelve empty panels — which looks like an idle cluster, not a misdirected query.</p>
+    <div id="monitoring"><div class="empty">Enter an admin key to list the dashboards.</div></div>
+    <p class="hint">Grafana → Dashboards → New → Import → Upload JSON. The alert rules are
+      Prometheus rule files, not Grafana imports.</p>
+    <div id="grafanaMsg" role="status" aria-live="polite"></div>
+    <table>
+      <tr><td class="mono">matrixark_gateway_embedding_semantic</td><td>0 means retrieval is running on hash
+        vectors. Alert on it — nothing else distinguishes that deployment from a healthy one.</td></tr>
+      <tr><td class="mono">matrixark_gateway_extraction_model_active</td><td>0 means ingest stores only what the
+        local rules extract, with no model call.</td></tr>
+      <tr><td class="mono">matrixark_gateway_config_warnings</td><td>How many configuration warnings are live
+        right now. Steady state is 0.</td></tr>
+      <tr><td class="mono">matrixark_gateway_request_duration_seconds</td><td>Edge latency histogram, by route.</td></tr>
+      <tr><td class="mono">matrixark_gateway_requests_total</td><td>Edge requests by route, method and status.</td></tr>
+      <tr><td class="mono">matrixark_ingestion_documents_retryable</td><td>Documents that failed an
+        import for a reason worth retrying. Non-zero means work is sitting there until somebody
+        presses retry — nothing else raises its hand.</td></tr>
+      <tr><td class="mono">matrixark_gateway_config_changed_timestamp_seconds</td><td>When the
+        configuration was last written from the portal. Half of “it started behaving differently on
+        Tuesday” is answered by knowing whether anyone changed it on Tuesday.</td></tr>
+    </table>
+    <pre id="scrape"></pre>
+  </section>
+
+</div>
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* Claimed before the strip's own script runs, so it feeds from this connection instead of
+     opening a second one to the same endpoint. */
+  window.__matrixarkLive = "page";
+
+/* ---------- the live stream ---------- */
+/* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
+   the alternative is the key in a query string, and a credential in a URL ends up in every access
+   log and proxy trace between here and the gateway. Same wire format either way; only the
+   reconnect is ours to write. */
+function liveStream(options) {
+  var onFrame = options.onFrame || function () {};
+  var onState = options.onState || function () {};
+  var headers = options.headers || function () { return {}; };
+  var controller = null, stopped = false, backoff = 1000, buffer = "";
+
+  function schedule() {
+    if (stopped) { return; }
+    onState("retrying", Math.round(backoff / 1000));
+    setTimeout(open, backoff);
+    backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down should not be hammered */
+  }
+
+  function handle(block) {
+    var payload = null;
+    block.split("\n").forEach(function (line) {
+      if (line.indexOf("data: ") === 0) { payload = line.slice(6); }
+    });
+    if (!payload) { return; }
+    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
+  }
+
+  function open() {
+    if (stopped) { return; }
+    controller = new AbortController();
+    onState("connecting");
+    fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
+      .then(function (response) {
+        if (!response.ok) { return Promise.reject(response.status); }
+        if (!response.body) { return Promise.reject("nostream"); }
+        onState("live");
+        backoff = 1000;
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) { schedule(); return; }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var blocks = buffer.split("\n\n");
+            buffer = blocks.pop();
+            blocks.forEach(handle);
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(function (err) {
+        if (stopped) { return; }
+        if (err === 401 || err === 403) { onState("denied"); return; }
+        schedule();
+      });
+  }
+
+  open();
+  window.addEventListener("pagehide", function () {
+    stopped = true;
+    if (controller) { controller.abort(); }
+  });
+  return {
+    restart: function () {
+      if (controller) { controller.abort(); }
+      backoff = 1000;
+      stopped = false;
+      open();
+    },
+    stop: function () { stopped = true; if (controller) { controller.abort(); } }
+  };
+}
+
+  var loaded = null;      /* last GET /v1/admin/config payload */
+  var fields = {};        /* setting key -> field descriptor from the server */
+  var edits = {};         /* setting key -> value typed/reset since the last load */
+  var timer = null;
+
+  function auth() {
+    var k = $("key").value.trim();
+    return k ? { Authorization: "Bearer " + k } : {};
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function say(el, text, cls) {
+    el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
+  }
+  function conn(state, text) {
+    $("dot").className = "dot " + state;
+    $("conn").textContent = text;
+  }
+  /* One phrasing for every failure on the page. "The gateway answered 403" tells a customer
+     nothing they can act on; naming the cause turns most of these into a self-service fix. */
+  function failure(status) {
+    if (status === 401) { return "This key was not accepted."; }
+    if (status === 403) { return "This key lacks an admin scope. Issue one with admin:api_key."; }
+    if (status === 413) { return "That request was too large."; }
+    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
+    if (status === 504) { return "The backend did not answer in time."; }
+    return "The gateway answered " + status + ".";
+  }
+
+  /* ---------- summary + warnings ---------- */
+  function renderSummary(d) {
+    var det = { "": 1, deterministic: 1, rules: 1, local: 1 };
+    var semantic = !det[(d.embedding || {}).provider];
+    var extracting = !det[(d.extraction || {}).provider];
+    var warn = (d.warnings || []).length;
+    var cards = [
+      { n: extracting ? "model" : "rules only", l: "extraction", c: extracting ? "ok" : "warn" },
+      { n: semantic ? "semantic" : "hash vectors", l: "retrieval", c: semantic ? "ok" : "warn" },
+      { n: warn, l: warn === 1 ? "warning" : "warnings", c: warn ? "warn" : "ok" },
+      { n: Object.keys(fields).length, l: "settings", c: "" }
+    ];
+    $("summary").innerHTML = cards.map(function (c) {
+      return '<div class="stat ' + c.c + '"><b>' + esc(c.n) + "</b><span>" + esc(c.l) + "</span></div>";
+    }).join("");
+    $("warnings").innerHTML = (d.warnings || []).map(function (w) {
+      return '<div class="note">' + esc(w) + "</div>";
+    }).join("");
+  }
+
+  /* ---------- presets ---------- */
+  function renderPresets(presets) {
+    var names = Object.keys(presets || {});
+    if (!names.length) { $("presets").innerHTML = '<div class="empty">None available.</div>'; return; }
+    $("presets").innerHTML = names.map(function (name) {
+      var p = presets[name];
+      return '<button type="button" class="preset" data-preset="' + esc(name) + '"><b>' +
+        esc(p.label) + "</b><span>" + esc(p.note) + "</span></button>";
+    }).join("");
+  }
+
+  /* ---------- settings ---------- */
+  function fieldId(key) { return "f_" + key.replace(/[^a-z0-9]/gi, "_"); }
+
+  function controlHtml(f) {
+    var id = fieldId(f.key), attr = ' id="' + id + '" data-key="' + esc(f.key) + '"';
+    if (f.kind === "secret") {
+      return '<input type="password"' + attr + ' autocomplete="off" spellcheck="false" placeholder="' +
+        (f.configured ? "configured — leave blank to keep" : "not set") + '">';
+    }
+    if (f.kind === "bool") {
+      return "<select" + attr + ">" +
+        '<option value="0"' + (f.value === "1" ? "" : " selected") + ">off</option>" +
+        '<option value="1"' + (f.value === "1" ? " selected" : "") + ">on</option></select>";
+    }
+    if (f.choices && f.choices.length) {
+      return "<select" + attr + ">" + f.choices.map(function (c) {
+        return '<option value="' + esc(c) + '"' + (c === f.value ? " selected" : "") + ">" +
+          esc(c) + "</option>";
+      }).join("") + "</select>";
+    }
+    return '<input type="text"' + attr + ' spellcheck="false" value="' + esc(f.value || "") + '">';
+  }
+
+  function fieldHtml(f) {
+    var badges = "";
+    if (f.essential) { badges += '<span class="badge essential">required</span>'; }
+    if (f.applies === "restart") { badges += '<span class="badge restart">needs restart</span>'; }
+    /* What is set here is the fallback. Without this the field reads as the final answer, and a
+       customer whose tenant or user override says otherwise has no way to know from this screen. */
+    if ((f.overridable_by || []).length) {
+      badges += '<span class="badge override" title="What you set here is the fallback. A ' +
+        (f.overridable_by || []).join(" or ") +
+        ' setting wins where one exists — set those under Retrieval settings.">' +
+        esc((f.overridable_by || []).join("/")) + " can override</span>";
+    }
+    if (f.source && f.source !== "default") {
+      badges += '<span class="badge ' + esc(f.source) + '">' + esc(f.source) + "</span>";
+    }
+    var resettable = f.kind !== "secret" &&
+      ((f.value || "") !== (f.default == null ? "" : String(f.default)));
+    var reset = resettable
+      ? '<button type="button" class="link reset" data-reset="' + esc(f.key) + '">reset</button>' : "";
+    var help = esc(f.help) + (f.env ? ' <span class="env">' + esc(f.env) + "</span>" : "");
+    var longCls = f.help.length > 190 ? " long" : "";
+    return '<div class="field" data-field="' + esc(f.key) + '" data-essential="' +
+      (f.essential ? "1" : "0") + '" data-search="' +
+      esc((f.label + " " + f.env + " " + f.help + " " + f.key).toLowerCase()) + '">' +
+      '<label class="row" for="' + fieldId(f.key) + '">' + esc(f.label) + badges + reset + "</label>" +
+      controlHtml(f) + '<div class="helptext' + longCls + '">' + help + "</div></div>";
+  }
+
+  function renderGroups(settings) {
+    var groups = (settings || {}).groups || {};
+    var meta = (settings || {}).group_meta || {};
+    fields = {};
+    Object.keys(groups).forEach(function (g) {
+      groups[g].forEach(function (f) { fields[f.key] = f; });
+    });
+    var order = Object.keys(groups).sort(function (a, b) {
+      return ((meta[a] || {}).order || 999) - ((meta[b] || {}).order || 999);
+    });
+    $("groups").innerHTML = order.map(function (g) {
+      var m = meta[g] || {};
+      var open = m.advanced ? "" : " open";
+      return '<details class="group" data-group="' + esc(g) + '"' + open + '><summary><b>' +
+        esc(m.title || g) + '</b><span class="n">' + groups[g].length + " settings</span>" +
+        (m.advanced ? '<span class="adv">advanced</span>' : "") +
+        '<span class="dirty" data-dirty="' + esc(g) + '" hidden></span></summary>' +
+        '<div class="group-body">' +
+        (m.note ? '<p class="group-note">' + esc(m.note) + "</p>" : "") +
+        '<div class="grid2">' + groups[g].map(fieldHtml).join("") + "</div></div></details>";
+    }).join("");
+    $("cfgTime").textContent = settings && settings.updated_at
+      ? "Stored in " + (settings.config_file || "the runtime config") + " · last saved " +
+        new Date(settings.updated_at * 1000).toLocaleString()
+      : "Stored in " + ((settings || {}).config_file || "the runtime config") +
+        " · nothing saved from the portal yet";
+    applyFilter();
+    markDirty();
+  }
+
+  /* ---------- change log ---------- */
+  function renderHistory(settings) {
+    var entries = (settings || {}).history || [];
+    if (!entries.length) { return; }
+    $("history").innerHTML = "<table><thead><tr><th>When</th><th>By</th><th>Change</th>" +
+      "</tr></thead><tbody>" + entries.map(function (e) {
+        var what = (e.changes || []).map(function (c) {
+          if (c.action === "reset") {
+            return "<div>" + esc(c.key) + " <em>reset to default</em></div>";
+          }
+          if (c.secret) {
+            return "<div>" + esc(c.key) + " <em>set</em></div>";
+          }
+          return "<div>" + esc(c.key) + " <em>" + esc(c.from || "unset") + " → " +
+            esc(c.to || "unset") + "</em></div>";
+        }).join("");
+        var restart = (e.restart_required || []).length
+          ? '<div class="hint" style="margin:4px 0 0">needed a restart: ' +
+            esc(e.restart_required.join(", ")) + "</div>" : "";
+        return "<tr><td>" + esc(new Date(e.at * 1000).toLocaleString()) + "</td><td>" +
+          esc(e.by) + "</td><td>" + what + restart + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  /* ---------- encoding ---------- */
+  /* Polled on its own cadence: fast while there is a backlog, because watching it shrink is the
+     point, and slowly once there is not. Deliberately NOT on /v1/metrics -- answering it walks the
+     record log, and a scrape every fifteen seconds doing that is a self-inflicted load. */
+  var encodeTimer = null, encodeMs = 0;
+
+  function encodePace(draining) {
+    var want = draining ? 5000 : 60000;
+    if (want === encodeMs && encodeTimer) { return; }
+    if (encodeTimer) { clearInterval(encodeTimer); }
+    encodeMs = want;
+    encodeTimer = setInterval(function () {
+      if (document.hidden || !$("key").value.trim()) { return; }
+      loadEncoding();
+    }, want);
+  }
+
+  function renderEncoding(d) {
+    var total = d.total || 0, encoded = d.encoded || 0, pending = d.pending || 0;
+    var pct = total ? Math.round((encoded / total) * 1000) / 10 : 100;
+    var encoder = d.encoder || {};
+    var rows = "";
+
+    if (!encoder.semantic) {
+      /* Zero pending means something else entirely here: nothing is waiting because nothing will
+         ever be encoded. Reporting "all done" would be true and useless. */
+      rows += '<div class="note">' + esc(encoder.note ||
+        "No encoder is configured, so nothing is waiting and nothing ever will be.") + "</div>";
+    }
+    if (d.mixed_dimensions) {
+      rows += '<div class="note">This store holds vectors of more than one width. Vectors of ' +
+        "different dimensions cannot be compared, so some memories can never match a query — " +
+        "which is what happens when the embedding model changes without a backfill, and looks " +
+        "exactly like ordinary poor recall.</div>";
+    }
+
+    var barCls = pending ? "" : "done";
+    rows += '<div class="bar"><i class="' + barCls + '" style="width:' + pct + '%"></i></div>' +
+      '<div class="job-stats">' +
+      "<span><b>" + encoded.toLocaleString() + "</b> encoded</span>" +
+      "<span><b>" + pending.toLocaleString() + "</b> waiting</span>" +
+      "<span><b>" + pct + "%</b> of " + total.toLocaleString() + "</span>" +
+      (d.deferred_tasks ? "<span><b>" + d.deferred_tasks + "</b> deferred tasks</span>" : "") +
+      "</div>";
+
+    var detail = [];
+    (d.models || []).forEach(function (m) {
+      detail.push(esc(m.model) + " · " + m.count.toLocaleString());
+    });
+    (d.dimensions || []).forEach(function (dim) {
+      detail.push(dim.dim + "-dim · " + dim.count.toLocaleString());
+    });
+    if (detail.length) {
+      rows += '<div class="hint">' + detail.join(" &nbsp;·&nbsp; ") + "</div>";
+    }
+    $("encoding").innerHTML = rows;
+    $("encodeAux").textContent = pending
+      ? pending.toLocaleString() + " waiting"
+      : (total ? "all encoded" : "nothing stored yet");
+    encodePace(pending > 0);
+  }
+
+  function loadEncoding() {
+    fetch("/v1/admin/embeddings", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(renderEncoding)
+      .catch(function (e) {
+        /* A backend that cannot answer must not read as "nothing is pending". */
+        $("encoding").innerHTML = '<div class="msg err">' +
+          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") +
+          " The encoding state is unknown, not empty.</div>";
+        $("encodeAux").textContent = "unknown";
+        encodePace(false);
+      });
+  }
+
+  /* ---------- model picker ---------- */
+  /* Kept as a chooser over the SAME fields the form below writes: one save path, one entry in the
+     change log. A second write path for models would be a second thing to keep correct. */
+  var modelData = {};
+  /* What is selected in the dropdown but not yet applied to the form. The risk of an encoder
+     change has to be visible while it is being chosen; showing it only after the field is filled
+     in tells someone about a decision they have already made. */
+  var pendingPick = {};
+
+  var MODEL_TARGETS = [
+    { target: "extraction", key: "extraction.model", title: "Extraction model",
+      note: "The model that reads a document and decides what is worth remembering. When it is " +
+            "unset or unreachable, ingest keeps working — it stores only what the local rules " +
+            "pull out, and says nothing." },
+    { target: "embedding", key: "embedding.model", title: "Embedding model",
+      note: "The encoder that turns text into the vectors retrieval searches. Changing it is the " +
+            "one setting on this page that can quietly invalidate data you already have." }
+  ];
+
+  function loadModels(probe) {
+    if (!$("key").value.trim()) { return Promise.resolve(); }
+    return Promise.all(MODEL_TARGETS.map(function (t) {
+      return fetch("/v1/admin/models?target=" + t.target + "&probe=" + (probe ? "1" : "0"),
+                   { headers: auth() })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (d) { modelData[t.target] = d; })
+        .catch(function (status) {
+          modelData[t.target] = { error: failure(typeof status === "number" ? status : 0) };
+        });
+    })).then(renderModels);
+  }
+
+  /* The catalogue, whatever the endpoint reported, and the value in use -- deduplicated, because a
+     model appearing twice in a list reads as two different models. */
+  function modelOptions(target) {
+    var d = modelData[target] || {};
+    var seen = {}, out = [];
+    function push(name, note) {
+      name = String(name || "").trim();
+      if (!name || seen[name]) { return; }
+      seen[name] = 1;
+      out.push({ model: name, note: note || "" });
+    }
+    if (d.current) { push(d.current, "currently configured"); }
+    ((d.discovered || {}).models || []).forEach(function (m) {
+      push(m, "offered by the configured endpoint");
+    });
+    (d.catalogue || []).forEach(function (c) {
+      /* The width collision belongs in the option text, not in a footnote: it is the reason a
+         switch that looks harmless is not. Two encoders of the same width raise no error. */
+      var same = (c.same_width_as || []).length
+        ? " — same width as " + (c.same_width_as || []).join(", ") + ", different space"
+        : "";
+      /* Lead with the measurement where there is one. "hit@1 76.2%" is the number a customer is
+         choosing on; the sentence is the explanation of it. */
+      var measured = c.hit_at_1 != null
+        ? "hit@1 " + c.hit_at_1 + "%, " + c.texts_per_s + " texts/s, " + c.dim + " dims" + same
+        : (c.dim ? c.dim + " dimensions" + same : "");
+      push(c.model, measured || c.note);
+    });
+    return out;
+  }
+
+  /* Same rule the backend uses: a repository prefix is not part of the model's identity. Without
+     it the table highlights nothing whenever the deployment names the model in the shorter form,
+     which reads as "you are on something exotic" while sitting on a listed model. */
+  function sameModel(left, right) {
+    left = String(left || "").trim().replace(/\/+$/, "");
+    right = String(right || "").trim().replace(/\/+$/, "");
+    if (!left || !right) { return false; }
+    if (left === right) { return true; }
+    return left.split("/").pop() === right.split("/").pop();
+  }
+
+  /* The backend reports models and widths as {model, count} / {dim, count} rows, not bare names. */
+  function storedModelNames(s) {
+    return (s.models || []).map(function (m) {
+      return typeof m === "string" ? m : String((m || {}).model || "");
+    }).filter(function (m) { return m; });
+  }
+
+  function storedModelLine(d) {
+    var s = d.in_store || {};
+    if (!s.known) {
+      return '<div class="mstore">' + esc(s.detail || "The store was not asked.") + "</div>";
+    }
+    if (!s.total) {
+      return '<div class="mstore">Nothing is stored yet, so there is nothing a change could ' +
+        "strand. This is the moment to settle on an encoder.</div>";
+    }
+    var models = storedModelNames(s);
+    var widths = (s.dimensions || []).map(function (x) {
+      return typeof x === "number" ? String(x) : String((x || {}).dim || "");
+    }).filter(function (x) { return x; });
+    return '<div class="mstore"><b>' + esc(s.total) + "</b> stored vector" +
+      (s.total === 1 ? "" : "s") +
+      (models.length ? ", made with <b>" + models.map(esc).join("</b>, <b>") + "</b>" :
+        ", made with an encoder this build did not record") +
+      (widths.length ? " · " + esc(widths.join(", ")) + " dimensions" : "") +
+      (s.mixed_dimensions ? " · <b>widths already differ</b>, so some of this store is already " +
+        "unsearchable against the rest" : "") + "</div>";
+  }
+
+  /* Show the warning only when the choice in the box would actually strand something. Warning on
+     every render trains people to click past it, and then it is not there when it matters. */
+  function embeddingRisk(d, chosen) {
+    var s = d.in_store || {};
+    if (!chosen) { return ""; }
+    if (s.known && !s.total) { return ""; }
+    var models = storedModelNames(s);
+    /* Compared with the same rule the backend uses. A repository prefix is not part of the model's
+       identity, and warning that a store will be stranded by re-spelling the encoder it already
+       holds is how the warning gets clicked past on the change that would strand it. */
+    if (s.known && models.length === 1 && sameModel(models[0], chosen)) { return ""; }
+    if (s.known && models.length > 1 &&
+        models.every(function (m) { return sameModel(m, chosen); })) { return ""; }
+    if (!s.known || !models.length) {
+      if (sameModel(chosen, d.current || "")) { return ""; }
+    }
+    return '<div class="mwarn"><b>Changing this strands what is already stored</b>' +
+      esc(d.change_warning || "") + "</div>";
+  }
+
+  function renderModels() {
+    $("models").innerHTML = MODEL_TARGETS.map(function (t) {
+      var d = modelData[t.target] || {};
+      if (d.error) {
+        return '<div class="mblock"><h3>' + esc(t.title) + '</h3><div class="mnote">' +
+          esc(d.error) + "</div></div>";
+      }
+      var chosen = Object.prototype.hasOwnProperty.call(pendingPick, t.target)
+        ? pendingPick[t.target]
+        : ((Object.prototype.hasOwnProperty.call(edits, t.key) && edits[t.key] !== null)
+            ? edits[t.key] : (d.current || ""));
+      var options = modelOptions(t.target);
+      var known = options.some(function (o) { return sameModel(o.model, chosen); });
+      var disc = d.discovered || {};
+      var discLine = disc.available
+        ? "The endpoint lists " + disc.count + " model" + (disc.count === 1 ? "" : "s") + "."
+        : (disc.reason === "not_probed"
+            ? "The endpoint has not been asked what it serves."
+            : esc(disc.detail || "The endpoint could not be asked."));
+      return '<div class="mblock" data-target="' + esc(t.target) + '"><h3>' + esc(t.title) +
+        '<span class="cur">' + (d.current ? esc(d.current) : "not set") + "</span></h3>" +
+        '<div class="mnote">' + esc(t.note) + "</div>" +
+        '<div class="mrow"><select data-pick="' + esc(t.target) + '">' +
+        options.map(function (o) {
+          return '<option value="' + esc(o.model) + '"' +
+            (o.model === chosen ? " selected" : "") + ">" + esc(o.model) +
+            (o.note ? " — " + esc(o.note) : "") + "</option>";
+        }).join("") +
+        '<option value="__other__"' + (known || !chosen ? "" : " selected") +
+        ">something else — type it</option></select>" +
+        '<input type="text" data-other="' + esc(t.target) + '" placeholder="model name" value="' +
+        (known ? "" : esc(chosen)) + '"' + (known || !chosen ? " hidden" : "") +
+        ' spellcheck="false">' +
+        '<button type="button" class="ghost" data-use="' + esc(t.target) + '">Use this</button>' +
+        "</div>" +
+        '<div class="mnote" style="margin-top:7px">' + discLine + "</div>" +
+        (t.target === "embedding"
+          ? measuredTable(d, chosen) + storedModelLine(d) + embeddingRisk(d, chosen)
+          : "") +
+        "</div>";
+    }).join("");
+  }
+
+  /* The measurement, as a table rather than as prose in six option labels. Sorted by the number
+     a customer is actually choosing on, with the best in each column marked -- otherwise every row
+     reads as equally reasonable and the default wins by being first. */
+  function measuredTable(d, chosen) {
+    var rows = (d.catalogue || []).filter(function (c) { return c.hit_at_1 != null; });
+    if (!rows.length) { return ""; }
+    rows = rows.slice().sort(function (a, b) { return b.hit_at_1 - a.hit_at_1; });
+    var best = {
+      hit_at_1: Math.max.apply(null, rows.map(function (c) { return c.hit_at_1; })),
+      texts_per_s: Math.max.apply(null, rows.map(function (c) { return c.texts_per_s; })),
+      vectors_mb_per_doc: Math.min.apply(null, rows.map(function (c) {
+        return c.vectors_mb_per_doc;
+      }))
+    };
+    function cell(value, key, suffix) {
+      return "<td" + (value === best[key] ? ' class="best"' : "") + ">" +
+        esc(value) + (suffix || "") + "</td>";
+    }
+    return '<table class="mmeas"><thead><tr><th>Encoder</th><th>hit@1</th><th>hit@5</th>' +
+      "<th>speed</th><th>storage</th><th>dims</th></tr></thead><tbody>" +
+      rows.map(function (c) {
+        return "<tr" + (sameModel(c.model, chosen) ? ' class="chosen"' : "") + '><td class="name">' +
+          esc(c.model) + (c.recommended ? ' <span class="badge portal">recommended</span>' : "") +
+          (c.needs_prefix ? ' <span class="tag">needs query/passage prefixes</span>' : "") +
+          "</td>" +
+          cell(c.hit_at_1, "hit_at_1", "%") +
+          "<td>" + esc(c.hit_at_5) + "%</td>" +
+          cell(c.texts_per_s, "texts_per_s", "/s") +
+          cell(c.vectors_mb_per_doc, "vectors_mb_per_doc", " MB/doc") +
+          "<td>" + esc(c.dim) + "</td></tr>";
+      }).join("") + "</tbody></table>" +
+      '<div class="hint" style="margin-top:6px">Measured on this deployment\'s own corpus. ' +
+      "Storage is per document at that model\'s window — a wider window needs fewer vectors, " +
+      "which is why the slowest model here is also the smallest.</div>";
+  }
+
+  function pickedModel(target) {
+    var select = $("models").querySelector('[data-pick="' + target + '"]');
+    var other = $("models").querySelector('[data-other="' + target + '"]');
+    if (!select) { return ""; }
+    return select.value === "__other__" ? (other ? other.value.trim() : "") : select.value;
+  }
+
+  $("models").addEventListener("change", function (ev) {
+    var dataset = ev.target && ev.target.dataset ? ev.target.dataset : {};
+    var target = dataset.pick || dataset.other;
+    if (!target) { return; }
+    if (dataset.pick && ev.target.value === "__other__") {
+      /* Do not re-render: it would replace the text box the customer is about to type into. */
+      var other = $("models").querySelector('[data-other="' + target + '"]');
+      if (other) { other.hidden = false; other.focus(); }
+      return;
+    }
+    pendingPick[target] = pickedModel(target);
+    renderModels();
+  });
+
+  $("models").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-use]") : null;
+    if (!button) { return; }
+    ev.preventDefault();
+    var target = button.dataset.use;
+    var entry = MODEL_TARGETS.filter(function (t) { return t.target === target; })[0];
+    var value = pickedModel(target);
+    if (!entry || !value) {
+      say($("saveMsg"), "Type a model name first.", "warn");
+      return;
+    }
+    var el = $("groups").querySelector('[data-key="' + entry.key + '"]');
+    if (!el) {
+      say($("saveMsg"), "That field is not loaded — enter an admin key first.", "warn");
+      return;
+    }
+    el.value = value;
+    edits[entry.key] = value;
+    pendingPick[target] = value;
+    markDirty();
+    renderModels();
+    var group = el.closest("details");
+    if (group) { group.open = true; }
+    el.scrollIntoView({ block: "center" });
+    /* Deliberately not saved here. A model change is worth seeing next to whatever else is
+       pending -- a key that has not been filled in yet, most of all. */
+    say($("saveMsg"), entry.title + " set to " + value + " — not saved yet. Save configuration " +
+      "below to apply it.", "info");
+  });
+
+  $("probeModels").addEventListener("click", function () {
+    say($("saveMsg"), "Asking the endpoints what they serve…", "info");
+    loadModels(true).then(function () { say($("saveMsg"), "", "info"); });
+  });
+
+  /* ---------- per-user settings ---------- */
+  var policyView = null;
+
+  function polLevel() { return $("polLevel").value; }
+
+  /* At tenant level every knob is settable; at user level only the ones that decide how one
+     request's results are selected. The backend is the authority on which -- the page asks rather
+     than keeping its own copy of the list. */
+  function settableHere(name) {
+    var d = policyView;
+    if (!d) { return false; }
+    if (polLevel() === "tenant") {
+      return (d.settable_per_tenant || []).indexOf(name) >= 0;
+    }
+    return (d.settable_per_user || []).indexOf(name) >= 0;
+  }
+
+  function loadPolicy() {
+    var user = $("polUser").value.trim();
+    if (!$("key").value.trim()) { say($("polMsg"), "Enter an admin key first.", "info"); return; }
+    if (polLevel() === "user" && !user) {
+      say($("polMsg"), "Name a user, or switch to the whole tenant.", "info");
+      return;
+    }
+    say($("polMsg"), "");
+    fetch("/v1/admin/policy?user_id=" + encodeURIComponent(user), { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { policyView = d; renderPolicy(); })
+      .catch(function (e) {
+        policyView = null;
+        $("policy").innerHTML = '<div class="empty">' +
+          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") + "</div>";
+      });
+  }
+
+  function policyControl(name, knob) {
+    var id = "pol_" + name;
+    if (!settableHere(name)) {
+      /* Shown, not hidden: a customer looking for a setting needs to find it and learn where it
+         lives, rather than conclude it does not exist. */
+      return '<span class="hint" style="margin:0">set it for the whole tenant</span>';
+    }
+    if (knob.kind === "bool") {
+      return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
+        "<option value='0'" + (knob.value ? "" : " selected") + ">off</option>" +
+        "<option value='1'" + (knob.value ? " selected" : "") + ">on</option></select>";
+    }
+    if (knob.kind === "choice") {
+      return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
+        (knob.choices || []).map(function (c) {
+          return "<option value='" + esc(c) + "'" + (c === knob.value ? " selected" : "") + ">" +
+            esc(c) + "</option>";
+        }).join("") + "</select>";
+    }
+    return "<input type='text' id='" + id + "' data-knob='" + esc(name) + "' value='" +
+      esc(knob.value) + "' spellcheck='false'>";
+  }
+
+  function renderPolicy() {
+    var d = policyView;
+    if (!d) { return; }
+    $("polWhy").hidden = false;
+    $("polWhy").textContent = d.why_some_are_tenant_only;
+    $("polAux").textContent = d.policy_file
+      ? "saved to " + d.policy_file
+      : "no policy file configured — changes are lost on restart";
+    var query = $("polFilter").value.trim().toLowerCase();
+    var onlySettable = $("polOnlySettable").checked;
+    var names = Object.keys(d.knobs).sort();
+    var rows = names.filter(function (name) {
+      var knob = d.knobs[name];
+      if (onlySettable && !settableHere(name)) { return false; }
+      if (!query) { return true; }
+      return (name + " " + knob.description).toLowerCase().indexOf(query) >= 0;
+    }).map(function (name) {
+      var knob = d.knobs[name];
+      return '<div class="polrow' + (settableHere(name) ? "" : " locked") + '">' +
+        '<span class="n">' + esc(name) + "</span>" +
+        '<span class="src ' + esc(knob.source) + '">' + esc(knob.source) + "</span>" +
+        policyControl(name, knob) +
+        '<span class="d">' + esc(knob.description) + "</span></div>";
+    }).join("");
+    /* The name comes from the field, not from the last loaded view: switching level does not
+       reload, so the view still remembers whoever was loaded before -- and this is the label on
+       the button that commits the change. */
+    var typed = $("polUser").value.trim();
+    var who = polLevel() === "tenant"
+      ? "everyone in " + esc(d.tenant || "this tenant")
+      : esc(typed || d.user || "this user");
+    $("policy").innerHTML = (rows || '<div class="empty">Nothing matches.</div>') +
+      '<div class="actions"><button id="polSave" type="button">Save for ' + who + "</button></div>";
+  }
+
+  function savePolicy() {
+    var d = policyView;
+    if (!d) { return; }
+    var settings = {};
+    Array.prototype.forEach.call($("policy").querySelectorAll("[data-knob]"), function (el) {
+      var name = el.dataset.knob, knob = d.knobs[name];
+      var raw = el.value;
+      var value = knob.kind === "bool" ? raw === "1"
+        : (knob.kind === "int" ? parseInt(raw, 10) : raw);
+      if (knob.kind === "int" && isNaN(value)) { return; }
+      /* Only what actually changed: sending the whole set would write a user override for every
+         knob, and then a later tenant change would never reach them. */
+      if (String(value) !== String(knob.value)) { settings[name] = value; }
+    });
+    if (!Object.keys(settings).length) {
+      say($("polMsg"), "Nothing changed.", "info");
+      return;
+    }
+    fetch("/v1/admin/policy", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({ level: polLevel(), user_id: $("polUser").value.trim(),
+                             settings: settings })
+    })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          say($("polMsg"), res.body.detail || res.body.error || "Save failed.", "err");
+          return;
+        }
+        policyView = res.body;
+        renderPolicy();
+        var applied = (res.body.applied || []).length;
+        var refused = res.body.refused || [];
+        var note = applied + " setting" + (applied === 1 ? "" : "s") + " applied" +
+          (res.body.persisted ? " and saved." : ".");
+        if (refused.length) {
+          note += " Refused for one user, because these decide what is written into the store " +
+            "the whole tenant shares — set them for the tenant instead: " +
+            refused.join(", ") + ".";
+        }
+        if (res.body.already_written_note) { note += " " + res.body.already_written_note; }
+        if (!res.body.persisted && res.body.persist_note) { note += " " + res.body.persist_note; }
+        say($("polMsg"), note, refused.length || !res.body.persisted ? "warn" : "ok");
+      })
+      .catch(function () { say($("polMsg"), "Could not reach the gateway.", "err"); });
+  }
+
+  function polLevelHint() {
+    /* The field stays usable at both levels: at tenant level it picks whose effective values are
+       shown, which is worth seeing while deciding a change for everyone. */
+    $("polUser").placeholder = polLevel() === "tenant"
+      ? "alice — optional, to see one person's effective values"
+      : "alice";
+  }
+
+  $("polLevel").addEventListener("change", function () {
+    /* The set of settable knobs changes with the level, so re-render rather than leave controls
+       from the other one on screen. */
+    polLevelHint();
+    if (policyView) { renderPolicy(); }
+  });
+  $("polUser").addEventListener("input", function () {
+    /* Keeps the save button naming the person it will actually save for. */
+    if (policyView && polLevel() === "user") { renderPolicy(); }
+  });
+  polLevelHint();
+  $("polLoad").addEventListener("click", loadPolicy);
+  $("polUser").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") { ev.preventDefault(); loadPolicy(); }
+  });
+  $("polFilter").addEventListener("input", renderPolicy);
+  $("polOnlySettable").addEventListener("change", renderPolicy);
+  $("policy").addEventListener("click", function (ev) {
+    if (ev.target && ev.target.id === "polSave") { savePolicy(); }
+  });
+
+  /* ---------- deployment inventory (read-only) ---------- */
+  function renderInventory(settings) {
+    var blocks = (settings || {}).inventory || [];
+    if (!blocks.length) { return; }
+    $("inventory").innerHTML = blocks.map(function (b) {
+      return "<h3 style='font-size:13px;margin:14px 0 6px;font-weight:650'>" + esc(b.group) +
+        '</h3><table class="inv">' + b.rows.map(function (r) {
+          var value = r.set
+            ? '<td>' + esc(r.redacted ? "configured" : r.value) + "</td>"
+            : '<td class="unset">not set</td>';
+          return "<tr><th>" + esc(r.label) + '<span class="envname">' + esc(r.env) +
+            "</span></th>" + value + "</tr>";
+        }).join("") + "</table>";
+    }).join("");
+  }
+
+  /* ---------- dirty tracking ---------- */
+  function isChanged(key, value) {
+    var f = fields[key];
+    if (!f) { return false; }
+    if (f.kind === "secret") { return value !== ""; }
+    return value !== (f.value || "");
+  }
+
+  function pendingPatch() {
+    var patch = {};
+    Object.keys(edits).forEach(function (k) {
+      var v = edits[k];
+      if (v === null) { patch[k] = null; return; }        /* explicit reset */
+      if (isChanged(k, v)) { patch[k] = v; }
+    });
+    return patch;
+  }
+
+  function markDirty() {
+    var patch = pendingPatch(), keys = Object.keys(patch);
+    var perGroup = {};
+    Array.prototype.forEach.call(document.querySelectorAll("[data-field]"), function (el) {
+      var on = Object.prototype.hasOwnProperty.call(patch, el.dataset.field);
+      el.classList.toggle("changed", on);
+      if (on) {
+        var g = (fields[el.dataset.field] || {}).group ||
+          (el.closest("details") || { dataset: {} }).dataset.group;
+        perGroup[g] = (perGroup[g] || 0) + 1;
+      }
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-dirty]"), function (el) {
+      var n = perGroup[el.dataset.dirty] || 0;
+      el.hidden = !n;
+      el.textContent = n + " changed";
+    });
+    $("dirtyCount").innerHTML = keys.length
+      ? "<b>" + keys.length + "</b> unsaved change" + (keys.length === 1 ? "" : "s")
+      : "No unsaved changes";
+    $("save").disabled = !keys.length;
+  }
+
+  /* ---------- filtering ---------- */
+  function applyFilter() {
+    var q = $("filter").value.trim().toLowerCase();
+    var advanced = $("showAdvanced").checked;
+    var onlyChanged = $("onlyChanged").checked;
+    var onlyEssential = $("onlyEssential").checked;
+    var patch = pendingPatch();
+    Array.prototype.forEach.call(document.querySelectorAll("details.group"), function (group) {
+      var shown = 0;
+      Array.prototype.forEach.call(group.querySelectorAll("[data-field]"), function (el) {
+        var ok = (!q || el.dataset.search.indexOf(q) >= 0) &&
+                 (!onlyEssential || el.dataset.essential === "1") &&
+                 (!onlyChanged || Object.prototype.hasOwnProperty.call(patch, el.dataset.field));
+        el.classList.toggle("hidden", !ok);
+        if (ok) { shown++; }
+      });
+      var meta = ((loaded || {}).settings || {}).group_meta || {};
+      var isAdvanced = (meta[group.dataset.group] || {}).advanced;
+      group.hidden = shown === 0;
+      /* A search or a changed-only view has to open the collapsed groups, otherwise the matches
+         are behind a closed triangle and the box reads as "no results". */
+      if (q || onlyChanged || onlyEssential) { group.open = shown > 0; }
+      else if (isAdvanced && !advanced) { group.open = false; }
+      var counter = group.querySelector("summary .n");
+      if (counter) {
+        counter.textContent = shown +
+          (q || onlyChanged || onlyEssential ? " matching" : " settings");
+      }
+    });
+  }
+
+  /* ---------- load ---------- */
+  function load() {
+    fetch("/v1/admin/config", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        conn("live", "connected");
+        loaded = d; edits = {};
+        renderGroups(d.settings);
+        renderSummary(d);
+        renderPresets((d.settings || {}).presets);
+        renderHistory(d.settings);
+        renderInventory(d.settings);
+        renderMonitoring(d);
+        loadEncoding();
+        loadModels(false);
+        startLive();
+      })
+      .catch(function (e) {
+        if (e === 401 || e === 403) {
+          conn("live", "connected");
+          $("groups").innerHTML = '<section><div class="empty">Enter an admin-scoped key above to ' +
+            "load and change this deployment’s configuration.</div></section>";
+          $("presets").innerHTML = '<div class="empty">Enter an admin key to see the presets.</div>';
+          $("models").innerHTML = '<div class="empty">Enter an admin key to choose models.</div>';
+        } else {
+          conn("down", "gateway unreachable");
+          $("groups").innerHTML = '<section><div class="msg err">Could not reach the gateway.</div></section>';
+        }
+      });
+  }
+
+  /* ---------- save ---------- */
+  function save(ev) {
+    ev.preventDefault();
+    var patch = pendingPatch();
+    if (!Object.keys(patch).length) { say($("saveMsg"), "Nothing changed.", "info"); return; }
+    $("save").disabled = true;
+    fetch("/v1/admin/config", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({ settings: patch })
+    })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) {
+        $("save").disabled = false;
+        if (!res.ok) {
+          say($("saveMsg"), res.body.detail || res.body.error || "Save failed.", "err");
+          return;
+        }
+        var restart = res.body.restart_required || [];
+        var one = restart.length === 1;
+        say($("saveMsg"), restart.length
+          ? "Saved. " + restart.length + " setting" + (one ? "" : "s") + " (" +
+            restart.join(", ") + ") " + (one ? "is" : "are") + " read once at startup — restart " +
+            "the gateway for " + (one ? "it" : "them") + " to take effect. Everything else is " +
+            "live now."
+          : "Saved and live now.", restart.length ? "info" : "ok");
+        load();
+      })
+      .catch(function () {
+        $("save").disabled = false;
+        say($("saveMsg"), "Could not reach the gateway.", "err");
+      });
+  }
+
+  /* ---------- probe ---------- */
+  function probeHtml(r) {
+    var cls = r.ok ? "ok" : (r.skipped ? "" : "bad");
+    var title = r.target === "extraction" ? "Extraction" : "Embedding";
+    var detail;
+    if (r.ok) {
+      var extra = r.response && r.response.dimensions ? " · " + r.response.dimensions + " dimensions" : "";
+      var model = r.response && r.response.model ? " · " + r.response.model : "";
+      detail = "answered in " + r.latency_ms + " ms" + model + extra;
+    } else if (r.skipped) {
+      detail = r.detail || r.error;
+    } else {
+      detail = (r.error || "failed") + (r.detail ? " — " + r.detail : "");
+    }
+    return '<div class="probe ' + cls + '"><h3>' + esc(title) +
+      '<span class="pill ' + (r.ok ? "completed" : (r.skipped ? "queued" : "failed")) + '">' +
+      (r.ok ? "ok" : (r.skipped ? "not configured" : "failed")) + "</span></h3>" +
+      "<p>" + esc(detail) + (r.url ? ' <span class="mono">' + esc(r.url) + "</span>" : "") + "</p></div>";
+  }
+
+  function test() {
+    $("test").disabled = true;
+    $("probe").innerHTML = '<div class="empty">Calling the configured endpoints…</div>';
+    fetch("/v1/admin/config/test", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: "{}"
+    })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        $("test").disabled = false;
+        $("probe").innerHTML = (d.results || []).map(probeHtml).join("") ||
+          '<div class="empty">Nothing to probe.</div>';
+      })
+      .catch(function (e) {
+        $("test").disabled = false;
+        $("probe").innerHTML = '<div class="msg err">' +
+          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") + "</div>";
+      });
+  }
+
+  /* ---------- traffic ---------- */
+  /* Parsed from the same /v1/metrics text Prometheus scrapes, so what this shows and what the
+     dashboard shows cannot drift, and loading it here also proves the scrape endpoint answers. */
+  function parseProm(text) {
+    var series = {};
+    text.split("\n").forEach(function (line) {
+      if (!line || line.charAt(0) === "#") { return; }
+      var m = /^([a-zA-Z_:][a-zA-Z0-9_:]*)(\{[^}]*\})?\s+(-?[0-9.eE+]+|NaN)$/.exec(line.trim());
+      if (!m) { return; }
+      var labels = {};
+      if (m[2]) {
+        m[2].slice(1, -1).replace(/([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"/g,
+          function (_all, k, v) { labels[k] = v; return ""; });
+      }
+      (series[m[1]] = series[m[1]] || []).push({ labels: labels, value: parseFloat(m[3]) });
+    });
+    return series;
+  }
+
+  function renderTraffic(series) {
+    var byRoute = {};
+    (series.matrixark_gateway_requests_total || []).forEach(function (s) {
+      var r = byRoute[s.labels.route] = byRoute[s.labels.route] || { n: 0, err: 0 };
+      r.n += s.value;
+      if (parseInt(s.labels.status, 10) >= 400) { r.err += s.value; }
+    });
+    (series.matrixark_gateway_request_duration_seconds_sum || []).forEach(function (s) {
+      (byRoute[s.labels.route] = byRoute[s.labels.route] || { n: 0, err: 0 }).sum = s.value;
+    });
+    (series.matrixark_gateway_request_duration_seconds_count || []).forEach(function (s) {
+      (byRoute[s.labels.route] = byRoute[s.labels.route] || { n: 0, err: 0 }).cnt = s.value;
+    });
+    var routes = Object.keys(byRoute).sort(function (a, b) { return byRoute[b].n - byRoute[a].n; });
+    if (!routes.length) {
+      $("traffic").innerHTML = '<div class="empty">No requests recorded yet on this worker.</div>';
+      return;
+    }
+    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Errors</th>" +
+      "<th>Mean latency</th></tr></thead><tbody>" + routes.map(function (r) {
+        var v = byRoute[r];
+        var mean = v.cnt ? (v.sum / v.cnt * 1000).toFixed(1) + " ms" : "—";
+        return "<tr><td><span class='mono'>" + esc(r) + "</span></td><td class='num'>" +
+          v.n + "</td><td class='num'>" + (v.err || 0) + "</td><td class='num'>" + mean + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  function loadTraffic() {
+    fetch("/v1/metrics?ts=" + Date.now())
+      .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+      .then(function (t) { renderTraffic(parseProm(t)); })
+      .catch(function () {
+        $("traffic").innerHTML = '<div class="msg err">Could not read /v1/metrics.</div>';
+      });
+  }
+
+  /* Set once the config lands. Until then only the gateway job is knowable, and printing a
+     placeholder engine host would be worse than printing nothing. */
+  var monitoringTargets = null;
+
+  function scrapeConfig() {
+    var targets = monitoringTargets || {
+      gateway: { job: "matrixark_gateway", metrics_path: "/v1/metrics", host: "" }
+    };
+    return "scrape_configs:\n" + Object.keys(targets).map(function (name) {
+      var t = targets[name];
+      /* The engine host comes from this deployment's own datanode setting, so the config that is
+         copied out resolves instead of carrying a placeholder to be edited by hand. */
+      var host = t.host || (name === "gateway" ? location.host : "");
+      return (t.note ? "  # " + t.note + "\n" : "") +
+        "  - job_name: " + t.job + "\n" +
+        "    metrics_path: " + t.metrics_path + "\n" +
+        "    static_configs:\n" +
+        "      - targets: [" + (host ? "'" + host + "'" : "") + "]" +
+        (host ? "" : "  # add each " + name + " process here") + "\n";
+    }).join("\n");
+  }
+
+  /* One row per asset the gateway actually ships, listed by the server rather than hard-coded
+     here, so adding an asset to the registry needs no matching edit on this page -- and so an
+     asset a build omits is never offered as a download that 404s. */
+  function renderMonitoring(d) {
+    var monitoring = (d || {}).monitoring || {};
+    var assets = monitoring.assets || [];
+    monitoringTargets = monitoring.targets || null;
+    $("scrape").textContent = scrapeConfig();
+    if (!assets.length) {
+      $("monitoring").innerHTML = '<div class="empty">This deployment does not bundle the ' +
+        "monitoring assets.</div>";
+      return;
+    }
+    var targets = monitoringTargets || {};
+    $("monitoring").innerHTML = "<table><thead><tr><th>Download</th><th>Covers</th>" +
+      "<th>Scraped from</th></tr></thead><tbody>" + assets.map(function (a) {
+        var target = targets[a.scrape] || {};
+        return "<tr><td><button class='link' type='button' data-asset='" + esc(a.asset) +
+          "' data-filename='" + esc(a.filename) + "'>" + esc(a.label) + "</button>" +
+          "<div class='hint' style='margin:2px 0 0'>" +
+          (a.kind === "rules" ? "Prometheus rules" : "Grafana dashboard") + "</div></td>" +
+          "<td>" + esc(a.covers) + "</td>" +
+          "<td>" + esc(target.label || a.scrape) + "<div class='hint mono' style='margin:2px 0 0'>" +
+          esc(target.metrics_path || "") + "</div></td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  /* ---------- wiring ---------- */
+  $("key").addEventListener("change", function () {
+    if ($("remember").checked) {
+      try { sessionStorage.setItem("matrixark_admin_key", $("key").value); } catch (e) { /* ignore */ }
+    }
+    load();
+  });
+  $("remember").addEventListener("change", function () {
+    try {
+      if ($("remember").checked) { sessionStorage.setItem("matrixark_admin_key", $("key").value); }
+      else { sessionStorage.removeItem("matrixark_admin_key"); }
+    } catch (e) { /* ignore */ }
+  });
+  $("groups").addEventListener("input", function (ev) {
+    var key = ev.target && ev.target.dataset ? ev.target.dataset.key : null;
+    if (!key) { return; }
+    edits[key] = ev.target.value;
+    markDirty();
+  });
+  $("groups").addEventListener("change", function (ev) {
+    var key = ev.target && ev.target.dataset ? ev.target.dataset.key : null;
+    if (!key) { return; }
+    edits[key] = ev.target.value;
+    markDirty();
+  });
+  $("groups").addEventListener("click", function (ev) {
+    var help = ev.target.closest ? ev.target.closest(".helptext.long") : null;
+    if (help) { help.classList.toggle("open"); return; }
+    var button = ev.target.closest ? ev.target.closest("[data-reset]") : null;
+    if (!button) { return; }
+    ev.preventDefault();
+    var key = button.dataset.reset, f = fields[key];
+    var el = $("groups").querySelector('[data-key="' + key + '"]');
+    if (el && f) { el.value = f.default == null ? "" : String(f.default); }
+    /* null tells the server to DROP the stored override, not to store an empty string. */
+    edits[key] = null;
+    markDirty();
+  });
+  $("presets").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-preset]") : null;
+    if (!button) { return; }
+    var preset = ((loaded || {}).settings || {}).presets[button.dataset.preset];
+    if (!preset) { return; }
+    Object.keys(preset.values).forEach(function (k) {
+      var el = $("groups").querySelector('[data-key="' + k + '"]');
+      if (el) { el.value = preset.values[k]; edits[k] = preset.values[k]; }
+    });
+    markDirty();
+    say($("saveMsg"), preset.note + " Review the fields, add your key, then save.", "info");
+  });
+  /* ---------- export / import ---------- */
+  function exportConfig() {
+    return fetch("/v1/admin/config/export", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); });
+  }
+
+  $("exportCfg").addEventListener("click", function () {
+    exportConfig().then(function (d) {
+      var text = JSON.stringify({ settings: d.settings }, null, 2);
+      var url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = "matrixark-config.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+      say($("importMsg"), (d.secrets_omitted || []).length
+        ? "Exported. " + d.secrets_omitted.join(", ") + " left out — set the key on the target."
+        : "Exported.", "ok");
+    }).catch(function (e) {
+      say($("importMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+          "err");
+    });
+  });
+
+  $("copyCfgCurl").addEventListener("click", function () {
+    exportConfig().then(function (d) {
+      var text = "curl -sX POST " + location.origin + "/v1/admin/config \\\n" +
+        "  -H \"Authorization: Bearer $MATRIXARK_ADMIN_KEY\" \\\n" +
+        "  -H 'Content-Type: application/json' \\\n  -d '" +
+        JSON.stringify({ settings: d.settings }) + "'\n";
+      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
+      $("copyCfgCurl").textContent = "copied";
+      setTimeout(function () { $("copyCfgCurl").textContent = "copy as curl"; }, 1400);
+    }).catch(function (e) {
+      say($("importMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
+          "err");
+    });
+  });
+
+  $("importCfg").addEventListener("click", function () {
+    var raw = $("importText").value.trim();
+    if (!raw) { say($("importMsg"), "Paste an exported configuration first.", "info"); return; }
+    var parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      say($("importMsg"), "That is not valid JSON.", "err");
+      return;
+    }
+    var settings = parsed && parsed.settings ? parsed.settings : parsed;
+    $("importCfg").disabled = true;
+    fetch("/v1/admin/config", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({ settings: settings })
+    })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, s: r.status, b: b }; }); })
+      .then(function (res) {
+        $("importCfg").disabled = false;
+        if (!res.ok) {
+          say($("importMsg"), res.b.detail || res.b.error || failure(res.s), "err");
+          return;
+        }
+        var n = Object.keys(settings).length;
+        var restart = res.b.restart_required || [];
+        say($("importMsg"), "Applied " + n + " setting" + (n === 1 ? "" : "s") + "." +
+          (restart.length
+            ? " " + restart.length + (restart.length === 1 ? " of them needs" : " of them need") +
+              " a gateway restart."
+            : ""),
+          restart.length ? "info" : "ok");
+        $("importText").value = "";
+        load();
+      })
+      .catch(function () {
+        $("importCfg").disabled = false;
+        say($("importMsg"), "Could not reach the gateway.", "err");
+      });
+  });
+
+  $("settingsForm").addEventListener("submit", save);
+  $("test").addEventListener("click", test);
+  $("reload").addEventListener("click", function () { edits = {}; load(); });
+  $("filter").addEventListener("input", applyFilter);
+  $("showAdvanced").addEventListener("change", function () {
+    Array.prototype.forEach.call(document.querySelectorAll("details.group"), function (group) {
+      var meta = ((loaded || {}).settings || {}).group_meta || {};
+      if ((meta[group.dataset.group] || {}).advanced) { group.open = $("showAdvanced").checked; }
+    });
+    applyFilter();
+  });
+  $("onlyChanged").addEventListener("change", applyFilter);
+  $("onlyEssential").addEventListener("change", function () {
+    /* The required settings live in the two model groups, both of which are open by default; but
+       ingestion.root is in an advanced one, so narrowing to "must set" has to reveal it. */
+    if ($("onlyEssential").checked) { $("showAdvanced").checked = true; }
+    applyFilter();
+  });
+  /* Served from the process, so what a customer imports is what this build emits. */
+  function downloadAsset(name, filename) {
+    fetch("/v1/admin/monitoring/" + name, { headers: auth() })
+      .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
+      .then(function (text) {
+        var url = URL.createObjectURL(new Blob([text], { type: "application/octet-stream" }));
+        var a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+        say($("grafanaMsg"), filename + " downloaded.", "ok");
+      })
+      .catch(function (e) {
+        say($("grafanaMsg"), e === 404
+          ? "This deployment does not bundle the monitoring assets."
+          : (typeof e === "number" ? failure(e) : "Could not reach the gateway."), "err");
+      });
+  }
+
+  /* Delegated, because the rows do not exist until the config lands. */
+  $("monitoring").addEventListener("click", function (ev) {
+    var node = ev.target;
+    while (node && node !== $("monitoring") && !(node.getAttribute && node.getAttribute("data-asset"))) {
+      node = node.parentNode;
+    }
+    if (node && node.getAttribute && node.getAttribute("data-asset")) {
+      downloadAsset(node.getAttribute("data-asset"), node.getAttribute("data-filename"));
+    }
+  });
+
+  $("copyScrape").addEventListener("click", function () {
+    var text = scrapeConfig();
+    if (navigator.clipboard) { navigator.clipboard.writeText(text); }
+    $("copyScrape").textContent = "copied";
+    setTimeout(function () { $("copyScrape").textContent = "copy scrape config"; }, 1400);
+  });
+  /* Traffic and encoding arrive on the stream; the checkbox now pauses the stream rather than a
+     timer, which is the same promise to the reader and one connection instead of two pollers. */
+  $("auto").addEventListener("change", function () {
+    if (!$("auto").checked) {
+      if (live) { live.stop(); live = null; }
+      conn("live", "paused");
+    } else {
+      startLive();
+    }
+  });
+
+  var live = null;
+
+  function startLive() {
+    if (!$("key").value.trim() || !$("auto").checked) { return; }
+    if (live) { live.restart(); return; }
+    live = liveStream({
+      headers: auth,
+      onState: function (state, seconds) {
+        if (state === "live") { conn("live", "live"); }
+        else if (state === "denied") { conn("live", "connected"); }
+        else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
+        if (window.__matrixarkLiveState) {
+          window.__matrixarkLiveState(state === "live" ? "live"
+            : (state === "retrying" ? "down" : "stale"));
+        }
+      },
+      onFrame: function (frame) {
+        renderLiveTraffic(frame.traffic);
+        if (frame.embedding) { renderEncoding(frame.embedding); }
+        if (window.__matrixarkLiveFrame) { window.__matrixarkLiveFrame(frame); }
+      }
+    });
+  }
+
+  /* The same table the scrape used to draw, from the frame instead of a /v1/metrics parse. */
+  function renderLiveTraffic(traffic) {
+    var routes = (traffic || {}).routes || {};
+    var names = Object.keys(routes).sort(function (a, b) {
+      return routes[b].requests - routes[a].requests;
+    });
+    if (!names.length) {
+      $("traffic").innerHTML = '<div class="empty">No requests recorded yet on this worker.</div>';
+      return;
+    }
+    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Errors</th>" +
+      "<th>Mean latency</th></tr></thead><tbody>" + names.map(function (name) {
+        var row = routes[name];
+        return "<tr><td><span class='mono'>" + esc(name) + "</span></td><td class='num'>" +
+          row.requests + "</td><td class='num'>" + (row.errors || 0) + "</td><td class='num'>" +
+          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+  /* Leaving with unsaved edits loses them silently otherwise; on a form this long that is a
+     genuine loss of work, not a nuisance. */
+  window.addEventListener("beforeunload", function (ev) {
+    if (Object.keys(pendingPatch()).length) { ev.preventDefault(); ev.returnValue = ""; }
+  });
+
+  try {
+    var saved = sessionStorage.getItem("matrixark_admin_key");
+    if (saved) { $("key").value = saved; $("remember").checked = true; }
+  } catch (e) { /* ignore */ }
+  $("scrape").textContent = scrapeConfig();
+  markDirty();
+  load();
+  loadTraffic();  /* one read so the table is populated before the first frame arrives */
+}());
+</script>
+<script>
+/* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
+   window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
+(function () {
+  "use strict";
+  var strip = document.getElementById("liveStrip");
+  if (!strip) { return; }
+  var seg = {
+    enc: document.getElementById("liveEnc"),
+    imp: document.getElementById("liveImp"),
+    req: document.getElementById("liveReq"),
+    warn: document.getElementById("liveWarn")
+  };
+  var dot = document.getElementById("liveDot");
+  /* Any page can watch the frames this page is already receiving. The alternative -- each panel
+     opening its own stream -- costs the gateway a task per panel to show one deployment's state. */
+  var watchers = [];
+  window.__matrixarkOnFrame = function (callback) {
+    if (typeof callback === "function") { watchers.push(callback); }
+  };
+
+  function n(value) {
+    return Number(value || 0).toLocaleString();
+  }
+  function show(el, html, cls) {
+    if (!el) { return; }
+    /* Reset the class on the way out too: a segment hidden while it was warning would come back
+       still coloured for a state that has passed. */
+    el.className = "live-seg" + (html != null && cls ? " " + cls : "");
+    if (html == null) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = html;
+  }
+
+  function plural(count, word) {
+    return "<b>" + n(count) + "</b> " + word + (Number(count) === 1 ? "" : "s");
+  }
+
+  /* Rendered only from a frame that arrived. Zeros drawn before the first frame would describe a
+     quiet healthy deployment for one that is not answering. */
+  function render(frame) {
+    strip.hidden = false;
+    var e = frame.embedding || null;
+    if (e && e.total) {
+      show(seg.enc, e.pending
+        ? "<b>" + n(e.pending) + "</b> waiting to embed"
+        : "<b>" + n(e.total) + "</b> embedded",
+        e.pending ? "busy" : "");
+    } else if (e) {
+      show(seg.enc, "<b>0</b> stored");
+    } else {
+      /* Absent, not zero: the backend could not be asked. "0 waiting" here would be the
+         reassuring answer to a question nobody managed to ask. */
+      show(seg.enc, "encoding <b>unknown</b>", "warn");
+    }
+
+    var imports = frame.imports || {};
+    var active = (imports.active || [])[0];
+    if (active) {
+      var done = (active.done || 0) + (active.failed || 0);
+      show(seg.imp, "importing <b>" + n(done) + "</b> of " + n(active.total || 0), "busy");
+    } else if (imports.retryable) {
+      show(seg.imp, "<b>" + n(imports.retryable) + "</b> to retry", "warn");
+    } else {
+      show(seg.imp, null);
+    }
+
+    var t = frame.traffic || {};
+    show(seg.req, plural(t.total_requests, "request") +
+      (t.total_errors ? ", <b>" + n(t.total_errors) + "</b> failed" : ""),
+      t.total_errors ? "warn" : "");
+
+    show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    watchers.forEach(function (callback) {
+      /* One panel throwing must not stop the others, or the strip, from updating. */
+      try { callback(frame); } catch (err) { /* a watcher's problem, not the strip's */ }
+    });
+  }
+
+  window.__matrixarkLiveFrame = function (frame) {
+    if (frame) { render(frame); dot.className = "live-dot"; }
+  };
+  window.__matrixarkLiveState = function (state) {
+    dot.className = "live-dot" + (state === "live" ? "" : (state === "down" ? " down" : " stale"));
+  };
+
+  /* A page with its own stream feeds the strip; only pages without one connect here. */
+  if (window.__matrixarkLive) { return; }
+  window.__matrixarkLive = "strip";
+
+  function key() {
+    var el = document.getElementById("key");
+    if (el && el.value.trim()) { return el.value.trim(); }
+    try { return sessionStorage.getItem("matrixark_admin_key") || ""; } catch (e) { return ""; }
+  }
+
+  var controller = null, backoff = 1000, buffer = "";
+
+  function open() {
+    var k = key();
+    if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
+    controller = new AbortController();
+    fetch("/v1/admin/events", {
+      headers: { Authorization: "Bearer " + k },
+      signal: controller.signal
+    }).then(function (r) {
+      if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
+      dot.className = "live-dot";
+      backoff = 1000;
+      var reader = r.body.getReader(), decoder = new TextDecoder();
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { throw new Error("stream ended"); }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          parts.forEach(function (block) {
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data:") !== 0) { return; }
+              try { render(JSON.parse(line.slice(5).trim())); } catch (err) { /* ignore */ }
+            });
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () {
+      dot.className = "live-dot stale";
+      setTimeout(open, backoff);
+      backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down must not be hammered */
+    });
+  }
+
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && controller) { controller.abort(); controller = null; }
+    else if (!document.hidden && !controller) { open(); }
+  });
+  window.addEventListener("pagehide", function () { if (controller) { controller.abort(); } });
+  open();
+}());
+</script>
+</body>
+</html>

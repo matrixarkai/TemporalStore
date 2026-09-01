@@ -46,6 +46,8 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_auth_sso_login": set(),
     "matrixark_list_resources": {"resource:read"},
     "matrixark_list_skills": {"skill:read"},
+    # A read about the store's own encoding state, gated like any other read of it.
+    "matrixark_embedding_status": {"context:retrieve"},
     "matrixark_update_skill": {"skill:manage"},
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},

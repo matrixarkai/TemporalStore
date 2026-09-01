@@ -5,9 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MatrixArk Ingestion</title>
 <style>
+  /* --faint carries the help text under every field, so it is body copy rather than
+     decoration: it is set to clear 4.5:1 against --panel in both schemes (measured 4.95
+     light / 5.76 dark). A lighter grey looks tidier and drops it to about 3:1. */
   :root{
     --bg:#f2f5f7; --panel:#fff; --panel-2:#f7f9fb;
-    --ink:#141a20; --muted:#5c6773; --faint:#8b95a1; --line:#dce3ea;
+    --ink:#141a20; --muted:#5c6773; --faint:#667180; --line:#dce3ea;
     --accent:#0d6b68; --accent-ink:#fff; --accent-soft:#d9ecea;
     --ok:#1c7a58; --ok-soft:#dbeee5;
     --warn:#93610f; --warn-soft:#f7ead2;
@@ -18,7 +21,7 @@
   @media (prefers-color-scheme:dark){
     :root{
       --bg:#0d1115; --panel:#151b21; --panel-2:#1a212a;
-      --ink:#e4e9ef; --muted:#8d99a7; --faint:#6c7885; --line:#27303a;
+      --ink:#e4e9ef; --muted:#8d99a7; --faint:#8996a5; --line:#27303a;
       --accent:#3fb3a8; --accent-ink:#06231f; --accent-soft:#11302e;
       --ok:#4cb68b; --ok-soft:#113126;
       --warn:#d9a441; --warn-soft:#31270f;
@@ -136,6 +139,21 @@
   .enc-cfg{margin-top:9px} .enc-cfg pre{margin:0;font-size:12px}
   a{color:var(--accent)}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .lineage{font-size:12.5px;color:var(--muted);margin-top:7px}
+  .lineage .mono{font-family:"IBM Plex Mono",monospace}
+  table.failures{margin-top:8px;font-size:13px}
+  table.failures td{vertical-align:top;overflow-wrap:anywhere}
+  table.failures td.mono{font-family:"IBM Plex Mono",monospace;font-size:12px}
+  details ul li{list-style:none;margin-left:-18px}
 </style>
 </head>
 <body>
@@ -143,8 +161,24 @@
 
   <header>
     <h1>Ingestion</h1>
-    <span class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+    <span class="conn" role="status" aria-live="polite"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   </header>
+  <nav class="portalnav">
+    <a href="/v1/admin">Overview</a>
+    <a href="/v1/admin/setup">Setup &amp; metrics</a>
+    <a href="/v1/admin/catalog">Skills &amp; resources</a>
+    <a href="/v1/admin/explore">Explore</a>
+    <a href="/v1/admin/ingestion" aria-current="page">Ingestion</a>
+    <a href="/v1/admin/portal">API keys</a>
+    <a href="/v1/admin/api">API</a>
+    <div class="livestrip" id="liveStrip" hidden>
+      <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
+      <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
+      <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <span class="live-dot" id="liveDot" title="live"></span>
+    </div>
+  </nav>
   <p class="lede">Point MatrixArk at a set of skill documents, watch the import run, and confirm the
     deployment is configured the way you expect before you commit to a long one.</p>
 
@@ -196,7 +230,7 @@
       <button id="start" disabled>Start import</button>
       <span class="hint" style="margin:0">Preview first — it shows exactly what would be sent.</span>
     </div>
-    <div id="startMsg"></div>
+    <div id="startMsg" role="status" aria-live="polite"></div>
     <div class="hint">Re-importing a document replaces it rather than duplicating it, so a stopped
       import can simply be run again.</div>
   </section>
@@ -236,6 +270,14 @@
   function say(el, text, cls) {
     el.innerHTML = text ? '<div class="msg ' + (cls || "info") + '">' + esc(text) + "</div>" : "";
   }
+  /* One phrasing for a failure, so a status code never reaches a customer on its own. */
+  function failure(status) {
+    if (status === 401) { return "This key was not accepted."; }
+    if (status === 403) { return "This key lacks an admin scope."; }
+    if (status === 409) { return "That import is still running — stop it first."; }
+    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
+    return "The gateway answered " + status + ".";
+  }
   function bytes(n) {
     if (!n) { return "0 B"; }
     var u = ["B", "KB", "MB", "GB", "TB"], i = Math.floor(Math.log(n) / Math.log(1024));
@@ -255,6 +297,12 @@
   /* ---------- summary ---------- */
   function renderSummary(jobs) {
     var running = 0, done = 0, failed = 0, remaining = 0, rate = 0, b = 0;
+    /* Defined before this function runs on the first load, so guard rather than assume. */
+    if (typeof pace === "function") {
+      pace(jobs.some(function (j) {
+        return j.state === "running" || j.state === "queued";
+      }));
+    }
     jobs.forEach(function (j) {
       if (j.state === "running") { running++; rate += j.docs_per_s || 0; }
       done += j.done; failed += j.failed; remaining += j.remaining; b += j.bytes || 0;
@@ -283,8 +331,25 @@
       ["Skill budget", d.skills.shared_skill_budget_ratio + " of " + d.skills.max_budget_tokens +
                        " tokens · " + d.skills.skill_chunks_per_skill + " sections per skill"]
     ];
+    /* The ingestion root is the one setting that stops THIS page working, and its absence is
+       otherwise invisible until a submission is refused. */
+    var root = "";
+    var groups = ((d.settings || {}).groups) || {};
+    (groups.ingestion || []).forEach(function (f) {
+      if (f.key === "ingestion.root") { root = f.value || ""; }
+    });
+    rows.unshift(["Ingestion root", root || "not set — imports below will be refused"]);
+
     renderEncoders(d.encoders || []);
-    var html = (d.warnings || []).map(function (w) {
+    var html = "";
+    if (!root) {
+      html += '<div class="note">No ingestion root is configured, so submitting server-side paths ' +
+        'is refused rather than defaulting to the whole filesystem. Set it on the ' +
+        '<a href="/v1/admin/setup">setup page</a> (or export MATRIXARK_INGESTION_ROOT) before ' +
+        "importing. Single documents can still be uploaded from " +
+        '<a href="/v1/admin/explore">Explore</a>.</div>';
+    }
+    html += (d.warnings || []).map(function (w) {
       return '<div class="note">' + esc(w) + "</div>";
     }).join("");
     html += "<table>" + rows.map(function (r) {
@@ -311,6 +376,30 @@
   }
 
   /* ---------- jobs ---------- */
+  function retryJob(id, onlyRetryable) {
+    say($("startMsg"), "Submitting a retry…", "info");
+    fetch("/v1/admin/ingestion/jobs/" + encodeURIComponent(id) + "/retry", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({ only_retryable: !!onlyRetryable })
+    })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          return { ok: r.ok, status: r.status, body: b };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          say($("startMsg"), res.body.detail || res.body.error || failure(res.status), "err");
+          return;
+        }
+        say($("startMsg"), "Retrying " + res.body.total + " document" +
+          (res.body.total === 1 ? "" : "s") + " as " + res.body.job_id + ".", "ok");
+        loadJobs();
+      })
+      .catch(function () { say($("startMsg"), "Could not reach the gateway.", "err"); });
+  }
+
   function jobHtml(j) {
     var processed = j.done + j.failed;
     var pct = j.total ? Math.round((processed / j.total) * 100) : 0;
@@ -332,13 +421,66 @@
       "<span>elapsed <b>" + secs(j.elapsed_s) + "</b></span>" +
       (j.remaining ? "<span>eta <b>" + secs(j.eta_s) + "</b></span>" : "") +
       "</div>";
-    if (j.current) { h += '<div class="current">' + esc(j.current) + "</div>"; }
-    if (j.failures && j.failures.length) {
-      h += "<details><summary>" + j.failures.length + " failure" +
-        (j.failures.length === 1 ? "" : "s") + "</summary><ul>" +
-        j.failures.map(function (f) {
-          return "<li>" + esc(f.detail) + " — " + esc(f.path) + "</li>";
+    if (j.retry_of) {
+      h += '<div class="lineage">retry of <span class="mono">' + esc(j.retry_of) + "</span></div>";
+    }
+    if (j.retried_by) {
+      h += '<div class="lineage">its failures were retried as <span class="mono">' +
+        esc(j.retried_by) + "</span></div>";
+    }
+    if (j.current) {
+      h += '<div class="current">' + esc(j.current) +
+        (j.current_elapsed_s ? " — " + j.current_elapsed_s + "s" : "") + "</div>";
+    }
+
+    /* What it has just been through. On a long import the counters barely move and the current
+       file changes too fast to read; this is the part that shows it is actually working, and
+       which documents are slow. */
+    if (j.recent && j.recent.length) {
+      var slowest = j.recent.slice().sort(function (a, b) { return b.ms - a.ms; })[0];
+      h += "<details><summary>recently processed (" + j.recent.length + ")" +
+        (slowest ? " · slowest " + Math.round(slowest.ms) + " ms" : "") + "</summary><ul>" +
+        j.recent.slice().reverse().map(function (r) {
+          return "<li>" + (r.ok ? "" : "failed · ") + Math.round(r.ms) + " ms — " +
+            esc(r.path) + "</li>";
         }).join("") + "</ul></details>";
+    }
+
+    if (j.failures && j.failures.length) {
+      var shown = j.failures.length, total = j.failure_count || shown;
+      h += "<details open><summary>" + total + " failure" + (total === 1 ? "" : "s") +
+        (j.retryable_failures ? " · " + j.retryable_failures + " worth retrying" : "") +
+        (j.failures_truncated ? " · list truncated" : "") + "</summary>" +
+        '<table class="failures"><thead><tr><th>Document</th><th>Why</th><th></th></tr></thead>' +
+        "<tbody>" + j.failures.map(function (f) {
+          return "<tr><td class='mono'>" + esc(f.path) + "</td><td>" + esc(f.detail) +
+            "</td><td>" + (f.retryable
+              ? '<span class="pill running">retryable</span>'
+              : '<span class="pill failed">permanent</span>') + "</td></tr>";
+        }).join("") + "</tbody></table>" +
+        (shown < total ? '<div class="hint">Showing ' + shown + " of " + total + ".</div>" : "") +
+        (j.failures_truncated
+          ? '<div class="note">This job failed more documents than it keeps a record of, so a ' +
+            "retry can only cover the ones listed. Fix the cause and re-run the import.</div>"
+          : "") + "</details>";
+    }
+
+    /* Ingest is a keyed upsert, so re-running the whole directory is SAFE -- which is exactly why
+       it is the tempting thing to do, and why a thousand-document import with three failures gets
+       re-run in full. */
+    if (j.state !== "running" && j.state !== "queued" && j.failed) {
+      h += '<div class="actions" style="margin-top:12px">';
+      if (j.retryable_failures) {
+        h += '<button data-retry="' + esc(j.job_id) + '">Retry ' + j.retryable_failures +
+          " failure" + (j.retryable_failures === 1 ? "" : "s") + "</button>";
+      }
+      h += '<button class="ghost" data-retry-all="' + esc(j.job_id) + '">Retry all ' +
+        j.failed + "</button>" +
+        '<span class="hint" style="margin:0">' +
+        (j.retryable_failures
+          ? "A timeout or an exhausted 5xx is worth another attempt; a 4xx will fail identically."
+          : "Every failure here is a rejected request — the same send will be rejected again.") +
+        "</span></div>";
     }
     return h + "</div>";
   }
@@ -377,6 +519,14 @@
     $("jobs").innerHTML = jobs.map(jobHtml).join("");
     Array.prototype.forEach.call($("jobs").querySelectorAll("[data-cancel]"), function (b) {
       b.addEventListener("click", function () { cancelJob(b.getAttribute("data-cancel")); });
+    });
+    Array.prototype.forEach.call($("jobs").querySelectorAll("[data-retry]"), function (b) {
+      b.addEventListener("click", function () { retryJob(b.getAttribute("data-retry"), true); });
+    });
+    Array.prototype.forEach.call($("jobs").querySelectorAll("[data-retry-all]"), function (b) {
+      b.addEventListener("click", function () {
+        retryJob(b.getAttribute("data-retry-all"), false);
+      });
     });
   }
 
@@ -523,15 +673,182 @@
   $("key").addEventListener("change", function () { persistKey(); loadConfig(); loadJobs(); });
   $("remember").addEventListener("change", persistKey);
 
-  function tick() { loadJobs(); loadMetrics(); }
-  function schedule() {
-    if (timer) { clearInterval(timer); timer = null; }
-    if ($("auto").checked) { timer = setInterval(tick, 4000); }
-  }
-  $("auto").addEventListener("change", schedule);
+  /* Fast while something is running -- that is when there is progress to watch -- and slow when
+     nothing is, because a page left open on an idle deployment was polling every four seconds
+     forever, including from a tab nobody was looking at. */
+  var ACTIVE_MS = 3000, IDLE_MS = 20000, currentMs = 0;
 
-  loadConfig(); tick(); schedule();
+  function tick() {
+    if (document.hidden) { return; }
+    loadJobs();
+    loadMetrics();
+  }
+
+  function schedule(ms) {
+    if (!$("auto").checked) {
+      if (timer) { clearInterval(timer); timer = null; }
+      currentMs = 0;
+      return;
+    }
+    if (ms === currentMs && timer) { return; }
+    if (timer) { clearInterval(timer); }
+    currentMs = ms;
+    timer = setInterval(tick, ms);
+  }
+
+  /* Called by the job renderer, which is the only place that knows whether anything is running. */
+  function pace(running) { schedule(running ? ACTIVE_MS : IDLE_MS); }
+
+  $("auto").addEventListener("change", function () { schedule(currentMs || IDLE_MS); });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) { tick(); }
+  });
+
+  loadConfig(); tick(); schedule(IDLE_MS);
 })();
+</script>
+<script>
+/* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
+   window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
+(function () {
+  "use strict";
+  var strip = document.getElementById("liveStrip");
+  if (!strip) { return; }
+  var seg = {
+    enc: document.getElementById("liveEnc"),
+    imp: document.getElementById("liveImp"),
+    req: document.getElementById("liveReq"),
+    warn: document.getElementById("liveWarn")
+  };
+  var dot = document.getElementById("liveDot");
+  /* Any page can watch the frames this page is already receiving. The alternative -- each panel
+     opening its own stream -- costs the gateway a task per panel to show one deployment's state. */
+  var watchers = [];
+  window.__matrixarkOnFrame = function (callback) {
+    if (typeof callback === "function") { watchers.push(callback); }
+  };
+
+  function n(value) {
+    return Number(value || 0).toLocaleString();
+  }
+  function show(el, html, cls) {
+    if (!el) { return; }
+    /* Reset the class on the way out too: a segment hidden while it was warning would come back
+       still coloured for a state that has passed. */
+    el.className = "live-seg" + (html != null && cls ? " " + cls : "");
+    if (html == null) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = html;
+  }
+
+  function plural(count, word) {
+    return "<b>" + n(count) + "</b> " + word + (Number(count) === 1 ? "" : "s");
+  }
+
+  /* Rendered only from a frame that arrived. Zeros drawn before the first frame would describe a
+     quiet healthy deployment for one that is not answering. */
+  function render(frame) {
+    strip.hidden = false;
+    var e = frame.embedding || null;
+    if (e && e.total) {
+      show(seg.enc, e.pending
+        ? "<b>" + n(e.pending) + "</b> waiting to embed"
+        : "<b>" + n(e.total) + "</b> embedded",
+        e.pending ? "busy" : "");
+    } else if (e) {
+      show(seg.enc, "<b>0</b> stored");
+    } else {
+      /* Absent, not zero: the backend could not be asked. "0 waiting" here would be the
+         reassuring answer to a question nobody managed to ask. */
+      show(seg.enc, "encoding <b>unknown</b>", "warn");
+    }
+
+    var imports = frame.imports || {};
+    var active = (imports.active || [])[0];
+    if (active) {
+      var done = (active.done || 0) + (active.failed || 0);
+      show(seg.imp, "importing <b>" + n(done) + "</b> of " + n(active.total || 0), "busy");
+    } else if (imports.retryable) {
+      show(seg.imp, "<b>" + n(imports.retryable) + "</b> to retry", "warn");
+    } else {
+      show(seg.imp, null);
+    }
+
+    var t = frame.traffic || {};
+    show(seg.req, plural(t.total_requests, "request") +
+      (t.total_errors ? ", <b>" + n(t.total_errors) + "</b> failed" : ""),
+      t.total_errors ? "warn" : "");
+
+    show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    watchers.forEach(function (callback) {
+      /* One panel throwing must not stop the others, or the strip, from updating. */
+      try { callback(frame); } catch (err) { /* a watcher's problem, not the strip's */ }
+    });
+  }
+
+  window.__matrixarkLiveFrame = function (frame) {
+    if (frame) { render(frame); dot.className = "live-dot"; }
+  };
+  window.__matrixarkLiveState = function (state) {
+    dot.className = "live-dot" + (state === "live" ? "" : (state === "down" ? " down" : " stale"));
+  };
+
+  /* A page with its own stream feeds the strip; only pages without one connect here. */
+  if (window.__matrixarkLive) { return; }
+  window.__matrixarkLive = "strip";
+
+  function key() {
+    var el = document.getElementById("key");
+    if (el && el.value.trim()) { return el.value.trim(); }
+    try { return sessionStorage.getItem("matrixark_admin_key") || ""; } catch (e) { return ""; }
+  }
+
+  var controller = null, backoff = 1000, buffer = "";
+
+  function open() {
+    var k = key();
+    if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
+    controller = new AbortController();
+    fetch("/v1/admin/events", {
+      headers: { Authorization: "Bearer " + k },
+      signal: controller.signal
+    }).then(function (r) {
+      if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
+      dot.className = "live-dot";
+      backoff = 1000;
+      var reader = r.body.getReader(), decoder = new TextDecoder();
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { throw new Error("stream ended"); }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          parts.forEach(function (block) {
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data:") !== 0) { return; }
+              try { render(JSON.parse(line.slice(5).trim())); } catch (err) { /* ignore */ }
+            });
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () {
+      dot.className = "live-dot stale";
+      setTimeout(open, backoff);
+      backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down must not be hammered */
+    });
+  }
+
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && controller) { controller.abort(); controller = null; }
+    else if (!document.hidden && !controller) { open(); }
+  });
+  window.addEventListener("pagehide", function () { if (controller) { controller.abort(); } });
+  open();
+}());
 </script>
 </body>
 </html>

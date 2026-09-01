@@ -121,13 +121,20 @@ def _direct_factory_for(response):
 # ---- ASGI test harness --------------------------------------------------------------------------
 def drive(app, *, method="POST", path="/v1/ingest", body=None, raw=None,
           headers=None, chunks=None):
-    """Run one request; return (status, headers_dict, body_bytes)."""
+    """Run one request; return (status, headers_dict, body_bytes).
+
+    `path` may carry a query string. A real ASGI server splits it out into scope["query_string"],
+    and the routes that read query parameters look there -- so without this split a `?user_id=...`
+    request would never match its route.
+    """
     if raw is not None:
         payload = raw
     else:
         payload = json.dumps(body if body is not None else {}).encode()
     hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
-    scope = {"type": "http", "method": method, "path": path, "headers": hdrs}
+    path, _, query = path.partition("?")
+    scope = {"type": "http", "method": method, "path": path,
+             "query_string": query.encode("latin-1"), "headers": hdrs}
 
     # Optionally stream the body as multiple http.request messages.
     if chunks is not None:

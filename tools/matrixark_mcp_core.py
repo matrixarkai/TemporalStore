@@ -382,6 +382,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_session_commit": {"context:ingest"},
     "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
+    "matrixark_embedding_status": {"context:retrieve"},
     "matrixark_forget": {"context:forget"},
     "matrixark_delete": {"context:forget"},
     "matrixark_reset": {"context:forget"},
@@ -483,6 +484,50 @@ def embedding_model_ref_for_name(model_name: str) -> str:
     slug = compact_model_slug(model_name)
     suffix = stable_hash(f"embedding_model:{model_name}") % 10000
     return f"emb:{slug}:{suffix:04d}"
+
+
+def same_embedding_model(left: str, right: str) -> bool:
+    """Whether two names refer to one encoder.
+
+    A repository prefix is not part of the identity: `sentence-transformers/all-MiniLM-L6-v2` and
+    `all-MiniLM-L6-v2` are one model, and both forms occur in real configuration -- a store written
+    under one and queried under the other must not read as an encoder change. Getting this wrong is
+    worse than not checking at all, because it declines every stored vector over a rename that
+    changed nothing.
+
+    Compared on the final path segment, which is the model name; the prefix is where it was fetched
+    from. Case is significant -- these are identifiers, not prose.
+    """
+    left = str(left or "").strip().rstrip("/")
+    right = str(right or "").strip().rstrip("/")
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.rsplit("/", 1)[-1] == right.rsplit("/", 1)[-1]
+
+
+def embedding_model_conflicts(stored_model: str, active_model: str) -> bool:
+    """Whether a stored vector was written by a different encoder than the one asking.
+
+    Mirrors `context_embedding_model_conflicts` in the engine, and must keep mirroring it: the two
+    decide the same question on two paths over the same store, and a store where one path scores a
+    vector the other declines ranks differently depending on which binary served the request.
+
+    Width is not the signal. Any two models truncated to a common width look identical, so a swap
+    produces no length mismatch and no error; the recorded model name is the only thing separating
+    them.
+
+    An empty name on either side means UNKNOWN and never conflicts. A stored blank predates the
+    field being written, and an active blank means nothing named an encoder -- treating either as a
+    conflict would decline every vector in every older store and take retrieval dark, which is the
+    outcome this guard exists to prevent.
+    """
+    stored = str(stored_model or "").strip()
+    active = str(active_model or "").strip()
+    if not stored or not active:
+        return False
+    return not same_embedding_model(stored, active)
 
 
 def context_model_registry_record(model_name: str, *, model_kind: str = "embedding", updated_at_ms: int | None = None) -> Json:

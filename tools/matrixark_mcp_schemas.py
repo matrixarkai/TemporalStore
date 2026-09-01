@@ -309,6 +309,19 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_embedding_status",
+        "description": "How much of a scope is encoded and how much is still waiting: counts, the "
+                       "models and vector widths in use, and any deferred extraction still to run.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": SCOPE_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_list_skills",
         "description": "List governed MatrixArk skills visible to the current account/tenant/user/session scope.",
         "inputSchema": {

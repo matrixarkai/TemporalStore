@@ -38,8 +38,20 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   client benchmark errors, retry exhaustion, ingestion lag/backpressure, cache
   fallback evidence, follower-read SLA, and raft gate readiness.
 
+- `temporalstore-engine-alerts.yml` is mounted from `docs/ops/temporalstore-alerts.yml` and covers
+  the engine itself: Raft majority loss and stalled applies, scheduler backlog, proxy quarantine,
+  cache miss pressure, replay failures and dead letters. It pairs with
+  `docs/ops/temporalstore-dashboard.json`. Both read the `temporalstore_engine` scrape job below,
+  which reads each process's own `/metrics` — a different surface from the `/vars` sidecar above,
+  which converts a handful of role-level health series through the textfile collector, and from the
+  gateway's `/v1/metrics`. Without that job these rules evaluate against nothing, and a rule that
+  cannot fire looks exactly like a cluster with nothing wrong.
+
 ## Defaults
 
+- Engine `/metrics`: proxy `:17000`, metaserver `:17001`, datanode `:17002` (the service ports from
+  `config/temporalstore.toml` — each process serves `/metrics` on the listener it serves its own
+  routes on)
 - Server `/vars`: `http://host.docker.internal:18001/vars`
 - MetaServer `/vars`: `http://host.docker.internal:18000/vars`
 - Proxy `/vars`: `http://host.docker.internal:18090/vars`

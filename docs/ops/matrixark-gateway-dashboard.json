@@ -1,0 +1,498 @@
+{
+  "title": "MatrixArk Gateway",
+  "uid": "matrixark-gateway",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "tags": [
+    "matrixark",
+    "gateway",
+    "api"
+  ],
+  "description": "The customer-facing /v1 edge: configuration health, request rate, errors and latency. The three stat tiles on the top row are the ones that catch a silently misconfigured deployment -- extraction and embedding both fall back to a local deterministic path that answers 200, so a deployment running on hash vectors looks identical to a healthy one on every other panel here.",
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Gateway",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "label_values(matrixark_gateway_requests_total, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      },
+      {
+        "name": "route",
+        "label": "Route",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "label_values(matrixark_gateway_requests_total{instance=~\"$instance\"}, route)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Config last changed",
+      "description": "Time since the configuration was last written from the portal. Half of \"it started behaving differently on Tuesday\" is answered by knowing whether anyone changed it on Tuesday; without this the answer comes from asking people.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "never"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max(matrixark_gateway_config_changed_timestamp_seconds{instance=~\"$instance\"} > 0)",
+          "legendFormat": "since change"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Settings away from stock",
+      "description": "Settings whose value is not the built-in default. The first thing to compare when one deployment behaves differently from another.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(matrixark_gateway_settings_overridden{instance=~\"$instance\"})",
+          "legendFormat": "overridden"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Worker uptime",
+      "description": "Time since this gateway worker started. A restart resets the in-process counters on this dashboard, so a sudden drop in a counter with a low uptime is a restart rather than a loss of traffic.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - min(matrixark_gateway_start_time_seconds{instance=~\"$instance\"})",
+          "legendFormat": "uptime"
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Retrieval mode",
+      "description": "0 means every vector is a hash fallback: retrieval still answers, and the results are not semantic. Nothing else on this dashboard distinguishes that deployment from a healthy one.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "hash vectors",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "semantic",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(matrixark_gateway_embedding_semantic{instance=~\"$instance\"})",
+          "legendFormat": "embedding"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Extraction",
+      "description": "0 means ingest calls no model at all and stores only what the local rules extract.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "rules only",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "model",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(matrixark_gateway_extraction_model_active{instance=~\"$instance\"})",
+          "legendFormat": "extraction"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Config warnings",
+      "description": "Configuration problems the gateway can see in itself. Steady state is 0; the text of each one is on the portal's setup page.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(matrixark_gateway_config_warnings{instance=~\"$instance\"})",
+          "legendFormat": "warnings"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Requests in flight",
+      "description": "Requests being served right now. A number that climbs and does not come back down is the edge queueing behind a slow backend.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(matrixark_gateway_requests_in_flight{instance=~\"$instance\"})",
+          "legendFormat": "in flight"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Request rate by route",
+      "description": "Requests per second the edge accepted, split by route template. Ids in a path are collapsed, so a busy /v1/memory/{id} is one line rather than thousands.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(matrixark_gateway_requests_total{instance=~\"$instance\",route=~\"$route\"}[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Errors by status",
+      "description": "4xx is the caller's to fix (401 unauthorized, 403 scope, 413 too large, 429 rate limit); 5xx and 504 are ours. Splitting them here saves an incident spent chasing a client's expired key.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(matrixark_gateway_requests_total{instance=~\"$instance\",route=~\"$route\",status=~\"4..|5..\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Latency p95 by route",
+      "description": "95th percentile edge latency. A retrieve that walks out to tens of seconds is usually an extraction call timing out behind it -- the request still answers 200 from the deterministic fallback, so latency is the only place it shows.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(matrixark_gateway_request_duration_seconds_bucket{instance=~\"$instance\",route=~\"$route\"}[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99 (all routes)",
+      "description": "The spread matters more than any single number: a p50 that stays flat while p99 climbs is a tail problem, not a capacity one.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(matrixark_gateway_request_duration_seconds_bucket{instance=~\"$instance\",route=~\"$route\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(matrixark_gateway_request_duration_seconds_bucket{instance=~\"$instance\",route=~\"$route\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(matrixark_gateway_request_duration_seconds_bucket{instance=~\"$instance\",route=~\"$route\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Bytes accepted and served",
+      "description": "Body bytes through the edge. Ingest volume against retrieve volume is the cheapest read on whether a corpus import is actually running.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(matrixark_gateway_request_bytes_total{instance=~\"$instance\",route=~\"$route\"}[5m]))",
+          "legendFormat": "accepted"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(matrixark_gateway_response_bytes_total{instance=~\"$instance\",route=~\"$route\"}[5m]))",
+          "legendFormat": "served"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "Routes, ranked",
+      "description": "Where the traffic and the failures actually are, over the dashboard's time range.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "format": "table",
+          "expr": "sum by (route) (rate(matrixark_gateway_requests_total{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "requests/s"
+        },
+        {
+          "refId": "B",
+          "instant": true,
+          "format": "table",
+          "expr": "sum by (route) (rate(matrixark_gateway_requests_total{instance=~\"$instance\",status=~\"5..\"}[5m]))",
+          "legendFormat": "errors/s"
+        }
+      ]
+    }
+  ]
+}

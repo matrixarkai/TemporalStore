@@ -30,6 +30,52 @@ except ImportError:
 )
 
 
+# Record types that carry an embedding vector, and the field naming what the vector belongs to.
+# Must stay equal to `_EMBEDDING_OWNER_REFS` on the retrieve path: that is the list of things that
+# get scored, and this is the list of things reported as encoded. A type in one and not the other
+# means the portal's encoding panel disagrees with what retrieval actually searches.
+EMBEDDING_OWNER_KEY_FIELDS = {
+    "context_event": ("event", "event_id_hash"),
+    "context_entity": ("entity", "entity_hash"),
+    "context_summary": ("summary", "summary_hash"),
+    "context_node": ("node", "node_hash"),
+    "context_segment": ("segment", "segment_hash"),
+    "context_compression_event": ("compression", "compression_id_hash"),
+    "resource_chunk": ("resource_chunk", "chunk_hash"),
+    "skill_section": ("skill_section", "section_hash"),
+}
+
+
+def embedding_owner_key(record: Json):
+    """What this record's vector belongs to, or None when the record carries no vector.
+
+    A legacy `context_embedding` row names its owner directly; an owner record IS the owner. Both
+    resolve to the same key, which is what lets a log holding both count the vector once.
+    """
+    record_type = str(record.get("record_type") or "")
+    if record_type == "context_embedding":
+        ref_type = str(record.get("ref_type") or "")
+        ref_hash = record.get("ref_hash")
+        if ref_hash in (None, ""):
+            # An old row with no owner named still counts -- as itself.
+            return ("context_embedding", id(record))
+        return (ref_type, ref_hash)
+    owner = EMBEDDING_OWNER_KEY_FIELDS.get(record_type)
+    if owner is None:
+        return None
+    vector = record.get("vector")
+    meta = record.get("embedding_meta")
+    if not (isinstance(vector, list) and vector) and not (isinstance(meta, dict) and meta):
+        # No vector and no ride-along metadata: this record was never embedded, and counting it
+        # would report a backlog that does not exist.
+        return None
+    ref_type, field = owner
+    ref_hash = record.get(field)
+    if ref_hash in (None, ""):
+        return None
+    return (ref_type, ref_hash)
+
+
 class _LocalAdapterDashboardMixin:
     def latest_skill_controls(self, records: list[Json] | None = None) -> dict[int, Json]:
         controls: dict[int, Json] = {}
@@ -636,6 +682,134 @@ class _LocalAdapterDashboardMixin:
         else:
             rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
         return rows
+
+    @staticmethod
+    def _embedding_is_pending(record: Json) -> bool:
+        """Is this embedding record still a placeholder?
+
+        Deliberately not `is_pending_async_candidate`: that is the RETRIEVAL predicate and returns
+        False unless `ref_type == "event"`, because an event is the only shape it ranks. A backlog
+        counted with it omits every pending embedding for a resource chunk or a skill section --
+        most of what a bulk import produces -- and reads as smaller than it is, which is the one
+        direction a backlog must never be wrong in.
+        """
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+
+        def field(name: str) -> str:
+            return str(record.get(name) or metadata.get(name) or "").strip()
+
+        return (
+            field("status").lower() == "pending"
+            or field("event_type").lower() == "pending_async"
+            or field("classification").upper() == "PENDING_ASYNC_EXTRACTION"
+            or field("extraction_phase").lower() == "pending_async"
+            or field("extraction_status").lower() in {"pending", "async_pending"}
+            or field("extraction_mode").lower() == "async_pending"
+        )
+
+    def embedding_status(self, args: Json) -> Json:
+        """How much of this scope is encoded, and how much is still waiting.
+
+        Counts, not rows. The dashboard can page the embeddings table, but a page is a sample and
+        a sample presented as a total is worse than no number: "12 pending" out of a 200-row window
+        onto 50,000 vectors is not a backlog, it is an artefact of the page size.
+
+        `dimensions` is the one that catches a silent break. Vectors of different widths cannot be
+        compared, so a store holding two dimensions is a store where some memories can never match
+        a query -- which happens the moment somebody changes the embedding model without a
+        backfill, and looks exactly like ordinary poor recall.
+        """
+        scope = optional_object(args, "scope")
+        records = self.read_all()
+
+        total = 0
+        pending = 0
+        encoded = 0
+        without_vector = 0
+        models: dict[str, int] = {}
+        dimensions: dict[int, int] = {}
+        oldest_pending_ms = 0
+        newest_pending_ms = 0
+        deferred_tasks = 0
+        deferred_stages = 0
+
+        # One entry per embedded thing, keyed by what it belongs to, so a log holding BOTH the
+        # retired separate row and its owner counts the vector once rather than twice.
+        seen_owners: set = set()
+
+        for record in records:
+            record_type = str(record.get("record_type") or "")
+            if record_type == "matrixark_async_pipeline_task":
+                if not scope_matches(candidate_access_scope(record), scope):
+                    continue
+                remaining = record.get("remaining_stages")
+                remaining = remaining if isinstance(remaining, list) else []
+                if remaining:
+                    deferred_tasks += 1
+                    deferred_stages += len(remaining)
+                continue
+            owner_key = embedding_owner_key(record)
+            if owner_key is None:
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+            if owner_key in seen_owners:
+                continue
+            seen_owners.add(owner_key)
+
+            total += 1
+            vector = record.get("vector")
+            has_vector = isinstance(vector, list) and bool(vector)
+            if not has_vector:
+                without_vector += 1
+
+            if self._embedding_is_pending(record) or not has_vector:
+                pending += 1
+                try:
+                    updated = int(record.get("updated_at_ms") or 0)
+                except (TypeError, ValueError):
+                    updated = 0
+                if updated:
+                    oldest_pending_ms = min(oldest_pending_ms or updated, updated)
+                    newest_pending_ms = max(newest_pending_ms, updated)
+            else:
+                encoded += 1
+
+            meta = record.get("embedding_meta")
+            meta = meta if isinstance(meta, dict) else {}
+            # The owner carries the retired row's fields under embedding_meta; a legacy separate row
+            # carries them at the top level. Prefer whichever this record actually has.
+            model = str(meta.get("model") or meta.get("model_ref")
+                        or record.get("model") or record.get("model_ref") or "")
+            if model:
+                models[model] = models.get(model, 0) + 1
+            try:
+                dim = int(meta.get("dim") or record.get("dim")
+                          or (len(vector) if has_vector else 0))
+            except (TypeError, ValueError):
+                dim = 0
+            if dim:
+                dimensions[dim] = dimensions.get(dim, 0) + 1
+
+        return {
+            "status": "ok",
+            "scope": scope,
+            "total": total,
+            "encoded": encoded,
+            "pending": pending,
+            "without_vector": without_vector,
+            "percent_encoded": round((encoded / total) * 100.0, 1) if total else 100.0,
+            "models": [{"model": name, "count": count}
+                       for name, count in sorted(models.items(), key=lambda kv: -kv[1])],
+            "dimensions": [{"dim": dim, "count": count}
+                           for dim, count in sorted(dimensions.items(), key=lambda kv: -kv[1])],
+            "mixed_dimensions": len(dimensions) > 1,
+            "oldest_pending_ms": oldest_pending_ms,
+            "newest_pending_ms": newest_pending_ms,
+            "deferred_tasks": deferred_tasks,
+            "deferred_stages": deferred_stages,
+            "record_count": len(records),
+        }
 
     def ingestion_dashboard(self, args: Json) -> Json:
         scope = optional_object(args, "scope")

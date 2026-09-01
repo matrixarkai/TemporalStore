@@ -30,6 +30,46 @@ MAX_RETAINED_JOBS = 50
 MAX_PATHS_PER_JOB = 100_000
 
 
+# Failures kept per job. A 10k-document import that fails wholesale would otherwise hold every
+# path twice. The snapshot says when it truncated, so a retry cannot quietly cover only the first
+# slice of a larger problem.
+MAX_FAILURES_KEPT = 500
+# Completed documents kept for the progress view. A ring, not a log: enough to see the import
+# moving and what it is chewing through, bounded so a long run cannot grow.
+RECENT_KEPT = 25
+
+
+def classify_failure(detail: str) -> bool:
+    """Is this failure worth retrying?
+
+    post_document already retries transient failures with backoff and gives up immediately on a
+    4xx, so a 4xx here means the request itself is wrong -- a malformed document, a rejected key,
+    a body over the limit -- and will fail again identically. Anything else (a timeout, a refused
+    connection, an exhausted 5xx) is the deployment having a bad minute, which is exactly what a
+    retry is for. Distinguishing them is the difference between "retry the 12 that timed out" and
+    "re-run all 1000 and get the same 3 failures".
+    """
+    text = (detail or "").strip().lower()
+    if text.startswith("http "):
+        try:
+            code = int(text.split()[1])
+        except (IndexError, ValueError):
+            return True
+        # 429 (back-pressure) and 408 (timeout) are the server asking for the request again,
+        # not rejecting it -- they are the most retryable failures there are, and a plain
+        # "4xx is permanent" rule gets them exactly backwards.
+        if code in (408, 429):
+            return True
+        return not (400 <= code < 500)
+    if text.startswith("read failed"):
+        return False  # the file did not open; retrying reads the same missing file
+    if text.startswith("empty record"):
+        # A batch line with no text. It will fail identically forever, and a failure that is
+        # marked retryable and never succeeds is how a retry button stops being trusted.
+        return False
+    return True
+
+
 class IngestionRootNotConfigured(Exception):
     """Raised when a job is submitted but no ingestion root bounds it."""
 
@@ -81,22 +121,78 @@ def resolve_request_paths(
     return unique[:MAX_PATHS_PER_JOB]
 
 
-class Job:
-    """One import: its counters, and the thread walking the document list."""
+MAX_RECORD_CHARS = 200_000
 
-    def __init__(self, job_id: str, paths: List[str], options: Dict[str, object]) -> None:
+
+def path_items(paths: List[str]) -> List[Dict[str, object]]:
+    return [{"kind": "path", "label": str(p), "path": str(p)} for p in paths]
+
+
+def record_items(records: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Batch records as job items.
+
+    The label has to identify the item well enough to appear in a failure list and to be re-sent by
+    a retry, and a record has no path to borrow. The line number plus a prefix of the text is what a
+    human can match back to the input; the record itself rides along so a retry does not need the
+    original paste.
+    """
+    items: List[Dict[str, object]] = []
+    for index, record in enumerate(records):
+        text = str(record.get("text") or record.get("content") or "")
+        preview = " ".join(text.split())[:60]
+        items.append({
+            "kind": "record",
+            "label": "record %d: %s" % (index + 1, preview or "(empty)"),
+            "record": record,
+            "bytes": len(text.encode("utf-8")),
+        })
+    return items
+
+
+def normalize_items(items: List[object]) -> List[Dict[str, object]]:
+    """Accept a list of paths or a list of items, and always return items.
+
+    submit() took paths for its whole life and the gateway still calls it that way; making every
+    caller convert would have been a change to make in several places at once, which is how one
+    gets missed.
+    """
+    out: List[Dict[str, object]] = []
+    for entry in items:
+        if isinstance(entry, str):
+            out.append({"kind": "path", "label": entry, "path": entry})
+        elif isinstance(entry, dict) and entry.get("kind") in ("path", "record"):
+            out.append(dict(entry))
+        elif isinstance(entry, dict):
+            out.extend(record_items([entry]))
+        else:
+            raise TypeError("job items must be paths or item dicts, got %r" % type(entry))
+    return out
+
+
+class Job:
+    """One import: its counters, and the thread walking the item list."""
+
+    def __init__(self, job_id: str, items: List[object], options: Dict[str, object]) -> None:
         self.id = job_id
-        self.paths = paths
+        self.items = normalize_items(items)
+        # Kept because the whole surface -- the gateway, the tests, the retry route -- speaks in
+        # paths, and a record job simply has none.
+        self.paths = [str(i["path"]) for i in self.items if i["kind"] == "path"]
         self.options = options
         self.state = "queued"
-        self.total = len(paths)
+        self.total = len(self.items)
         self.done = 0
         self.failed = 0
         self.bytes = 0
         self.started_at = time.time()
         self.finished_at: Optional[float] = None
-        self.failures: List[Dict[str, str]] = []
+        self.failures: List[Dict[str, object]] = []
+        self.failures_truncated = False
+        self.recent: List[Dict[str, object]] = []
         self.current: Optional[str] = None
+        self.current_started: Optional[float] = None
+        self.retry_of: Optional[str] = str(options.get("retry_of") or "") or None
+        self.retried_by: Optional[str] = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -118,9 +214,67 @@ class Job:
                 "docs_per_s": round(rate, 3),
                 "eta_s": round(remaining / rate, 1) if rate > 0 and remaining else 0,
                 "current": self.current,
-                "failures": list(self.failures[:20]),
+                "current_elapsed_s": (round(time.time() - self.current_started, 1)
+                                      if self.current_started else None),
+                "failures": [dict(f) for f in self.failures[:20]],
+                "failure_count": len(self.failures),
+                "failures_truncated": self.failures_truncated,
+                "retryable_failures": sum(1 for f in self.failures if f.get("retryable")),
+                "recent": [dict(r) for r in self.recent],
+                "retry_of": self.retry_of,
+                "retried_by": self.retried_by,
                 "user_id": self.options.get("user_id"),
+                # What this job is walking. A records job has no paths, and a UI that assumed
+                # paths would render its failures as blank rows.
+                "source": ("records"
+                           if any(i["kind"] == "record" for i in self.items)
+                           else "paths"),
             }
+
+    def record(self, path: str, ok: bool, took_ms: float, size: int, detail: str = "",
+               item_kind: str = "path") -> None:
+        """Record one document's outcome: the counters, the failure list, and the recent ring.
+
+        One place rather than inline in the runner, so the two bounds -- MAX_FAILURES_KEPT and
+        RECENT_KEPT -- cannot be honoured by one caller and forgotten by the next.
+        """
+        with self._lock:
+            if ok:
+                self.done += 1
+                self.bytes += size
+            else:
+                self.failed += 1
+                if len(self.failures) < MAX_FAILURES_KEPT:
+                    self.failures.append({
+                        "path": path, "detail": detail, "bytes": size,
+                        "retryable": classify_failure(detail),
+                        "item_kind": item_kind,
+                    })
+                else:
+                    self.failures_truncated = True
+            self.recent.append({"path": path, "ok": ok, "ms": took_ms, "bytes": size})
+            if len(self.recent) > RECENT_KEPT:
+                del self.recent[0]
+
+    def failed_paths(self, only_retryable: bool = True) -> List[str]:
+        """The documents to hand a retry. Ordered as the original run saw them."""
+        with self._lock:
+            return [str(f["path"]) for f in self.failures
+                    if (not only_retryable or f.get("retryable"))
+                    and f.get("item_kind", "path") == "path"]
+
+    def failed_items(self, only_retryable: bool = True) -> List[Dict[str, object]]:
+        """The items to hand a retry -- paths and records alike, in the order they were tried.
+
+        A record cannot be looked up again from a label, so the item carries its own record and a
+        retry re-sends that. Without it, a records job could report retryable failures and then
+        have nothing to retry, which reads as the retry silently doing nothing.
+        """
+        with self._lock:
+            wanted = [str(f["path"]) for f in self.failures
+                      if not only_retryable or f.get("retryable")]
+        by_label = {str(i["label"]): i for i in self.items}
+        return [dict(by_label[label]) for label in wanted if label in by_label]
 
     def cancel(self) -> None:
         self._stop.set()
@@ -133,34 +287,41 @@ class Job:
 
         with self._lock:
             self.state = "running"
-        for path in self.paths:
+        for item in self.items:
             if self._stop.is_set():
                 with self._lock:
                     self.state = "cancelled"
                     self.finished_at = time.time()
                     self.current = None
+                    self.current_started = None
                 return
+            label = str(item["label"])
+            started = time.time()
             with self._lock:
-                self.current = path
-            try:
-                size = os.path.getsize(path)
-            except OSError:
-                size = 0
-            ok, detail = batch.post_document(
-                base_url, path, user_id=user_id, api_key=api_key, timeout_s=timeout_s
-            )
-            with self._lock:
-                if ok:
-                    self.done += 1
-                    self.bytes += size
-                else:
-                    self.failed += 1
-                    if len(self.failures) < 100:
-                        self.failures.append({"path": path, "detail": detail})
+                self.current = label
+                self.current_started = started
+            if item["kind"] == "record":
+                record = item.get("record") or {}
+                size = int(item.get("bytes") or 0)
+                ok, detail = batch.post_record(
+                    base_url, record, user_id=user_id, api_key=api_key, timeout_s=timeout_s
+                )
+            else:
+                path = str(item["path"])
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = 0
+                ok, detail = batch.post_document(
+                    base_url, path, user_id=user_id, api_key=api_key, timeout_s=timeout_s
+                )
+            self.record(label, ok, round((time.time() - started) * 1000.0, 1), size, detail,
+                        item_kind=str(item["kind"]))
         with self._lock:
             self.state = "failed" if self.failed and not self.done else "completed"
             self.finished_at = time.time()
             self.current = None
+            self.current_started = None
 
 
 class JobRegistry:
@@ -171,8 +332,8 @@ class JobRegistry:
         self._order: List[str] = []
         self._lock = threading.Lock()
 
-    def submit(self, paths: List[str], options: Dict[str, object]) -> Job:
-        job = Job(uuid.uuid4().hex[:12], paths, options)
+    def submit(self, items: List[object], options: Dict[str, object]) -> Job:
+        job = Job(uuid.uuid4().hex[:12], items, options)
         with self._lock:
             self._jobs[job.id] = job
             self._order.insert(0, job.id)
@@ -181,6 +342,28 @@ class JobRegistry:
                 self._jobs.pop(dropped, None)
         threading.Thread(target=job.run, name="ingest-job-%s" % job.id, daemon=True).start()
         return job
+
+    def retry(self, job_id: str, only_retryable: bool = True) -> Optional[Job]:
+        """Re-run a finished job's failed documents as a new job.
+
+        Only the failures, not the whole list. Ingest is a keyed upsert, so re-running everything
+        is *safe* -- which is exactly why it is the tempting thing to do, and why a thousand-document
+        import with three failures gets re-run in full and takes as long the second time. The two
+        jobs are linked in both directions so the history reads as one import rather than two
+        unrelated ones.
+        """
+        parent = self.get(job_id)
+        if parent is None:
+            return None
+        items = parent.failed_items(only_retryable=only_retryable)
+        if not items:
+            return None
+        options = dict(parent.options)
+        options["retry_of"] = parent.id
+        child = self.submit(items, options)
+        with parent._lock:  # noqa: SLF001 - same module, same object's lock
+            parent.retried_by = child.id
+        return child
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
@@ -201,6 +384,8 @@ class JobRegistry:
             "documents_total": 0.0,
             "documents_done": 0.0,
             "documents_failed": 0.0,
+            "documents_retried": 0.0,
+            "documents_retryable": 0.0,
             "bytes_total": 0.0,
         }
         for job in jobs:
@@ -211,6 +396,9 @@ class JobRegistry:
             totals["documents_done"] += float(snap["done"])
             totals["documents_failed"] += float(snap["failed"])
             totals["bytes_total"] += float(snap["bytes"])
+            if snap.get("retry_of"):
+                totals["documents_retried"] += float(snap["total"])
+            totals["documents_retryable"] += float(snap.get("retryable_failures") or 0)
         return totals
 
 
@@ -236,6 +424,14 @@ def prometheus_text(extra: Optional[Dict[str, float]] = None) -> str:
         "# HELP matrixark_ingestion_documents_failed Documents that failed to ingest.",
         "# TYPE matrixark_ingestion_documents_failed counter",
         "matrixark_ingestion_documents_failed %g" % totals["documents_failed"],
+        "# HELP matrixark_ingestion_documents_retried Documents submitted as part of a retry.",
+        "# TYPE matrixark_ingestion_documents_retried counter",
+        "matrixark_ingestion_documents_retried %g" % totals["documents_retried"],
+        "# HELP matrixark_ingestion_documents_retryable Failed documents that are worth retrying "
+        "-- a timeout or an exhausted 5xx rather than a rejected request. Non-zero after an import "
+        "means work is waiting for someone to press retry.",
+        "# TYPE matrixark_ingestion_documents_retryable gauge",
+        "matrixark_ingestion_documents_retryable %g" % totals["documents_retryable"],
         "# HELP matrixark_ingestion_bytes_total Source bytes ingested.",
         "# TYPE matrixark_ingestion_bytes_total counter",
         "matrixark_ingestion_bytes_total %g" % totals["bytes_total"],

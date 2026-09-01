@@ -71,6 +71,38 @@
   .statusdot.on{background:var(--ok)}
   footer{border-top:1px solid var(--line);margin-top:40px;padding:22px 0;color:var(--muted);font-size:12.5px}
   details summary{cursor:pointer;color:var(--accent);font-size:13px;margin-top:6px}
+
+  /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
+  .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
+             border-bottom:1px solid var(--line)}
+  .portalnav a{display:inline-block;padding:7px 12px;font-size:13.5px;font-weight:550;
+               text-decoration:none;color:var(--muted);border-bottom:2px solid transparent;
+               margin-bottom:-1px}
+  .portalnav a:hover{color:var(--accent)}
+  .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
+  .scope-presets{display:flex;gap:8px;flex-wrap:wrap}
+  .scope-presets button{flex:1 1 200px;text-align:left;background:var(--card);color:var(--fg);
+                        border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+                        cursor:pointer;font:inherit}
+  .scope-presets button:hover{border-color:var(--accent)}
+  .scope-presets b{display:block;font-size:14px;margin-bottom:2px}
+  .scope-presets span{display:block;font-size:12.5px;color:var(--muted);line-height:1.45}
+  .scope-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:6px 18px}
+  .scope-list label{display:flex;gap:8px;align-items:flex-start;font-weight:400;margin:0;
+                    padding:5px 0;font-size:13.5px;cursor:pointer}
+  .scope-list input{margin-top:3px}
+  .scope-list b{font-weight:600;display:block}
+  .scope-list code{font-size:11.5px;color:var(--muted)}
+  .scope-list em{font-style:normal;color:var(--muted);font-size:12.5px;display:block;
+                 line-height:1.45}
+  .scope-list .danger-scope b{color:var(--warn)}
+  .scope-chip{display:inline-block;font-family:var(--mono);font-size:11px;line-height:1.6;
+              background:var(--card);border:1px solid var(--line);border-radius:4px;
+              padding:0 5px;margin:1px 3px 1px 0;white-space:nowrap}
+  .scope-chip.destructive{border-color:var(--danger);color:var(--danger);
+                          background:var(--danger-bg)}
+  .scope-chip.admin{border-color:var(--warn);color:var(--warn);background:var(--warn-bg)}
+  .scope-none{color:var(--muted);font-style:italic;font-size:12px}
 </style>
 </head>
 <body>
@@ -83,6 +115,22 @@
 </div></header>
 
 <main class="wrap">
+  <nav class="portalnav">
+    <a href="/v1/admin">Overview</a>
+    <a href="/v1/admin/setup">Setup &amp; metrics</a>
+    <a href="/v1/admin/catalog">Skills &amp; resources</a>
+    <a href="/v1/admin/explore">Explore</a>
+    <a href="/v1/admin/ingestion">Ingestion</a>
+    <a href="/v1/admin/portal" aria-current="page">API keys</a>
+    <a href="/v1/admin/api">API</a>
+    <div class="livestrip" id="liveStrip" hidden>
+      <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
+      <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
+      <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <span class="live-dot" id="liveDot" title="live"></span>
+    </div>
+  </nav>
 
   <!-- ============================ Connection ============================ -->
   <section class="card">
@@ -115,7 +163,7 @@
     <div class="actions">
       <button id="saveConn" class="secondary">Save connection</button>
       <button id="clearKey" class="secondary">Clear key</button>
-      <span id="connMsg" class="hint" style="margin:0"></span>
+      <span id="connMsg" class="hint" style="margin:0" role="status" aria-live="polite"></span>
     </div>
   </section>
 
@@ -135,8 +183,13 @@
         <input id="ckAccount" type="text" placeholder="acct_local">
       </div>
     </div>
-    <label>Scopes <span class="opt">(comma-separated)</span></label>
-    <input id="ckScopes" type="text" value="context:ingest,context:retrieve,context:feedback,context:replay">
+    <label>What is this key for?</label>
+    <div id="scopePresets" class="scope-presets"><span class="hint">Connect above to load the
+      scope catalogue.</span></div>
+    <label style="margin-top:14px">Scopes <span class="opt">(tick what this key may do)</span></label>
+    <div id="scopeList" class="scope-list"></div>
+    <label style="margin-top:10px">Scopes, as sent <span class="opt">(editable)</span></label>
+    <input id="ckScopes" type="text" value="context:ingest,context:retrieve,context:feedback,resource:read,skill:read">
     <div class="row3">
       <div>
         <label>Role <span class="opt"></span></label>
@@ -165,9 +218,10 @@
     </div>
     <div class="actions">
       <button id="createBtn">Create key</button>
+      <button id="copyCurl" class="secondary" type="button">Copy as curl</button>
     </div>
     <div id="createKeyOut" class="keyout"></div>
-    <div id="createMsg" class="msg"></div>
+    <div id="createMsg" class="msg" role="status" aria-live="polite"></div>
   </section>
 
   <!-- ============================ Keys list ============================ -->
@@ -182,7 +236,7 @@
         <input id="inclRevoked" type="checkbox"> include revoked
       </label>
     </div>
-    <div id="listMsg" class="msg"></div>
+    <div id="listMsg" class="msg" role="status" aria-live="polite"></div>
     <div class="tablewrap">
       <table id="keysTable" style="display:none">
         <thead><tr>
@@ -202,7 +256,7 @@
     <div class="actions">
       <button id="usageBtn" class="secondary">Refresh usage</button>
     </div>
-    <div id="usageMsg" class="msg"></div>
+    <div id="usageMsg" class="msg" role="status" aria-live="polite"></div>
     <div class="tablewrap">
       <table id="usageTable" style="display:none">
         <thead><tr>
@@ -361,6 +415,18 @@
       .catch(function (e) { showMsg("listMsg", "err", "List failed: " + e.message); });
   }
 
+  /* context:forget destroys a tenant's memory and admin:* can mint more keys; both deserve to be
+     visible without reading the row. */
+  function scopeChips(scopes) {
+    if (!scopes || !scopes.length) { return "<span class='scope-none'>none</span>"; }
+    return scopes.slice().sort().map(function (s) {
+      var cls = "scope-chip";
+      if (s === "context:forget") { cls += " destructive"; }
+      else if (s.indexOf("admin:") === 0) { cls += " admin"; }
+      return "<span class='" + cls + "'>" + escapeHtml(s) + "</span>";
+    }).join("");
+  }
+
   function renderKeys(keys) {
     var tb = $("keysTable").querySelector("tbody");
     tb.innerHTML = "";
@@ -372,7 +438,7 @@
       tr.innerHTML =
         "<td class='mono'>" + escapeHtml(k.api_key_id || "") + "</td>" +
         "<td>" + escapeHtml(k.tenant_id || ctxTenant() || "") + "</td>" +
-        "<td>" + escapeHtml((k.scopes || []).join(", ")) + "</td>" +
+        "<td>" + scopeChips(k.scopes) + "</td>" +
         "<td>" + escapeHtml(quota) + "</td>" +
         "<td><span class='pill " + escapeHtml(status) + "'>" + escapeHtml(status) + "</span></td>" +
         "<td>" + fmtTime(k.created_at_ms) + "</td>" +
@@ -465,6 +531,250 @@
   $("usageBtn").onclick = loadUsage;
   loadConn();
 })();
+</script>
+<script>
+/* ---------- scope catalogue ---------- */
+/* Served from /v1/admin/scopes so the descriptions live next to the map the backend gates with,
+   rather than in a copy on this page that nobody updates when a scope is added. */
+(function () {
+  "use strict";
+  var CATALOG = [], PRESETS = [];
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function selected() {
+    return Array.prototype.filter.call(
+      document.querySelectorAll("#scopeList input[type=checkbox]"), function (c) {
+        return c.checked;
+      }).map(function (c) { return c.value; });
+  }
+  function syncFromBoxes() { el("ckScopes").value = selected().join(","); }
+  function syncToBoxes() {
+    var want = {};
+    el("ckScopes").value.split(",").forEach(function (s) {
+      s = s.trim();
+      if (s) { want[s] = true; }
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("#scopeList input[type=checkbox]"),
+      function (c) { c.checked = !!want[c.value]; });
+  }
+  function render() {
+    el("scopePresets").innerHTML = PRESETS.map(function (p) {
+      return '<button type="button" data-preset="' + esc(p.id) + '"><b>' + esc(p.label) +
+        "</b><span>" + esc(p.detail) + "</span></button>";
+    }).join("") || '<span class="hint">No presets available.</span>';
+    el("scopeList").innerHTML = CATALOG.map(function (s) {
+      var risky = s.scope === "context:forget" || s.scope.indexOf("admin:") === 0;
+      return '<label class="' + (risky ? "danger-scope" : "") + '">' +
+        '<input type="checkbox" value="' + esc(s.scope) + '"><span><b>' + esc(s.label) +
+        ' <code>' + esc(s.scope) + "</code></b><em>" + esc(s.detail) + "</em></span></label>";
+    }).join("");
+    syncToBoxes();
+  }
+  function loadCatalog() {
+    var key = (el("adminKey") || {}).value || "";
+    var base = (el("gwBase") || {}).value || "";
+    fetch((base || "") + "/v1/admin/scopes",
+          { headers: key ? { Authorization: "Bearer " + key.trim() } : {} })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { CATALOG = d.scopes || []; PRESETS = d.presets || []; render(); })
+      .catch(function () {
+        el("scopePresets").innerHTML = '<span class="hint">Enter an admin key to load the ' +
+          "scope catalogue. You can still type scopes below.</span>";
+      });
+  }
+  document.addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-preset]") : null;
+    if (!button) { return; }
+    ev.preventDefault();
+    var preset = PRESETS.filter(function (p) { return p.id === button.dataset.preset; })[0];
+    if (!preset) { return; }
+    el("ckScopes").value = preset.scopes.join(",");
+    syncToBoxes();
+  });
+  document.addEventListener("change", function (ev) {
+    if (ev.target && ev.target.closest && ev.target.closest("#scopeList")) { syncFromBoxes(); }
+  });
+  el("ckScopes").addEventListener("input", syncToBoxes);
+  var adminKey = el("adminKey");
+  if (adminKey) { adminKey.addEventListener("change", loadCatalog); }
+  var save = el("saveConn");
+  if (save) { save.addEventListener("click", function () { setTimeout(loadCatalog, 50); }); }
+
+  /* ---------- copy as curl ---------- */
+  /* The portal is often the first place someone meets this API; handing them the exact request it
+     just made is the cheapest documentation there is. The key is deliberately left as a shell
+     variable rather than pasted in, so a copied command is not a copied credential. */
+  var copy = el("copyCurl");
+  if (copy) {
+    copy.addEventListener("click", function () {
+      var payload = {
+        tenant_id: (el("ckTenant") || {}).value || (el("ctxTenant") || {}).value || "",
+        account_id: (el("ckAccount") || {}).value || (el("ctxAccount") || {}).value || "",
+        scopes: el("ckScopes").value.split(",").map(function (s) { return s.trim(); })
+          .filter(Boolean),
+        role: (el("ckRole") || {}).value || "service",
+        display_name: (el("ckDisplay") || {}).value || ""
+      };
+      var text = "curl -sX POST " + (((el("mgmtBase") || {}).value) || location.origin) +
+        "/api/admin/create_api_key \\\n" +
+        "  -H \"Authorization: Bearer $MATRIXARK_ADMIN_KEY\" \\\n" +
+        "  -H 'Content-Type: application/json' \\\n  -d '" +
+        JSON.stringify(payload) + "'\n";
+      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
+      copy.textContent = "Copied";
+      setTimeout(function () { copy.textContent = "Copy as curl"; }, 1400);
+    });
+  }
+
+  loadCatalog();
+}());
+</script>
+<script>
+/* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
+   window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
+(function () {
+  "use strict";
+  var strip = document.getElementById("liveStrip");
+  if (!strip) { return; }
+  var seg = {
+    enc: document.getElementById("liveEnc"),
+    imp: document.getElementById("liveImp"),
+    req: document.getElementById("liveReq"),
+    warn: document.getElementById("liveWarn")
+  };
+  var dot = document.getElementById("liveDot");
+  /* Any page can watch the frames this page is already receiving. The alternative -- each panel
+     opening its own stream -- costs the gateway a task per panel to show one deployment's state. */
+  var watchers = [];
+  window.__matrixarkOnFrame = function (callback) {
+    if (typeof callback === "function") { watchers.push(callback); }
+  };
+
+  function n(value) {
+    return Number(value || 0).toLocaleString();
+  }
+  function show(el, html, cls) {
+    if (!el) { return; }
+    /* Reset the class on the way out too: a segment hidden while it was warning would come back
+       still coloured for a state that has passed. */
+    el.className = "live-seg" + (html != null && cls ? " " + cls : "");
+    if (html == null) { el.hidden = true; return; }
+    el.hidden = false;
+    el.innerHTML = html;
+  }
+
+  function plural(count, word) {
+    return "<b>" + n(count) + "</b> " + word + (Number(count) === 1 ? "" : "s");
+  }
+
+  /* Rendered only from a frame that arrived. Zeros drawn before the first frame would describe a
+     quiet healthy deployment for one that is not answering. */
+  function render(frame) {
+    strip.hidden = false;
+    var e = frame.embedding || null;
+    if (e && e.total) {
+      show(seg.enc, e.pending
+        ? "<b>" + n(e.pending) + "</b> waiting to embed"
+        : "<b>" + n(e.total) + "</b> embedded",
+        e.pending ? "busy" : "");
+    } else if (e) {
+      show(seg.enc, "<b>0</b> stored");
+    } else {
+      /* Absent, not zero: the backend could not be asked. "0 waiting" here would be the
+         reassuring answer to a question nobody managed to ask. */
+      show(seg.enc, "encoding <b>unknown</b>", "warn");
+    }
+
+    var imports = frame.imports || {};
+    var active = (imports.active || [])[0];
+    if (active) {
+      var done = (active.done || 0) + (active.failed || 0);
+      show(seg.imp, "importing <b>" + n(done) + "</b> of " + n(active.total || 0), "busy");
+    } else if (imports.retryable) {
+      show(seg.imp, "<b>" + n(imports.retryable) + "</b> to retry", "warn");
+    } else {
+      show(seg.imp, null);
+    }
+
+    var t = frame.traffic || {};
+    show(seg.req, plural(t.total_requests, "request") +
+      (t.total_errors ? ", <b>" + n(t.total_errors) + "</b> failed" : ""),
+      t.total_errors ? "warn" : "");
+
+    show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    watchers.forEach(function (callback) {
+      /* One panel throwing must not stop the others, or the strip, from updating. */
+      try { callback(frame); } catch (err) { /* a watcher's problem, not the strip's */ }
+    });
+  }
+
+  window.__matrixarkLiveFrame = function (frame) {
+    if (frame) { render(frame); dot.className = "live-dot"; }
+  };
+  window.__matrixarkLiveState = function (state) {
+    dot.className = "live-dot" + (state === "live" ? "" : (state === "down" ? " down" : " stale"));
+  };
+
+  /* A page with its own stream feeds the strip; only pages without one connect here. */
+  if (window.__matrixarkLive) { return; }
+  window.__matrixarkLive = "strip";
+
+  function key() {
+    var el = document.getElementById("key");
+    if (el && el.value.trim()) { return el.value.trim(); }
+    try { return sessionStorage.getItem("matrixark_admin_key") || ""; } catch (e) { return ""; }
+  }
+
+  var controller = null, backoff = 1000, buffer = "";
+
+  function open() {
+    var k = key();
+    if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
+    controller = new AbortController();
+    fetch("/v1/admin/events", {
+      headers: { Authorization: "Bearer " + k },
+      signal: controller.signal
+    }).then(function (r) {
+      if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
+      dot.className = "live-dot";
+      backoff = 1000;
+      var reader = r.body.getReader(), decoder = new TextDecoder();
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { throw new Error("stream ended"); }
+          buffer += decoder.decode(chunk.value, { stream: true });
+          var parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          parts.forEach(function (block) {
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data:") !== 0) { return; }
+              try { render(JSON.parse(line.slice(5).trim())); } catch (err) { /* ignore */ }
+            });
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () {
+      dot.className = "live-dot stale";
+      setTimeout(open, backoff);
+      backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down must not be hammered */
+    });
+  }
+
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return. */
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden && controller) { controller.abort(); controller = null; }
+    else if (!document.hidden && !controller) { open(); }
+  });
+  window.addEventListener("pagehide", function () { if (controller) { controller.abort(); } });
+  open();
+}());
 </script>
 </body>
 </html>

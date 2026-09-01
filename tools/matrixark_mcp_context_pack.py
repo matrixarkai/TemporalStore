@@ -1549,6 +1549,36 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["tokens"] = pack.get("tokens", {})
     if pack.get("quality_warnings"):
         compact["warnings"] = pack.get("quality_warnings", [])
+    # Vectors the query could not compare against. Carried only when something was actually
+    # declined: a healthy deployment should not pay bytes on every pack to be told nothing
+    # happened, and a caller reading this key at all is reading about a real problem.
+    # Which implementation answered, and how it ordered the results. Carried always, not only when
+    # something went wrong: "why do these two deployments rank differently" is a question asked
+    # about working systems.
+    served = pack.get("served_by")
+    if not isinstance(served, dict):
+        metrics = pack.get("retrieval_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        assembly = (pack.get("context_pack_assembly")
+                    or metrics.get("source")
+                    or ("native_backend" if pack.get("native_context_pack") else ""))
+        served = {
+            # Empty rather than "unknown": a pack whose producer is not identifiable carries no
+            # claim at all. Printing "answered by unknown" is noise dressed as provenance.
+            "assembly": str(assembly or ""),
+            # Absent means the producer did not say, which is not the same as "no vectors".
+            "ranking": metrics.get("ranking"),
+            "ranking_uses_vectors": metrics.get("ranking_uses_vectors"),
+        }
+    if served.get("assembly"):
+        compact["served_by"] = {key: value for key, value in served.items() if value is not None}
+
+    conflicts = pack.get("embedding_conflicts")
+    if isinstance(conflicts, dict) and (conflicts.get("encoder_change") or
+                                        conflicts.get("vector_width")):
+        compact["embedding_conflicts"] = {
+            key: value for key, value in conflicts.items() if value not in (None, "", 0)
+        }
     if debug_lineage_enabled(include_debug=include_debug) and isinstance(pack.get("memory_inventory"), dict):
         compact["memory_inventory"] = pack["memory_inventory"]
     if pack.get("partial_context_pack"):

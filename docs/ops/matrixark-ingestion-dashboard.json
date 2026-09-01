@@ -5,15 +5,24 @@
   "version": 1,
   "editable": true,
   "refresh": "10s",
-  "time": { "from": "now-6h", "to": "now" },
-  "tags": ["matrixark", "ingestion"],
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "tags": [
+    "matrixark",
+    "ingestion"
+  ],
   "templating": {
     "list": [
       {
         "name": "instance",
         "label": "Gateway",
         "type": "query",
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "query": "label_values(matrixark_ingestion_documents_total, instance)",
         "refresh": 1,
         "includeAll": true,
@@ -27,15 +36,29 @@
       "type": "stat",
       "title": "Imports running",
       "description": "Ingestion jobs currently walking a document list. Zero with documents still remaining means an import stopped early.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "text", "value": null },
-              { "color": "blue", "value": 1 }
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "blue",
+                "value": 1
+              }
             ]
           }
         },
@@ -54,8 +77,16 @@
       "type": "stat",
       "title": "Documents ingested",
       "description": "Cumulative successful documents across every job this worker has run.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
       "targets": [
         {
           "refId": "A",
@@ -69,15 +100,29 @@
       "type": "stat",
       "title": "Failures",
       "description": "Documents that exhausted their retries. Any sustained non-zero value means part of the import is not in the store.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "red", "value": 1 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         },
@@ -96,8 +141,16 @@
       "type": "stat",
       "title": "Remaining",
       "description": "Documents submitted but not yet processed.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
       "targets": [
         {
           "refId": "A",
@@ -107,18 +160,130 @@
       ]
     },
     {
+      "id": 8,
+      "type": "stat",
+      "title": "Waiting for retry",
+      "description": "Failed documents worth retrying -- a timeout or an exhausted 5xx rather than a rejected request. Non-zero after an import means work is sitting there until somebody opens the portal and presses retry.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(matrixark_ingestion_documents_retryable{instance=~\"$instance\"})",
+          "legendFormat": "retryable"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Documents retried",
+      "description": "Documents submitted as part of a retry. Rising against a flat failure count means retries are working; rising with it means they are not.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(matrixark_ingestion_documents_retried{instance=~\"$instance\"})",
+          "legendFormat": "retried"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Imports submitted",
+      "description": "Import jobs this worker has run since it started, retries included.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(matrixark_ingestion_jobs_total{instance=~\"$instance\"})",
+          "legendFormat": "jobs"
+        }
+      ]
+    },
+    {
       "id": 5,
       "type": "timeseries",
       "title": "Ingest rate",
       "description": "Documents per second, successes and failures separately. A failure line that tracks the success line means the import is systematically broken rather than hitting occasional bad documents.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 8, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "failed" },
-            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
           }
         ]
       },
@@ -140,10 +305,24 @@
       "type": "timeseries",
       "title": "Source throughput",
       "description": "Bytes of source documents accepted per second.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
       "fieldConfig": {
-        "defaults": { "unit": "Bps", "custom": { "fillOpacity": 8, "lineWidth": 2 } },
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "fillOpacity": 8,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
       "targets": [
@@ -159,10 +338,23 @@
       "type": "timeseries",
       "title": "Import backlog",
       "description": "Submitted minus processed. A backlog that stops falling while no job is running is the signature of an import that died partway.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 12 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "fillOpacity": 12, "lineWidth": 2 } },
+        "defaults": {
+          "custom": {
+            "fillOpacity": 12,
+            "lineWidth": 2
+          }
+        },
         "overrides": []
       },
       "targets": [

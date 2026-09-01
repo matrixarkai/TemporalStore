@@ -176,6 +176,98 @@ class EnvelopeShapeTest(unittest.TestCase):
         self.assertTrue(self.captured["url"].endswith("/v1/ingest"))
 
 
+class BackPressureTest(unittest.TestCase):
+    """A 429 is the server asking for the request again, not refusing it.
+
+    The gateway rate-limits ingest and answers 429 with a retry-after header, which is exactly what
+    a large import provokes. Treating it as a 4xx -- the caller's fault, will not improve -- meant
+    an import against a busy deployment silently abandoned the documents the gateway had asked it to
+    resend. The document count still said 1000; the store held fewer.
+    """
+
+    def setUp(self) -> None:
+        self.doc = os.path.join(tempfile.mkdtemp(), "playbook.md")
+        with open(self.doc, "w", encoding="utf-8") as handle:
+            handle.write("# Playbook" + chr(10))
+        self.attempts = []
+        self.slept = []
+        self._real_urlopen = batch.urllib.request.urlopen
+        self._real_sleep = batch.time.sleep
+        batch.time.sleep = lambda seconds: self.slept.append(seconds)
+
+    def tearDown(self) -> None:
+        batch.urllib.request.urlopen = self._real_urlopen
+        batch.time.sleep = self._real_sleep
+
+    def _respond(self, script):
+        """Answer each attempt from `script`: an int status, or (status, headers)."""
+        class FakeResponse:
+            def __init__(self, status):
+                self.status = status
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            step = script[min(len(self.attempts), len(script) - 1)]
+            status, headers = step if isinstance(step, tuple) else (step, {})
+            self.attempts.append(status)
+            if status >= 400:
+                raise batch.urllib.error.HTTPError(
+                    request.full_url, status, "err", headers, None)
+            return FakeResponse(status)
+
+        batch.urllib.request.urlopen = fake_urlopen
+
+    def test_a_429_is_retried_and_can_succeed(self) -> None:
+        self._respond([429, 429, 202])
+        ok, detail = batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        self.assertTrue(ok, detail)
+        self.assertEqual([429, 429, 202], self.attempts)
+
+    def test_the_server_s_retry_after_is_honoured(self) -> None:
+        self._respond([(429, {"Retry-After": "2"}), 202])
+        ok, _ = batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        self.assertTrue(ok)
+        self.assertIn(2.0, self.slept)
+
+    def test_a_retry_after_cannot_park_the_import(self) -> None:
+        # The header is remote input; one of them must not stall an import for an hour.
+        self._respond([(429, {"Retry-After": "99999"}), 202])
+        batch.post_document("http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        self.assertLessEqual(max(self.slept), batch.MAX_RETRY_AFTER_S)
+
+    def test_an_http_date_retry_after_falls_back_to_our_own_backoff(self) -> None:
+        self._respond([(429, {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}), 202])
+        ok, _ = batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        self.assertTrue(ok)
+
+    def test_a_408_is_retried_too(self) -> None:
+        self._respond([408, 202])
+        ok, _ = batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        self.assertTrue(ok)
+
+    def test_a_real_4xx_still_gives_up_at_once(self) -> None:
+        # A malformed document or a rejected key will fail identically however many times it is
+        # sent; retrying it just makes an import slower at failing.
+        self._respond([400, 400, 400])
+        ok, detail = batch.post_document(
+            "http://h:8080", self.doc, user_id="u", api_key="", timeout_s=5)
+        self.assertFalse(ok)
+        self.assertEqual("http 400", detail)
+        self.assertEqual([400], self.attempts)
+
+
 class ArgumentTest(unittest.TestCase):
     def test_resume_without_a_state_file_is_rejected(self) -> None:
         self.assertEqual(batch.main(["--dir", ".", "--resume"]), 2)

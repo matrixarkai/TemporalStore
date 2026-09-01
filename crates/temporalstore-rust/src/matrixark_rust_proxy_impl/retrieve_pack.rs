@@ -612,6 +612,13 @@ fn retrieve_context_pack_native(
     let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
     if let Some(stats) = scan_stats.as_object_mut() {
         stats.insert("native_pack_assembly".to_string(), json!(true));
+        // Same as the compact-snapshot path: candidates are ordered by term overlap plus boosts,
+        // and no vector is read. Said here so a caller does not have to infer it from a config.
+        stats.insert(
+            "ranking".to_string(),
+            json!("lexical_term_overlap_and_boosts"),
+        );
+        stats.insert("ranking_uses_vectors".to_string(), json!(false));
         stats.insert(
             "pack_assembly_location".to_string(),
             json!("rust_proxy_native"),

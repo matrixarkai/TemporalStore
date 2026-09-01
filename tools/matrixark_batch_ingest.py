@@ -46,6 +46,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_GLOBS = ("*.md", "*.markdown", "*.json")
 RETRY_BACKOFF_S = (1.0, 3.0, 8.0)
+# Ceiling on an honoured Retry-After. The header is remote input; one of them must not be able to
+# park an import for an hour.
+MAX_RETRY_AFTER_S = 30.0
 
 
 # ---------------------------------------------------------------------------------------------
@@ -141,6 +144,24 @@ def resource_type_for(path: str) -> str:
 # ---------------------------------------------------------------------------------------------
 # ingest
 # ---------------------------------------------------------------------------------------------
+def _retry_after_seconds(exc: "urllib.error.HTTPError") -> float:
+    """The server's own answer to "when should I try again", bounded.
+
+    Capped because the header is remote input: an import must not be parked for an hour by one
+    header, and the caller's own backoff is a reasonable floor to fall back to.
+    """
+    try:
+        raw = exc.headers.get("Retry-After") if exc.headers else None
+    except Exception:  # pragma: no cover - headers absent or malformed
+        raw = None
+    if not raw:
+        return 0.0
+    try:
+        return max(0.0, min(float(str(raw).strip()), MAX_RETRY_AFTER_S))
+    except ValueError:
+        return 0.0  # an HTTP-date form; fall back to the caller's own backoff
+
+
 def post_document(
     base_url: str,
     path: str,
@@ -176,6 +197,22 @@ def post_document(
         # report 1000 successes and read back nothing.
         "finalize": finalize,
     }
+    return post_ingest_body(base_url, body, api_key=api_key, timeout_s=timeout_s)
+
+
+def post_ingest_body(
+    base_url: str,
+    body: Dict[str, object],
+    *,
+    api_key: str,
+    timeout_s: float,
+) -> Tuple[bool, str]:
+    """POST one ingest envelope, with the retry policy. Returns (ok, detail).
+
+    Split out from post_document so a record typed into the portal and a file read off disk take
+    the same wire path -- one place that knows which failures are worth repeating, rather than a
+    second copy that would drift from it.
+    """
     payload = json.dumps(body).encode("utf-8")
     url = base_url.rstrip("/") + "/v1/ingest"
 
@@ -196,12 +233,70 @@ def post_document(
                 last = "http %d" % response.status
         except urllib.error.HTTPError as exc:
             last = "http %d" % exc.code
-            # A 4xx is the caller's fault and will not improve on retry.
+            # 429 is back-pressure and 408 is a timeout: both are the server ASKING for the
+            # request again later, not rejecting it. Giving up on them meant a large import
+            # against a busy deployment abandoned exactly the documents it was told to resend.
+            # The gateway sends retry-after on 429, so honour it rather than guessing.
+            if exc.code in (408, 429):
+                wait = _retry_after_seconds(exc)
+                if wait:
+                    time.sleep(wait)
+                continue
+            # Any other 4xx is the caller's fault and will not improve on retry.
             if 400 <= exc.code < 500:
                 return False, last
         except Exception as exc:  # network/timeout: worth retrying
             last = ("%s: %s" % (type(exc).__name__, exc))[:120]
     return False, last
+
+
+def record_body(record: Dict[str, object], default_user: str) -> Dict[str, object]:
+    """Turn one batch line into an ingest envelope.
+
+    A per-record user, agent or session overrides the batch's, because the common case for a paste
+    is a dump that already carries whose memory each line is; ignoring that would file everybody's
+    memories under one subject with nothing to say it had happened.
+    """
+    text = str(record.get("text") or record.get("content") or "")
+    scope: Dict[str, object] = {"user_id": str(record.get("user_id") or default_user)}
+    for name in ("agent_id", "session_id"):
+        value = str(record.get(name) or "")
+        if value:
+            scope[name] = value
+    body: Dict[str, object] = {
+        "scope": scope,
+        "user_id": scope["user_id"],
+        "messages": [{"role": str(record.get("role") or "user"), "content": text}],
+        # A batch line is a complete unit, like a document and unlike a streaming turn. Without
+        # this the gateway acks it as a deferred event and a batch reports successes for records
+        # that are not yet retrievable.
+        "wait": True,
+        "finalize": True,
+    }
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict) and metadata:
+        body["metadata"] = metadata
+    if record.get("identity_key"):
+        body["identity_key"] = str(record["identity_key"])
+    return body
+
+
+def post_record(
+    base_url: str,
+    record: Dict[str, object],
+    *,
+    user_id: str,
+    api_key: str,
+    timeout_s: float,
+) -> Tuple[bool, str]:
+    """Ingest one batch record. Returns (ok, detail)."""
+    text = str(record.get("text") or record.get("content") or "")
+    if not text.strip():
+        # Not retryable, and worth saying plainly: an empty line reaching here is a bug in whoever
+        # built the batch, and repeating it would fail identically forever.
+        return False, "empty record"
+    return post_ingest_body(base_url, record_body(record, user_id),
+                            api_key=api_key, timeout_s=timeout_s)
 
 
 # ---------------------------------------------------------------------------------------------
