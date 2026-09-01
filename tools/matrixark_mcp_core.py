@@ -2521,10 +2521,13 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             record = dict(base)
             record["ref_hashes"] = ref_chunk
             record["posting_part"] = part
-            if len(ref_chunk) == 1:
-                record["ref_hash"] = ref_chunk[0]
-            else:
-                record.pop("ref_hash", None)
+            # `ref_hashes` is the one place a posting names what it points at. The singular
+            # `ref_hash` restated it on every single-ref row, and `chunk_hash` restated it again;
+            # the serving accessor reads neither when the list is present, and `index_hash` is
+            # derived from the list, so both are dropped rather than written three ways. Older
+            # rows still resolve -- the fallbacks that read them are unchanged.
+            record.pop("ref_hash", None)
+            record.pop("chunk_hash", None)
             if len(record.get("node_hashes", [])) == 1:
                 record["node_hash"] = record["node_hashes"][0]
             else:

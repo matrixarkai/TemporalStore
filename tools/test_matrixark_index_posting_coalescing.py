@@ -25,6 +25,8 @@ import os
 import sys
 import unittest
 
+import matrixark_mcp_core as core
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -145,14 +147,26 @@ class CoalescedPostingsKeepEveryReference(unittest.TestCase):
             self.assertIsNone(record.get("ref_hash"),
                               "a multi-ref posting must not carry a singular ref_hash")
 
-    def test_a_single_ref_posting_keeps_its_scalar(self):
+    def test_a_single_ref_posting_names_its_target_once(self):
+        """`ref_hashes` is the only place a posting names what it points at.
+
+        Single-ref rows used to repeat that value into a singular `ref_hash`, and the row also
+        carried `chunk_hash` holding it a third time. Nothing read either when the list was
+        present -- `context_index_record_ref_hashes` takes the list whenever it is a list -- so
+        both are gone from what is written. What matters is that the row still resolves, which is
+        asserted here rather than the shape it used to have.
+        """
         records, _, _ = _emit(True)
         singles = [r for r in records
                    if r.get("record_type") == "context_index"
                    and len(r.get("ref_hashes", []) or []) == 1]
         self.assertTrue(singles, "no single-ref posting produced")
         for record in singles:
-            self.assertEqual(record["ref_hashes"][0], record.get("ref_hash"))
+            self.assertNotIn("ref_hash", record)
+            self.assertNotIn("chunk_hash", record)
+            self.assertEqual(record["ref_hashes"],
+                             core.context_index_record_ref_hashes(record),
+                             "a single-ref posting no longer resolves to what it points at")
 
 
 if __name__ == "__main__":
