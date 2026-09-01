@@ -13,6 +13,19 @@ import warnings as _warnings
 _PROFILE_SCOPE_WARNED: set = set()
 
 
+def _segments_enabled(scope) -> bool:
+    """Whether this tenant materialises context_segment rows (a segment restates its event).
+
+    Lazily imported and failing OPEN: a deployment without the policy module keeps its current
+    behaviour rather than silently storing nothing.
+    """
+    try:
+        from matrixark_index_growth_bound import extract_segments_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    return bool(extract_segments_enabled(scope))
+
+
 def _segment_access_scope_enabled() -> bool:
     """Gate: write context_segment records WITH a tenant/user/session access_scope so a
     scored segment passes access_scope_matches_before_scoring instead of being dropped
@@ -3293,7 +3306,10 @@ class _LocalAdapterIngestMixin:
                 )
 
         segment_hashes = []
-        for segment in extraction["segments"]:
+        # Second of the two segment writers. Both consult the same tenant knob; the pair is
+        # covered by one behavioural test rather than a shared symbol, because the thing that
+        # must not drift is the OUTCOME, not the spelling.
+        for segment in (extraction["segments"] if _segments_enabled(envelope.get("scope")) else []):
             segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
             segment_hashes.append(segment_hash)
             (

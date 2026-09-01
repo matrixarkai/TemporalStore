@@ -27,15 +27,24 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(TOOLS)
 GATES_MODULE = os.path.join(TOOLS, "matrixark_index_growth_bound.py")
 
-# Known unwired as of 2026-09-01, verified three ways: no call to the gate, no direct
-# resolve_tenant_policy() for the knob, and no read of the knob's env var in any .py or .rs.
-# Shrink this list as they are wired -- the test fails if you forget to.
+# Known unwired, verified three ways: no call to the gate, no direct resolve_tenant_policy() for
+# the knob, and no read of the knob's env var in any .py or .rs. Shrink this list as they are
+# wired -- the test fails if you forget to.
+#
+# This was six until the caller check started requiring a real call rather than a mention of the
+# name; the true figure was twelve. `extract_segments` and `generate_embeddings` are now wired, so
+# ten remain. The wider surface is worse still: of 42 functions in the policy module, 3 are
+# reachable from production code.
 KNOWN_UNWIRED: Set[str] = {
-    "extract_segments_enabled",
-    "generate_embeddings_enabled",
+    "dedupe_index_postings_enabled",
+    "embed_node_path_prefix_enabled",
+    "generate_l1_summaries_enabled",
+    "index_compact_on_summary_enabled",
     "node_path_embeddings_enabled",
+    "recall_reinforcement_enabled",
     "return_all_candidates_enabled",
     "store_event_summary_text_enabled",
+    "summarize_aggregation_only_nodes_enabled",
     "traverse_sibling_sessions_enabled",
 }
 
@@ -51,10 +60,18 @@ def _gates() -> List[str]:
 
 
 def _production_sources() -> List[str]:
+    """Production files that could consult a gate -- excluding the module that defines them.
+
+    A gate called only by its neighbours proves nothing: 3 of the 42 functions in that module are
+    reachable from production, so an internal caller is usually itself dead. "Wired" has to mean
+    reached from code that runs.
+    """
     listed = subprocess.run(["git", "ls-files", "*.py"], cwd=REPO,
                             capture_output=True, text=True).stdout.split()
+    defining = os.path.basename(GATES_MODULE)
     return [path for path in listed
-            if not os.path.basename(path).startswith("test_")]
+            if not os.path.basename(path).startswith("test_")
+            and os.path.basename(path) != defining]
 
 
 def _callers() -> Dict[str, List[str]]:
@@ -73,6 +90,16 @@ def _callers() -> Dict[str, List[str]]:
                 continue
             for gate in gates:
                 if gate not in line or stripped.startswith("def %s(" % gate):
+                    continue
+                # A CALL, not a mention. Matching the bare name counted
+                #     recall_reinforcement_enabled = bool(ranking.get(...))
+                # -- a local variable sharing the name and reading a different source entirely --
+                # as wiring, and reported 8 of 14 gates wired when the real number was 2.
+                if not re.search(r"(?<![\w.])%s\s*\(" % re.escape(gate), line):
+                    continue
+                # ...and not the assignment form, which contains a call on its right-hand side but
+                # is defining a look-alike rather than consulting the gate.
+                if re.search(r"(?<![\w.])%s\s*=" % re.escape(gate), line):
                     continue
                 found[gate].append("%s:%d" % (path, number))
     return found

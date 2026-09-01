@@ -73,6 +73,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+def _segments_enabled(scope: Any) -> bool:
+    """Whether this tenant materialises context_segment rows. Fails OPEN, as the fold gate does."""
+    try:
+        from matrixark_index_growth_bound import extract_segments_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    return bool(extract_segments_enabled(scope))
+
+
 def compact_context_embedding_record(record: Json) -> Json:
     return compact_hot_context_embedding_record(record)
 
@@ -927,7 +936,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             records_to_append.extend(profile_dirty_records)
 
     segment_hashes = []
-    for segment in extraction["segments"]:
+    # A segment restates its event, so a tenant can decline them. The list stays empty rather than
+    # absent, which keeps every downstream source_segment_hashes field well-formed.
+    for segment in (extraction["segments"] if _segments_enabled(envelope.get("scope")) else []):
         segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
         segment_hashes.append(segment_hash)
         records_to_append.append(

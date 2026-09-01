@@ -758,6 +758,64 @@ def drop_owner_derivable_postings(records: list[Json], resolve_owner=None) -> li
     return [r for i, r in enumerate(records) if i not in drop]
 
 
+def _embeddings_enabled_for(record: Json) -> bool:
+    """Whether this record's tenant stores vectors at all (default ON -- a tenant opts out).
+
+    Imported lazily and failing OPEN: a deployment without the policy module keeps its existing
+    behaviour rather than silently storing nothing, which would be a worse failure than the one
+    this setting exists to allow.
+
+    Gated here rather than at `embedding_for_text` because that producer has 57 callers and most
+    are on the READ path embedding a query. Gating it would stop retrieval working for a tenant who
+    only asked not to STORE vectors, which is a different setting entirely.
+    """
+    try:
+        from matrixark_index_growth_bound import generate_embeddings_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    # Read the scope the way the store itself does. Interning reduces a written record's scope dict
+    # to a `scope_key` holding the tenant HASH, so reading only `scope` sees None on most records,
+    # resolves to the default, and fails OPEN -- which is how the first version of this gate ran
+    # over 82 records and changed nothing while reporting success.
+    scope = record.get("scope") or record.get("access_scope") or record.get("scope_key")
+    return bool(generate_embeddings_enabled(scope))
+
+
+def drop_vectors_for_opted_out_tenants(records: list[Json]) -> list[Json]:
+    """Remove stored vectors for tenants that turned embeddings off, by BOTH routes.
+
+    A vector reaches storage two ways: as its own `context_embedding` record, and written straight
+    onto the owner as an inline `vector` field. Handling only the first is what the first attempt
+    did, and it silently left nine of ten records carrying vectors for a tenant that had opted out.
+
+    Applied at every append site alongside the fold, so there is one answer rather than one per
+    writer. Records for tenants that have not opted out are returned untouched -- identity, not a
+    copy -- so this costs nothing in the ordinary case.
+    """
+    if not records:
+        return records
+    out: list[Json] = []
+    changed = False
+    for record in records:
+        if _embeddings_enabled_for(record):
+            out.append(record)
+            continue
+        if record.get("record_type") == "context_embedding":
+            changed = True
+            continue
+        if record.get("vector") not in (None, "", []):
+            stripped = dict(record)
+            stripped.pop("vector", None)
+            # The metadata describes a vector that is no longer there; leaving it behind would
+            # tell a reader this record was embedded when it was not.
+            stripped.pop("embedding_meta", None)
+            out.append(stripped)
+            changed = True
+            continue
+        out.append(record)
+    return out if changed else records
+
+
 def fold_embedding_records(
     records: list[Json],
     resolve_owner=None,
@@ -810,6 +868,14 @@ def fold_embedding_records(
                 owner = dict(resolved)
                 replace[index] = owner
         if owner is None:
+            continue
+        # Decided on the OWNER, not the embedding. An embedding record often carries no scope of
+        # its own -- it is addressed by the owner's hash -- so the earlier pass cannot attribute it
+        # and lets it through. Here the owner is in hand, so the tenant is knowable: without this,
+        # 7 of 19 embeddings folded onto records belonging to a tenant that had opted out.
+        if not _embeddings_enabled_for(owner):
+            drop.add(index)
+            replace.pop(index, None)
             continue
         owner["vector"] = vector
         # The separate record carried more than the vector: serving-layer lineage, scope and
@@ -4445,6 +4511,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
+        records = drop_vectors_for_opted_out_tenants(records)
         records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
         records = drop_owner_derivable_postings(
             records, resolve_owner=self._resolve_embedding_owner
@@ -4483,6 +4550,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # their earlier owner through the durable view. The fold runs AFTER the serving
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
+        records = drop_vectors_for_opted_out_tenants(records)
         records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
         records = drop_owner_derivable_postings(
             records, resolve_owner=self._resolve_embedding_owner

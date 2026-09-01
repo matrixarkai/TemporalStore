@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Setting a tenant knob has to change what the deployment stores.
+
+Before this, it did not. The knob was in the registry, the portal offered it, `resolve()` returned
+exactly what the tenant set, and the write path never asked -- so two tenants with *opposite*
+policies produced near-identical records. Nothing errored and nothing logged.
+
+These tests are deliberately behavioural: they ingest the same text under two policies and compare
+what landed. A test that asserts the gate function is called would have passed throughout the period
+the knob did nothing, because the gate was always callable; it was simply never called.
+
+Two details are load-bearing, both found by this test failing:
+
+* A vector reaches storage by TWO routes -- its own `context_embedding` record, and an inline
+  `vector` field written straight onto the owner. Handling only the first left 9 of 10 records
+  still carrying vectors for a tenant that had opted out.
+* An embedding record usually carries no scope of its own; it is addressed by its owner's hash. The
+  tenant is knowable only from the OWNER, and reading the embedding's own scope let 7 of 19 through.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import matrixark_tenant_policy as policy  # noqa: E402
+
+
+def _ingest_under(policies: dict) -> dict:
+    """Ingest one identical message per tenant and report what was stored for each."""
+    import matrixark_mcp_server as mcp
+
+    for tenant, knobs in policies.items():
+        policy.set_tenant_policy(tenant, knobs)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
+        server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+        for tenant in policies:
+            scope = {"tenant_id": tenant, "user_id": "u1", "session_id": "s1"}
+            server.call_tool("matrixark_ingest", {
+                "scope": scope, "finalize": True,
+                "messages": [{"role": "user",
+                              "content": "I am allergic to peanuts and I live in Kyoto."}]})
+            server.call_tool("matrixark_session_commit", {"scope": scope})
+        records = adapter.read_all()
+
+    out = {}
+    for tenant in policies:
+        identities = {tenant, policy.tenant_hash_of(tenant)}
+        segments = vectors = total = 0
+        for record in records:
+            scope = (record.get("scope") or record.get("access_scope")
+                     or record.get("scope_key"))
+            if policy.tenant_of(scope) not in identities:
+                continue
+            total += 1
+            if str(record.get("record_type")) == "context_segment":
+                segments += 1
+            if record.get("vector"):
+                vectors += 1
+        out[tenant] = {"total": total, "segments": segments, "vectors": vectors}
+    return out
+
+
+class TheKnobChangesWhatIsStoredTest(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.result = _ingest_under({
+            "gates_on": {"extract_segments": True, "generate_embeddings": True},
+            "gates_off": {"extract_segments": False, "generate_embeddings": False},
+        })
+
+    def test_both_tenants_stored_something(self) -> None:
+        # Without this the assertions below pass on a run that stored nothing at all.
+        for tenant in ("gates_on", "gates_off"):
+            with self.subTest(tenant=tenant):
+                self.assertGreater(self.result[tenant]["total"], 0,
+                                   "nothing was stored for %s, so this file proves nothing"
+                                   % tenant)
+
+    def test_extract_segments_off_stores_no_segments(self) -> None:
+        self.assertEqual(0, self.result["gates_off"]["segments"],
+                         "a tenant that declined segments still got them")
+        self.assertGreater(self.result["gates_on"]["segments"], 0,
+                           "a tenant that asked for segments got none -- the gate is inverted or "
+                           "the extractor produced nothing, and either way the comparison above "
+                           "would pass for the wrong reason")
+
+    def test_generate_embeddings_off_stores_no_vectors(self) -> None:
+        self.assertEqual(0, self.result["gates_off"]["vectors"],
+                         "a tenant that declined embeddings still has stored vectors; a vector "
+                         "reaches storage both as its own record and inline on the owner, so this "
+                         "fails when only one route is gated")
+        self.assertGreater(self.result["gates_on"]["vectors"], 0,
+                           "no vectors stored for anyone, so the check above is vacuous")
+
+    def test_declining_one_knob_does_not_disable_the_other(self) -> None:
+        # The two are separate settings and a customer will set them independently.
+        result = _ingest_under({
+            "segments_only": {"extract_segments": True, "generate_embeddings": False},
+        })["segments_only"]
+        self.assertGreater(result["segments"], 0, "segments were dropped by the embedding knob")
+        self.assertEqual(0, result["vectors"], "vectors survived with embeddings off")
+
+
+class TheStripHandlesBothVectorShapesTest(unittest.TestCase):
+    """`drop_vectors_for_opted_out_tenants` on its own.
+
+    The ingest test above cannot reach this: on that path every vector arrives as a
+    `context_embedding` record and the fold's owner check catches it first. But records are also
+    written with an inline `vector` and no embedding record at all -- `context_node` is one -- and
+    that shape has to be handled or a tenant who opted out keeps vectors on those records.
+    """
+
+    def setUp(self) -> None:
+        import matrixark_mcp_local_adapter as adapter
+        self.adapter = adapter
+        policy.set_tenant_policy("strip_off", {"generate_embeddings": False})
+        policy.set_tenant_policy("strip_on", {"generate_embeddings": True})
+
+    def test_an_inline_vector_is_removed_for_an_opted_out_tenant(self) -> None:
+        record = {"record_type": "context_node", "scope": {"tenant_id": "strip_off"},
+                  "vector": [0.1, 0.2], "embedding_meta": {"model": "x"}}
+        out = self.adapter.drop_vectors_for_opted_out_tenants([record])
+        self.assertEqual(1, len(out), "the owner record itself must survive")
+        self.assertNotIn("vector", out[0])
+        # The metadata describes a vector that is no longer there; leaving it would tell a reader
+        # this record was embedded when it was not.
+        self.assertNotIn("embedding_meta", out[0])
+
+    def test_a_separate_embedding_record_is_dropped_entirely(self) -> None:
+        record = {"record_type": "context_embedding", "scope": {"tenant_id": "strip_off"},
+                  "vector": [0.1, 0.2]}
+        self.assertEqual([], self.adapter.drop_vectors_for_opted_out_tenants([record]))
+
+    def test_an_opted_in_tenant_is_untouched(self) -> None:
+        records = [{"record_type": "context_node", "scope": {"tenant_id": "strip_on"},
+                    "vector": [0.1]}]
+        out = self.adapter.drop_vectors_for_opted_out_tenants(records)
+        self.assertIs(records, out, "an unaffected batch should not even be copied")
+
+    def test_the_interned_scope_forms_are_all_understood(self) -> None:
+        # A written record carries `scope_key` holding the tenant hash rather than a scope dict.
+        # Reading only `scope` made this gate fail OPEN on nearly every record it saw.
+        digest = policy.tenant_hash_of("strip_off")
+        for field, value in (("scope", {"tenant_id": "strip_off"}),
+                             ("access_scope", {"tenant_id": "strip_off"}),
+                             ("scope_key", digest)):
+            with self.subTest(field=field):
+                record = {"record_type": "context_node", field: value, "vector": [0.1]}
+                out = self.adapter.drop_vectors_for_opted_out_tenants([record])
+                self.assertNotIn("vector", out[0],
+                                 "%s was not understood, so the gate failed open" % field)
+
+    def test_a_record_with_no_tenant_keeps_its_vector(self) -> None:
+        # Nothing to attribute means nothing to decide, and failing closed here would delete
+        # vectors from records that belong to tenants who never opted out.
+        record = {"record_type": "context_node", "vector": [0.1]}
+        out = self.adapter.drop_vectors_for_opted_out_tenants([record])
+        self.assertIn("vector", out[0])
+
+
+class BothSegmentWritersConsultTheKnobTest(unittest.TestCase):
+    """The ingest test drives one of the two segment writers; this covers the other's helper.
+
+    Ungating the batch-extract-runtime writer left the ingest test green, which is a true statement
+    about coverage rather than about the gate: that writer is on a path this file does not drive.
+    """
+
+    def test_each_writer_has_a_helper_that_follows_the_tenant(self) -> None:
+        # The adapter has to be imported FIRST: importing matrixark_local_adapter_ingest on its
+        # own trips a pre-existing circular import between the two (the adapter pulls the ingest
+        # mixin, and the ingest module pulls back). Importing the adapter establishes both.
+        import matrixark_mcp_local_adapter  # noqa: F401
+        import matrixark_local_adapter_ingest as ingest
+        import matrixark_mcp_local_batch_extract_runtime as runtime
+        policy.set_tenant_policy("seg_off", {"extract_segments": False})
+        policy.set_tenant_policy("seg_on", {"extract_segments": True})
+        for module in (ingest, runtime):
+            with self.subTest(module=module.__name__):
+                self.assertFalse(module._segments_enabled({"tenant_id": "seg_off"}))
+                self.assertTrue(module._segments_enabled({"tenant_id": "seg_on"}))
+                # No tenant to attribute falls to the knob's own default, which for segments is
+                # OFF -- unlike generate_embeddings, which defaults ON. The two are opposite on
+                # purpose: a segment restates its event, so not writing one loses nothing, while
+                # not writing a vector loses retrieval.
+                self.assertFalse(module._segments_enabled(None))
+
+    def test_the_two_knobs_have_opposite_defaults_and_that_is_deliberate(self) -> None:
+        # Wiring extract_segments therefore CHANGES behaviour for a deployment that has set no
+        # policy: it stops writing segments. That is the documented intent of the knob rather than
+        # an accident, and MATRIXARK_EXTRACT_SEGMENTS=1 restores them everywhere -- but it is a
+        # live change and this test is where someone will find that out.
+        import matrixark_mcp_local_adapter  # noqa: F401
+        import matrixark_local_adapter_ingest as ingest
+        self.assertFalse(ingest._segments_enabled({"tenant_id": "never_configured"}))
+        self.assertTrue(matrixark_mcp_local_adapter._embeddings_enabled_for(
+            {"record_type": "context_node", "scope": {"tenant_id": "never_configured"}}))
+
+
+if __name__ == "__main__":
+    unittest.main()
