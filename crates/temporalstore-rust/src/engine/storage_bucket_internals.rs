@@ -259,7 +259,7 @@ pub(super) fn storage_block_address_sample(
         block_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
-        checksum: address.sha256.clone().unwrap_or_default(),
+        checksum: address.sha256_hex().unwrap_or_default(),
     }
 }
 
@@ -312,7 +312,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                     .address
                     .band_id
                     .unwrap_or(entry.address.page_slab_id),
-                checksum: entry.address.sha256.clone().unwrap_or_default(),
+                checksum: entry.address.sha256_hex().unwrap_or_default(),
                 generation: entry.address.object_id.unwrap_or(0),
                 page_address,
                 block_address,

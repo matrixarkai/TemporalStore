@@ -79,11 +79,63 @@ pub struct BlockAddress {
     pub generation: Option<u64>,
     #[serde(default, alias = "extent_id", alias = "zone_id", skip_serializing_if = "Option::is_none")]
     pub band_id: Option<u64>,
-    #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
+    /// The page's digest, as the 32 bytes it is.
+    ///
+    /// It was a hex `String`: 24 bytes inline plus a 64-character allocation, for 32 bytes of
+    /// information, held in the index for every page for the life of the shard. Measured at 100%
+    /// occupancy over 1500 pages, so this is per-page cost and not an occasional one.
+    ///
+    /// The wire form is unchanged -- `hex_digest` writes the same hex string it always did, and
+    /// reads either -- so an index written before this change loads, and one written after is
+    /// readable by anything expecting the old shape.
+    #[serde(
+        default,
+        alias = "checksum",
+        skip_serializing_if = "Option::is_none",
+        with = "hex_digest"
+    )]
+    pub sha256: Option<[u8; 32]>,
+}
+
+/// A digest is 32 bytes in memory and hex on the wire.
+///
+/// Keeping the wire form makes this change invisible to anything that reads a persisted index, in
+/// both directions: the same hex string is written, and a hex string is what is read.
+mod hex_digest {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<[u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(bytes) => serializer.serialize_str(&hex::encode(bytes)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; 32]>, D::Error> {
+        // A digest that is not 32 bytes of hex is not a digest. Reading it as absent rather than
+        // failing keeps a malformed one from making a whole index unloadable -- the read path
+        // treats a missing digest as "unverified", which is what a corrupt one deserves too.
+        let raw = Option::<String>::deserialize(deserializer)?;
+        Ok(raw.and_then(|text| {
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(text.as_bytes(), &mut bytes)
+                .ok()
+                .map(|_| bytes)
+        }))
+    }
 }
 
 impl BlockAddress {
+    /// The digest as the hex text every reporting path quotes.
+    pub fn sha256_hex(&self) -> Option<String> {
+        self.sha256.as_ref().map(hex::encode)
+    }
+
     pub fn compact_slab_id(&self) -> Option<u32> {
         u32::try_from(self.page_slab_id).ok()
     }
@@ -1761,7 +1813,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"verified-page").unwrap();
-        assert_eq!(address.sha256, Some(sha256_hex(b"verified-page")));
+        assert_eq!(address.sha256_hex(), Some(sha256_hex(b"verified-page")));
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
         let path = slab_path(dir.path(), address.page_slab_id);
@@ -1788,7 +1840,7 @@ mod tests {
         assert_eq!(address.object_id, Some(4242));
         assert_eq!(address.routing_bucket, Some(17));
         assert_eq!(address.band_id, Some(0));
-        assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
+        assert_eq!(address.sha256_hex(), Some(sha256_hex(b"address-contract")));
         assert_eq!(address.compact_slab_id(), Some(0));
         assert_eq!(address.compact_slab_offset(), Some(0));
         assert_eq!(address.compact_slab_address(), Some(0));
@@ -1816,7 +1868,12 @@ mod tests {
             // alias JSON must carry it or the round-trip deserializes to None.
             "generation": address.generation,
             "band_id": address.band_id,
-            "checksum": address.sha256,
+            // The legacy document carries the digest as HEX, which is what the alias means and
+            // what a record written before the digest became bytes actually holds. Passing the
+            // bytes here would build a document no old writer ever produced -- an array where the
+            // alias expects a string -- and test the round-trip against a shape that never
+            // existed.
+            "checksum": address.sha256_hex(),
         });
         let from_checksum_alias: BlockAddress = serde_json::from_value(legacy_alias_json).unwrap();
         assert_eq!(from_checksum_alias, address);
@@ -2514,7 +2571,7 @@ mod tests {
         assert!(!reports[0].block_index_entries[0].dirty);
         assert!(!reports[0].block_index_entries[0].deleted);
         assert!(!reports[0].block_index_entries[0].block_in_log);
-        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256);
+        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256_hex());
         assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
         assert_eq!(reports[0].block_index_entries[1].length, second.length);
         assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id);

@@ -609,6 +609,14 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// The digest as the 32 bytes it is, for storing.
+///
+/// `sha256_hex` remains for the places that want text -- a report, an error message. What it does
+/// not do any more is decide the in-memory representation of every page in the index.
+pub(super) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SlabSummary {
     pub(super) logical_bytes: u64,
