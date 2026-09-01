@@ -1903,10 +1903,7 @@ fn persist_scope_index_backfill(
 /// history also needs the records that POINT at an id: a tombstone's `target_memory_id`, and the
 /// supersede link `superseded_by` that marks the successor's creation.
 fn record_id_linked(record: &Value, ids: &HashSet<String>) -> bool {
-    if record_addressable_ids(record)
-        .iter()
-        .any(|id| ids.contains(id.as_str()))
-    {
+    if record_carries_wanted_id(record, |id| ids.contains(id)) {
         return true;
     }
     for field in ["target_memory_id", "superseded_by", "source_event_hash"] {
@@ -2514,6 +2511,74 @@ fn forget_scope_records(
 /// A delete removes the addressed record AND the embeddings / index postings that point at it --
 /// those carry no identity of their own, only a `ref_hash` / `ref_hashes` aimed at one. Matching
 /// both is what stops a delete leaving orphaned postings behind that still surface its text.
+/// Write a u64 as text into a caller-owned buffer. No allocation.
+///
+/// Exists because the ids in these records are mostly JSON numbers (`event_id_hash`,
+/// `entity_hash`, ...) and `Number::to_string()` allocates a String for each one -- which is a lot
+/// of allocation to answer a question that only needs a comparison.
+fn u64_into<'a>(buf: &'a mut [u8; 20], mut value: u64) -> &'a str {
+    if value == 0 {
+        buf[0] = b'0';
+        return std::str::from_utf8(&buf[..1]).unwrap_or("0");
+    }
+    let mut at = buf.len();
+    while value > 0 {
+        at -= 1;
+        buf[at] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    std::str::from_utf8(&buf[at..]).unwrap_or("")
+}
+
+/// Does this record carry any id the caller is looking for?
+///
+/// Same identity fields as [`record_addressable_ids`], but answers the membership question without
+/// building anything. That function allocates a `Vec<String>` per record plus a `String` per id it
+/// finds, and both call sites immediately threw all of it away after an `.any(...)`.
+///
+/// It is on the hot loop of `update`: a purge at 360 memories parses 7,829 records to remove 663,
+/// and asked this question of every one of them.
+///
+/// `contains` is a closure rather than a set so the two callers can keep the set types they
+/// already have -- one holds `&str`, the other `String`.
+fn record_carries_wanted_id(record: &Value, contains: impl Fn(&str) -> bool) -> bool {
+    let mut hit = |value: Option<&Value>| -> bool {
+        match value {
+            Some(Value::String(text)) if !text.is_empty() => contains(text.as_str()),
+            Some(Value::Number(number)) => {
+                if let Some(unsigned) = number.as_u64() {
+                    let mut buf = [0_u8; 20];
+                    contains(u64_into(&mut buf, unsigned))
+                } else {
+                    // Signed or floating: rare for an id, so the allocation here is not worth
+                    // avoiding, and matching `to_string` keeps the answer identical.
+                    contains(number.to_string().as_str())
+                }
+            }
+            _ => false,
+        }
+    };
+    for field in [
+        "event_id_hash",
+        "entity_hash",
+        "summary_hash",
+        "segment_hash",
+        "ref_hash",
+    ] {
+        if hit(record.get(field)) {
+            return true;
+        }
+    }
+    if let Some(Value::Array(refs)) = record.get("ref_hashes") {
+        for item in refs {
+            if hit(Some(item)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn record_addressable_ids(record: &Value) -> Vec<String> {
     let mut ids = Vec::new();
     let mut push = |value: Option<&Value>| {
@@ -2650,10 +2715,7 @@ fn delete_records_by_ids(
             let mut survivors = Vec::with_capacity(records.len());
             let mut removed_here = 0_usize;
             for record in records {
-                if record_addressable_ids(&record)
-                    .iter()
-                    .any(|id| wanted.contains(id.as_str()))
-                {
+                if record_carries_wanted_id(&record, |id| wanted.contains(id)) {
                     removed_here += 1;
                 } else {
                     survivors.push(record);
@@ -7313,4 +7375,84 @@ mod scan_cap_tests {
         let all = vec![at(0, 999), at(1, 1)];
         assert_eq!(newest_locations(all, Some(1)), vec![at(1, 1)]);
     }
+}
+
+
+#[cfg(test)]
+mod record_id_predicate_tests {
+    use super::*;
+
+    /// Record shapes to check the two implementations against each other on.
+    fn shapes() -> Vec<Value> {
+        vec![
+            json!({"event_id_hash": 7}),
+            json!({"event_id_hash": "7"}),
+            json!({"entity_hash": 0}),
+            json!({"summary_hash": u64::MAX}),
+            json!({"segment_hash": -5}),
+            json!({"ref_hash": ""}),
+            json!({"ref_hash": "abc"}),
+            json!({"ref_hashes": [1, 2, 3]}),
+            json!({"ref_hashes": ["a", "", "b"]}),
+            json!({"ref_hashes": []}),
+            json!({"ref_hashes": "not-an-array"}),
+            json!({"event_id_hash": 11, "ref_hashes": [12, "13"]}),
+            json!({"unrelated": "field"}),
+            json!({}),
+            json!({"event_id_hash": null}),
+            json!({"entity_hash": 1.5}),
+        ]
+    }
+
+    /// The candidate id sets to ask about, including ones that should match nothing.
+    fn probes() -> Vec<Vec<&'static str>> {
+        vec![
+            vec![],
+            vec!["7"],
+            vec!["0"],
+            vec!["18446744073709551615"],
+            vec!["-5"],
+            vec!["abc"],
+            vec!["1"],
+            vec!["2"],
+            vec!["3"],
+            vec!["13"],
+            vec!["nope"],
+            vec![""],
+            vec!["7", "nope"],
+            vec!["1.5"],
+        ]
+    }
+
+    #[test]
+    fn the_predicate_agrees_with_the_allocating_version() {
+        // Checked against record_addressable_ids rather than against hand-written expectations:
+        // this is a deletion path, and the property that matters is "same answer as before", not
+        // "the answer I think is right".
+        for record in shapes() {
+            let ids = record_addressable_ids(&record);
+            for probe in probes() {
+                let wanted: HashSet<&str> = probe.iter().copied().collect();
+                let old = ids.iter().any(|id| wanted.contains(id.as_str()));
+                let new = record_carries_wanted_id(&record, |id| wanted.contains(id));
+                assert_eq!(
+                    old, new,
+                    "disagreement on record {record} for ids {probe:?}: old={old} new={new}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_u64_is_written_without_allocating_and_reads_back_the_same() {
+        for value in [0_u64, 1, 9, 10, 99, 100, 12345, u64::MAX, u64::MAX - 1] {
+            let mut buf = [0_u8; 20];
+            assert_eq!(
+                value.to_string(),
+                u64_into(&mut buf, value),
+                "{value} did not round-trip through the stack buffer"
+            );
+        }
+    }
+
 }
