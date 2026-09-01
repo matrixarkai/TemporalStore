@@ -77,6 +77,22 @@ INDEX_KEYWORD_LIMIT = int(os.environ.get("MATRIXARK_INDEX_KEYWORD_LIMIT", "12"))
 # fields and never read `ref_hashes`, so a posting carrying two refs had no identity and was
 # dropped outright -- silently, with no length mismatch to raise an error. That is fixed, and
 # the emitter now splits at MAX_SECONDARY_INDEX_REFS_PER_POSTING like the compactor does.
+try:  # package path
+    from tools.matrixark_mcp_core_query_analysis import index_term_is_consultable
+except ImportError:  # top-level path
+    from matrixark_mcp_core_query_analysis import index_term_is_consultable
+
+# Default ON. See index_term_is_consultable: a term whose kind the query analyser can never
+# emit cannot appear in a filter group, so it cannot narrow a search or earn the hint boost. On a
+# 1 MB skill those terms are 1,418 KB of the 1,471 KB index -- 15.7% of the ingest -- and dropping
+# them takes amplification 8.6x to 7.2x while embeddings become the majority of the footprint
+# (44.6% -> 53.0%), which is what an embedding-first store should look like.
+#
+# Set MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS=0 to write every term again.
+INDEX_ONLY_CONSULTABLE_TERMS = os.environ.get(
+    "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS", "1"
+).strip().lower() not in {"0", "false", "no", "off", ""}
+
 INDEX_POSTING_LISTS = os.environ.get(
     "MATRIXARK_INDEX_POSTING_LISTS", "1"
 ) not in {"0", "false", "False", ""}
@@ -289,6 +305,15 @@ def append_resource_chunk_records(
             0,
             len(ordered_unique([term for term in raw_chunk_index_terms if term])) - len(chunk_index_terms),
         )
+        # Drop terms no query can ask for. passes_secondary_index_filters only ever intersects a
+        # candidate's terms with the groups infer_secondary_index_filter_groups produces, and that
+        # inference emits a fixed set of KINDS -- so a term outside it cannot narrow a search or
+        # earn the hint boost whatever its value. On a 1 MB skill those terms are 96.4% of the
+        # index and 15.7% of the whole ingest, written and scanned to affect nothing.
+        if INDEX_ONLY_CONSULTABLE_TERMS:
+            chunk_index_terms = [
+                term for term in chunk_index_terms if index_term_is_consultable(term)
+            ]
         chunk_index_terms = take_secondary_index_terms(chunk_index_terms, secondary_index_budget)
         for index_name in chunk_index_terms:
             index_write_count += 1

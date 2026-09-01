@@ -461,6 +461,37 @@ def deterministic_secondary_index_filter_groups(query: str, question_type: str) 
     return groups
 
 
+# The index KINDS a query can ever ask for. `passes_secondary_index_filters` intersects a
+# candidate's terms with the groups this module infers, so a term whose kind never appears in a
+# group cannot narrow a search or earn the hint boost -- whatever its value.
+#
+# This lives next to the inference it mirrors on purpose. If a kind is added to the inference and
+# not here, ingest stops writing it and the query that needs it narrows to nothing, silently; the
+# two are only correct together.
+INFERABLE_SECONDARY_INDEX_KINDS = frozenset({
+    "classification",
+    "entity_type",
+    "event_type",
+    "memory_layer",
+    "memory_scope",
+    "memory_selection_policy",
+    "profile_entity_current",
+    "profile_memory_class",
+    "profile_memory_kind",
+    "profile_summary_current",
+    "segment_topic",
+    "session_continuity",
+    "source_role",
+    "source_type",
+})
+
+
+def index_term_is_consultable(term: str) -> bool:
+    """Whether a query could ever match this term."""
+    kind, separator, _ = str(term).partition(":")
+    return bool(separator) and kind in INFERABLE_SECONDARY_INDEX_KINDS
+
+
 def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
     if understanding_provider() == "oss_encoder":
         return oss_encoder_secondary_index_filter_groups(query, question_type)
