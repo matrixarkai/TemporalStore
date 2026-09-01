@@ -34,6 +34,35 @@ def _idle_drain_min_interval_ms() -> int:
         return 1000
 
 
+
+
+# Fields the retrieval scan actually reads, measured with a probe that recorded every key access
+# rather than chosen by inspection. `text`, `heading` and `source_locator` are absent because the
+# scan never asks for them -- they exist to RETURN a hit, not to find one.
+RETRIEVAL_SCAN_FIELDS = (
+    "record_type", "node_path", "access_scope", "metadata", "scope", "scope_key", "envelope",
+    "node_hash", "memory_scope", "session_continuity", "embedding_meta", "vector",
+    "event_id_hash", "entity_hash", "segment_hash", "summary_hash", "compression_id_hash",
+    "chunk_hash", "section_hash", "skill_hash", "ref_hash", "ref_hashes", "ref_type",
+    "index_name", "batch_id_hash", "batch_id_hashes", "node_hashes", "updated_at_ms",
+    "stale_or_superseded", "superseded_by_ref_hash", "superseded_by_entity_hash",
+    "profile_shadowed_by_ref_hash", "expires_at", "tombstone_kind", "posting_part",
+)
+
+# OFF by default. A projected record cannot serve the resource and skill scans' lexical, keyword and
+# origin terms, which read `text`; enabling this without hydrating those candidates changes ranking.
+RETRIEVAL_SCAN_PROJECTION = os.environ.get(
+    "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", "0"
+).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def project_scan_record(record):
+    """Keep only what the scan reads. Returns the record unchanged when projection is off."""
+    if not RETRIEVAL_SCAN_PROJECTION:
+        return record
+    return {key: value for key, value in record.items() if key in RETRIEVAL_SCAN_FIELDS}
+
+
 class _LocalAdapterRetrievalMixin:
     def reload_context_hot_state_from_disk(self, *, scope: Json | None = None) -> Json:
         """Rebuild process-local serving state from the durable JSONL record log."""
@@ -549,7 +578,7 @@ class _LocalAdapterRetrievalMixin:
                 continue
             filtered.append(record)
         result = {
-            "records": filtered,
+            "records": [project_scan_record(record) for record in filtered],
             "scan_stats": {
                 "backend": getattr(self, "_backend_label", lambda: "local")(),
                 "execution_mode": "adapter_prefilter_cached",
