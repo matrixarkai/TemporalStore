@@ -3,6 +3,7 @@
 
 //! LocalBlockStore read/read_range/install_slab methods, split from block_store.rs.
 use super::*;
+use super::record::sha256_bytes;
 
 impl LocalBlockStore {
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
@@ -18,14 +19,16 @@ impl LocalBlockStore {
         let decoded = decode_page_record(&bytes, address)?;
         let bytes = decoded.payload;
         if let Some(expected) = &address.sha256 {
-            let actual = sha256_hex(&bytes);
+            // Compare the bytes; render hex only if they differ, which is the path that has a
+            // human on the other end of it.
+            let actual = sha256_bytes(&bytes);
             if &actual != expected {
                 return Err(BlockStoreError::ChecksumMismatch {
                     page_slab_id: address.page_slab_id,
                     offset: address.offset,
                     length: address.length,
-                    expected: expected.clone(),
-                    actual,
+                    expected: hex::encode(expected),
+                    actual: hex::encode(actual),
                 });
             }
         }

@@ -8208,7 +8208,7 @@ fn what_a_live_record_is_made_of() {
                     address.object_id,
                     address.generation,
                     address.band_id,
-                    address.sha256.as_deref().map(str::len).unwrap_or(0),
+                    address.sha256.map(|digest| digest.len()).unwrap_or(0),
                 );
                 println!(
                     "[census]   item.object_id == address.object_id? {}",
@@ -9851,7 +9851,9 @@ fn what_one_page_costs_to_index() {
             heap += page.object_key.len();
             heap += page.model_id.len();
             heap += page.component.as_ref().map_or(0, String::len);
-            heap += page.address.sha256.as_ref().map_or(0, String::len);
+            // The digest is 32 inline bytes now, not a 64-character allocation: it costs
+            // nothing on the heap, which is the whole point of the change.
+            heap += 0;
         }
     }
     assert!(entries > 0, "the workload must produce pages, or this measures nothing");

@@ -3,6 +3,7 @@
 
 //! LocalBlockStore append/append_batch methods, split from block_store.rs.
 use super::*;
+use super::record::sha256_bytes;
 
 impl LocalBlockStore {
     /// Force durability for writes made under relaxed (bulk) mode: fsync the
@@ -81,7 +82,7 @@ impl LocalBlockStore {
             routing_bucket,
             generation: Some(page_id),
             band_id: Some(band_id),
-            sha256: Some(sha256_hex(bytes)),
+            sha256: Some(sha256_bytes(bytes)),
         };
         file.write_all(&record.bytes)?;
         file.flush()?;
@@ -190,7 +191,7 @@ impl LocalBlockStore {
                 routing_bucket,
                 generation: Some(page_id),
                 band_id: Some(band_id),
-                sha256: Some(sha256_hex(&bytes)),
+                sha256: Some(sha256_bytes(&bytes)),
             };
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;

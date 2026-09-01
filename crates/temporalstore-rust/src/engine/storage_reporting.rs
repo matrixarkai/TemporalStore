@@ -275,7 +275,10 @@ pub(super) fn native_packed_page_index_bytes(
         routing_bucket: Some(page.routing_bucket),
         generation: page.page_id.or(page.object_id),
         band_id: page.zone_id,
-        sha256: page.checksum.clone(),
+        sha256: page.checksum.as_deref().and_then(|text| {
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(text.as_bytes(), &mut bytes).ok().map(|_| bytes)
+        }),
     });
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
@@ -380,7 +383,7 @@ pub(super) fn storage_physical_index_report(
             page_id: entry.address.page_id,
             object_id: entry.address.object_id,
             zone_id: entry.address.band_id,
-            checksum: entry.address.sha256.clone(),
+            checksum: entry.address.sha256_hex(),
             dirty: entry.dirty,
             deleted: entry.deleted,
             log_backed: entry.log_backed,
@@ -431,7 +434,7 @@ pub(super) fn storage_physical_index_report(
                 page_id: page.address.page_id,
                 object_id: Some(page.object_id),
                 zone_id: page.address.band_id,
-                checksum: page.address.sha256.clone(),
+                checksum: page.address.sha256_hex(),
                 dirty: page.dirty,
                 deleted: page.deleted,
                 log_backed: page.log_backed,
@@ -746,7 +749,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.address.object_id.unwrap_or_default(),
             entry.address.routing_bucket.unwrap_or(routing_bucket),
             entry.address.generation.unwrap_or_default(),
-            entry.address.sha256.unwrap_or_default()
+            entry.address.sha256_hex().unwrap_or_default()
         ));
     }
     by_bucket
