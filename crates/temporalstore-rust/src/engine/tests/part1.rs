@@ -3682,3 +3682,701 @@ fn how_scattered_are_node_extents_after_a_real_ingest() {
 "
     );
 }
+
+
+/// Does the per-ingest bucket-index reconstruct change anything, or recompute what is already right?
+///
+/// It costs 94% of an add's allocations at 320 memories and grows with the store. Since a context
+/// write now maintains the index rather than asking for a rebuild, the rebuild at the end of each
+/// ingest may be pure overhead -- and if it is, skipping it removes almost all of an add's
+/// allocation.
+///
+/// Snapshots every bucket before and after, and reports the buckets that differ. A difference is
+/// not a failure of this test: it names precisely what a write still fails to maintain, which is
+/// the next thing to fix.
+///
+///   cargo test -p temporalstore-rust --lib does_the_per_ingest_reconstruct_change_anything -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_the_per_ingest_reconstruct_change_anything() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    /// (routing bucket, pages, live object ids, tombstoned ids, layout, deleted, in_memory)
+    type Shape = (u32, usize, usize, usize, String, bool, bool);
+
+    fn snapshot(engine: &TemporalEngine) -> Vec<Shape> {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let mut out: Vec<Shape> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| {
+                (
+                    *routing_bucket,
+                    bucket.page_index.len(),
+                    bucket.object_index.len(),
+                    bucket.deleted_object_index.len(),
+                    format!("{:?}", bucket.layout),
+                    bucket.deleted,
+                    bucket.in_memory,
+                )
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
+    for rung in [40_usize, 160] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 7901,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 7901,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("REDUN-{index:06}"),
+                        title: format!("redundancy {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        // The ingest already ran a reconstruct at its end. Snapshot, run another, compare: a
+        // reconstruct that changes nothing on an already-reconstructed store is idempotent, which
+        // is necessary but not sufficient. The interesting case is the one below it.
+        let before_idempotent = snapshot(&engine);
+        engine.reconstruct_bucket_index_now(1);
+        let after_idempotent = snapshot(&engine);
+
+        // The real question: does a reconstruct change anything after ONE MORE plain write, which
+        // is what the ingest's own final reconstruct is there to absorb?
+        let node = crate::types::ContextNode {
+            node_hash: 8_500_000 + rung as u64,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/redun-{rung}"),
+            l0: "one more write, then reconstruct".to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vec![0.25_f32; 16],
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: vec![0.5_f32; 16],
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        };
+        let wrote = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: 7901, node },
+        });
+        assert!(wrote.status.ok, "{:?}", wrote.status);
+        let before_write = snapshot(&engine);
+        engine.reconstruct_bucket_index_now(1);
+        let after_write = snapshot(&engine);
+
+        let idempotent_differs = before_idempotent
+            .iter()
+            .zip(after_idempotent.iter())
+            .filter(|(a, b)| a != b)
+            .count()
+            + before_idempotent.len().abs_diff(after_idempotent.len());
+        let write_differs = before_write
+            .iter()
+            .zip(after_write.iter())
+            .filter(|(a, b)| a != b)
+            .count()
+            + before_write.len().abs_diff(after_write.len());
+
+        println!(
+            "  corpus {rung:>4}: buckets {:>4}   reconstruct-after-reconstruct differs in {idempotent_differs}   reconstruct-after-one-write differs in {write_differs}",
+            before_idempotent.len(),
+        );
+        if write_differs > 0 {
+            for (a, b) in before_write.iter().zip(after_write.iter()).filter(|(a, b)| a != b).take(3)
+            {
+                println!("      before {a:?}");
+                println!("      after  {b:?}");
+            }
+        }
+    }
+    println!(
+        "
+  both columns 0 => the reconstruct recomputes an index the writes already maintain, and the
+                    ingest's final call is removable (94% of an add's allocations at 320 memories).
+  non-zero      => that difference is what a write still fails to maintain; fix that first.
+"
+    );
+}
+
+
+/// Full-contents version of the reconstruct-redundancy question.
+///
+/// The shape comparison said a reconstruct changes nothing, but it compared counts after a bare
+/// node write. Removing a call that keeps a durable index correct deserves the strong form: every
+/// page entry's identity, address and flags, captured after a COMPLETE ingest rather than one
+/// write.
+///
+///   cargo test -p temporalstore-rust --lib deep_compare_the_index_a_reconstruct_produces -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn deep_compare_the_index_a_reconstruct_produces() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    /// Every field of every page entry, ordered, so two indexes compare exactly.
+    fn deep(engine: &TemporalEngine) -> Vec<String> {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let mut rows: Vec<String> = Vec::new();
+        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+            for (field_key, page) in bucket.page_index.iter() {
+                rows.push(format!(
+                    "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
+                    page.object_key,
+                    page.model_id,
+                    page.component,
+                    page.object_id,
+                    page.address.page_slab_id,
+                    page.address.offset,
+                    page.address.length,
+                    page.dirty,
+                    page.deleted,
+                    page.log_backed,
+                    bucket.layout as u8 as u32,
+                ));
+            }
+            for object_id in bucket.object_index.iter() {
+                rows.push(format!("{routing_bucket}|obj|{object_id}"));
+            }
+            for object_id in bucket.deleted_object_index.iter() {
+                rows.push(format!("{routing_bucket}|tomb|{object_id}"));
+            }
+        }
+        rows.sort_unstable();
+        rows
+    }
+
+    for rung in [30_usize, 120] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let mut ingest = |index: usize| {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 8101,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 8101,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("DEEP-{index:06}"),
+                        title: format!("deep {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "ingest {index}: {:?}", report.status);
+        };
+
+        for index in 0..rung {
+            ingest(index);
+        }
+
+        // A COMPLETE ingest, then compare the index before and after a reconstruct. The ingest ran
+        // its own reconstruct at the end, so this asks whether a further one would find anything to
+        // change -- which is exactly what removing the call would rely on.
+        ingest(rung);
+        let before = deep(&engine);
+        engine.reconstruct_bucket_index_now(1);
+        let after = deep(&engine);
+
+        let only_before = before.iter().filter(|row| !after.contains(row)).count();
+        let only_after = after.iter().filter(|row| !before.contains(row)).count();
+        println!(
+            "  corpus {rung:>4}: {} page/index rows   only-before {only_before}   only-after {only_after}",
+            before.len(),
+        );
+        for row in before.iter().filter(|row| !after.contains(row)).take(2) {
+            println!("      lost by reconstruct: {row}");
+        }
+        for row in after.iter().filter(|row| !before.contains(row)).take(2) {
+            println!("      added by reconstruct: {row}");
+        }
+    }
+    println!(
+        "
+  both 0 => the reconstruct reproduces the index the writes already built, entry for entry, and
+            the ingest's final call can go (94% of an add's allocations at 320 memories).
+  non-0  => those rows are what a write fails to maintain, and are the thing to fix instead.
+"
+    );
+}
+
+
+/// Series append or block-store append: which one grows with the store?
+///
+/// `ContextUpsertSummary` costs 1,553 allocations at 40 memories and 10,667 at 320, while
+/// `ContextUpsertNode` is flat at ~194. They differ in their write primitive, so measure the
+/// primitives directly on grown stores with FRESH keys -- nothing merges into an existing series,
+/// so anything that grows is responding to the store rather than to the key.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_write_primitive_grows_with_the_store -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn which_write_primitive_grows_with_the_store() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+    use crate::types::FeaturePoint;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  primitive                        corpus 40   corpus 320   growth
+"
+    );
+
+    let mut series_small = 0_u64;
+    let mut series_large = 0_u64;
+    let mut value_small = 0_u64;
+    let mut value_large = 0_u64;
+
+    for (rung, series_out, value_out) in [
+        (40_usize, &mut series_small, &mut value_small),
+        (320_usize, &mut series_large, &mut value_large),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 8301,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 8301,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("PRIM-{index:06}"),
+                        title: format!("prim {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        let payload = vec![7_u8; 512];
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let _ = shards.get(&1).expect("loaded shard");
+        drop(shards);
+
+        // The series primitive, on a fresh key.
+        let warm_key = format!("probe:series:warm:{rung}");
+        let _ = super::packed_pages::append_timestamped_kv_pages(
+            &engine.cache,
+            &engine.page_store,
+            1,
+            "context_summary",
+            &warm_key,
+            vec![FeaturePoint { timestamp_ms: 1, value: payload.clone() }],
+            0,
+            false,
+        );
+        let key = format!("probe:series:{rung}");
+        let probe = crate::alloc_probe::Probe::start();
+        let _ = super::packed_pages::append_timestamped_kv_pages(
+            &engine.cache,
+            &engine.page_store,
+            1,
+            "context_summary",
+            &key,
+            vec![FeaturePoint { timestamp_ms: 1, value: payload.clone() }],
+            0,
+            false,
+        );
+        *series_out = probe.stop().allocs;
+
+        // The plain value append, for contrast.
+        let _ = super::append_value(
+            &engine.cache,
+            &engine.page_store,
+            1,
+            &payload,
+            Some(9_900_000 + rung as u64),
+            Some(0),
+            false,
+        );
+        let probe = crate::alloc_probe::Probe::start();
+        let _ = super::append_value(
+            &engine.cache,
+            &engine.page_store,
+            1,
+            &payload,
+            Some(9_950_000 + rung as u64),
+            Some(0),
+            false,
+        );
+        *value_out = probe.stop().allocs;
+    }
+
+    println!(
+        "  append_timestamped_kv_pages    {series_small:>9}   {series_large:>10}   {:>6.2}x",
+        series_large as f64 / series_small.max(1) as f64,
+    );
+    println!(
+        "  append_value                   {value_small:>9}   {value_large:>10}   {:>6.2}x",
+        value_large as f64 / value_small.max(1) as f64,
+    );
+    println!(
+        "
+  series grows, value flat => the series primitive is the cost.
+  both grow                => the block-store append beneath them is.
+  neither grows            => the cost is elsewhere in the command arm.
+"
+    );
+}
+
+
+/// What does post-write index maintenance cost, per key kind?
+///
+/// A summary write costs 1,554 allocations at 40 memories and 10,671 at 320; a node write is flat
+/// at ~197. The append primitives underneath both are flat, no rebuild fires, and every counted
+/// bucket walk is flat -- so the cost is in the maintenance that succeeds, not in the write and not
+/// in a fallback. The two arms differ in which branch of `sync_context_pages_for_object` they take:
+/// a node's page is filed under `shard.hashes` and goes through `upsert_bucket_index_page_with`, a
+/// summary is a timestamped series and goes through `sync_bucket_index_object_pages`.
+///
+/// Calling maintenance directly, on the same grown stores, one key of each kind, decides it.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_post_write_maintenance_costs_per_key_kind -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_post_write_maintenance_costs_per_key_kind() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 8807;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  corpus   maintained key kind      allocs   covered
+"
+    );
+
+    for rung in [40_usize, 320] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: TENANT,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("MAINT-{index:06}"),
+                        title: format!("maint {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        // Real keys, written through the real arms, so maintenance sees exactly what it sees in
+        // production rather than a key that happens to be absent.
+        let node_hash = 9_800_000 + rung as u64;
+        let node_write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: crate::types::ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: format!("session/maint-{node_hash}"),
+                    l0: "probe node".to_string(),
+                    status: 0,
+                    last_event_time_ms: 1_781_700_000_000,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: vec![0.25_f32; 16],
+                    embedding_model_hash: 7,
+                    embedding_updated_at_ms: 1,
+                    summary_vector: vec![0.5_f32; 16],
+                    summary_vector_valid_from_ms: 1_781_700_000_000,
+                    summary_vector_model_hash: 7,
+                },
+            },
+        });
+        assert!(node_write.status.ok, "{:?}", node_write.status);
+        let summary_write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertSummary {
+                tenant_hash: TENANT,
+                summary: crate::types::ContextSummary {
+                    node_hash,
+                    level: 2,
+                    text: "a probe summary of ordinary length for one turn".to_string(),
+                    valid_from_ms: 1_781_700_000_000,
+                    vector: vec![0.5_f32; 16],
+                    embedding_model_hash: 7,
+                },
+            },
+        });
+        assert!(summary_write.status.ok, "{:?}", summary_write.status);
+
+        let node_key = super::context::context_node_key(TENANT, node_hash);
+        let summary_key = super::context::context_summary_key(TENANT, node_hash, 2);
+
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("loaded shard");
+        for (label, key) in [("context node   ", &node_key), ("context summary", &summary_key)] {
+            // Warm once: the first maintenance of a key does one-off work.
+            let _ = super::storage_bucket_internals::sync_context_pages_for_object(
+                shard, 1, key,
+            );
+            let probe = crate::alloc_probe::Probe::start();
+            let covered = super::storage_bucket_internals::sync_context_pages_for_object(
+                shard, 1, key,
+            );
+            let allocs = probe.stop().allocs;
+            println!("  {rung:>6}   {label}      {allocs:>9}   {covered}");
+        }
+    }
+
+    println!(
+        "
+  summary rising while node stays flat => maintenance is the cost, and the fix belongs in the
+  series branch of it. Both flat => maintenance is not the cost either, and what remains is the
+  wrapper around the arm.
+"
+    );
+}
+
+
+/// The incrementally maintained object->page lookup must equal a rebuilt one.
+///
+/// `sync_bucket_index_object_pages` used to end by rebuilding the shard's entire object->page
+/// lookup, which made every timestamped-series write O(pages in the shard) -- 10,457 allocations for
+/// one summary write at 320 memories against 27 for a node write, which never reaches that path.
+/// The rebuild is now confined to establishing an empty lookup, and the steady state applies only
+/// the pages a write touched.
+///
+/// A rebuild is self-correcting: it cleared the lookup and refilled it from the buckets, so it
+/// repaired any drift for free. Incremental maintenance does not, so the equivalence has to be
+/// asserted rather than assumed. Rewrites matter as much as first writes: a rewrite drops this
+/// object's entries and inserts new ones, and applying those two in the wrong order deletes what the
+/// same call just wrote.
+#[test]
+fn the_maintained_page_lookup_matches_a_rebuilt_one() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 6203;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..24_usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("LOOKUP-{index:06}"),
+                    title: format!("lookup {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(12)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "ingest {index}: {:?}", report.status);
+    }
+
+    // Write the same summary key twice at different times, then a second key once: the first pair
+    // exercises the drop-then-insert path, the single write the plain insert.
+    for (node_hash, valid_from_ms) in [
+        (7_100_001_u64, 1_781_700_000_000_u64),
+        (7_100_001, 1_781_700_000_001),
+        (7_100_002, 1_781_700_000_000),
+    ] {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertSummary {
+                tenant_hash: TENANT,
+                summary: crate::types::ContextSummary {
+                    node_hash,
+                    level: 2,
+                    text: "a summary written to exercise lookup maintenance".to_string(),
+                    valid_from_ms,
+                    vector: vec![0.5_f32; 16],
+                    embedding_model_hash: 7,
+                },
+            },
+        });
+        assert!(out.status.ok, "summary {node_hash}: {:?}", out.status);
+    }
+
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("loaded shard");
+
+    let maintained = shard.bucket_index.object_page_lookup.clone();
+    let maintained_total = shard.bucket_index.object_component_page_refs;
+    assert!(
+        !maintained.is_empty(),
+        "the lookup is empty, so this test would pass without maintaining anything"
+    );
+
+    shard.bucket_index.rebuild_object_page_lookup();
+    let rebuilt = &shard.bucket_index.object_page_lookup;
+
+    let missing: Vec<&String> = rebuilt.keys().filter(|key| !maintained.contains_key(*key)).collect();
+    let extra: Vec<&String> = maintained.keys().filter(|key| !rebuilt.contains_key(*key)).collect();
+    let differing: Vec<&String> = rebuilt
+        .iter()
+        .filter(|(key, refs)| maintained.get(*key).map(|held| held != *refs).unwrap_or(false))
+        .map(|(key, _)| key)
+        .collect();
+    assert!(
+        missing.is_empty() && extra.is_empty() && differing.is_empty(),
+        "maintained lookup differs from a rebuilt one: {} missing {:?}, {} extra {:?}, {} differing {:?}",
+        missing.len(),
+        missing.iter().take(4).collect::<Vec<_>>(),
+        extra.len(),
+        extra.iter().take(4).collect::<Vec<_>>(),
+        differing.len(),
+        differing.iter().take(4).collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        maintained_total, shard.bucket_index.object_component_page_refs,
+        "the page-ref total drifted; the stats path reads it instead of walking the shard"
+    );
+}

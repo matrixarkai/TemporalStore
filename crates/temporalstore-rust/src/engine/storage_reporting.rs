@@ -975,7 +975,7 @@ pub(super) fn storage_feature_page_layout_report(
         });
         report.unique_timestamped_page_refs = report.unique_timestamped_page_refs.saturating_add(1);
         family.unique_page_refs = family.unique_page_refs.saturating_add(1);
-        if entry.kind == Arc::from("feature") {
+        if &*entry.kind == "feature" {
             report.unique_feature_page_refs = report.unique_feature_page_refs.saturating_add(1);
         }
         match page_store.read(&entry.address) {
@@ -984,7 +984,7 @@ pub(super) fn storage_feature_page_layout_report(
                     report.packed_timestamped_pages =
                         report.packed_timestamped_pages.saturating_add(1);
                     family.packed_pages = family.packed_pages.saturating_add(1);
-                    if entry.kind == Arc::from("feature") {
+                    if &*entry.kind == "feature" {
                         report.packed_feature_pages = report.packed_feature_pages.saturating_add(1);
                     }
                     for point in points {
@@ -1012,7 +1012,7 @@ pub(super) fn storage_feature_page_layout_report(
                     report.legacy_timestamped_value_pages =
                         report.legacy_timestamped_value_pages.saturating_add(1);
                     family.legacy_value_pages = family.legacy_value_pages.saturating_add(1);
-                    if entry.kind == Arc::from("feature") {
+                    if &*entry.kind == "feature" {
                         report.legacy_feature_value_pages =
                             report.legacy_feature_value_pages.saturating_add(1);
                     }
