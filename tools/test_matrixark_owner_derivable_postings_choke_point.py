@@ -46,6 +46,23 @@ def _derivable_term(owner):
     return terms[0]
 
 
+def _reload_flag_modules():
+    """Drop EVERY spelling of the flag's module, not just the flat one.
+
+    tools/ is importable as `x` and as `tools.x`; python keeps those as separate modules with
+    separate module-level flags. Popping one and reloading leaves the other stale, which makes an
+    environment override look ignored.
+    """
+    import importlib
+    for name in [m for m in list(sys.modules)
+                 if m.endswith("matrixark_mcp_ingest_resource_chunk_records")
+                 or m.endswith("matrixark_mcp_local_adapter")
+                 or m.endswith("matrixark_local_adapter_retrieval")
+                 or m.endswith("matrixark_resource_parser")]:
+        sys.modules.pop(name, None)
+    return importlib
+
+
 class PostingsTheOwnerCanDeriveAreDropped(unittest.TestCase):
     def test_a_derivable_posting_is_dropped(self):
         owner = _owner()
@@ -83,20 +100,18 @@ class PostingsTheOwnerCanDeriveAreDropped(unittest.TestCase):
         self.assertEqual(1, len(out))
 
     def test_the_escape_hatch_keeps_everything(self):
-        import importlib
-        import matrixark_mcp_local_adapter as adapter
         os.environ["MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS"] = "0"
         try:
-            sys.modules.pop("matrixark_mcp_ingest_resource_chunk_records", None)
-            reloaded = importlib.reload(adapter)
+            importlib = _reload_flag_modules()
+            reloaded = importlib.import_module("matrixark_mcp_local_adapter")
             owner = _owner()
             out = reloaded.drop_owner_derivable_postings(
                 [owner, _posting(_derivable_term(owner))])
             self.assertEqual(2, len(out))
         finally:
             os.environ.pop("MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS", None)
-            sys.modules.pop("matrixark_mcp_ingest_resource_chunk_records", None)
-            importlib.reload(adapter)
+            _reload_flag_modules()
+            importlib.import_module("matrixark_mcp_local_adapter")
 
 
 if __name__ == "__main__":

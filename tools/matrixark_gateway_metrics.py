@@ -28,6 +28,7 @@ import os
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
+import sys
 
 Json = Dict[str, Any]
 
@@ -321,3 +322,17 @@ def prometheus_text(config_snapshot: Optional[Json] = None,
     if extra_lines:
         lines += extra_lines
     return "\n".join(lines) + "\n"
+
+
+# tools/ is importable flat (`matrixark_gateway_metrics`) and as a package
+# (`tools.matrixark_gateway_metrics`). Python keeps those as two module objects, each with its own
+# METRICS, so the gateway can record into one while a reader observes another and sees a route it
+# served as having no samples. Which spelling loads first depends on what imported first, which is
+# why the affected tests pass alone and fail inside a suite.
+#
+# Registering under both names makes the singleton genuinely single. `setdefault` so the first
+# spelling to load wins and a later import binds to it instead of replacing it.
+_MODULE_ALIASES = ("matrixark_gateway_metrics", "tools.matrixark_gateway_metrics")
+for _alias in _MODULE_ALIASES:
+    if _alias != __name__:
+        sys.modules.setdefault(_alias, sys.modules[__name__])
