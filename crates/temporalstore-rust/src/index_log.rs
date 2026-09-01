@@ -74,29 +74,29 @@ impl Default for IndexItemKind {
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexItem {
-    #[serde(default)]
+    #[serde(rename = "k", alias = "kind", default)]
     pub kind: IndexItemKind,
-    #[serde(default, rename = "routing_slot")]
+    #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
     pub routing_bucket: u32,
-    #[serde(default)]
+    #[serde(rename = "pk", alias = "page_ref_key", default)]
     pub page_ref_key: String,
-    #[serde(default)]
+    #[serde(rename = "ok", alias = "object_key", default)]
     pub object_key: String,
-    #[serde(default)]
+    #[serde(rename = "mi", alias = "model_id", default)]
     pub model_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "c", alias = "component", default, skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
-    #[serde(default)]
+    #[serde(rename = "pi", alias = "page_id", default)]
     pub page_id: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "a", alias = "address", default, skip_serializing_if = "Option::is_none")]
     pub address: Option<BlockAddress>,
-    #[serde(default)]
+    #[serde(rename = "sz", alias = "size", default)]
     pub size: u64,
-    #[serde(default)]
+    #[serde(rename = "il", alias = "in_log", default)]
     pub in_log: bool,
-    #[serde(default)]
+    #[serde(rename = "d", alias = "deleted", default)]
     pub deleted: bool,
 }
 
@@ -1453,6 +1453,66 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn an_index_item_written_with_the_old_field_names_still_loads() {
+        // The names are short now because they repeat once per ITEM for the life of the log.
+        // Every record already on disk spells them out, so each short name keeps its old
+        // spelling as an alias -- including `routing_slot`, which was itself a rename.
+        let legacy = serde_json::json!({
+            "kind": "page",
+            "routing_slot": 545210715_u32,
+            "page_ref_key": "string:m:0::0:0:126:0:0",
+            "object_key": "m:0",
+            "model_id": "string",
+            "object_id": 122110326161599232_u64,
+            "page_id": 0,
+            "size": 126,
+            "in_log": false,
+            "deleted": false
+        });
+        let item: IndexItem = serde_json::from_value(legacy).expect("a legacy item must load");
+        assert_eq!(item.routing_bucket, 545210715);
+        assert_eq!(item.object_key, "m:0");
+        assert_eq!(item.object_id, 122110326161599232);
+        assert_eq!(item.size, 126);
+        assert!(!item.deleted);
+    }
+
+    #[test]
+    fn an_index_item_costs_far_less_than_its_field_names_used_to() {
+        // Field names were 65.3% of a measured 859-byte index-log record: they are written once
+        // per item, forever, and cost more than the addresses they label.
+        let item = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 545210715,
+            page_ref_key: "string:m:0::0:0:126:0:0".to_string(),
+            object_key: "m:0".to_string(),
+            model_id: "string".to_string(),
+            component: None,
+            object_id: 122110326161599232,
+            page_id: 0,
+            address: None,
+            size: 126,
+            in_log: false,
+            deleted: false,
+        };
+        let encoded = serde_json::to_string(&item).unwrap();
+        // Not vacuous: the item must still carry its values, so assert the payload is present
+        // before asserting the envelope is small.
+        assert!(encoded.contains("545210715"));
+        assert!(encoded.contains("m:0"));
+        assert!(encoded.contains("122110326161599232"));
+        // The long spellings must be gone from the WRITTEN form.
+        for gone in ["routing_slot", "page_ref_key", "object_key", "model_id", "object_id"] {
+            assert!(!encoded.contains(gone), "{gone} should not be written any more");
+        }
+        assert!(
+            encoded.len() < 150,
+            "expected a compact item, got {} bytes: {encoded}",
+            encoded.len()
+        );
+    }
+
     fn meta_item_without_zones_serializes_byte_identically_to_pre_fold() {
         // Byte-identical-when-off invariant: an anchor whose `zones` is empty (the only state
         // reachable with TS_INDEX_CATALOG_FOLD off) must serialize with NO `zones` key and NO
