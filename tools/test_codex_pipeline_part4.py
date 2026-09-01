@@ -3,6 +3,9 @@
 """_CodexPipelinePart4 methods split from test_matrixark_codex_hook_pipeline.MatrixArkCodexHookPipelineTest (mixin)."""
 from __future__ import annotations
 
+import os
+from unittest import mock
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -2986,6 +2989,10 @@ class _CodexPipelinePart4:
             self.assertEqual("prefer", inventory["query_scope"]["session_scope"])
             self.assertNotIn("source_event_ids", json.dumps(inventory, sort_keys=True))
 
+    # This test exercises context_segment rows, which are OFF unless a tenant asks for them.
+    # Patched for the duration of the test only: setting it at module scope would leak across
+    # the single-process suite run and flip the knob for tests that assert it is off.
+    @mock.patch.dict(os.environ, {"MATRIXARK_EXTRACT_SEGMENTS": "1"})
     def test_context_segment_debug_pack_shows_source_context_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-segment-source-events.jsonl")

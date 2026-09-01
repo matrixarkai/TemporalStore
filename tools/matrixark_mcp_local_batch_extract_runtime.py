@@ -73,6 +73,19 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+def _segments_enabled(scope: Any) -> bool:
+    """Whether this tenant materialises context_segment rows (default OFF).
+
+    A segment restates its event -- same text up to a role or index prefix -- so each one costs a
+    record, an embedding and a set of index postings to store what the event already holds.
+    """
+    try:
+        from matrixark_index_growth_bound import extract_segments_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return False
+    return bool(extract_segments_enabled(scope))
+
+
 def compact_context_embedding_record(record: Json) -> Json:
     return compact_hot_context_embedding_record(record)
 
@@ -927,7 +940,9 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
             records_to_append.extend(profile_dirty_records)
 
     segment_hashes = []
-    for segment in extraction["segments"]:
+    # The list stays empty rather than absent, which keeps every downstream
+    # source_segment_hashes field well-formed instead of missing.
+    for segment in (extraction["segments"] if _segments_enabled(envelope.get("scope")) else []):
         segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
         segment_hashes.append(segment_hash)
         records_to_append.append(
