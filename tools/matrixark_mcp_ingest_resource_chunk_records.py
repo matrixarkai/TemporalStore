@@ -358,12 +358,13 @@ def append_resource_chunk_records(
             # in for every posting of the term that falls in this part.
             record["ref_hashes"] = ref_chunk
             record["posting_part"] = part
-            # Same singular/plural rule as the compactor: the scalar exists only when the
-            # posting carries exactly one ref, so the two producers agree on the shape.
-            if len(ref_chunk) == 1:
-                record["ref_hash"] = ref_chunk[0]
-            else:
-                record.pop("ref_hash", None)
+            # `ref_hashes` is the one place a posting names what it points at. The singular
+            # `ref_hash` restated it on every single-ref row, and `chunk_hash` restated it again;
+            # the serving accessor reads neither when the list is present, and `index_hash` is
+            # derived from the list, so both are dropped rather than written three ways. Older
+            # rows still resolve -- the fallbacks that read them are unchanged.
+            record.pop("ref_hash", None)
+            record.pop("chunk_hash", None)
             pending_records.append(record)
             if len(pending_records) >= RESOURCE_APPEND_BATCH_RECORDS:
                 pending_records = _flush_pending_records(adapter, pending_records)
