@@ -103,7 +103,11 @@ def serving_resource_metadata(metadata: Json) -> Json:
         if key in sanitized and sanitized[key] not in (None, "", [], {})
     }
     serving["raw_storage_policy"] = sanitized.get("raw_storage_policy", "raw_uri_only")
-    serving["raw_bytes_stored"] = False
+    # `raw_bytes_stored` is a per-document fact and a constant False on every chunk of a
+    # document, 27 B a row -- 66.2 KB per 1 MB skill. It is not carried here because
+    # nothing reads it from a chunk: every mention inside a metadata dict is an
+    # ASSIGNMENT, and every read takes the top-level field with a False default, which
+    # the manifest record supplies.
     parse_warnings = normalize_parse_warnings(sanitized)
     if parse_warnings:
         serving["parse_warning_count"] = len(parse_warnings)
