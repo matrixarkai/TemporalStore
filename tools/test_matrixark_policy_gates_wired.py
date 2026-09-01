@@ -42,6 +42,18 @@ KNOWN_UNWIRED: Set[str] = {
     "generate_l1_summaries_enabled",
     "index_compact_on_summary_enabled",
     "recall_reinforcement_enabled",
+    # The two below are READ path, and unlike the write-path knobs there is no single boundary
+    # every candidate crosses -- `retrieve()` in matrixark_local_adapter_retrieve.py is one entry
+    # point, but both knobs change the algorithm inside it rather than filtering its output.
+    #
+    #   return_all_candidates      (default False = today's behaviour) means skipping the
+    #                              secondary-index prefilter AND the scoring pass entirely.
+    #   traverse_sibling_sessions  (default True  = today's behaviour) means the node walk stops
+    #                              at the current session instead of descending into others.
+    #
+    # Both defaults match what happens today, so wiring them is opt-in and cannot regress an
+    # unconfigured tenant. But each changes what retrieval RETURNS, so the test has to be a recall
+    # comparison, not a presence check -- a knob that silently narrows results looks like it works.
     "return_all_candidates_enabled",
     "summarize_aggregation_only_nodes_enabled",
     "traverse_sibling_sessions_enabled",
