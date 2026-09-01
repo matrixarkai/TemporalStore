@@ -30,6 +30,21 @@ fn simple_conviction_round(
 
 impl SingleNodeMeta {
     pub fn get_table_topology(&self, request: GetTableTopologyRequest) -> TableTopologyResponse {
+        // Timed around the whole answer, lock included: a client waiting on a
+        // metaserver that is busy waits for the lock as surely as for the work,
+        // and timing only the work would report the metaserver as fast while
+        // every caller saw it as slow.
+        let started = std::time::Instant::now();
+        let response = self.get_table_topology_timed(request);
+        self.metrics
+            .record_topology_latency(started.elapsed().as_micros() as u64);
+        response
+    }
+
+    fn get_table_topology_timed(
+        &self,
+        request: GetTableTopologyRequest,
+    ) -> TableTopologyResponse {
         self.counters.topology_query_total.fetch_add(1, Ordering::Relaxed);
         // Resolving a topology only reads. It took the exclusive lock solely to
         // count, which serialised every client's and every proxy's hottest call
