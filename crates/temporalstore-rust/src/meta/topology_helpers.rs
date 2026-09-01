@@ -92,8 +92,20 @@ pub(super) fn shard_owning_tables(state: &MetaState) -> BTreeMap<ShardId, &Table
 }
 
 pub(super) fn table_for_shard<'a>(state: &'a MetaState, shard_id: ShardId) -> Option<&'a TableRecord> {
-    // Still the first match in map order, so two tables claiming overlapping
-    // ranges resolve exactly as they did before.
+    if !state.table_ranges_overlap {
+        // The shard belongs to the nearest table starting at or below it, if
+        // that table's range reaches it. Nothing else can own it: every other
+        // table starts above the shard, or ends before the nearest one begins.
+        return state
+            .table_starts
+            .range(..=shard_id)
+            .next_back()
+            .and_then(|(_, key)| state.tables.get(key))
+            .filter(|table| table_owns_shard(&table.info, shard_id));
+    }
+    // Two tables have claimed overlapping shards at some point, and this
+    // answered those with the first in map order, which the index cannot
+    // reproduce. So it answers them.
     state
         .tables
         .values()

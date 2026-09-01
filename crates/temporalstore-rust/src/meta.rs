@@ -1598,6 +1598,66 @@ struct TableRecord {
     info: TableMetaInfo,
 }
 
+impl MetaState {
+    /// Record where a table's shards start, and notice if its range overlaps
+    /// one already there.
+    ///
+    /// Called wherever a table is created or its shard count changes, which are
+    /// the only ways a range comes into being or grows.
+    pub(crate) fn note_table_range(&mut self, key: &str, info: &TableMetaInfo) {
+        let first = info.first_shard_id;
+        let end = first.saturating_add(info.shard_count);
+        let overlaps_below = self
+            .table_starts
+            .range(..first)
+            .next_back()
+            .and_then(|(_, other)| self.tables.get(other))
+            .is_some_and(|other| {
+                other
+                    .info
+                    .first_shard_id
+                    .saturating_add(other.info.shard_count)
+                    > first
+            });
+        // Every other table starting inside this range overlaps it, not just
+        // the nearest one -- and the nearest entry at or above  is this
+        // table itself once it has been recorded.
+        let overlaps_above = self
+            .table_starts
+            .range(first..end)
+            .any(|(_, other)| other != key);
+        if overlaps_below || overlaps_above {
+            self.table_ranges_overlap = true;
+        }
+        self.table_starts.insert(first, key.to_string());
+    }
+
+    /// Forget a table's start when the table itself is forgotten.
+    pub(crate) fn forget_table_range(&mut self, key: &str, info: &TableMetaInfo) {
+        if self
+            .table_starts
+            .get(&info.first_shard_id)
+            .is_some_and(|owner| owner == key)
+        {
+            self.table_starts.remove(&info.first_shard_id);
+        }
+    }
+
+    /// Rebuild the index from the tables, for a state that arrived whole.
+    pub(crate) fn reindex_table_ranges(&mut self) {
+        self.table_starts.clear();
+        self.table_ranges_overlap = false;
+        let entries = self
+            .tables
+            .iter()
+            .map(|(key, record)| (key.clone(), record.info.clone()))
+            .collect::<Vec<_>>();
+        for (key, info) in entries {
+            self.note_table_range(&key, &info);
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct MetaState {
     shards: HashMap<ShardId, ShardLocation>,
@@ -1606,6 +1666,23 @@ pub(crate) struct MetaState {
     proxy_groups: BTreeMap<String, ProxyGroupInfo>,
     namespaces: BTreeMap<String, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
+    /// Where each table's shards start, keyed by that start.
+    ///
+    /// Finding which table owns a shard is done on the shard-load path, under
+    /// the write lock, and doing it by walking every table made every other
+    /// call wait behind a walk that grew with the cluster. `first_shard_id` is
+    /// pinned when a table is created, so where tables start is something that
+    /// can be looked up.
+    #[serde(default)]
+    table_starts: BTreeMap<ShardId, String>,
+    /// Whether two tables have ever claimed overlapping shards.
+    ///
+    /// The walk answered an overlap with the first table in map order, which is
+    /// not necessarily the one starting nearest below the shard. Once that has
+    /// happened the index cannot reproduce the walk's answer, so the walk
+    /// decides from then on.
+    #[serde(default)]
+    table_ranges_overlap: bool,
     next_table_id: u64,
     topology_version: u64,
     topology_events: VecDeque<TopologyChangeEvent>,
@@ -8202,6 +8279,127 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(report.server_count, 3);
         assert_eq!(report.proxy_count, 3);
         assert_eq!(report.table_count, 3);
+    }
+
+    #[test]
+    fn the_shard_index_answers_what_the_walk_answered() {
+        // Which table owns a shard is now looked up rather than searched for,
+        // and a lookup is only as good as the thing maintaining it. This walks
+        // every shard id in range after each kind of change a table can undergo
+        // and checks the two agree -- including after an overlap, which the
+        // index cannot answer and must hand back to the walk.
+        use crate::meta::topology_helpers::table_for_shard;
+
+        let owner_by_walk = |meta: &SingleNodeMeta, shard_id: ShardId| -> Option<String> {
+            let state = meta.inner.read().expect("meta lock poisoned");
+            state
+                .tables
+                .values()
+                .find(|table| {
+                    let first = table.info.first_shard_id;
+                    shard_id >= first && shard_id < first.saturating_add(table.info.shard_count)
+                })
+                .map(|table| table_key(&table.info.namespace, &table.info.table_name))
+        };
+        let owner_by_lookup = |meta: &SingleNodeMeta, shard_id: ShardId| -> Option<String> {
+            let state = meta.inner.read().expect("meta lock poisoned");
+            table_for_shard(&state, shard_id)
+                .map(|table| table_key(&table.info.namespace, &table.info.table_name))
+        };
+        let agree = |meta: &SingleNodeMeta, stage: &str| {
+            for shard_id in 0..300u64 {
+                assert_eq!(
+                    owner_by_lookup(meta, shard_id),
+                    owner_by_walk(meta, shard_id),
+                    "shard {shard_id} resolved differently after {stage}"
+                );
+            }
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        let add = |name: &str, first: u64, count: u64| AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: name.to_string(),
+            first_shard_id: first,
+            shard_count: count,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        };
+
+        // Disjoint ranges, out of order, so the index is not merely insertion
+        // order and the nearest start below actually has to be found.
+        assert!(meta.add_table(add("b", 100, 10)).status.ok);
+        assert!(meta.add_table(add("a", 10, 10)).status.ok);
+        assert!(meta.add_table(add("c", 200, 10)).status.ok);
+        agree(&meta, "three disjoint tables");
+
+        // A gap between ranges: a shard no table owns must stay unowned.
+        assert_eq!(owner_by_lookup(&meta, 50), None);
+
+        // Growing a range up to the next start stays disjoint.
+        assert!(meta
+            .update_table(UpdateTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "a".to_string(),
+                first_shard_id: None,
+                shard_count: Some(100),
+                replica_count: None,
+                partition_version: None,
+                serving_options: None,
+            })
+            .status
+            .ok);
+        // That growth reaches from 10 to 110, into the table starting at 100:
+        // an overlap created by an update rather than by a creation, which is
+        // the one the index will not notice unless the update says so.
+        agree(&meta, "a range grew into another");
+
+        // Now one that overlaps: the index cannot reproduce the walk's answer
+        // for a contested shard, and has to stand aside.
+        assert!(meta.add_table(add("d", 105, 10)).status.ok);
+        agree(&meta, "an overlapping table");
+
+        // Freezing and dropping do not move a range, but they change what the
+        // caller does with the answer, so the answer still has to be the same.
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "b".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "c".to_string(),
+            })
+            .status
+            .ok);
+        agree(&meta, "a freeze and a drop");
+
+        // Forgetting a table entirely.
+        let purged = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert_eq!(purged.plan.tables, vec![table_key("ns", "c")]);
+        agree(&meta, "a purge");
+
+        // And a state that arrived whole rather than being built up.
+        let snapshot = meta.export_snapshot();
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(snapshot).status.ok);
+        agree(&restored, "a snapshot install");
     }
 
     #[test]
