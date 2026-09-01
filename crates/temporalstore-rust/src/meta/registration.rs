@@ -473,7 +473,9 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        if let Some(status) = self.reserved_name_refusal(&request.namespace, None) {
+        if let Some(status) =
+            self.admission_refusal(&MetaMutation::AddNamespace(request.clone()))
+        {
             return AckResponse { status };
         }
         self.record_mutation(MetaMutation::AddNamespace(request.clone()));
@@ -531,27 +533,46 @@ impl SingleNodeMeta {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
-        {
-            let state = self.inner.read().expect("meta lock poisoned");
-            let Some(current) = state.namespaces.get(&request.namespace).copied() else {
-                return AckResponse {
-                    status: Status::error("namespace_not_found", "namespace not found"),
-                };
+        // One write lock across the check, the record and the apply.
+        //
+        // These checks used to run under a read lock that was released before
+        // the change was applied. A table created in that window was stranded:
+        // the namespace reached Dropped with a live table still inside it,
+        // which is exactly what the emptiness check exists to prevent. The
+        // metaserver serves each connection on its own thread, so `drop` and
+        // `add_table` arriving together is ordinary traffic, not a corner.
+        //
+        // Holding the lock across `record_mutation` means one fsync with
+        // readers blocked. That is affordable here and nowhere else: the only
+        // callers are freeze, unfreeze and drop of a namespace -- operator
+        // actions, never a background loop and never per-request.
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(current) = state.namespaces.get(&request.namespace).copied() else {
+            return AckResponse {
+                status: Status::error("namespace_not_found", "namespace not found"),
             };
-            if current == next {
-                return AckResponse {
-                    status: Status::error("not_modified", "namespace state is unchanged"),
-                };
-            }
+        };
+        if current == next {
+            return AckResponse {
+                status: Status::error("not_modified", "namespace state is unchanged"),
+            };
         }
-        if let Some(status) =
-            self.admission_refusal(&MetaMutation::SetNamespaceState(request.clone(), next))
-        {
+        // The judgement the propose path also applies, read off the state this
+        // thread already holds. The `&self` form takes its own read lock and
+        // would deadlock under the write lock held here.
+        if let Some(status) = Self::admission_refusal_in(
+            &state,
+            &MetaMutation::SetNamespaceState(request.clone(), next),
+        ) {
             return AckResponse { status };
         }
-        let at_ms =
-            self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
-        self.apply_set_namespace_state(request, next, at_ms)
+        // Recorded before the state moves, so a crash between the two replays
+        // the change rather than losing it. `record_mutation` does not touch
+        // `self.inner`, so holding the lock here cannot deadlock. It answers
+        // with the time it recorded, and the drop clock is stamped from that
+        // rather than from the clock here, so replay stamps the same instant.
+        let at_ms = self.record_mutation(MetaMutation::SetNamespaceState(request.clone(), next));
+        Self::apply_namespace_state_locked(&mut state, &request, next, at_ms)
     }
 
     pub(crate) fn apply_set_namespace_state(
@@ -561,6 +582,20 @@ impl SingleNodeMeta {
         at_ms: u64,
     ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
+        Self::apply_namespace_state_locked(&mut state, &request, next, at_ms)
+    }
+
+    /// The state change itself, for a caller that already holds the write lock.
+    ///
+    /// Split out so the guarded path can check and apply without letting go in
+    /// between, while replay keeps entering through
+    /// [`Self::apply_set_namespace_state`] and reapplying unconditionally.
+    fn apply_namespace_state_locked(
+        state: &mut MetaState,
+        request: &AddNamespaceRequest,
+        next: MetaEntityState,
+        at_ms: u64,
+    ) -> AckResponse {
         let Some(current) = state.namespaces.get_mut(&request.namespace) else {
             return AckResponse {
                 status: Status::error("namespace_not_found", "namespace not found"),
@@ -568,7 +603,7 @@ impl SingleNodeMeta {
         };
         *current = next;
         stamp_dropped_since(
-            &mut state,
+            state,
             &dropped_key("namespace", &request.namespace),
             next,
             at_ms,
@@ -576,7 +611,7 @@ impl SingleNodeMeta {
         // Topology is derived on read, so the version bump is what makes clients
         // notice that a namespace stopped, or resumed, serving.
         record_topology_event(
-            &mut state,
+            state,
             "namespace_state",
             format!("namespace:{}", request.namespace),
             format!("state={}", next.as_str()),

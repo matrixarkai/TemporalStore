@@ -868,6 +868,126 @@ mod tests {
         assert!(!settled.config_changed);
     }
 
+    /// Build a namespace with one proxy group serving it and one proxy attached.
+    fn serving_namespace() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_proxy(RegisterProxyRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: String::new(),
+                location: "us-east/dc1/az1".to_string(),
+                config_version: 0,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "p1".to_string(),
+                namespace: String::new(),
+                config_version: 0,
+                binary_version: "v1".to_string(),
+                boot_time_ms: 1,
+            })
+            .status
+            .ok);
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "orders".to_string(),
+                namespace: "ns".to_string(),
+                location: "us-east/dc1".to_string(),
+                instance_num: 1,
+                drop_percent: 0,
+            })
+            .status
+            .ok);
+        let first = meta.calibrate_proxy_groups(ProxyCalibrationOptions::default());
+        assert_eq!(attached(&first.plan), vec![("p1", "orders")]);
+        meta
+    }
+
+    #[test]
+    fn a_namespace_a_proxy_group_still_routes_to_is_not_dropped() {
+        // Dropping the namespace under a serving group used to succeed. The
+        // group stayed Normal, its proxy stayed attached, and the very next
+        // heartbeat still handed that proxy the dropped namespace to serve --
+        // with nothing anywhere reporting the contradiction. A live table
+        // already blocks the drop; routing is the other live dependent.
+        let meta = serving_namespace();
+
+        let refused = meta.drop_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert_eq!(
+            refused.status.code, "namespace_still_routed",
+            "a namespace with a proxy group routing to it was dropped"
+        );
+
+        // And nothing moved: refusing must leave the tier exactly as it was.
+        let group = meta
+            .list_proxy_groups()
+            .groups
+            .into_iter()
+            .find(|g| g.group == "orders")
+            .expect("group missing");
+        assert_eq!(group.state, MetaEntityState::Normal);
+        let beat = meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            proxy_addr: "p1".to_string(),
+            namespace: String::new(),
+            config_version: 0,
+            binary_version: "v1".to_string(),
+            boot_time_ms: 1,
+        });
+        assert_eq!(beat.namespace, "ns");
+    }
+
+    #[test]
+    fn dropping_the_group_first_lets_the_namespace_go() {
+        // The guard must let go, or it would have bought consistency by making
+        // a routed namespace undroppable forever. A dropped group is not a live
+        // dependent, so the namespace goes once the group does.
+        let meta = serving_namespace();
+        assert!(meta
+            .drop_proxy_group(DropProxyGroupRequest {
+                group: "orders".to_string()
+            })
+            .status
+            .ok);
+        assert!(
+            meta.drop_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok,
+            "namespace stayed undroppable after its group was dropped"
+        );
+    }
+
+    #[test]
+    fn routing_does_not_block_freezing_a_namespace() {
+        // The guard is for Dropped only. Freeze and unfreeze share this path
+        // and must keep working while a group routes to the namespace.
+        let meta = serving_namespace();
+        assert!(meta
+            .freeze_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .unfreeze_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+    }
+
     #[test]
     fn dropping_a_group_releases_its_proxy_back_to_idle() {
         let meta = SingleNodeMeta::default();

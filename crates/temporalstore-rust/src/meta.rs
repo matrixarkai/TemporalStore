@@ -2021,19 +2021,62 @@ impl SingleNodeMeta {
     /// what was already accepted -- a name reserved today must not invalidate a
     /// namespace legitimately created before it.
     pub(crate) fn admission_refusal(&self, mutation: &MetaMutation) -> Option<Status> {
+        let state = self.inner.read().expect("meta lock poisoned");
+        Self::admission_refusal_in(&state, mutation)
+    }
+
+    /// The same judgement, for a caller that already holds the lock.
+    ///
+    /// A caller that has to decide and act without letting go -- the namespace
+    /// state change does, or a table created in the gap is stranded -- holds
+    /// the write lock across the whole thing. Calling the `&self` form there
+    /// would acquire a read inside that write, on the same lock and the same
+    /// thread, and never return.
+    pub(crate) fn admission_refusal_in(
+        state: &MetaState,
+        mutation: &MetaMutation,
+    ) -> Option<Status> {
         match mutation {
             MetaMutation::AddNamespace(request) => {
-                self.reserved_name_refusal(&request.namespace, None)
+                Self::reserved_name_refusal_in(state, &request.namespace, None)
             }
             MetaMutation::AddTable(request) => {
-                self.reserved_name_refusal(&request.namespace, Some(&request.table_name))
+                Self::reserved_name_refusal_in(state, &request.namespace, Some(&request.table_name))
             }
             MetaMutation::SetNamespaceState(request, MetaEntityState::Dropped) => {
-                self.namespace_not_empty_refusal(&request.namespace)
+                Self::namespace_not_empty_in(state, &request.namespace).or_else(|| {
+                    Self::namespace_still_routed_in(state, &request.namespace)
+                })
             }
             MetaMutation::PutProxyGroup(request) => Self::proxy_group_name_refusal(request),
             _ => None,
         }
+    }
+
+    /// Refuses dropping a namespace a proxy group still routes to.
+    ///
+    /// A proxy group is the routing tier's standing promise to serve the
+    /// namespace, so it is a live dependent exactly as a table is. Dropping the
+    /// namespace under one used to succeed and leave the contradiction in
+    /// place: the group stayed Normal, its proxies stayed attached, and the
+    /// next heartbeat still handed them the dropped namespace to serve.
+    /// Calibration does not clean that up -- it keys off the group's own state,
+    /// which nothing changed -- and no report flags it. Refusing keeps the
+    /// order of operations the code already implies: drop the group, then drop
+    /// the namespace, and `drop_proxy_group` releases the proxies as it goes.
+    fn namespace_still_routed_in(state: &MetaState, namespace: &str) -> Option<Status> {
+        state
+            .proxy_groups
+            .values()
+            .any(|group| {
+                group.namespace == namespace && group.state != MetaEntityState::Dropped
+            })
+            .then(|| {
+                Status::error(
+                    "namespace_still_routed",
+                    "namespace still has a proxy group routing to it",
+                )
+            })
     }
 
     /// Refuses a proxy group that names neither itself nor a namespace.
@@ -2053,8 +2096,7 @@ impl SingleNodeMeta {
 
     /// Refuses dropping a namespace that still holds a table which is not itself
     /// dropped, so dropping a namespace cannot strand one.
-    fn namespace_not_empty_refusal(&self, namespace: &str) -> Option<Status> {
-        let state = self.inner.read().expect("meta lock poisoned");
+    fn namespace_not_empty_in(state: &MetaState, namespace: &str) -> Option<Status> {
         state
             .tables
             .values()
@@ -2070,8 +2112,11 @@ impl SingleNodeMeta {
             })
     }
 
-    fn reserved_name_refusal(&self, namespace: &str, table: Option<&str>) -> Option<Status> {
-        let state = self.inner.read().expect("meta lock poisoned");
+    fn reserved_name_refusal_in(
+        state: &MetaState,
+        namespace: &str,
+        table: Option<&str>,
+    ) -> Option<Status> {
         if state.reserved_names.namespaces.contains(namespace) {
             return Some(Status::error(
                 "name_reserved",
@@ -7422,6 +7467,138 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         drop(meta);
         let reopened = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert_eq!(reopened.list_namespaces().namespaces.len(), 1);
+    }
+
+    #[test]
+    fn a_namespace_is_never_dropped_out_from_under_a_live_table() {
+        // The emptiness check used to run under a read lock that was released
+        // before the drop was applied. A table created in that window was
+        // stranded -- the namespace reached Dropped with a live table inside it.
+        //
+        // A durable log is what makes this reproducible: `record_mutation`
+        // fsyncs between the check and the apply, so the window is wide rather
+        // than a few instructions. The metaserver serves each connection on its
+        // own thread, so these two arriving together is ordinary traffic.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+
+        let mut stranded = Vec::new();
+        for round in 0..24u64 {
+            let namespace = format!("ns-{round}");
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: namespace.clone()
+                })
+                .status
+                .ok);
+
+            let dropper = meta.clone();
+            let dropping = namespace.clone();
+            let creator = meta.clone();
+            let creating = namespace.clone();
+            let drop_thread = std::thread::spawn(move || {
+                dropper.drop_namespace(AddNamespaceRequest {
+                    namespace: dropping,
+                })
+            });
+            let create_thread = std::thread::spawn(move || {
+                creator.add_table(AddTableRequest {
+                    namespace: creating,
+                    table_name: "t".to_string(),
+                    first_shard_id: 10_000 + round * 8,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+            });
+            let _ = drop_thread.join().expect("drop thread");
+            let _ = create_thread.join().expect("create thread");
+
+            let dropped = meta
+                .list_namespaces()
+                .namespaces
+                .into_iter()
+                .any(|entry| entry.namespace == namespace && entry.state == MetaEntityState::Dropped);
+            let live_table = meta.list_tables().tables.into_iter().any(|table| {
+                table.namespace == namespace && table.state != MetaEntityState::Dropped
+            });
+            if dropped && live_table {
+                stranded.push(namespace);
+            }
+        }
+
+        assert!(
+            stranded.is_empty(),
+            "a namespace was dropped with a live table still inside it: {stranded:?}"
+        );
+    }
+
+    #[test]
+    fn the_emptiness_check_still_refuses_and_still_lets_go() {
+        // The guard must keep refusing a non-empty namespace, and must stop
+        // refusing once the table is gone -- otherwise holding the lock longer
+        // would have bought atomicity by making the namespace undroppable.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                first_shard_id: 9_100,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+
+        let refused = meta.drop_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert_eq!(refused.status.code, "namespace_not_empty");
+
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+            })
+            .status
+            .ok);
+        assert!(
+            meta.drop_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok,
+            "an empty namespace could not be dropped"
+        );
+        // And freeze / unfreeze, which share the same path, still work.
+        let meta2 = SingleNodeMeta::default();
+        assert!(meta2
+            .add_namespace(AddNamespaceRequest {
+                namespace: "n2".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta2
+            .freeze_namespace(AddNamespaceRequest {
+                namespace: "n2".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta2
+            .unfreeze_namespace(AddNamespaceRequest {
+                namespace: "n2".to_string()
+            })
+            .status
+            .ok);
     }
 
     #[test]
