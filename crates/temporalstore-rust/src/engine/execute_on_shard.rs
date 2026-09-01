@@ -572,7 +572,7 @@ pub(crate) fn execute_on_shard(
                 .into_iter()
                 .filter_map(|(field, address)| {
                     read_page_bytes(cache, page_store, shard_id, &address)
-                        .map(|value| (field.unwrap_or_default(), value))
+                        .map(|value| (field.map(|name| name.to_string()).unwrap_or_default(), value))
                 })
                 .collect();
             CommandResponse::HashEntries { entries }

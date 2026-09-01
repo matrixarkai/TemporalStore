@@ -2428,7 +2428,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     PageIndex {
                         object_key: "hash-key".to_string(),
                         model_id: Arc::from("hash".to_string()),
-                        component: Some("a".to_string()),
+                        component: Some(Arc::from("a".to_string())),
                         object_id: 50,
                         address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50), Some(5), Some(4), None, None),
                         dirty: false,
@@ -2441,7 +2441,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     PageIndex {
                         object_key: "hash-key".to_string(),
                         model_id: Arc::from("hash".to_string()),
-                        component: Some("b".to_string()),
+                        component: Some(Arc::from("b".to_string())),
                         object_id: 51,
                         address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51), Some(5), Some(5), None, None),
                         dirty: false,

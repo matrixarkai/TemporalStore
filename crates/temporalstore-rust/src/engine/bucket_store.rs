@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::{LocalBlockStore, BlockAddress};
@@ -206,7 +208,7 @@ pub(super) fn bucket_index_component_page_addresses(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
-) -> Vec<(Option<String>, BlockAddress)> {
+) -> Vec<(Option<Arc<str>>, BlockAddress)> {
     if let Some(object_refs) = shard.bucket_index.object_page_refs(model_id, object_key) {
         let mut refs = object_refs
             .all_refs()

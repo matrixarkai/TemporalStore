@@ -201,7 +201,7 @@ impl StorageManagerPhaseExecutor {
 pub(super) struct LivePageEntry {
     pub(super) object_key: String,
     pub(super) kind: Arc<str>,
-    pub(super) component: Option<String>,
+    pub(super) component: Option<Arc<str>>,
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
@@ -223,7 +223,7 @@ pub(super) fn live_page_entry(
     LivePageEntry {
         object_key: object_key.into(),
         kind: Arc::from(kind.into()),
-        component,
+        component: component.map(Arc::from),
         // A page materialized in the block store carries a real page_id; a page
         // backed only by the hot/append-log buffer does not. Evaluate before the
         // `address` field moves it.
@@ -911,7 +911,7 @@ pub(super) fn rebuild_bucket_page_ownership(
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
-                component: entry.component,
+                component: entry.component.clone(),
                 object_id,
                 address: entry.address,
                 dirty: entry.dirty,
@@ -978,7 +978,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
         hashes
             .entry(entry.object_key)
             .or_default()
-            .insert(entry.component.unwrap_or_default(), entry.address);
+            .insert(entry.component.unwrap_or_default().to_string(), entry.address);
     }
     if !hashes.is_empty() {
         shard.hashes = hashes;
@@ -992,7 +992,7 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
             entries.push(LivePageEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
-                component: page.component.clone(),
+                component: page.component.clone().map(|value| value.to_string()).map(Arc::from),
                 address: page.address.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
@@ -1370,8 +1370,9 @@ pub(super) fn upsert_bucket_index_page_with(
     }
     let entry = LivePageEntry {
         object_key: object_key.to_string(),
-        kind: crate::engine::state::intern_kind(&mut shard.bucket_index.kind_pool, kind),
-        component,
+        kind: crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, kind),
+        component: component
+            .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
         log_backed: address.page_id().is_none(),
         address,
         dirty,
@@ -1422,7 +1423,7 @@ pub(super) fn upsert_bucket_index_page_with(
             bucket.page_index.retain(|_, page| {
                 !(page.object_key == entry.object_key
                     && page.model_id == entry.kind
-                    && page.component == entry.component)
+                    && page.component.as_deref() == entry.component.as_deref())
             });
             if !bucket
                 .page_index
@@ -1438,7 +1439,7 @@ pub(super) fn upsert_bucket_index_page_with(
     let page_index = PageIndex {
         object_key: entry.object_key,
         model_id: entry.kind,
-        component: entry.component,
+        component: entry.component.clone(),
         object_id,
         address: entry.address,
         dirty: entry.dirty,
@@ -1580,7 +1581,7 @@ pub(super) fn sync_bucket_index_object_pages(
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
-                component: entry.component,
+                component: entry.component.clone(),
                 object_id,
                 address: entry.address,
                 dirty: entry.dirty,
@@ -1956,7 +1957,7 @@ pub(super) fn rebuild_bucket_first_index(
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
-                component: entry.component,
+                component: entry.component.clone(),
                 object_id,
                 address: entry.address,
                 dirty: page_dirty,
@@ -2098,7 +2099,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 hashes
                     .entry(entry.object_key)
                     .or_default()
-                    .insert(entry.component.unwrap_or_default(), entry.address);
+                    .insert(entry.component.unwrap_or_default().to_string(), entry.address);
             }
             "set" => {
                 saw_sets = true;

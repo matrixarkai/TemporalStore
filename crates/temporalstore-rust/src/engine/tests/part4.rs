@@ -4217,6 +4217,7 @@ fn page_index_identity_string_cardinality() {
     // report the cost as if nothing had changed -- every page still holds one, it just points at
     // a string it does not own.
     let mut model_allocations: HashSet<*const u8> = HashSet::new();
+    let mut component_allocations: HashSet<*const u8> = HashSet::new();
     let mut distinct_components: HashSet<&str> = HashSet::new();
     let mut distinct_keys: HashSet<&str> = HashSet::new();
     let mut model_bytes = 0usize;
@@ -4233,6 +4234,9 @@ fn page_index_identity_string_cardinality() {
             key_bytes += page.object_key.len();
             if let Some(component) = page.component.as_deref() {
                 distinct_components.insert(component);
+                if let Some(shared) = page.component.as_ref() {
+                    component_allocations.insert(std::sync::Arc::as_ptr(shared).cast::<u8>());
+                }
                 component_bytes += component.len();
                 components_present += 1;
             }
@@ -4254,7 +4258,7 @@ fn page_index_identity_string_cardinality() {
         "
   page index identity strings over {pages} pages:
     model_id    {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
-    component   {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
+    component   {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
     object_key  {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
 
     PageIndex is {} B before its heap strings
@@ -4262,7 +4266,8 @@ fn page_index_identity_string_cardinality() {
         distinct_models.len(), pages, share(distinct_models.len(), pages),
         model_allocations.len(), model_bytes,
         distinct_components.len(), components_present,
-        share(distinct_components.len(), components_present), component_bytes,
+        share(distinct_components.len(), components_present),
+        component_allocations.len(), component_bytes,
         distinct_keys.len(), pages, share(distinct_keys.len(), pages), key_bytes,
         std::mem::size_of::<crate::engine::state::PageIndex>(),
     );
@@ -4491,7 +4496,7 @@ fn per_record_structure_census() {
             ref_key.len()
                 + page.object_key.len()
                 + page.model_id.len()
-                + page.component.as_ref().map_or(0, String::len)
+                + page.component.as_ref().map_or(0, |name| name.len())
         })
         .sum();
     // Outer keys plus the page-ref key each entry holds.
@@ -4517,14 +4522,14 @@ fn per_record_structure_census() {
             entry
                 .by_component
                 .iter()
-                .map(|component| component.component.as_ref().map_or(0, String::len))
+                .map(|component| component.component.as_ref().map_or(0, |name| name.len()))
                 .sum::<usize>()
         })
         .sum();
     let dirty_bytes: usize = shard.dirty_objects.iter().map(String::len).sum();
     let total_string_bytes =
         key_bytes + page_index_bytes + page_lookup_bytes + component_lookup_bytes + dirty_bytes;
-    let sample_key_len = shard.strings.keys().next().map_or(0, String::len);
+    let sample_key_len = shard.strings.keys().next().map_or(0, |name| name.len());
     let perb = |n: usize| n as f64 / RECORDS as f64;
     println!(
         "  string bytes held per record (sample key is {sample_key_len} B):
@@ -9476,7 +9481,7 @@ fn nesting_the_page_lookups_saved_what_it_measured() {
                 Some(name) => format!("1|{}:{}|", name.len(), name).len(),
                 None => "0|".len(),
             };
-            nested_keys += component.component.as_ref().map_or(0, String::len);
+            nested_keys += component.component.as_ref().map_or(0, |name| name.len());
             // ...and another per (object, component) in the first. Nesting turns the second of
             // those into a vector element, which is why these are counted apart: a B-tree node
             // and a vector slot are not the same object, and adding them together hides the
@@ -10246,7 +10251,7 @@ fn what_one_page_costs_to_index() {
             heap += ref_key.len();
             heap += page.object_key.len();
             heap += page.model_id.len();
-            heap += page.component.as_ref().map_or(0, String::len);
+            heap += page.component.as_ref().map_or(0, |name| name.len());
             // The digest is 32 inline bytes now, not a 64-character allocation: it costs
             // nothing on the heap, which is the whole point of the change.
             heap += 0;
@@ -10541,7 +10546,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (
                             page.model_id.to_string(),
                             page.object_key.clone(),
-                            page.component.clone(),
+                            page.component.as_ref().map(|name| name.to_string()),
                         ),
                     )
                 })
@@ -10575,7 +10580,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (
                             page.model_id.to_string(),
                             page.object_key.clone(),
-                            page.component.clone(),
+                            page.component.as_ref().map(|name| name.to_string()),
                         ),
                     )
                 })

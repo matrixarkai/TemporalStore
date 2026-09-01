@@ -350,7 +350,7 @@ pub(super) struct ObjectPageRefs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ComponentPages {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<String>,
+    pub(super) component: Option<Arc<str>>,
     /// Sorted and deduplicated, and held inline when there is only one -- which is all of them.
     /// Insertion goes through `PageRefs::insert`, which keeps both invariants.
     #[serde(default)]
@@ -381,13 +381,14 @@ impl ObjectPageRefs {
     }
 }
 
-/// A kind is drawn from a fixed set of literals in the code, so a pool of them is bounded. The
-/// cap keeps that true even if some future caller passes something unbounded: it stops sharing
-/// rather than growing.
+/// A kind is drawn from a fixed set of literals in the code, so a pool of them is bounded. A
+/// component name is not -- it comes from the caller -- and the cap is what makes sharing it safe
+/// anyway: past the cap a name still works, it just allocates as it did before. So the cap is not
+/// a tuning knob, it is the thing that lets an unbounded input share a bounded pool.
 const KIND_POOL_CAP: usize = 64;
 
 /// One shared copy of `kind`, taken from the pool or added to it.
-pub(super) fn intern_kind(pool: &mut std::collections::HashSet<Arc<str>>, kind: &str) -> Arc<str> {
+pub(super) fn intern_shared(pool: &mut std::collections::HashSet<Arc<str>>, kind: &str) -> Arc<str> {
     if let Some(shared) = pool.get(kind) {
         return Arc::clone(shared);
     }
@@ -545,7 +546,7 @@ pub(super) struct PageIndex {
     pub(super) object_key: String,
     pub(super) model_id: Arc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) component: Option<String>,
+    pub(super) component: Option<Arc<str>>,
     pub(super) object_id: u64,
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
@@ -811,7 +812,7 @@ mod component_lookup_tests {
         PageIndex {
             object_key: object.to_string(),
             model_id: Arc::from("hash".to_string()),
-            component: component.map(str::to_string),
+            component: component.map(str::to_string).map(Arc::from),
             object_id: 0,
             address: BlockAddress::from_parts(0, 0, 0, None, None, None, None, None, None),
             dirty: false,
@@ -842,7 +843,9 @@ mod component_lookup_tests {
                 entry
                     .by_component
                     .iter()
-                    .map(|component| component.component.clone())
+                    .map(|component| {
+                        component.component.as_ref().map(|name| name.to_string())
+                    })
                     .collect()
             })
             .unwrap_or_default()
