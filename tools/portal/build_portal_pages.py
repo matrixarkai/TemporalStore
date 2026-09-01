@@ -1964,6 +1964,41 @@ CATALOG_JS = r"""
     });
   });
   $("refresh").addEventListener("click", function () { load(); });
+
+  /* Follow the store rather than a clock. Only after the customer has listed once: before that the
+     page has no scope to list in, and refreshing something nobody asked for would spend their
+     backend on a guess. */
+  var listedOnce = false;
+  var lastStoredTotal = null;
+  var lastAutoAt = 0;
+
+  var originalLoad = load;
+  load = function (keepMessage) {
+    listedOnce = true;
+    return originalLoad(keepMessage);
+  };
+
+  if (window.__matrixarkOnFrame) {
+    window.__matrixarkOnFrame(function (frame) {
+      var total = (frame.embedding || {}).total;
+      if (total == null) { return; }
+      if (lastStoredTotal === null) { lastStoredTotal = total; return; }
+      if (total === lastStoredTotal) { return; }
+      var grew = total > lastStoredTotal;
+      lastStoredTotal = total;
+      if (!listedOnce || document.hidden) { return; }
+      /* An import lands many records; re-listing on each frame of it would be a request per
+         couple of seconds for a list nobody is reading yet. */
+      var now = Date.now();
+      if (now - lastAutoAt < 4000) { return; }
+      lastAutoAt = now;
+      load(true);
+      say($("listMsg"), grew
+        ? "The store changed — this list has been refreshed."
+        : "Items were removed from the store — this list has been refreshed.", "info");
+    });
+  }
+
   $("filter").addEventListener("input", function () { load(); });
   $("rtype").addEventListener("change", function () { load(); });
   $("disabled").addEventListener("change", function () { load(); });

@@ -552,11 +552,33 @@ so the slow case avoids re-deriving a constant for every connected browser, and 
 what makes a draining backlog look like it is draining rather than stuck. Deferred work counts as
 draining, and so does *unknown*.
 
+**Anything can watch the same frames.** The strip takes subscribers, so a panel that needs live
+state uses the connection the page already has rather than opening its own. Two do:
+
+* a **batch started on Explore is watched on Explore** — it used to print a job id and a link to
+  another page, which is a dead end at the moment a customer most wants to see something happen. A
+  job missing from one frame is not treated as finished until it has actually been seen running,
+  because a submission can be accepted before it appears;
+* **Skills & resources follows the store** — ingest elsewhere, come back, and the list used to be
+  whatever it was when the button was last pressed. It re-lists when the stored total changes, not
+  on a clock, so a quiet deployment does no work and a busy one keeps up. It will not list before
+  the customer has listed once (the page has no scope until then), will not re-list more than once
+  every few seconds during an import, and does nothing in a hidden tab.
+
 The strip's script is tested by running it: the page as shipped, through a small DOM stub, against
 real frames. A strip whose source contains the word "unknown" and never reaches that branch greps
 identically and is a different product. Four deliberate breakages — rendering unknown as zero,
 drawing before the first frame, dropping the retry count, keeping a stale colour on a hidden
 segment — each turn tests red.
+
+Every page's scripts are also **executed** at load against a stub, which catches two things nothing
+else here would. A stray brace produces a page that serves 200, renders its markup and does nothing,
+with the error visible only in a browser console. And a subscription written as
+`if (false) { …onFrame(…) }` satisfies any check that greps for the call: the first version of these
+tests passed with the catalogue's subscription disabled exactly that way. The stub lists each browser
+API a page reaches for rather than answering everything through a catch-all, because a catch-all
+would also swallow a call into something that does not exist — which is the class of bug the harness
+is for.
 
 ---
 

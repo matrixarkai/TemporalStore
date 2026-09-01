@@ -271,5 +271,116 @@ class StripRenderTest(unittest.TestCase):
         self.assertNotIn("busy", self.out["all_encoded_idle"]["impClass"])
 
 
+class PageScriptsParseTest(unittest.TestCase):
+    """Every script on every portal page must at least parse.
+
+    These pages are assembled by string concatenation from a builder. A stray brace produces a page
+    that serves 200, renders its markup, and does nothing -- the failure appears in a browser
+    console and nowhere else, so no other test in this suite would notice.
+    """
+
+    def test_every_script_on_every_page_parses(self) -> None:
+        import json
+        import re
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node is not available to parse the page scripts")
+        checked = 0
+        for name in _html_files():
+            page = _read(name)
+            for index, body in enumerate(re.findall(r"<script>(.*?)</script>", page, re.S)):
+                checked += 1
+                result = subprocess.run(
+                    [node, "-e", "new Function(require('fs').readFileSync(0,'utf8'))"],
+                    input=body, capture_output=True, text=True, timeout=30)
+                with self.subTest(page=name, script=index):
+                    self.assertEqual(0, result.returncode,
+                                     "%s script %d does not parse: %s"
+                                     % (name, index, result.stderr.strip()[:300]))
+        self.assertGreater(checked, 10, "almost nothing was checked, so this passed vacuously")
+
+
+class PageWiringTest(unittest.TestCase):
+    """What the pages actually do when they load.
+
+    Source checks cannot tell a live subscription from one behind `if (false)`. These run every
+    script on a page against a DOM stub and count what registered.
+    """
+
+    @classmethod
+    def _run(cls, page: str) -> dict:
+        import json
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            raise unittest.SkipTest("node is not available to run the page scripts")
+        harness = os.path.join(PORTAL, "page_watchers_harness.js")
+        result = subprocess.run([node, harness, os.path.join(PORTAL, page)],
+                                capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise AssertionError("%s would not run: %s" % (page, result.stderr[:600]))
+        return json.loads(result.stdout)
+
+    def test_no_page_script_throws_while_loading(self) -> None:
+        # A script that throws at load leaves the rest of the page wired to nothing, and the page
+        # still serves 200 and renders its markup.
+        for page in _html_files():
+            with self.subTest(page=page):
+                out = self._run(page)
+                self.assertEqual(0, out["threwAtLoad"],
+                                 "a script on %s threw before it finished loading" % page)
+                self.assertGreater(out["scripts"], 0)
+
+    def test_the_catalogue_actually_subscribes_to_the_frames(self) -> None:
+        # Ingest elsewhere, come back here, and the list must not be whatever it was when the
+        # button was last pressed.
+        self.assertEqual(1, self._run("catalog_portal.html")["frameWatchers"])
+
+    def test_explore_actually_subscribes_so_a_batch_can_be_watched(self) -> None:
+        self.assertEqual(1, self._run("explore_portal.html")["frameWatchers"])
+
+    def test_pages_that_render_from_their_own_stream_do_not_also_subscribe(self) -> None:
+        # They receive the frames directly; a watcher on top would be a second path to the same
+        # render and a second place for it to drift.
+        for page in ("setup_portal.html", "overview_portal.html"):
+            with self.subTest(page=page):
+                self.assertEqual(0, self._run(page)["frameWatchers"])
+
+
+class CatalogRefreshPolicyTest(unittest.TestCase):
+    """How often it re-lists, and when it declines to."""
+
+    def setUp(self) -> None:
+        source = _read(os.path.join("build_portal_pages.py"))
+        start = source.index("CATALOG_JS = ")
+        self.script = source[start:source.index("OVERVIEW_BODY = ", start)]
+
+    def test_it_watches_the_shared_frames_rather_than_opening_its_own_stream(self) -> None:
+        self.assertNotIn("/v1/admin/events", self.script)
+
+    def test_it_refreshes_on_the_store_changing_not_on_a_clock(self) -> None:
+        # A timer would work a quiet deployment for nothing and still lag a busy one.
+        self.assertIn("lastStoredTotal", self.script)
+        self.assertNotIn("setInterval", self.script)
+
+    def test_it_does_not_list_before_the_customer_has_asked(self) -> None:
+        # The page needs a key and a scope; refreshing something nobody requested spends their
+        # backend on a guess.
+        self.assertIn("listedOnce", self.script)
+
+    def test_it_does_not_re_list_on_every_frame_of_an_import(self) -> None:
+        # An import lands many records; one request per frame is a request every couple of seconds
+        # for a list nobody is reading yet.
+        self.assertIn("lastAutoAt", self.script)
+
+    def test_a_hidden_tab_does_not_refresh(self) -> None:
+        self.assertIn("document.hidden", self.script)
+
+
 if __name__ == "__main__":
     unittest.main()
