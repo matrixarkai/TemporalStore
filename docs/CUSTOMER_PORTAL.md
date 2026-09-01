@@ -109,10 +109,17 @@ every render is one people learn to click past.
 
 #### The engine knew; nothing else did
 
-The guards above live in the Rust engine. The portal, the SDK and mem0 do not retrieve through it —
-they run the Python adapter, a second implementation over the same store — and that one never
-consulted the encoder at all. So an encoder swap stayed exactly as undetectable on the path that
-actually serves customers as it had been in the engine before it was fixed.
+The guards above live in the Rust engine, and there are two retrieve paths over the same store.
+
+Against a TemporalStore backend the engine assembles the pack and Python packing is refused
+outright, so the engine's guards apply. Against the **local** backend — the default
+`MatrixArkLocalAdapter`, what an OSS install and every local deployment run —
+`native_context_pack()` returns `None` by construction and retrieval is the Python adapter's own
+scan. That path never consulted the encoder at all, so on it an encoder swap stayed exactly as
+undetectable as it had been in the engine before it was fixed.
+
+A test pins that claim rather than leaving it as prose: it asserts the local adapter returns no
+native pack and does not require one, which is what makes the Python scan the live path there.
 
 Two things made it worse there than a plain zero would be. Python's `cosine` is a bare dot product,
 so a vector from another space returns a *plausible* number rather than nothing, and a plausible

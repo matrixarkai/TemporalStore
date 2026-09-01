@@ -178,6 +178,46 @@ class ServingPathTest(unittest.TestCase):
                            "makes this a degradation rather than an outage")
 
 
+class LivePathTest(unittest.TestCase):
+    """Which retrieve path these tests are guarding, stated as an assertion.
+
+    There are two implementations over one store. Against a TemporalStore backend the engine
+    assembles the pack and Python packing is refused; against the local backend the Python scan IS
+    retrieval. A guard built on the wrong assumption about which is live is a guard that never runs,
+    and prose in a commit message cannot fail when the answer changes.
+    """
+
+    def test_the_local_backend_retrieves_through_the_python_scan(self) -> None:
+        adapter, _server = build_store(turns=2)
+        self.assertIsNone(
+            adapter.native_context_pack({}),
+            "the local adapter returned a native pack, so the guarded scan is not the live path "
+            "here and these tests are measuring something nothing runs")
+        self.assertFalse(
+            adapter.native_context_pack_required(),
+            "the local adapter demands a native pack it cannot produce")
+
+    def test_the_guard_is_consulted_during_a_real_retrieve(self) -> None:
+        # The direct evidence, rather than an argument about which branch is reachable: count the
+        # calls during an actual retrieve. Zero would mean the code is dead however good it looks.
+        import matrixark_local_adapter_retrieve as retrieve_mod
+
+        _adapter, server = build_store()
+        original = retrieve_mod.embedding_model_conflicts
+        calls = []
+
+        def counting(stored, active):
+            calls.append((stored, active))
+            return original(stored, active)
+
+        retrieve_mod.embedding_model_conflicts = counting
+        try:
+            retrieve(server)
+        finally:
+            retrieve_mod.embedding_model_conflicts = original
+        self.assertTrue(calls, "the encoder check was never reached during a retrieve")
+
+
 class EncodingPanelTest(unittest.TestCase):
     """`embedding_status` is what the portal's encoding panel and the model picker read."""
 
