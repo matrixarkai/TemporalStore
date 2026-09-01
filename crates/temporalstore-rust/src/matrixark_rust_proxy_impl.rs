@@ -2352,6 +2352,11 @@ struct ForgetScopeStats {
     /// derivative through exactly that link. The remainder, `fields_without_match` minus this, is
     /// the part where nothing in the field relates to the ids at all.
     fields_pointed_only: usize,
+    /// Located entries dropped because this call decoded the field they point at and found nothing
+    /// filed under that id. They accumulate because the index is append-only: a purge that rewrites
+    /// a field to remove an id's records leaves behind the entry that led it there, and every later
+    /// purge pays to open that field again.
+    locator_locations_dropped: usize,
 }
 
 /// A forget query must actually CONSTRAIN which subject's records it removes. Because
@@ -2641,6 +2646,158 @@ fn record_points_at_wanted_id(record: &Value, contains: impl Fn(&str) -> bool) -
     false
 }
 
+/// Every field the WRITER files a record under, so "is this location still described by this id"
+/// can be answered the same way the entry was created.
+///
+/// This deliberately does NOT reuse the purge's matcher. The two ask different questions and the
+/// writer's set is wider: it files under `chunk_hash`, `section_hash`, `skill_hash`,
+/// `resource_hash` and `batch_id_hash`, none of which deletion looks at. The located set has two
+/// consumers -- deletion, and the id-scoped read that serves retrieval -- so an entry that
+/// deletion finds uninteresting can still be the only route by which a read finds its record.
+/// Deciding staleness with the narrower set would drop those entries and quietly cost retrieval
+/// rows while deletion stayed correct.
+///
+/// So the rule here is: keep the entry if ANY field the writer files under still matches. Being a
+/// superset is safe (an entry is kept), being a subset is not (an entry is dropped), which is why
+/// `entity_hash` and `segment_hash` are included even though the writer does not file under them.
+/// `locator_filing_fields_are_covered` pins the list against the writer's.
+fn record_filed_under_id(record: &Value, contains: impl Fn(&str) -> bool) -> bool {
+    let mut hit = |value: Option<&Value>| -> bool {
+        match value {
+            Some(Value::String(text)) if !text.is_empty() => contains(text.as_str()),
+            Some(Value::Number(number)) => {
+                if let Some(unsigned) = number.as_u64() {
+                    let mut buf = [0_u8; 20];
+                    contains(u64_into(&mut buf, unsigned))
+                } else {
+                    contains(number.to_string().as_str())
+                }
+            }
+            _ => false,
+        }
+    };
+    for field in LOCATOR_FILING_SCALAR_FIELDS {
+        if hit(record.get(*field)) {
+            return true;
+        }
+    }
+    for field in LOCATOR_FILING_LIST_FIELDS {
+        if let Some(Value::Array(values)) = record.get(*field) {
+            for item in values {
+                if hit(Some(item)) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The writer's scalar filing fields, plus the two identity hashes deletion matches on.
+const LOCATOR_FILING_SCALAR_FIELDS: &[&str] = &[
+    // context_index_ref_hashes
+    "ref_hash",
+    "event_id_hash",
+    "chunk_hash",
+    "section_hash",
+    "skill_hash",
+    "resource_hash",
+    "summary_hash",
+    "batch_id_hash",
+    // record_pointed_ref_ids
+    "source_event_hash",
+    "target_memory_id",
+    "superseded_by",
+    // not filed under by the writer; kept because dropping an entry is the unsafe direction
+    "entity_hash",
+    "segment_hash",
+];
+
+const LOCATOR_FILING_LIST_FIELDS: &[&str] = &["ref_hashes", "source_event_ids", "source_refs"];
+
+/// Drop the located entries that this purge proved no longer describe where they point.
+///
+/// Only called for `(id, location)` pairs whose field was decoded in full during this call, so
+/// "nothing here is filed under this id" is read off the field's actual contents rather than
+/// inferred. Chunk boundaries are left exactly as the writer laid them out -- each chunk is
+/// filtered in place and written back, and `location_chunks` is untouched -- so no second opinion
+/// about how the list should be split can drift from the writer's.
+fn prune_locator_locations(
+    engine: &TemporalEngine,
+    record_hash_key: &str,
+    stale: &BTreeMap<String, BTreeSet<(String, String)>>,
+    commands: &mut Vec<Command>,
+) -> Result<usize, String> {
+    let Some(prefix) = record_hash_key.strip_suffix(":records") else {
+        return Ok(0);
+    };
+    let locator_key = format!("{prefix}:context_ref_locator");
+    let mut dropped = 0_usize;
+
+    let drop_here = |location: &Value, gone: &BTreeSet<(String, String)>| -> bool {
+        // Anything this call cannot resolve to a location in THIS record log is left alone.
+        match location_shard_and_field(location, record_hash_key) {
+            Some(pair) => gone.contains(&pair),
+            None => false,
+        }
+    };
+
+    for (id, gone) in stale {
+        let mut filter_field = |field: String| -> Result<(), String> {
+            let raw = read_bytes(
+                engine,
+                Command::HashGet {
+                    key: locator_key.clone(),
+                    field: field.clone(),
+                },
+            )?;
+            if raw.is_empty() {
+                return Ok(());
+            }
+            let Ok(mut decoded) = serde_json::from_str::<Value>(&raw) else {
+                return Ok(());
+            };
+            let Some(list) = decoded.get_mut("locations").and_then(Value::as_array_mut) else {
+                return Ok(());
+            };
+            let before = list.len();
+            list.retain(|location| !drop_here(location, gone));
+            let removed = before - list.len();
+            if removed == 0 {
+                return Ok(());
+            }
+            dropped += removed;
+            commands.push(Command::HashSet {
+                key: locator_key.clone(),
+                field,
+                value: decoded.to_string().into_bytes(),
+            });
+            Ok(())
+        };
+
+        // The head field carries the chunk count, so read it before filtering it.
+        let head = read_bytes(
+            engine,
+            Command::HashGet {
+                key: locator_key.clone(),
+                field: id.clone(),
+            },
+        )?;
+        if head.is_empty() {
+            continue;
+        }
+        let chunks = serde_json::from_str::<Value>(&head)
+            .ok()
+            .and_then(|value| value.get("location_chunks").and_then(Value::as_u64))
+            .unwrap_or(0);
+        filter_field(id.clone())?;
+        for index in 1..=chunks {
+            filter_field(format!("{id}#{index}"))?;
+        }
+    }
+    Ok(dropped)
+}
+
 fn record_addressable_ids(record: &Value) -> Vec<String> {
     let mut ids = Vec::new();
     let mut push = |value: Option<&Value>| {
@@ -2740,6 +2897,9 @@ fn delete_records_by_ids(
     }
     let max_shard = (count - 1) / shard_size;
     let mut commands = Vec::new();
+    // Located entries this call can prove no longer describe where they point: the field was
+    // decoded here in full and nothing in it is filed under that id.
+    let mut stale: BTreeMap<String, BTreeSet<(String, String)>> = BTreeMap::new();
     // Which fields could hold these ids? The locator answers directly on a store it covers
     // completely; otherwise every shard has to be read.
     let located = located_fields_for_ids(engine, record_hash_key, ids)?;
@@ -2782,6 +2942,20 @@ fn delete_records_by_ids(
                     removed_here += 1;
                 } else {
                     survivors.push(record);
+                }
+            }
+            // This field has been decoded in full, so for each id it is now known -- not guessed --
+            // whether anything here is still filed under it. Judged on the SURVIVORS, since the
+            // records being removed are about to stop being here.
+            for id in ids {
+                let still_filed = survivors
+                    .iter()
+                    .any(|record| record_filed_under_id(record, |candidate| candidate == id));
+                if !still_filed {
+                    stale
+                        .entry(id.clone())
+                        .or_default()
+                        .insert((shard.clone(), field.clone()));
                 }
             }
             if removed_here == 0 {
@@ -2829,6 +3003,12 @@ fn delete_records_by_ids(
                 stats.fields_rewritten += 1;
             }
         }
+    }
+    // Same durable batch as the record removals: the entries and the records they describe go
+    // together, so a crash cannot leave the index pointing at content that is already gone.
+    if !stale.is_empty() {
+        stats.locator_locations_dropped =
+            prune_locator_locations(engine, record_hash_key, &stale, &mut commands)?;
     }
     if !commands.is_empty() {
         execute_empty_batch_runtime(engine, commands, true)?;
@@ -3495,6 +3675,10 @@ fn execute_record_log_request(
             output.extra.insert(
                 "matrixark_delete_fields_pointed_only".to_string(),
                 json!(stats.fields_pointed_only),
+            );
+            output.extra.insert(
+                "matrixark_delete_locator_locations_dropped".to_string(),
+                json!(stats.locator_locations_dropped),
             );
             output.extra.insert(
                 "matrixark_delete_ids_requested".to_string(),
@@ -7483,6 +7667,94 @@ mod tests {
         assert!(remaining.contains_key("f-points"), "a pointing record is not a carrier");
         assert!(remaining.contains_key("f-unrelated"), "an unrelated record is untouched");
         assert!(!remaining.contains_key("f-carries"), "the carrier is gone");
+    }
+
+    /// The purge drops a located entry only when the field it points at has been read and holds
+    /// nothing filed under that id -- and keeps it when something IS still filed there. Both
+    /// halves matter: the first is the whole saving, the second is what stops the saving from
+    /// costing retrieval the rows it reaches through those entries.
+    #[test]
+    fn a_purge_drops_the_entries_it_proved_stale_and_keeps_the_rest() {
+        let _guard = env_guard();
+        clear_native_caches();
+        let dir = tempdir().expect("tempdir");
+        let engine = forget_engine(dir.path(), "primary");
+        let hash_key = "matrixark:mcp:prune:records";
+        let count_key = "matrixark:mcp:prune:record_count";
+        let locator = "matrixark:mcp:prune:context_ref_locator";
+
+        seed_records(
+            &engine,
+            hash_key,
+            count_key,
+            &[
+                // Field names are the 20-wide zero-padded offsets a location resolves to, so the
+                // compact "shard:offset" entries below address exactly these.
+                // Everything about 4242 lives here, and all of it is about to go.
+                ("00000000000000000000", json!({ "record_type": "context_entity", "ref_hash": 4242 })),
+                // Filed under 4242 as a source, and stays filed after the purge.
+                ("00000000000000000001", json!({
+                    "record_type": "context_summary",
+                    "summary_hash": 99,
+                    "source_event_ids": [4242],
+                })),
+            ],
+        );
+        // Both fields are filed under 4242; the first will stop describing it, the second will not.
+        execute_empty_batch_runtime(
+            &engine,
+            vec![Command::HashSet {
+                key: locator.to_string(),
+                field: "4242".to_string(),
+                value: json!({ "locations": ["0:0", "0:1"] }).to_string().into_bytes(),
+            }],
+            true,
+        )
+        .expect("seed locator");
+
+        let stats = delete_records_by_ids(&engine, hash_key, count_key, 1024,
+                                          &["4242".to_string()]).expect("purge");
+        assert_eq!(stats.records_removed, 1);
+        assert_eq!(stats.locator_locations_dropped, 1, "exactly the emptied location is dropped");
+
+        clear_native_caches();
+        let raw = read_bytes(&engine, Command::HashGet {
+            key: locator.to_string(),
+            field: "4242".to_string(),
+        })
+        .expect("locator readable");
+        let decoded: Value = serde_json::from_str(&raw).expect("valid json");
+        let left: Vec<&str> = decoded["locations"].as_array().expect("locations")
+            .iter().filter_map(Value::as_str).collect();
+        assert_eq!(left, vec!["0:1"],
+                   "the entry for the field that still has a record filed under 4242 survives");
+    }
+
+    /// Staleness is decided by the WRITER's filing rule, and the writer files under more fields
+    /// than deletion matches on. Every one of them has to keep an entry alive, or a purge would
+    /// drop the only route by which an id-scoped read reaches that record. Checked field by field
+    /// so adding one to the writer without adding it here shows up as a failure.
+    #[test]
+    fn locator_filing_fields_are_covered() {
+        for field in ["ref_hash", "event_id_hash", "chunk_hash", "section_hash", "skill_hash",
+                      "resource_hash", "summary_hash", "batch_id_hash", "source_event_hash",
+                      "target_memory_id", "superseded_by", "entity_hash", "segment_hash"] {
+            let record = json!({ field: 4242 });
+            assert!(
+                record_filed_under_id(&record, |id| id == "4242"),
+                "a record filed under {field} must keep its located entry alive"
+            );
+        }
+        for field in ["ref_hashes", "source_event_ids", "source_refs"] {
+            let record = json!({ field: [1, 4242] });
+            assert!(
+                record_filed_under_id(&record, |id| id == "4242"),
+                "a record filed under {field} must keep its located entry alive"
+            );
+        }
+        // A record that names the id nowhere must NOT hold an entry open, or nothing is reclaimed.
+        assert!(!record_filed_under_id(&json!({ "unrelated_hash": 4242 }), |id| id == "4242"));
+        assert!(!record_filed_under_id(&json!({ "ref_hash": 7 }), |id| id == "4242"));
     }
 
     /// A posting carrying SEVERAL refs has no singular `ref_hash` -- the builder only writes that
