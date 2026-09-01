@@ -2035,7 +2035,15 @@ def ordered_unique(values: list[str]) -> list[str]:
 
 RAW_BYTE_METADATA_FIELDS = {"raw_bytes", "file_bytes", "bytes", "binary", "payload_bytes", "data_url", "base64"}
 SERVING_RESOURCE_METADATA_FIELDS = {
-    "resource_type",
+    # `resource_type` is not carried: it restates what the record already says it is.
+    # candidate_index_terms derives both `resource_type:` and `source_type:` from the
+    # record_type -- a skill_section is a skill -- and dropping this copy loses no terms,
+    # checked against the derivation. 63.7 KB per 1 MB skill, identical on every row.
+    #
+    # `unit_kind` and `heading_slug` are NOT droppable with it: the same check shows each is
+    # the only source of its own term. `resource_version` produces no term, but the retrieve
+    # path compares it against the manifest's latest to decide version_state, and a manifest
+    # holding only the latest cannot supply a record's own ingested version.
     "resource_version",
     "unit_kind",
     "relative_path",
