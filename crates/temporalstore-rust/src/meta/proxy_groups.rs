@@ -344,6 +344,13 @@ impl SingleNodeMeta {
 
     pub(super) fn apply_put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
+        // Clamped once, before anything compares or records it. What is stored
+        // has always been clamped; comparing the raw request against it meant a
+        // group asking for more than 100 never matched itself, so every re-put
+        // bumped config_version and told every attached proxy its config had
+        // changed. The change history had the same split, reporting a shed rate
+        // the group was not using.
+        let drop_percent = request.drop_percent.min(100);
         let existing = state.proxy_groups.get(&request.group).cloned();
         let config_version = match &existing {
             // Only a change proxies must act on bumps the version; re-putting an
@@ -351,7 +358,7 @@ impl SingleNodeMeta {
             Some(previous)
                 if previous.namespace == request.namespace
                     && previous.location == request.location
-                    && previous.drop_percent == request.drop_percent
+                    && previous.drop_percent == drop_percent
                     && previous.state == MetaEntityState::Normal =>
             {
                 previous.config_version
@@ -360,7 +367,7 @@ impl SingleNodeMeta {
             None => 1,
         };
         let info = ProxyGroupInfo {
-            drop_percent: request.drop_percent.min(100),
+            drop_percent,
             group: request.group.clone(),
             namespace: request.namespace,
             location: request.location,
@@ -375,7 +382,7 @@ impl SingleNodeMeta {
             format!("proxy_group:{}", request.group),
             format!(
                 "instance_num={},drop_percent={},config_version={config_version}",
-                request.instance_num, request.drop_percent
+                request.instance_num, drop_percent
             ),
         );
         AckResponse {
@@ -934,6 +941,82 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].namespace, "ns");
         assert_eq!(groups[0].instance_num, 3);
+    }
+
+    #[test]
+    fn a_clamped_drop_percent_still_counts_as_unchanged() {
+        // The stored value is clamped to 100; the comparison that decides
+        // "nothing changed" was made against the raw request. So a group asking
+        // for more than 100 never matched itself: every re-put bumped
+        // config_version, and every attached proxy saw config_changed on its
+        // next heartbeat, for as long as the group was re-applied.
+        let meta = SingleNodeMeta::default();
+        let put = || {
+            meta.put_proxy_group(PutProxyGroupRequest {
+                group: "orders".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 1,
+                drop_percent: 250,
+            })
+        };
+        assert!(put().status.ok);
+        let first = meta.list_proxy_groups().groups[0].clone();
+        assert_eq!(first.drop_percent, 100, "the stored value is clamped");
+
+        assert!(put().status.ok);
+        let second = meta.list_proxy_groups().groups[0].clone();
+        assert_eq!(
+            second.config_version, first.config_version,
+            "re-putting the same group moved config_version, so every attached \
+             proxy is told its config changed"
+        );
+
+        // And a real change still bumps it, so this does not just freeze the version.
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "orders".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 1,
+                drop_percent: 10,
+            })
+            .status
+            .ok);
+        let third = meta.list_proxy_groups().groups[0].clone();
+        assert!(
+            third.config_version > second.config_version,
+            "a genuine change stopped bumping config_version"
+        );
+        assert_eq!(third.drop_percent, 10);
+    }
+
+    #[test]
+    fn the_change_history_records_the_drop_percent_that_took_effect() {
+        // The event carried the requested value while the state carried the
+        // clamped one, so the history said 250 for a group shedding 100.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .put_proxy_group(PutProxyGroupRequest {
+                group: "orders".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                instance_num: 1,
+                drop_percent: 250,
+            })
+            .status
+            .ok);
+        let events = meta.topology_events(TopologyEventsRequest::default());
+        let put = events
+            .events
+            .iter()
+            .find(|event| event.kind == "put_proxy_group")
+            .expect("no put_proxy_group event");
+        assert!(
+            put.detail.contains("drop_percent=100"),
+            "the history reports a value the group is not using: {:?}",
+            put.detail
+        );
     }
 
     #[test]
