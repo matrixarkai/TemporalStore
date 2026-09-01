@@ -259,7 +259,8 @@ pub(super) fn storage_block_address_sample(
         block_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
-        checksum: address.sha256_hex().unwrap_or_default(),
+        // Not carried in the index any more; the page envelope holds it.
+        checksum: String::new(),
     }
 }
 
@@ -312,7 +313,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                     .address
                     .band_id()
                     .unwrap_or(entry.address.page_slab_id),
-                checksum: entry.address.sha256_hex().unwrap_or_default(),
+                checksum: String::new(),
                 generation: entry.address.object_id().unwrap_or(0),
                 page_address,
                 block_address,

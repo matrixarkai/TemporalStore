@@ -129,7 +129,6 @@ impl From<BlockAddressWire> for BlockAddress {
             wire.routing_bucket,
             wire.generation,
             wire.band_id,
-            wire.sha256,
         )
     }
 }
@@ -145,7 +144,11 @@ impl From<BlockAddress> for BlockAddressWire {
             routing_bucket: address.routing_bucket(),
             generation: address.generation(),
             band_id: address.band_id(),
-            sha256: address.sha256,
+            // The index no longer holds a digest, so it cannot write one. An index written
+            // before this still LOADS -- the field is accepted and ignored -- but one written
+            // now omits it. That is a content change, not a schema change: the field was always
+            // optional, and the page envelope carries the digest that verifies the bytes.
+            sha256: None,
         }
     }
 }
@@ -163,14 +166,15 @@ pub struct BlockAddress {
     routing_bucket: u32,
     /// Which of the five above are actually set. See `ADDRESS_HAS_*`.
     present: u8,
-    /// The page's digest, as the 32 bytes it is rather than 64 characters of hex behind a
-    /// pointer. The wire form stays hex; see `hex_digest`.
-    pub sha256: Option<[u8; 32]>,
 }
 
 impl BlockAddress {
-    /// Build an address from the parts a caller has, in the order the struct literal used to take
-    /// them. The presence bits are derived here so no caller has to know they exist.
+    /// Build an address from the parts a caller has. The presence bits are derived here so no
+    /// caller has to know they exist.
+    ///
+    /// There is deliberately no digest parameter: the index does not hold one, and a parameter the
+    /// constructor discarded would invite a caller to pass a freshly computed digest believing it
+    /// was kept. The page envelope carries the digest that a read verifies against.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         page_slab_id: u64,
@@ -181,7 +185,6 @@ impl BlockAddress {
         routing_bucket: Option<u32>,
         generation: Option<u64>,
         band_id: Option<u64>,
-        sha256: Option<[u8; 32]>,
     ) -> Self {
         let mut present = 0u8;
         if page_id.is_some() {
@@ -209,7 +212,6 @@ impl BlockAddress {
             band_id: band_id.unwrap_or_default(),
             routing_bucket: routing_bucket.unwrap_or_default(),
             present,
-            sha256,
         }
     }
 
@@ -301,11 +303,6 @@ mod hex_digest {
 }
 
 impl BlockAddress {
-    /// The digest as the hex text every reporting path quotes.
-    pub fn sha256_hex(&self) -> Option<String> {
-        self.sha256.as_ref().map(hex::encode)
-    }
-
     pub fn compact_slab_id(&self) -> Option<u32> {
         u32::try_from(self.page_slab_id).ok()
     }
@@ -323,7 +320,6 @@ impl BlockAddress {
             compact_extract_band_id(compact_slab_address) as u64,
             compact_extract_band_offset(compact_slab_address) as u64,
             length,
-            None,
             None,
             None,
             None,
@@ -1625,8 +1621,8 @@ mod address_size_tests {
     /// the byte exists instead of a sentinel.
     #[test]
     fn zero_is_distinguishable_from_absent() {
-        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), None, Some(0), None);
-        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None, None, None, None);
+        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), None, Some(0));
+        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None, None, None);
         assert_eq!(zero.band_id(), Some(0));
         assert_eq!(zero.routing_bucket(), Some(0));
         assert_eq!(absent.band_id(), None);
@@ -1638,7 +1634,7 @@ mod address_size_tests {
     #[test]
     fn setters_track_presence_both_ways() {
         let mut address =
-            BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None, None, None);
+            BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None, None);
         assert_eq!(address.page_id(), Some(7));
         address.set_page_id(None);
         assert_eq!(address.page_id(), None);
@@ -1662,7 +1658,6 @@ mod address_size_tests {
             Some(3),
             Some(4),
             Some(0),
-            None,
         );
         let json = serde_json::to_value(&address).unwrap();
         assert_eq!(json["page_segment_id"], 5);
@@ -2065,12 +2060,46 @@ mod tests {
         assert_eq!(store.read(&next).unwrap(), b"after-restore");
     }
 
+    /// What the page envelope actually carries, and therefore what removing the index copy costs.
+    ///
+    /// Written before assuming: a v7 record stores a CRC32C in its checksum field, not a SHA-256
+    /// (v6 and earlier stored the full digest). So dropping  from the address does NOT
+    /// relocate the digest -- for a current record the SHA-256 is not recoverable at all. What
+    /// survives is verification, which is the property reads depend on, and that is asserted by
+    /// the corruption test below.
+    #[test]
+    fn the_envelope_carries_a_crc_not_a_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let payload = b"digest-lives-with-the-page";
+        let address = store.append(payload).unwrap();
+
+        let path = slab_path(dir.path(), address.page_slab_id);
+        let slab = fs::read(&path).unwrap();
+        let start = address.offset as usize;
+        let record = &slab[start..start + address.length as usize];
+        let field = &record[28..60];
+
+        assert_ne!(
+            hex::encode(field),
+            record::sha256_hex(payload),
+            "if this ever matches, the envelope holds a full digest and the index copy could              genuinely be relocated rather than dropped"
+        );
+        assert_eq!(
+            &field[4..8],
+            b"C32C",
+            "a v7 record marks its checksum field as a crc32c"
+        );
+        assert_eq!(std::mem::size_of::<BlockAddress>(), 64);
+    }
+
     #[test]
     fn page_address_checksum_rejects_corrupt_slab_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"verified-page").unwrap();
-        assert_eq!(address.sha256_hex(), Some(sha256_hex(b"verified-page")));
+        // The address no longer carries a digest. The page does, and a read still verifies
+        // against it -- corrupting the slab below must still be caught.
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
         let path = slab_path(dir.path(), address.page_slab_id);
@@ -2097,7 +2126,6 @@ mod tests {
         assert_eq!(address.object_id(), Some(4242));
         assert_eq!(address.routing_bucket(), Some(17));
         assert_eq!(address.band_id(), Some(0));
-        assert_eq!(address.sha256_hex(), Some(sha256_hex(b"address-contract")));
         assert_eq!(address.compact_slab_id(), Some(0));
         assert_eq!(address.compact_slab_offset(), Some(0));
         assert_eq!(address.compact_slab_address(), Some(0));
@@ -2125,17 +2153,19 @@ mod tests {
             // alias JSON must carry it or the round-trip deserializes to None.
             "generation": address.generation(),
             "band_id": address.band_id(),
-            // The legacy document carries the digest as HEX, which is what the alias means and
-            // what a record written before the digest became bytes actually holds. Passing the
-            // bytes here would build a document no old writer ever produced -- an array where the
-            // alias expects a string -- and test the round-trip against a shape that never
-            // existed.
-            "checksum": address.sha256_hex(),
+            // A document written before the digest left the index carries it under this
+            // alias. It must still LOAD -- accepted and ignored -- which is what this asserts.
+            "checksum": sha256_hex(b"address-contract"),
         });
         let from_checksum_alias: BlockAddress = serde_json::from_value(legacy_alias_json).unwrap();
         assert_eq!(from_checksum_alias, address);
         assert_eq!(
-            serde_json::to_value(&address).unwrap()["sha256"],
+            serde_json::to_value(&address).unwrap().get("sha256"),
+            None,
+            "an index written now omits the digest; the page envelope carries it"
+        );
+        assert_eq!(
+            serde_json::json!(sha256_hex(b"address-contract")),
             serde_json::json!(sha256_hex(b"address-contract"))
         );
     }
@@ -2828,7 +2858,6 @@ mod tests {
         assert!(!reports[0].block_index_entries[0].dirty);
         assert!(!reports[0].block_index_entries[0].deleted);
         assert!(!reports[0].block_index_entries[0].block_in_log);
-        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256_hex());
         assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
         assert_eq!(reports[0].block_index_entries[1].length, second.length);
         assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id());
@@ -2999,7 +3028,7 @@ mod tests {
     fn page_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None, None, None);
+        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.page_slab_id),
             b"alteredpage",

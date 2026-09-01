@@ -266,10 +266,7 @@ pub(super) fn native_packed_page_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress::from_parts(page.page_slab_id, page.offset, page.length, page.page_id, page.object_id, Some(page.routing_bucket), page.page_id.or(page.object_id), page.zone_id, page.checksum.as_deref().and_then(|text| {
-            let mut bytes = [0u8; 32];
-            hex::decode_to_slice(text.as_bytes(), &mut bytes).ok().map(|_| bytes)
-        })));
+    let address = physical_address_word(&BlockAddress::from_parts(page.page_slab_id, page.offset, page.length, page.page_id, page.object_id, Some(page.routing_bucket), page.page_id.or(page.object_id), page.zone_id));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
@@ -373,7 +370,8 @@ pub(super) fn storage_physical_index_report(
             page_id: entry.address.page_id(),
             object_id: entry.address.object_id(),
             zone_id: entry.address.band_id(),
-            checksum: entry.address.sha256_hex(),
+            // The index does not hold a digest; a caller wanting one reads the page.
+            checksum: None,
             dirty: entry.dirty,
             deleted: entry.deleted,
             log_backed: entry.log_backed,
@@ -424,7 +422,7 @@ pub(super) fn storage_physical_index_report(
                 page_id: page.address.page_id(),
                 object_id: Some(page.object_id),
                 zone_id: page.address.band_id(),
-                checksum: page.address.sha256_hex(),
+                checksum: None,
                 dirty: page.dirty,
                 deleted: page.deleted,
                 log_backed: page.log_backed,
@@ -739,7 +737,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.address.object_id().unwrap_or_default(),
             entry.address.routing_bucket().unwrap_or(routing_bucket),
             entry.address.generation().unwrap_or_default(),
-            entry.address.sha256_hex().unwrap_or_default()
+            String::new()
         ));
     }
     by_bucket
