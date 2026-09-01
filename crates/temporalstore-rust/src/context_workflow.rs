@@ -1497,7 +1497,8 @@ pub fn extract_context(
 /// Extraction with explicit control over L1 gating. The batch ingest path
 /// (`ingest_extract_context`) passes `gate_l1 = false` so bulk resource/skill
 /// docs always produce L1 and keep their fixed fanout contract (2 summaries +
-/// 3 embeddings per extract).
+/// 2 embeddings per extract -- the node and its level-2 summary are built from the
+/// same `l1` text and share the one vector it produces).
 pub(crate) fn extract_context_gated(
     engine: &TemporalEngine,
     request: ContextExtractRequest,
@@ -1675,16 +1676,21 @@ pub(crate) fn extract_context_gated(
     // and hit@5 gains 5.0 points, which is what more signal in the vector buys: the right node
     // is far likelier to be in the set at all.
     //
-    // When L1 is emitted the same string was already being encoded for the level-2 summary, so
-    // the two calls become one and the vector is shared. Embedding is the slowest part of an
-    // ingest, so that is a third of the encoder work on this path.
+    // When L1 is emitted, the string the node embeds is the string the level-2 summary embeds --
+    // both are `l1`. It goes to the provider ONCE and the single vector that comes back is handed
+    // to every owner of it. Listing it twice made the batch carry the same text in two slots, and
+    // `context_embeddings_for_extract` maps inputs to vectors one for one with no dedupe, so a
+    // real OpenAI-compatible provider was asked to encode it twice on every rich ingest and billed
+    // for both. Embedding is the slowest part of an ingest; the second copy bought a vector that
+    // was already in hand.
+    //
+    // So the batch is two texts whether or not L1 is emitted: the text the node is searched by,
+    // and the event body.
     let node_embedding_text = if emit_l1 { l1.as_str() } else { l0.as_str() };
-    let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
-        vec![("node_l0", node_hash, 1, node_embedding_text)];
-    if emit_l1 {
-        embedding_inputs.push(("node_l1", node_hash, 2, l1.as_str()));
-    }
-    embedding_inputs.push(("event_text", event_id_hash, 3, request.body.as_str()));
+    let embedding_inputs: Vec<(&str, u64, u32, &str)> = vec![
+        ("node_text", node_hash, 1, node_embedding_text),
+        ("event_text", event_id_hash, 3, request.body.as_str()),
+    ];
     // Compute embeddings, trying the fallback provider on error. On total failure
     // the behavior depends on `context_embed_defer_on_failure()`: the default is to
     // DEFER (persist the node/event/summaries without vectors and mark the node
@@ -1734,9 +1740,10 @@ pub(crate) fn extract_context_gated(
     // embedding-dirty and the async drainer attaches vectors later, so an empty vector here
     // means "not yet", never "none". skip_serializing_if keeps that costing nothing on disk.
     if !embedding_deferred {
-        // embedding_inputs order is node_l0, [node_l1], event_text, so the vectors line up
-        // with their owners: index 0 is the L0 summary (and the node), index 1 the L1 summary
-        // when emitted, and the event last.
+        // embedding_inputs order is node text then event text, so the vectors line up with their
+        // owners: index 0 is whatever the node was embedded from -- taken by the node, the L0
+        // summary, and the L1 summary when one is emitted, because one string produced it -- and
+        // index 1 is the event.
         //
         // One encoder produced all of them, so its identity is computed once and stamped on
         // every owner that takes a vector. The summaries need it as much as the node does: the
@@ -1760,14 +1767,17 @@ pub(crate) fn extract_context_gated(
             node.embedding_model_hash = embedding_model_hash;
             node.embedding_updated_at_ms = timestamp_ms;
         }
-        if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
+        if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.first()) {
+            // Index 0, not a slot of its own: this summary's text IS `l1`, and `l1` is what the
+            // node was embedded from, so the vector it wants is the one already returned.
             summary.vector = vector.clone();
             // The one summary vector retrieval actually scores: level 2 is the only level the
             // retrieve pass queries for vectors, so this stamp is what the guard there reads.
             summary.embedding_model_hash = embedding_model_hash;
         }
-        let event_vector_index = if emit_l1 { 2 } else { 1 };
-        if let Some(vector) = embedding_vectors.get(event_vector_index) {
+        // The event is at index 1 either way, because the node now contributes exactly one text
+        // to the batch whether or not L1 was emitted.
+        if let Some(vector) = embedding_vectors.get(1) {
             event.vector = vector.clone();
         }
     }
