@@ -16,12 +16,37 @@ use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
 use super::{read_page_bytes, stable_object_hash, ShardState};
+/// `prefix` then two decimal parts, joined by colons, in one allocation.
+///
+/// `format!` would take two: the String it returns, plus one inside the formatting machinery.
+/// `write!` into a String that already has capacity takes none, so building the key directly halves
+/// its cost. These run on the hot path -- `context_node_key` once per retrieval candidate -- and the
+/// bytes are identical to the format strings they replace, which matters because these keys are
+/// stored in the shard's maps and the bucket index and compared against keys already written.
+fn context_key_2(prefix: &str, first: u64, second: u64) -> String {
+    use std::fmt::Write as _;
+    // Prefix, two u64 at 20 digits each, and the colon between them.
+    let mut key = String::with_capacity(prefix.len() + 41);
+    key.push_str(prefix);
+    let _ = write!(key, "{first}:{second}");
+    key
+}
+
+/// As [`context_key_2`], with a third part.
+fn context_key_3(prefix: &str, first: u64, second: u64, third: u64) -> String {
+    use std::fmt::Write as _;
+    let mut key = String::with_capacity(prefix.len() + 62);
+    key.push_str(prefix);
+    let _ = write!(key, "{first}:{second}:{third}");
+    key
+}
+
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
-    format!("ctx:node:{tenant_hash}:{node_hash}")
+    context_key_2("ctx:node:", tenant_hash, node_hash)
 }
 
 pub(super) fn context_event_key(tenant_hash: u64, node_hash: u64) -> String {
-    format!("ctx:event:{tenant_hash}:{node_hash}")
+    context_key_2("ctx:event:", tenant_hash, node_hash)
 }
 
 pub(super) fn normalize_context_event_storage_keys(node_hash: u64, event: &mut ContextEvent) {
@@ -60,19 +85,19 @@ pub(super) fn context_event_kind_hash(event: &ContextEvent) -> u64 {
 }
 
 pub(super) fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
-    format!("ctx:audit:{tenant_hash}:{session_hash}")
+    context_key_2("ctx:audit:", tenant_hash, session_hash)
 }
 
 pub(super) fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
-    format!("ctx:dirty:{tenant_hash}:{node_hash}")
+    context_key_2("ctx:dirty:", tenant_hash, node_hash)
 }
 
 pub(super) fn context_embedding_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
-    format!("ctx:embdirty:{tenant_hash}:{node_hash}")
+    context_key_2("ctx:embdirty:", tenant_hash, node_hash)
 }
 
 pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {
-    format!("ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}")
+    context_key_3("ctx:entity:", tenant_hash, node_hash, entity_hash)
 }
 
 /// Split a persisted per-entity key back into (collection key, entity hash).
@@ -97,19 +122,19 @@ pub(super) fn split_context_entity_key(object_key: &str) -> Option<(String, u64)
 }
 
 pub(super) fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
-    format!("ctx:entity:{tenant_hash}:{node_hash}")
+    context_key_2("ctx:entity:", tenant_hash, node_hash)
 }
 
 pub(super) fn context_child_key(tenant_hash: u64, parent_hash: u64) -> String {
-    format!("ctx:child:{tenant_hash}:{parent_hash}")
+    context_key_2("ctx:child:", tenant_hash, parent_hash)
 }
 
 pub(super) fn context_summary_key(tenant_hash: u64, node_hash: u64, level: u32) -> String {
-    format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")
+    context_key_3("ctx:summary:", tenant_hash, node_hash, u64::from(level))
 }
 
 pub(super) fn context_compression_key(tenant_hash: u64, node_hash: u64) -> String {
-    format!("ctx:compress:{tenant_hash}:{node_hash}")
+    context_key_2("ctx:compress:", tenant_hash, node_hash)
 }
 
 /// Configurable temporal-compression policy for a context node.
