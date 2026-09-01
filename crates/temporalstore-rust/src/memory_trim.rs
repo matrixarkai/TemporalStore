@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
 //! Returning freed heap to the operating system.
 //!
 //! Rust's `free` hands memory back to the allocator, not to the kernel. On glibc -- what this runs
