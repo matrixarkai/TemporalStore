@@ -1359,6 +1359,73 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
 }
 
 #[test]
+fn a_partly_shed_batch_does_not_refuse_the_keys_it_kept() {
+    // drop_percent is a per-key rate, but the batch path refused the whole
+    // batch as soon as one key fell in the shed range, so the rate arrived as
+    // 1-(1-p)^n per batch: at 1%, 63% of hundred-key batches were refused; at
+    // 5%, 99.5%. The keys that were not shed never reached the network.
+    //
+    // The proxy address is unroutable, which is what makes the difference
+    // visible without standing a server up. A batch that is entirely shed
+    // never touches the network and answers traffic_dropped. A batch with
+    // survivors has to try to serve them, so it comes back as a connection
+    // failure instead -- that failure is the evidence the survivors were sent.
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        ..ClientOptions::default()
+    });
+    let everything = client.open_table(
+        "ns",
+        "tbl",
+        TableOptions {
+            drop_percent: 100,
+            ..TableOptions::default()
+        },
+    );
+    let all_shed = everything
+        .batch_execute(
+            (0..40)
+                .map(|i| Command::StringGet {
+                    key: format!("key-{i}"),
+                })
+                .collect(),
+        )
+        .expect("a fully shed batch never reaches the network");
+    assert_eq!(all_shed.status.code, "traffic_dropped");
+    assert!(all_shed.responses.is_empty());
+    assert_eq!(client.stats().route_refreshes, 0);
+
+    let some = client.open_table(
+        "ns",
+        "tbl2",
+        TableOptions {
+            drop_percent: 50,
+            ..TableOptions::default()
+        },
+    );
+    let keys: Vec<Command> = (0..40)
+        .map(|i| Command::StringGet {
+            key: format!("key-{i}"),
+        })
+        .collect();
+    let shed_here = keys
+        .iter()
+        .filter(|command| crate::client::commands::command_is_dropped(command, 50))
+        .count();
+    assert!(
+        shed_here > 0 && shed_here < keys.len(),
+        "the test needs a batch that is partly shed; got {shed_here} of {}",
+        keys.len()
+    );
+    let result = some.batch_execute(keys);
+    assert!(
+        result.is_err(),
+        "the kept keys were never sent: a partly shed batch answered without \
+         touching the network, which is the whole-batch refusal this fixes"
+    );
+}
+
+#[test]
 fn client_table_drop_percent_rejects_sampled_requests_before_network() {
     let client = TemporalStoreClient::with_options(ClientOptions {
         proxy_addr: "127.0.0.1:1".to_string(),

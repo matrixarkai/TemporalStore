@@ -1382,19 +1382,77 @@ impl TemporalStoreTable {
             self.refresh_table_topology_before_write_if_due()?;
         }
         let table_options = self.table_options();
-        if let Some(command) = commands
+        // Shed by key, not by batch. `command_is_dropped` hashes the routing
+        // key, so the rate is per key -- but refusing the whole batch as soon
+        // as one key fell in the dropped range turned it into 1-(1-p)^n per
+        // batch. A 1% rate refused 63% of hundred-key batches, and 5% refused
+        // 99.5% of them, which is not a shed rate an operator can reason about.
+        //
+        // A shed key gets its own slot with its own status, beside the results
+        // of the keys that were not shed. That is the shape a batch already
+        // has: the grouped path fills a missing slot with a per-response error
+        // inside an otherwise-ok batch.
+        let shed: Vec<bool> = commands
             .iter()
-            .find(|command| command_is_dropped(command, table_options.drop_percent))
-        {
-            return Ok(BatchExecuteResponse {
-                status: Status::error(
-                    "traffic_dropped",
-                    format!(
-                        "batch command for key {:?} dropped by table drop_percent",
-                        command_key(command)
+            .map(|command| command_is_dropped(command, table_options.drop_percent))
+            .collect();
+        if shed.iter().any(|dropped| *dropped) {
+            let kept: Vec<Command> = commands
+                .iter()
+                .zip(shed.iter())
+                .filter(|(_, dropped)| !**dropped)
+                .map(|(command, _)| command.clone())
+                .collect();
+            // Nothing survived: the batch as a whole was shed, and it answers
+            // exactly as it always has. Only a batch with survivors changes,
+            // and only so the survivors are served.
+            if kept.is_empty() {
+                let first = commands
+                    .first()
+                    .and_then(command_key)
+                    .map(|key| key.to_string());
+                return Ok(BatchExecuteResponse {
+                    status: Status::error(
+                        "traffic_dropped",
+                        format!(
+                            "batch command for key {:?} dropped by table drop_percent",
+                            first
+                        ),
                     ),
-                ),
-                responses: Vec::new(),
+                    responses: Vec::new(),
+                });
+            }
+            let served = self.batch_execute(kept)?;
+            // A failure that stopped the batch is still the batch's failure.
+            if !served.status.ok {
+                return Ok(served);
+            }
+            let mut served = served.responses.into_iter();
+            let responses = shed
+                .iter()
+                .map(|dropped| {
+                    if *dropped {
+                        ExecuteResponse {
+                            status: Status::error(
+                                "traffic_dropped",
+                                "request dropped by table drop_percent",
+                            ),
+                            response: CommandResponse::Empty,
+                        }
+                    } else {
+                        served.next().unwrap_or_else(|| ExecuteResponse {
+                            status: Status::error(
+                                "missing_response",
+                                "batch response missing",
+                            ),
+                            response: CommandResponse::Empty,
+                        })
+                    }
+                })
+                .collect();
+            return Ok(BatchExecuteResponse {
+                status: Status::ok(),
+                responses,
             });
         }
         // The LIVE shard count, not the one this handle was opened with. Read from the

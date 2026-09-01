@@ -441,3 +441,77 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod shed_shape {
+    use super::*;
+
+    /// How many of `batches` batches of `batch` keys contain at least one key
+    /// the rate sheds, and what share of individual keys it sheds.
+    fn shed_rates(percent: u8, batch: usize, batches: usize) -> (f64, f64) {
+        let mut batches_touched = 0usize;
+        let mut keys_shed = 0usize;
+        let mut keys_total = 0usize;
+        for b in 0..batches {
+            let commands: Vec<Command> = (0..batch)
+                .map(|i| Command::CommonExists {
+                    key: format!("tenant/{b}/key-{i}"),
+                })
+                .collect();
+            keys_total += commands.len();
+            let here = commands
+                .iter()
+                .filter(|command| command_is_dropped(command, percent))
+                .count();
+            keys_shed += here;
+            if here > 0 {
+                batches_touched += 1;
+            }
+        }
+        (
+            100.0 * keys_shed as f64 / keys_total as f64,
+            100.0 * batches_touched as f64 / batches as f64,
+        )
+    }
+
+    #[test]
+    fn the_rate_is_per_key_and_a_batch_multiplies_it() {
+        // Not a claim about the fix -- a claim about why one was needed. The
+        // rate really is per key, and the chance a batch contains at least one
+        // shed key climbs with its size. Refusing the batch on that basis is
+        // what turned 1% into most of the traffic.
+        let (keys, touched) = shed_rates(1, 100, 2_000);
+        assert!(
+            (0.5..2.0).contains(&keys),
+            "keys shed should track the rate, got {keys:.1}%"
+        );
+        assert!(
+            touched > 40.0,
+            "a hundred-key batch should usually contain a shed key at 1%, got {touched:.1}%"
+        );
+
+        // And at a rate an operator might actually pick for load shedding,
+        // nearly every large batch contains one.
+        let (_, touched) = shed_rates(5, 100, 2_000);
+        assert!(
+            touched > 90.0,
+            "at 5% nearly every hundred-key batch contains a shed key, got {touched:.1}%"
+        );
+    }
+
+    #[test]
+    fn a_single_key_is_shed_at_the_rate_it_was_given() {
+        for &percent in &[1u8, 10, 25] {
+            let (keys, batches) = shed_rates(percent, 1, 4_000);
+            assert!(
+                (keys - batches).abs() < f64::EPSILON,
+                "a batch of one is the key itself"
+            );
+            let expected = percent as f64;
+            assert!(
+                (keys - expected).abs() < 3.0,
+                "rate {percent} shed {keys:.1}% of keys"
+            );
+        }
+    }
+}
