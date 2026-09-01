@@ -2006,7 +2006,11 @@ SERVING_RESOURCE_METADATA_FIELDS = {
     #
     # `heading` stays: skill_section_record sets it at the top level but resource_chunk_record
     # does not, so for a resource chunk this is the only copy.
-    "content_hash",
+    # `content_hash` is not carried: it is a hash of text the same record already stores,
+    # and every reader recomputes it when absent -- `metadata.get("content_hash") or
+    # content_hash(chunk.text)` in ingest and in resource IO, with the remaining uses
+    # conditional on its presence. 88.2 KB per 1 MB skill to restate what the row derives
+    # from itself. The dashboard and registry read the TOP-level field, not this one.
     "token_estimate",
     "row_start",
     "row_end",
