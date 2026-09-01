@@ -1093,45 +1093,15 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
-        BlockAddress {
-            page_slab_id: 7,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(7, 0, 1, None, None, None, None, None, None),
     );
     shard.hashes.entry("hash".to_string()).or_default().insert(
         "field".to_string(),
-        BlockAddress {
-            page_slab_id: 8,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(8, 0, 1, None, None, None, None, None, None),
     );
     shard.sets.entry("set".to_string()).or_default().insert(
         b"member".to_vec(),
-        BlockAddress {
-            page_slab_id: 9,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(9, 0, 1, None, None, None, None, None, None),
     );
     shard
         .features
@@ -1139,17 +1109,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             10,
-            BlockAddress {
-                page_slab_id: 10,
-                offset: 0,
-                length: 1,
-                page_id: None,
-                object_id: None,
-                routing_bucket: None,
-                band_id: None,
-                generation: None,
-                sha256: None,
-            },
+            BlockAddress::from_parts(10, 0, 1, None, None, None, None, None, None),
         );
     shard
         .features
@@ -1157,17 +1117,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             11,
-            BlockAddress {
-                page_slab_id: 11,
-                offset: 0,
-                length: 1,
-                page_id: None,
-                object_id: None,
-                routing_bucket: None,
-                band_id: None,
-                generation: None,
-                sha256: None,
-            },
+            BlockAddress::from_parts(11, 0, 1, None, None, None, None, None, None),
         );
     shard
         .control_state
@@ -1258,19 +1208,19 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             .and_then(|fields| fields.get("f"))
             .expect("hash address");
         assert_eq!(
-            string_address.object_id,
+            string_address.object_id(),
             Some(stable_page_object_id(1, "string", "k", None))
         );
         assert_eq!(
-            string_address.routing_bucket,
+            string_address.routing_bucket(),
             Some(page_routing_bucket("k", 0, u32::MAX))
         );
         assert_eq!(
-            hash_address.object_id,
+            hash_address.object_id(),
             Some(stable_page_object_id(1, "hash", "h", Some("f")))
         );
         assert_eq!(
-            hash_address.routing_bucket,
+            hash_address.routing_bucket(),
             Some(page_routing_bucket("h", 0, u32::MAX))
         );
     }
@@ -1863,7 +1813,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == "owned")
             .expect("owned slot page");
-        page.address.object_id = Some(page.object_id.wrapping_add(1));
+        page.address.set_object_id(Some(page.object_id.wrapping_add(1)));
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -1925,7 +1875,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == "second")
             .expect("second slot page");
-        second.address.object_id = Some(first_object_id);
+        second.address.set_object_id(Some(first_object_id));
         first_object_id
     };
 
@@ -2197,7 +2147,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         )
     };
 
@@ -2417,27 +2367,27 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         .expect("hash address");
 
     assert_eq!(
-        string_address.object_id,
+        string_address.object_id(),
         Some(stable_page_object_id(1, "string", "k", None))
     );
     assert_eq!(
-        string_address.routing_bucket,
+        string_address.routing_bucket(),
         Some(page_routing_bucket("k", 10, 20))
     );
     assert_eq!(
-        string_address.band_id,
+        string_address.band_id(),
         Some(string_address.page_slab_id)
     );
     assert_eq!(
-        hash_address.object_id,
+        hash_address.object_id(),
         Some(stable_page_object_id(1, "hash", "h", Some("f")))
     );
     assert_eq!(
-        hash_address.routing_bucket,
+        hash_address.routing_bucket(),
         Some(page_routing_bucket("h", 10, 20))
     );
-    assert_eq!(hash_address.band_id, Some(hash_address.page_slab_id));
-    assert_ne!(string_address.object_id, hash_address.object_id);
+    assert_eq!(hash_address.band_id(), Some(hash_address.page_slab_id));
+    assert_ne!(string_address.object_id(), hash_address.object_id());
 }
 
 #[test]
@@ -3162,17 +3112,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "container-probe".to_string(),
-        BlockAddress {
-            page_slab_id: 7,
-            offset: 11,
-            length: 13,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(7, 11, 13, None, None, None, None, None, None),
     );
 
     // Container OFF: raw JSON, and JSON is what an older binary would have written.
@@ -3215,32 +3155,12 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for i in 0..64u64 {
         shard.strings.insert(
             format!("object-{i}"),
-            BlockAddress {
-                page_slab_id: i,
-                offset: i * 7,
-                length: i + 1,
-                page_id: Some(i),
-                object_id: Some(i * 3),
-                routing_bucket: Some((i % 8) as u32),
-                band_id: None,
-                generation: Some(i),
-                sha256: None,
-            },
+            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3), Some((i % 8) as u32), Some(i), None, None),
         );
     }
     shard.hashes.entry("hash-object".to_string()).or_default().insert(
         "component".to_string(),
-        BlockAddress {
-            page_slab_id: 9,
-            offset: 1,
-            length: 2,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(9, 1, 2, None, None, None, None, None, None),
     );
     shard.applied_wal_sequence = Some(4242);
 
@@ -3423,7 +3343,7 @@ fn what_reading_one_summary_actually_costs() {
             .iter()
             .filter(|a| crate::wal_record::is_wal_resident(a.page_slab_id))
             .count();
-        let with_page_id = addresses.iter().filter(|a| a.page_id.is_some()).count();
+        let with_page_id = addresses.iter().filter(|a| a.page_id().is_some()).count();
         let distinct_slabs: std::collections::BTreeSet<u64> =
             addresses.iter().map(|a| a.page_slab_id).collect();
         println!(

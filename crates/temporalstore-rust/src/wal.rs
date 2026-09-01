@@ -290,7 +290,7 @@ impl WalOutcomeItem {
     /// bucket-index half of the equivalence gate fails on.
     pub fn resolved_address(&self) -> Option<crate::block_store::BlockAddress> {
         self.address.clone().map(|mut address| {
-            address.routing_bucket = Some(self.routing_bucket);
+            address.set_routing_bucket(Some(self.routing_bucket));
             address
         })
     }
@@ -477,7 +477,7 @@ mod outcome_address_serde {
             None => serializer.serialize_none(),
             Some(address) => {
                 let mut trimmed = address.clone();
-                trimmed.routing_bucket = None;
+                trimmed.set_routing_bucket(None);
                 Some(trimmed).serialize(serializer)
             }
         }

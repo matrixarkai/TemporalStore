@@ -93,12 +93,12 @@ impl TemporalEngine {
             slab_report.live_physical_bytes = slab_report
                 .live_physical_bytes
                 .saturating_add(address.length);
-            if let Some(object_id) = address.object_id {
+            if let Some(object_id) = address.object_id() {
                 let objects = live_object_ids.entry(address.page_slab_id).or_default();
                 objects.insert(object_id);
                 slab_report.live_object_count = objects.len() as u64;
             }
-            if let Some(routing_bucket) = address.routing_bucket {
+            if let Some(routing_bucket) = address.routing_bucket() {
                 let buckets = live_routing_buckets
                     .entry(address.page_slab_id)
                     .or_default();

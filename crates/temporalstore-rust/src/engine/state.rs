@@ -627,10 +627,10 @@ fn same_page_address(left: &BlockAddress, right: &BlockAddress) -> bool {
     left.page_slab_id == right.page_slab_id
         && left.offset == right.offset
         && left.length == right.length
-        && left.page_id == right.page_id
-        && left.object_id == right.object_id
-        && left.routing_bucket == right.routing_bucket
-        && left.generation == right.generation
+        && left.page_id() == right.page_id()
+        && left.object_id() == right.object_id()
+        && left.routing_bucket() == right.routing_bucket()
+        && left.generation() == right.generation()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -698,17 +698,7 @@ mod component_lookup_tests {
             model_id: "hash".to_string(),
             component: component.map(str::to_string),
             object_id: 0,
-            address: BlockAddress {
-                page_slab_id: 0,
-                offset: 0,
-                length: 0,
-                page_id: None,
-                object_id: None,
-                routing_bucket: None,
-                generation: None,
-                band_id: None,
-                sha256: None,
-            },
+            address: BlockAddress::from_parts(0, 0, 0, None, None, None, None, None, None),
             dirty: false,
             deleted: false,
             log_backed: false,

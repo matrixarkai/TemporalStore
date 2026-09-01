@@ -2136,7 +2136,7 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
             .strings
             .get_mut("lifecycle")
             .expect("manifest string address");
-        address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
+        address.set_object_id(Some(address.object_id().unwrap_or_default().wrapping_add(1)));
         reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
         reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
@@ -2906,7 +2906,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         )
     };
 
@@ -5277,7 +5277,7 @@ fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
         item.object_id,
         item.address
             .as_ref()
-            .and_then(|address| address.object_id)
+            .and_then(|address| address.object_id())
             .unwrap_or_default()
     );
 
@@ -8156,7 +8156,7 @@ fn what_a_live_record_is_made_of() {
         });
     }
 
-    // Does address.object_id EVER differ from the item's, or go absent? That decides whether it
+    // Does address.object_id() EVER differ from the item's, or go absent? That decides whether it
     // can be dropped from the wire and rebuilt.
     let mut same = 0usize;
     let mut differ = 0usize;
@@ -8169,7 +8169,7 @@ fn what_a_live_record_is_made_of() {
     {
         let record = crate::wal::decode_wal_line(&line).expect("decodes");
         for item in &record.outcomes {
-            match item.resolved_address().map(|a| a.object_id) {
+            match item.resolved_address().map(|a| a.object_id()) {
                 None => no_address += 1,
                 Some(None) => absent += 1,
                 Some(Some(id)) if id == item.object_id => same += 1,
@@ -8204,15 +8204,15 @@ fn what_a_live_record_is_made_of() {
                     address.page_slab_id,
                     address.offset,
                     address.length,
-                    address.page_id,
-                    address.object_id,
-                    address.generation,
-                    address.band_id,
+                    address.page_id(),
+                    address.object_id(),
+                    address.generation(),
+                    address.band_id(),
                     address.sha256.map(|digest| digest.len()).unwrap_or(0),
                 );
                 println!(
-                    "[census]   item.object_id == address.object_id? {}",
-                    address.object_id == Some(item.object_id)
+                    "[census]   item.object_id == address.object_id()? {}",
+                    address.object_id() == Some(item.object_id)
                 );
             }
         }
@@ -9946,11 +9946,11 @@ fn which_parts_of_a_page_address_are_populated() {
         for page in bucket.page_index.values() {
             pages += 1;
             let a = &page.address;
-            page_id += usize::from(a.page_id.is_some());
-            object_id += usize::from(a.object_id.is_some());
-            routing_bucket += usize::from(a.routing_bucket.is_some());
-            generation += usize::from(a.generation.is_some());
-            band_id += usize::from(a.band_id.is_some());
+            page_id += usize::from(a.page_id().is_some());
+            object_id += usize::from(a.object_id().is_some());
+            routing_bucket += usize::from(a.routing_bucket().is_some());
+            generation += usize::from(a.generation().is_some());
+            band_id += usize::from(a.band_id().is_some());
             sha256 += usize::from(a.sha256.is_some());
             compactable += usize::from(a.compact_slab_address().is_some());
         }
@@ -10036,10 +10036,10 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
         for page in bucket.page_index.values() {
             pages += 1;
-            if page.address.routing_bucket == Some(*bucket_key) {
+            if page.address.routing_bucket() == Some(*bucket_key) {
                 routing_matches_bucket += 1;
             }
-            if page.address.object_id == Some(page.object_id) {
+            if page.address.object_id() == Some(page.object_id) {
                 object_id_matches_entry += 1;
             }
             if let Some(sha) = page.address.sha256.as_ref() {
@@ -10077,7 +10077,7 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
     );
     assert!(
         object_id_matches_entry == 0 || object_id_matches_entry == pages,
-        "address.object_id agrees with the entry on {object_id_matches_entry} of {pages} pages \
+        "address.object_id() agrees with the entry on {object_id_matches_entry} of {pages} pages \
          -- a partial match means an entry and its address disagree about which object it is"
     );
 }

@@ -683,8 +683,8 @@ impl TemporalEngine {
                     target,
                     address.clone(),
                     bytes,
-                    address.object_id,
-                    address.routing_bucket,
+                    address.object_id(),
+                    address.routing_bucket(),
                 ));
             }
         }
@@ -724,7 +724,7 @@ impl TemporalEngine {
                                 published.page_slab_id,
                                 published.offset,
                                 published.length,
-                                published.routing_bucket,
+                                published.routing_bucket(),
                             ),
                             bytes,
                         );
@@ -751,7 +751,7 @@ impl TemporalEngine {
                                 published.page_slab_id,
                                 published.offset,
                                 published.length,
-                                published.routing_bucket,
+                                published.routing_bucket(),
                             ),
                             bytes,
                         );

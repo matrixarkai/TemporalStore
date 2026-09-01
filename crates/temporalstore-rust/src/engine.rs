@@ -1439,7 +1439,7 @@ impl TemporalEngine {
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket))
+            address.routing_bucket()))
     }
 
     #[doc(hidden)]
@@ -2121,11 +2121,11 @@ fn collect_upsert_index_items(
         };
         let Some(address) = address else { continue };
         let routing_bucket = address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| {
                 page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
             });
-        let object_id = address.object_id.unwrap_or_else(|| {
+        let object_id = address.object_id().unwrap_or_else(|| {
             stable_page_object_id(shard_id, kind, object_key, component.as_deref())
         });
         let page_ref_key = format!(
@@ -2136,8 +2136,8 @@ fn collect_upsert_index_items(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.page_id.unwrap_or_default(),
-            address.generation.unwrap_or_default()
+            address.page_id().unwrap_or_default(),
+            address.generation().unwrap_or_default()
         );
         items.push(crate::index_log::IndexItem {
             kind: crate::index_log::IndexItemKind::Page,
@@ -2147,9 +2147,9 @@ fn collect_upsert_index_items(
             model_id: (*kind).to_string(),
             component: component.clone(),
             object_id,
-            page_id: address.page_id.unwrap_or(0),
+            page_id: address.page_id().unwrap_or(0),
             size: address.length,
-            in_log: address.page_id.is_none(),
+            in_log: address.page_id().is_none(),
             deleted: false,
             address: Some(address),
         });
@@ -2189,7 +2189,7 @@ fn collect_command_index_items(
                 model_id: page.model_id.clone(),
                 component: page.component.clone(),
                 object_id: page.object_id,
-                page_id: page.address.page_id.unwrap_or(0),
+                page_id: page.address.page_id().unwrap_or(0),
                 address: Some(page.address.clone()),
                 size: page.address.length,
                 in_log: page.log_backed,
@@ -3255,17 +3255,7 @@ fn append_value(
     if !async_storage {
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
-    let address = BlockAddress {
-        page_slab_id: HOT_PAGE_SLAB_ID,
-        offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
-        length: bytes.len() as u64,
-        page_id: None,
-        object_id,
-        routing_bucket,
-        generation: object_id,
-        band_id: None,
-        sha256: None,
-    };
+    let address = BlockAddress::from_parts(HOT_PAGE_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None, None);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if block_in_wal::enabled() {
@@ -3280,7 +3270,7 @@ fn append_value(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket),
+            address.routing_bucket()),
         bytes,
     );
     Ok(address)
@@ -3434,7 +3424,7 @@ fn read_page_bytes(
         address.page_slab_id,
         address.offset,
         address.length,
-        address.routing_bucket);
+        address.routing_bucket());
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
     }
@@ -3457,7 +3447,7 @@ fn read_page_bytes(
         if block_in_wal::enabled() {
             if let Some(bytes) =
                 address
-                    .object_id
+                    .object_id()
                     .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
             {
                 let _ = cache.put(cache_key, bytes.clone());

@@ -459,7 +459,7 @@ impl TemporalEngine {
         for entry in collect_live_page_entries(shard) {
             let routing_bucket = entry
                 .address
-                .routing_bucket
+                .routing_bucket()
                 .unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
             if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
                 report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
@@ -471,7 +471,7 @@ impl TemporalEngine {
                 entry.address.page_slab_id,
                 entry.address.offset,
                 entry.address.length,
-                entry.address.routing_bucket,
+                entry.address.routing_bucket(),
             );
             if self.cache.get(&key).ok().flatten().is_some() {
                 report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
