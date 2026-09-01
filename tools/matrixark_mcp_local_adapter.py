@@ -5015,7 +5015,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         records. That is the property that makes the fast path unable to lose one."""
         if not records:
             return
-        with self._event_member_index_lock:
+        # Read both through getattr, as `_invalidate_event_member_index` already does: an instance
+        # that never ran __init__ has neither, and no lock means no index, which by the rule above
+        # makes this a no-op rather than an error.
+        lock = getattr(self, "_event_member_index_lock", None)
+        if lock is None or getattr(self, "_event_member_index", None) is None:
+            return
+        with lock:
             if self._event_member_index is None:
                 return
             for event_id, members in build_event_member_index(records).items():
