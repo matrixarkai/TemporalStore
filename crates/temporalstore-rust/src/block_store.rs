@@ -1680,8 +1680,13 @@ mod address_size_tests {
         assert_eq!(address.page_id(), Some(9), "one setter disturbed another");
     }
 
-    /// The packing is an in-memory concern: the serialized form must be unchanged, including the
-    /// renames an older index on disk was written with.
+    /// The packing is an in-memory concern, and the field names are a wire concern: an address
+    /// writes the short names and still reads the long ones an older index was written with.
+    ///
+    /// Both halves matter and they pull in opposite directions. Writing the long names again would
+    /// undo the saving that shortening them bought -- fifteen characters to label an integer, once
+    /// per index item forever. Failing to read them would make every index already on disk
+    /// unresolvable, and the blocks it points at unreachable.
     #[test]
     fn wire_form_survives_the_packing() {
         let address = BlockAddress::from_parts(
@@ -1695,12 +1700,39 @@ mod address_size_tests {
             Some(0),
         );
         let json = serde_json::to_value(&address).unwrap();
-        assert_eq!(json["page_segment_id"], 5);
-        assert_eq!(json["routing_slot"], 3);
-        assert_eq!(json["band_id"], 0, "a present zero must still be written");
+        // What is written now: the short names, and nothing else.
+        assert_eq!(json["ps"], 5, "the page slab id");
+        assert_eq!(json["o"], 64, "the offset");
+        assert_eq!(json["l"], 128, "the length");
+        assert_eq!(json["rs"], 3, "the routing bucket");
+        assert_eq!(json["b"], 0, "a present zero must still be written");
+        for long in ["page_segment_id", "routing_slot", "band_id", "object_id", "generation"] {
+            assert!(
+                json.get(long).is_none(),
+                "{long} is a read alias now, not something to write"
+            );
+        }
         assert!(json.get("present").is_none(), "presence bits must not reach the wire");
+
+        // What is still read: the same address spelled the old way, which is what an index already
+        // on disk looks like.
         let round_tripped: BlockAddress = serde_json::from_value(json).unwrap();
-        assert_eq!(round_tripped, address);
+        assert_eq!(round_tripped, address, "an address written now must read back identical");
+        let long_form = serde_json::json!({
+            "page_segment_id": 5_u64,
+            "offset": 64_u64,
+            "length": 128_u64,
+            "page_id": 1_u64,
+            "object_id": 2_u64,
+            "routing_slot": 3_u32,
+            "generation": 4_u64,
+            "band_id": 0_u64,
+        });
+        let from_long: BlockAddress = serde_json::from_value(long_form).unwrap();
+        assert_eq!(
+            from_long, address,
+            "an index written with the long names must still load as the same address"
+        );
     }
 }
 
