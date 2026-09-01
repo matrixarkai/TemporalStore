@@ -612,6 +612,7 @@ mod tests {
         // One idle proxy for a group that wants three.
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "p1".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -662,6 +663,7 @@ mod tests {
             .ok);
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "p1".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -989,6 +991,7 @@ mod tests {
             .ok);
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "p1".to_string(),
                 namespace: String::new(),
                 location: "us-east/dc1/az1".to_string(),
@@ -1113,6 +1116,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "p1".to_string(),
                 namespace: String::new(),
                 location: "rack-1".to_string(),
@@ -1177,6 +1181,7 @@ mod tests {
         for addr in ["p1", "p2"] {
             assert!(meta
                 .register_proxy(RegisterProxyRequest {
+                    registered_at_ms: 0,
                     proxy_addr: addr.to_string(),
                     namespace: String::new(),
                     location: "rack-1".to_string(),
