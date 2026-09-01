@@ -269,8 +269,7 @@ pub(super) fn wait_for_replica_value(
 }
 
 pub(super) fn free_local_addr() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().to_string()
+    crate::http::test_ports::unique_addr()
 }
 
 pub(super) fn topology_for_shard(
