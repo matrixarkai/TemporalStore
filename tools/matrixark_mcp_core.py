@@ -9,6 +9,9 @@ adapter that can be replaced with TemporalStore RPC calls later.
 """
 
 from __future__ import annotations
+import base64 as _base64
+import struct as _struct
+from struct import error as struct_error
 
 import argparse
 import secrets
@@ -3208,6 +3211,84 @@ def _int8_scale(dims: int) -> float:
     if dims <= 0:
         return 127.0
     return 127.0 * math.sqrt(dims) / 8.0
+
+
+# base64 of int16 little-endian, instead of JSON decimal digits. A 512-dim vector at
+# scale=1e4 is 2,745 bytes as JSON text and 1,368 as base64 int16 -- the same integers, half
+# the bytes, because JSON spends a character per digit on numbers no human reads.
+#
+# int16 fits by construction: at scale=1e4 the largest value a UNIT vector can produce is
+# 10,000 (all mass on one axis), against a signed range of 32,767. Measured over 500 real
+# vectors the range was -1,649..3,036.
+#
+# Default ON. Measured on a 1 MB skill: vectors 2,727 -> 1,374 bytes, the whole ingest
+# 12.6 MB -> 9.2 MB, amplification 11.8x -> 8.6x, 12.6 GB -> 9.2 GB per thousand documents.
+# The footprint stops being vector-dominated: 59.5% -> 44.6%.
+#
+# This was gated off until every reader went through decode_stored_vector, because the failure
+# mode is silent rather than loud: a reader that expects a list and receives a string does not
+# raise, it reads the vector as absent, and the node simply stops being scored. Twenty-four
+# extraction sites and five isinstance(..., list) checks -- one on the context-node path, one
+# skipping context_node embeddings outright -- had to be fixed first.
+#
+# Set MATRIXARK_EMBEDDING_VECTOR_BASE64=0 to write lists again. Reads accept both forms either
+# way, so a store written under one setting serves under the other.
+EMBEDDING_VECTOR_BASE64 = os.environ.get(
+    "MATRIXARK_EMBEDDING_VECTOR_BASE64", "1"
+).strip().lower() not in {"0", "false", "no", "off", ""}
+
+_VECTOR_BASE64_PREFIX = "i16:"
+_VECTOR_INT8_PREFIX = "i8:"
+
+
+def encode_stored_vector(values: list) -> Any:
+    """The stored form of an already-compacted vector: a list, or a tagged base64 string.
+
+    Width follows the values. int8 vectors fit in a byte, and packing them as int16 would waste
+    half of every element -- the encoding and the container have to agree or the smaller encoding
+    buys nothing. The tag records which was used, so a store holding both serves both.
+    """
+    if not EMBEDDING_VECTOR_BASE64 or not values:
+        return values
+    try:
+        ints = [int(v) for v in values]
+    except (ValueError, TypeError):
+        return values          # a float encoding cannot use this container
+    try:
+        if all(-128 <= v <= 127 for v in ints):
+            return _VECTOR_INT8_PREFIX + _base64.b64encode(
+                _struct.pack("<%db" % len(ints), *ints)).decode("ascii")
+        packed = _struct.pack("<%dh" % len(ints), *ints)
+    except (struct_error, ValueError, TypeError):
+        # Outside int16 as well -- a scale too large for this container. Store the list rather
+        # than lose precision silently.
+        return values
+    return _VECTOR_BASE64_PREFIX + _base64.b64encode(packed).decode("ascii")
+
+
+def decode_stored_vector(value: Any) -> list:
+    """Read a stored vector in either form.
+
+    Dual read is the whole point: a store written before this existed holds lists, and one
+    written with it holds tagged strings. Both must serve, and a reader that silently treated
+    the string form as "no vector" would stop scoring those nodes with nothing to notice.
+    """
+    if isinstance(value, str):
+        if value.startswith(_VECTOR_INT8_PREFIX):
+            blob = _base64.b64decode(value[len(_VECTOR_INT8_PREFIX):])
+            return list(_struct.unpack("<%db" % len(blob), blob))
+        if value.startswith(_VECTOR_BASE64_PREFIX):
+            blob = _base64.b64decode(value[len(_VECTOR_BASE64_PREFIX):])
+            return list(_struct.unpack("<%dh" % (len(blob) // 2), blob))
+        return []
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def record_vector(record: Json) -> list:
+    """The vector on a record, in either stored form."""
+    return decode_stored_vector((record or {}).get("vector"))
 
 
 def compact_embedding_vector(vector: list[float]) -> list[float]:

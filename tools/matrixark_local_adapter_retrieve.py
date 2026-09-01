@@ -1277,7 +1277,7 @@ class _LocalAdapterRetrieveMixin:
                             {**meta, "ref_type": ref_type, "ref_hash": ref_hash}
                         )
             if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1", "context_node"}:
-                dense_score = cosine(query_embedding, record.get("vector", []))
+                dense_score = cosine(query_embedding, record_vector(record))
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
@@ -1299,24 +1299,24 @@ class _LocalAdapterRetrieveMixin:
                 # is the ONLY place a new log stores it. setdefault so a separate
                 # context_embedding record from an old log still wins when both exist; the two
                 # are identical by construction where both were written.
-                event_embedding_vectors.setdefault(record["event_id_hash"], record["vector"])
+                event_embedding_vectors.setdefault(record["event_id_hash"], record_vector(record))
             elif record_type == "context_entity" and record.get("vector"):
-                entity_embedding_vectors.setdefault(record["entity_hash"], record["vector"])
+                entity_embedding_vectors.setdefault(record["entity_hash"], record_vector(record))
             elif record_type == "context_segment" and record.get("vector"):
-                segment_embedding_vectors.setdefault(record["segment_hash"], record["vector"])
+                segment_embedding_vectors.setdefault(record["segment_hash"], record_vector(record))
             elif record_type == "context_compression_event" and record.get("vector"):
                 compression_embedding_vectors.setdefault(
-                    record["compression_id_hash"], record["vector"]
+                    record["compression_id_hash"], record_vector(record)
                 )
             elif record_type == "resource_chunk" and record.get("vector"):
-                resource_embedding_vectors.setdefault(record["chunk_hash"], record["vector"])
+                resource_embedding_vectors.setdefault(record["chunk_hash"], record_vector(record))
             elif record_type == "skill_section" and record.get("vector"):
-                resource_embedding_vectors.setdefault(record["section_hash"], record["vector"])
+                resource_embedding_vectors.setdefault(record["section_hash"], record_vector(record))
             elif record_type == "context_node" and record.get("vector"):
                 # Node scoring from the node's own vector, exactly the formula the separate
                 # records used; an old log's separate record wins via the earlier branch, so
                 # this only fills nodes nothing has scored yet.
-                dense_score = cosine(query_embedding, record.get("vector", []))
+                dense_score = cosine(query_embedding, record_vector(record))
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
@@ -1334,19 +1334,19 @@ class _LocalAdapterRetrieveMixin:
                         "embedding_type": "context_node",
                     }
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
-                event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                event_embedding_vectors[record["ref_hash"]] = record_vector(record)
             elif record_type == "context_embedding" and record.get("embedding_type") in {"entity_state", "profile_entity_state"}:
-                entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                entity_embedding_vectors[record["ref_hash"]] = record_vector(record)
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
-                segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                segment_embedding_vectors[record["ref_hash"]] = record_vector(record)
             elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
-                compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                compression_embedding_vectors[record["ref_hash"]] = record_vector(record)
             elif record_type == "context_embedding" and record.get("embedding_type") == "resource_chunk":
-                resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                resource_embedding_vectors[record["ref_hash"]] = record_vector(record)
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_section":
-                resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                resource_embedding_vectors[record["ref_hash"]] = record_vector(record)
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
-                skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                skill_embedding_vectors[record["ref_hash"]] = record_vector(record)
         for record in records:
             if record.get("record_type") != "context_node":
                 continue
@@ -1490,19 +1490,19 @@ class _LocalAdapterRetrieveMixin:
                     remember_embedding_metadata(record)
                     embedding_type = record.get("embedding_type")
                     if embedding_type == "event_text":
-                        event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        event_embedding_vectors[record["ref_hash"]] = record_vector(record)
                     elif embedding_type in {"entity_state", "profile_entity_state"}:
-                        entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        entity_embedding_vectors[record["ref_hash"]] = record_vector(record)
                     elif embedding_type == "segment_text":
-                        segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        segment_embedding_vectors[record["ref_hash"]] = record_vector(record)
                     elif embedding_type == "compression_summary":
-                        compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        compression_embedding_vectors[record["ref_hash"]] = record_vector(record)
                     elif embedding_type == "resource_chunk":
-                        resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        resource_embedding_vectors[record["ref_hash"]] = record_vector(record)
                     elif embedding_type == "skill_section":
-                        resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        resource_embedding_vectors[record["ref_hash"]] = record_vector(record)
                     elif embedding_type == "skill_summary":
-                        skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                        skill_embedding_vectors[record["ref_hash"]] = record_vector(record)
 
         def selected_by_tree(record: Json) -> bool:
             if traversal.get("fallback_to_flat"):

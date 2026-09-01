@@ -7,6 +7,7 @@ from __future__ import annotations
 
 try:
     from tools.matrixark_mcp_core import (
+        record_vector,
         Json,
         candidate_access_scope,
         clamp01,
@@ -17,6 +18,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
+        record_vector,
         Json,
         candidate_access_scope,
         clamp01,
@@ -64,7 +66,7 @@ def add_node_embedding_score(
         return False
     if record.get("embedding_type") not in {"node_l0", "node_l1"}:
         return False
-    dense_score = cosine(query_embedding, record.get("vector", []))
+    dense_score = cosine(query_embedding, record_vector(record))
     node_hash = record["node_hash"]
     node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
     sparse_score = sparse_lexical_score(query_terms, node_text)
