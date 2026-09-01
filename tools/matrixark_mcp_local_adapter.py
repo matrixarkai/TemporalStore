@@ -685,6 +685,72 @@ _EMBEDDING_META_SKIP = (
     "storage_part",
 )
 
+try:  # package path
+    from tools.matrixark_mcp_ingest_resource_chunk_records import (
+        INDEX_SKIP_OWNER_DERIVABLE_TERMS,
+    )
+except ImportError:  # top-level path (direct tools/ execution)
+    from matrixark_mcp_ingest_resource_chunk_records import (
+        INDEX_SKIP_OWNER_DERIVABLE_TERMS,
+    )
+
+
+def drop_owner_derivable_postings(records: list[Json], resolve_owner=None) -> list[Json]:
+    """Drop a posting whose term the record it points at can derive for itself.
+
+    `context_index_posting_record` has fourteen call sites; this runs once, on the batch, next to
+    the fold that already resolves owners. A posting survives unless EVERY ref it carries has an
+    owner that both carries a vector -- the condition the retrieve prefilter's owner branch is
+    gated on -- and derives the term.
+
+    Conservative in every direction that matters: an owner that cannot be found, or that carries no
+    vector, keeps its posting.
+    """
+    if not INDEX_SKIP_OWNER_DERIVABLE_TERMS:
+        return records
+    postings = [(i, r) for i, r in enumerate(records)
+                if r.get("record_type") == "context_index"]
+    if not postings:
+        return records
+
+    owners_by_key: dict[tuple[str, Any], Json] = {}
+    for record in records:
+        record_type = record.get("record_type")
+        for ref_type, (owner_type, field) in INLINE_VECTOR_OWNER_BY_REF_TYPE.items():
+            if record_type == owner_type and record.get(field) not in (None, ""):
+                owners_by_key[(ref_type, record[field])] = record
+
+    def owner_for(ref_type, ref_hash):
+        owner = owners_by_key.get((ref_type, ref_hash))
+        if owner is None and resolve_owner is not None:
+            mapped = INLINE_VECTOR_OWNER_BY_REF_TYPE.get(ref_type)
+            if mapped is not None:
+                owner = resolve_owner(mapped[0], mapped[1], ref_hash)
+        return owner
+
+    drop: set[int] = set()
+    for index, record in postings:
+        name = str(record.get("index_name") or "")
+        ref_type = str(record.get("ref_type") or "")
+        refs = context_index_record_ref_hashes(record)
+        if not name or not refs or ref_type not in INLINE_VECTOR_OWNER_BY_REF_TYPE:
+            continue
+        covered = True
+        for ref_hash in refs:
+            owner = owner_for(ref_type, ref_hash)
+            if owner is None or not (owner.get("vector") or owner.get("embedding_meta")):
+                covered = False
+                break
+            if name not in candidate_index_terms(owner, {}, {}):
+                covered = False
+                break
+        if covered:
+            drop.add(index)
+    if not drop:
+        return records
+    return [r for i, r in enumerate(records) if i not in drop]
+
+
 def fold_embedding_records(
     records: list[Json],
     resolve_owner=None,
@@ -4371,6 +4437,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
         records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
+        records = drop_owner_derivable_postings(
+            records, resolve_owner=self._resolve_embedding_owner
+        )
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4406,6 +4475,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
         records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
+        records = drop_owner_derivable_postings(
+            records, resolve_owner=self._resolve_embedding_owner
+        )
         if not records:
             return
         if self._queue_batched_records(records):
