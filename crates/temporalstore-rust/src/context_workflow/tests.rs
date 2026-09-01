@@ -3499,6 +3499,455 @@ fn what_the_discarded_node_text_costs() {
     println!("     candidate for the whole node fetch. Worth building only if it is a real share.");
 }
 
+/// Which of the writes an ingest makes is the one that grows with the store?
+///
+/// One add allocates 5,293 / 13,099 / 32,629 at 40 / 120 / 320 memories, a bare `ContextUpsertNode`
+/// is flat at ~188, bucket-index visits per add are 3 and flat, and the ingest no longer calls the
+/// reconstruct. So the growth is in one of the other writes, and each lands in a different
+/// structure.
+///
+/// Measures each on stores grown by REAL ingests, and reports growth per command. A flat command is
+/// cleared; a rising one is the answer.
+///
+///   cargo test --features alloc-probe --lib which_ingest_write_grows_with_the_store -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn which_ingest_write_grows_with_the_store() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    const TENANT: u64 = 8201;
+
+    fn grown(rung: usize) -> TemporalEngine {
+        let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: TENANT,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("CMDB-{index:06}"),
+                        title: format!("cmd {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+        engine
+    }
+
+    fn measure(engine: &TemporalEngine, tag: u64, command: impl Fn(u64) -> Command) -> u64 {
+        // Warm with a different key, then measure a fresh one: the first write of a shape touches
+        // one-off structures that are not part of a steady-state write.
+        let warm = engine.execute(ExecuteRequest { shard_id: 1, command: command(tag) });
+        assert!(warm.status.ok, "warm: {:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest { shard_id: 1, command: command(tag + 1) });
+        assert!(out.status.ok, "measured: {:?}", out.status);
+        probe.stop().allocs
+    }
+
+    let small = grown(40);
+    let large = grown(320);
+
+    println!(
+        "
+  command                     corpus 40   corpus 320   growth
+"
+    );
+
+    let node = |hash: u64| Command::ContextUpsertNode {
+        tenant_hash: TENANT,
+        node: crate::types::ContextNode {
+            node_hash: hash,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/probe-{hash}"),
+            l0: "probe node".to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vec![0.25_f32; 16],
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: vec![0.5_f32; 16],
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        },
+    };
+    let summary = |hash: u64| Command::ContextUpsertSummary {
+        tenant_hash: TENANT,
+        summary: crate::types::ContextSummary {
+            node_hash: hash,
+            level: 2,
+            text: "a probe summary of ordinary length for one turn".to_string(),
+            valid_from_ms: 1_781_700_000_000,
+            vector: vec![0.5_f32; 16],
+            embedding_model_hash: 7,
+        },
+    };
+
+    for (label, small_n, large_n) in [
+        ("ContextUpsertNode", measure(&small, 9_100_000, node), measure(&large, 9_200_000, node)),
+        (
+            "ContextUpsertSummary",
+            measure(&small, 9_300_000, summary),
+            measure(&large, 9_400_000, summary),
+        ),
+    ] {
+        println!(
+            "  {label:<26} {small_n:>9}   {large_n:>10}   {:>6.2}x",
+            large_n as f64 / small_n.max(1) as f64,
+        );
+    }
+    println!(
+        "
+  growth ~1x   => that write is not the cost.
+  growth >>1x  => it is, and its structure is where an ingest's corpus-proportional work lives.
+"
+    );
+}
+
+/// Does the per-ingest bucket-index reconstruct explain add's corpus-proportional cost?
+///
+/// One add allocates 5,293 / 13,099 / 32,629 at 40 / 120 / 320 memories while a bare engine write is
+/// flat at 188 / 188 / 190, so the growth sits above the engine inside `ingest_extract_context`.
+/// That function closes its coalescing window and calls `reconstruct_bucket_index_now`, which walks
+/// every live page in the shard.
+///
+/// Measuring the reconstruct alone against the same rungs decides it: growth here means the walk IS
+/// the cost and the remedy is for context writes to maintain the index rather than ask for a
+/// rebuild; flat here means the hypothesis is wrong and extraction is hiding it somewhere else.
+///
+///   cargo test --features alloc-probe --lib does_the_per_ingest_reconstruct_explain_the_growth -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_the_per_ingest_reconstruct_explain_the_growth() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  corpus   reconstruct allocs   reconstruct bytes   vs first rung
+"
+    );
+    let mut first: Option<u64> = None;
+    for rung in [40_usize, 120, 320] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 7801,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 7801,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("RECON-{index:06}"),
+                        title: format!("recon {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        // The reconstruct on its own, on a store of this size. Warm first: the call is idempotent,
+        // so a second one measures steady state rather than whatever the last ingest left dirty.
+        engine.reconstruct_bucket_index_now(1);
+        let probe = crate::alloc_probe::Probe::start();
+        engine.reconstruct_bucket_index_now(1);
+        let counts = probe.stop();
+
+        let ratio = match first {
+            Some(base) if base > 0 => counts.allocs as f64 / base as f64,
+            _ => {
+                first = Some(counts.allocs);
+                1.0
+            }
+        };
+        println!(
+            "  {rung:>6}   {:>18}   {:>17}   {ratio:>13.2}x",
+            counts.allocs, counts.alloc_bytes,
+        );
+    }
+    println!(
+        "
+  Compare against the add itself: 5,293 / 13,099 / 32,629 allocations, 6.16x across these rungs.
+  A reconstruct that tracks those numbers is the cost; one that is flat clears it.
+"
+    );
+}
+
+/// Is add's corpus-proportional allocation in the engine write, or in the extraction above it?
+///
+/// One add allocates 5,293 / 13,099 / 32,629 times at 40 / 120 / 320 memories -- 6.16x for an 8x
+/// corpus. The bucket-index rebuild is not the cause (that is 3 visits per add now), so something
+/// else is proportional to the store.
+///
+/// This measures a BARE `ContextUpsertNode` against stores grown to the same sizes. A bare write
+/// that stays flat puts the growth above the engine, in the extraction pipeline; one that rises
+/// puts it in the write path itself. The two need different fixes, which is why it is worth
+/// separating before looking anywhere.
+///
+///   cargo test --features alloc-probe --lib where_does_an_adds_corpus_proportional_cost_live -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn where_does_an_adds_corpus_proportional_cost_live() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  corpus   bare write allocs   bare write bytes   vs first rung
+"
+    );
+    let mut first: Option<u64> = None;
+    for rung in [40_usize, 120, 320] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Grow the store with REAL adds, so the bare write below sees a realistic store rather
+        // than one containing only nodes.
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 7701,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: 7701,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("BISECT-{index:06}"),
+                        title: format!("bisect {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        let node = crate::types::ContextNode {
+            node_hash: 9_000_000 + rung as u64,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/bare-{rung}"),
+            l0: "a bare write, carrying no extraction".to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vec![0.25_f32; 16],
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: vec![0.5_f32; 16],
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        };
+        // Warm: the first write of a session touches one-off structures.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: 7701, node: node.clone() },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: 7701, node },
+        });
+        assert!(out.status.ok, "{:?}", out.status);
+        let counts = probe.stop();
+
+        let ratio = match first {
+            Some(base) if base > 0 => counts.allocs as f64 / base as f64,
+            _ => {
+                first = Some(counts.allocs);
+                1.0
+            }
+        };
+        println!(
+            "  {rung:>6}   {:>17}   {:>16}   {ratio:>13.2}x",
+            counts.allocs, counts.alloc_bytes,
+        );
+    }
+    println!(
+        "
+  bare write FLAT   => the growth is above the engine, in the extraction pipeline.
+  bare write RISING => the engine write path itself does work proportional to the store.
+"
+    );
+}
+
+/// What does one add allocate, and does it grow with the corpus?
+///
+/// `add` is the largest single cost in the API matrix, and the only thing measured about it so far
+/// is bucket-index visits. Allocation is a separate question: a constant-allocation add is
+/// acceptable however slow, while one that allocates in proportion to the store is the quadratic
+/// shape the index work removed, resurfacing somewhere else.
+///
+/// Measures the LAST add at each rung, so the figure is what an add costs on a store of that size
+/// rather than an average smeared across the growth.
+///
+///   cargo test --features alloc-probe --lib what_one_add_allocates_as_the_corpus_grows -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_one_add_allocates_as_the_corpus_grows() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    fn one_add(engine: &TemporalEngine, index: usize) {
+        let report = ingest_extract_context(
+            engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: 7601,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 7601,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("ALLOCADD-{index:06}"),
+                    title: format!("add {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "add {index} failed: {:?}", report.status);
+    }
+
+    println!(
+        "
+  corpus   allocs for one add   bytes for one add   allocs vs first rung
+"
+    );
+    let mut first: Option<u64> = None;
+    for rung in [40_usize, 120, 320] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Grow to one short of the rung, then measure the add that lands ON it.
+        for index in 0..rung.saturating_sub(1) {
+            one_add(&engine, index);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        one_add(&engine, rung - 1);
+        let counts = probe.stop();
+        let ratio = match first {
+            Some(base) if base > 0 => counts.allocs as f64 / base as f64,
+            _ => {
+                first = Some(counts.allocs);
+                1.0
+            }
+        };
+        println!(
+            "  {rung:>6}   {:>18}   {:>17}   {ratio:>20.2}x",
+            counts.allocs, counts.alloc_bytes,
+        );
+    }
+    println!(
+        "
+  ratio flat across rungs => an add costs the same on a big store as a small one.
+  ratio rising with corpus => the add path still does work proportional to the store.
+"
+    );
+}
+
 /// How many allocations does one retrieve make, and how does that scale with the corpus?
 ///
 /// Bytes decoded are not the interesting quantity on their own: with a production-width vector the
@@ -4668,5 +5117,166 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
         0, retrieve.fanout_plan.summary_lookup_nodes,
         "the copy already answered; reading the summary again would reach the same verdict and \
          count it twice"
+    );
+}
+
+
+/// Does a summary write fall through to a full bucket-index rebuild?
+///
+/// Every piece of the summary arm measures flat: the series append is 35 allocations at both 40 and
+/// 320 memories, the plain value append 8, and disabling the node-copy path gives byte-identical
+/// counts. Yet `ContextUpsertSummary` costs 1,553 allocations at 40 and 10,667 at 320 while
+/// `ContextUpsertNode` stays at ~190. The cost is therefore not the write but what the post-write
+/// path does after it: maintain the bucket index for the touched keys, or -- when maintenance does
+/// not cover them -- rebuild it, walking every live page in the shard.
+///
+/// `live_page_scan_entries` counts exactly the entries that walk materializes, so it separates the
+/// two outcomes by measurement rather than by reading:
+///
+///   live entries ~0           => maintenance covered the write
+///   live entries ~ store size => it did not, and every write of that shape is O(store)
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_summary_write_rebuild_the_whole_index -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_a_summary_write_rebuild_the_whole_index() {
+    const TENANT: u64 = 7907;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let node = |hash: u64| Command::ContextUpsertNode {
+        tenant_hash: TENANT,
+        node: crate::types::ContextNode {
+            node_hash: hash,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/rebuild-{hash}"),
+            l0: "probe node".to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vec![0.25_f32; 16],
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: vec![0.5_f32; 16],
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        },
+    };
+    let summary = |hash: u64| Command::ContextUpsertSummary {
+        tenant_hash: TENANT,
+        summary: crate::types::ContextSummary {
+            node_hash: hash,
+            level: 2,
+            text: "a probe summary of ordinary length for one turn".to_string(),
+            valid_from_ms: 1_781_700_000_000,
+            vector: vec![0.5_f32; 16],
+            embedding_model_hash: 7,
+        },
+    };
+
+    // Warm with one key, measure a different one: the first write of a shape touches one-off
+    // structures that are not part of a steady-state write.
+    fn measure(
+        engine: &TemporalEngine,
+        tag: u64,
+        command: impl Fn(u64) -> Command,
+    ) -> (u64, u64, u64, u64, u64, u64) {
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: command(tag),
+        });
+        assert!(warm.status.ok, "warm: {:?}", warm.status);
+        crate::engine::reset_live_page_scan_entries();
+        crate::engine::bucket_visit_sites::reset();
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: command(tag + 1),
+        });
+        let allocs = probe.stop().allocs;
+        assert!(out.status.ok, "measured: {:?}", out.status);
+        let (layout, clear_dirty, refresh, remove_all) = crate::engine::bucket_visit_sites::snapshot();
+        (
+            allocs,
+            crate::engine::live_page_scan_entries(),
+            layout,
+            clear_dirty,
+            refresh,
+            remove_all,
+        )
+    }
+
+    println!(
+        "
+  corpus   command                  allocs   live   layout   clear_dirty   refresh   remove_all
+"
+    );
+
+    for rung in [40_usize, 320] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: TENANT,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("REBUILD-{index:06}"),
+                        title: format!("rebuild {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        let node_row = measure(&engine, 9_500_000 + rung as u64 * 10, node);
+        let summary_row = measure(&engine, 9_700_000 + rung as u64 * 10, summary);
+        for (label, row) in [
+            ("ContextUpsertNode   ", node_row),
+            ("ContextUpsertSummary", summary_row),
+        ] {
+            let (allocs, live, layout, clear_dirty, refresh, remove_all) = row;
+            println!(
+                "  {rung:>6}   {label}  {allocs:>9}   {live:>4}   {layout:>6}   {clear_dirty:>11}   {refresh:>7}   {remove_all:>10}"
+            );
+        }
+    }
+
+    println!(
+        "
+  live is 0 everywhere: no rebuild fires. Whichever of the remaining columns rises with the corpus
+  is the walk that makes a summary write cost 54x a node write; if none rises, the cost is not a
+  bucket walk at all and the next cut is inside the maintenance call itself.
+"
     );
 }

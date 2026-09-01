@@ -972,7 +972,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     }
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
     for entry in collect_bucket_index_live_page_entries(shard) {
-        if entry.deleted || entry.kind != Arc::from("hash") {
+        if entry.deleted || &*entry.kind != "hash" {
             continue;
         }
         hashes
@@ -1485,7 +1485,20 @@ pub(super) fn sync_bucket_index_object_pages(
 ) {
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
-    let target_buckets = if shard.bucket_index.object_page_lookup.is_empty() {
+    // An empty lookup means "not established yet", which callers read as a signal to fall back to
+    // scanning. Establishing it still walks the buckets; maintaining an established one must not.
+    //
+    // The ref total counts as part of being established. Only a rebuild can set it -- a count that
+    // starts at "unknown" cannot be incremented into a right answer -- and the load path fills the
+    // lookup without it, so a shard can come up with entries and no total. The wholesale rebuild
+    // this replaces re-established the total on every series write, which hid that. Tie the two
+    // together instead: either both are established or the next write establishes both.
+    let lookup_needs_establishing = shard.bucket_index.object_page_lookup.is_empty()
+        || shard.bucket_index.object_component_page_refs.is_none();
+    // Components whose pages this call drops, so the lookup can be corrected for exactly those
+    // instead of being rebuilt from every page in the shard.
+    let mut removed_components: BTreeSet<Option<Arc<str>>> = BTreeSet::new();
+    let target_buckets = if lookup_needs_establishing {
         shard
             .bucket_index
             .bucket_map
@@ -1509,8 +1522,13 @@ pub(super) fn sync_bucket_index_object_pages(
             continue;
         };
         let before = bucket.page_index.len();
-        bucket.page_index
-            .retain(|_, page| !(page.model_id == Arc::from(kind) && page.object_key == object_key));
+        bucket.page_index.retain(|_, page| {
+            let matches_object = &*page.model_id == kind && page.object_key == object_key;
+            if matches_object {
+                removed_components.insert(page.component.clone());
+            }
+            !matches_object
+        });
         if bucket.page_index.len() != before {
             removed_any = true;
             touched_buckets.insert(routing_bucket);
@@ -1521,6 +1539,17 @@ pub(super) fn sync_bucket_index_object_pages(
             }
             bucket.in_memory = !bucket.page_index.is_empty();
             update_bucket_layout(bucket);
+        }
+    }
+
+    if !lookup_needs_establishing {
+        // Only this object's own entries were dropped above, so only they need correcting.
+        for component in &removed_components {
+            shard.bucket_index.remove_object_page_lookup_entry(
+                kind,
+                object_key,
+                component.as_deref(),
+            );
         }
     }
 
@@ -1576,20 +1605,25 @@ pub(super) fn sync_bucket_index_object_pages(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
-        bucket.page_index.insert(
-            page_index_ref_key(&entry),
-            PageIndex {
-                object_key: entry.object_key,
-                model_id: entry.kind,
-                component: entry.component.clone(),
-                object_id,
-                address: entry.address,
-                dirty: entry.dirty,
-                deleted: entry.deleted,
-                log_backed: entry.log_backed,
-            },
-        );
+        let page_ref_key = page_index_ref_key(&entry);
+        let page = PageIndex {
+            object_key: entry.object_key,
+            model_id: entry.kind,
+            component: entry.component.clone(),
+            object_id,
+            address: entry.address,
+            dirty: entry.dirty,
+            deleted: entry.deleted,
+            log_backed: entry.log_backed,
+        };
+        bucket.page_index.insert(Arc::clone(&page_ref_key), page.clone());
         update_bucket_layout(bucket);
+        // The bucket borrow has to end before the lookup, which borrows the index itself.
+        if !lookup_needs_establishing {
+            shard
+                .bucket_index
+                .insert_object_page_lookup(routing_bucket, page_ref_key, &page);
+        }
     }
 
     if removed_any || dirty {
@@ -1598,7 +1632,9 @@ pub(super) fn sync_bucket_index_object_pages(
             .bucket_map
             .retain(|_, bucket| !bucket.page_index.is_empty() || !bucket.object_index.is_empty());
     }
-    shard.bucket_index.rebuild_object_page_lookup();
+    if lookup_needs_establishing {
+        shard.bucket_index.rebuild_object_page_lookup();
+    }
 }
 
 pub(super) fn classify_bucket_layout(object_count: usize, page_ref_count: usize) -> BucketLayoutState {
