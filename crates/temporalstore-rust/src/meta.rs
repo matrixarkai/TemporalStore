@@ -9911,4 +9911,76 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
             .unwrap()
             .is_empty());
     }
+
+    #[test]
+    fn a_shard_served_short_of_replicas_is_reported() {
+        // Placement is worked out per request, so a table asking for three
+        // replicas on a cluster that can only offer one is answered with one
+        // and nothing says so. The readiness flag named after this is a
+        // hardcoded true.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
+                numa_nodes: Vec::new(),
+                server_addr: "only-node".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "wants_three".to_string(),
+                first_shard_id: 500,
+                shard_count: 2,
+                replica_count: 3,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+
+        let response = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "wants_three".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        assert_eq!(response.shards.len(), 2);
+        for shard in &response.shards {
+            assert_eq!(shard.replicas.len(), 1, "one server can only be one replica");
+        }
+
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(
+            exported.contains("temporalstore_meta_placement_short 2"),
+            "both shards were served short and nothing said so:
+{exported}"
+        );
+        assert!(
+            exported.contains("temporalstore_meta_placement_short_total 2"),
+            "{exported}"
+        );
+
+        // A second answer keeps the running total moving and reports the same
+        // shortfall now, rather than accumulating into the gauge.
+        let _ = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "wants_three".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        let exported = meta.subsystem_metrics().prometheus();
+        assert!(exported.contains("temporalstore_meta_placement_short 2"), "{exported}");
+        assert!(exported.contains("temporalstore_meta_placement_short_total 4"), "{exported}");
+    }
 }
