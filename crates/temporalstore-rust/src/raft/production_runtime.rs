@@ -785,6 +785,26 @@ impl ProductionMetaRaftRuntime {
         self.cluster.clone()
     }
 
+    /// Which node leads, and the address it was configured with.
+    ///
+    /// `RaftClusterStatus` carries the leader's id and no address, and the
+    /// addresses live only in the options -- so nothing could answer "where do
+    /// I send a change" without them.
+    pub fn leader_endpoint(&self) -> Option<(RaftNodeId, String)> {
+        let leader_id = self.status().leader_id;
+        self.options
+            .nodes
+            .iter()
+            .find(|node| node.node_id == leader_id)
+            .map(|node| (leader_id, node.addr.clone()))
+    }
+
+    /// The node this process is, which is what makes the answer above useful:
+    /// a caller can tell whether it is already talking to the leader.
+    pub fn local_node_id(&self) -> RaftNodeId {
+        self.options.local_node_id
+    }
+
     pub fn status(&self) -> RaftClusterStatus {
         self.cluster.status()
     }
