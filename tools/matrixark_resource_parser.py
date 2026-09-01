@@ -92,8 +92,11 @@ DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
 # each step -- where many chunks are equally correct for any query and exactly one counts as right,
 # so its hit@1 was near zero for every configuration and could not rank them. Re-measured on this
 # repo's own markdown documentation with real multilingual-e5-large vectors, and with the query
-# sentence removed from its own target so no verbatim span leaks into the match, the larger window
-# scored HIGHER at both hit@1 and hit@5 while producing fewer chunks.
+# sentence removed from its own target so no verbatim span leaks into the match, 512 came out
+# INDISTINGUISHABLE from 240 over 269 queries: hit@1 +0.015 with a 95% interval of [-0.042, +0.072]
+# and hit@5 +0.023 [-0.062, +0.107]. Not better, not worse -- and nowhere near a 25-point loss,
+# which sits far outside that interval. So the larger chunk is a free footprint choice, not a
+# quality one.
 DEFAULT_MAX_CHUNK_TOKENS = int(
     os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240")
 )
