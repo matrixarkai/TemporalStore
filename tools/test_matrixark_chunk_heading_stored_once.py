@@ -81,10 +81,21 @@ class AHeadingIsStoredOnce(unittest.TestCase):
                 [t for t in terms if t.startswith("heading_slug:")],
                 "no heading_slug term derivable, so a heading-anchored query matches nothing")
 
-    def test_the_ingest_still_writes_heading_slug_postings(self):
-        postings = [r for r in self.records
-                    if str(r.get("index_name", "")).startswith("heading_slug:")]
-        self.assertTrue(postings, "heading_slug postings disappeared from the write path")
+    def test_the_heading_slug_term_is_still_reachable(self):
+        """Reachability is the invariant; a posting was only ever one way to provide it.
+
+        Chunks now carry their own vector, so the prefilter reaches the owner and recomputes the
+        term from it, and the posting that restated it is no longer written. What must stay true
+        is that some route still offers a `heading_slug:` term for every section -- whether that
+        is a stored row or the owner deriving it.
+        """
+        for record in self.sections:
+            posted = [r for r in self.records
+                      if str(r.get("index_name", "")).startswith("heading_slug:")]
+            derived = [t for t in core.candidate_index_terms(record, {}, {})
+                       if t.startswith("heading_slug:")]
+            self.assertTrue(posted or derived,
+                            "no route offers a heading_slug term for this section")
 
 
 if __name__ == "__main__":
