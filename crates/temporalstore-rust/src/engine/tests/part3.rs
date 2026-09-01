@@ -1874,17 +1874,7 @@ fn rebuild_bucket_page_ownership_preserves_dirty_watermarks() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "k".to_string(),
-        BlockAddress {
-            page_slab_id: 1,
-            offset: 0,
-            length: 4,
-            page_id: Some(1),
-            object_id: Some(30),
-            routing_bucket: Some(3),
-            band_id: None,
-            generation: Some(1),
-            sha256: None,
-        },
+        BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None, None),
     );
     shard.bucket_index.bucket_map.insert(
         3,
@@ -2101,8 +2091,8 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
             .strings
             .get_mut("slot-authority")
             .expect("secondary string view");
-        stale.object_id = Some(stale.object_id.unwrap_or_default().wrapping_add(99));
-        stale.routing_bucket = Some(stale.routing_bucket.unwrap_or_default().wrapping_add(99));
+        stale.set_object_id(Some(stale.object_id().unwrap_or_default().wrapping_add(99)));
+        stale.set_routing_bucket(Some(stale.routing_bucket().unwrap_or_default().wrapping_add(99)));
         stale.page_slab_id = stale.page_slab_id.wrapping_add(999);
     }
 
@@ -2322,7 +2312,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
             .next()
             .expect("legacy page index should load")
             .address
-            .routing_bucket,
+            .routing_bucket(),
         Some(7)
     );
 }
@@ -2369,17 +2359,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     model_id: "string".to_string(),
                     component: None,
                     object_id: 30,
-                    address: BlockAddress {
-                        page_slab_id: 1,
-                        offset: 0,
-                        length: 4,
-                        page_id: Some(1),
-                        object_id: Some(30),
-                        routing_bucket: Some(3),
-                        band_id: None,
-                        generation: Some(1),
-                        sha256: None,
-                    },
+                    address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None, None),
                     dirty: false,
                     deleted: false,
                     log_backed: true,
@@ -2408,17 +2388,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "feature".to_string(),
                         component: None,
                         object_id: 40,
-                        address: BlockAddress {
-                            page_slab_id: 2,
-                            offset: 0,
-                            length: 4,
-                            page_id: Some(2),
-                            object_id: Some(40),
-                            routing_bucket: Some(4),
-                            band_id: None,
-                            generation: Some(2),
-                            sha256: None,
-                        },
+                        address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40), Some(4), Some(2), None, None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2431,17 +2401,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "feature".to_string(),
                         component: None,
                         object_id: 40,
-                        address: BlockAddress {
-                            page_slab_id: 2,
-                            offset: 4,
-                            length: 4,
-                            page_id: Some(3),
-                            object_id: Some(40),
-                            routing_bucket: Some(4),
-                            band_id: None,
-                            generation: Some(3),
-                            sha256: None,
-                        },
+                        address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40), Some(4), Some(3), None, None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2470,17 +2430,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "hash".to_string(),
                         component: Some("a".to_string()),
                         object_id: 50,
-                        address: BlockAddress {
-                            page_slab_id: 3,
-                            offset: 0,
-                            length: 1,
-                            page_id: Some(4),
-                            object_id: Some(50),
-                            routing_bucket: Some(5),
-                            band_id: None,
-                            generation: Some(4),
-                            sha256: None,
-                        },
+                        address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50), Some(5), Some(4), None, None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2493,17 +2443,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: "hash".to_string(),
                         component: Some("b".to_string()),
                         object_id: 51,
-                        address: BlockAddress {
-                            page_slab_id: 3,
-                            offset: 1,
-                            length: 1,
-                            page_id: Some(5),
-                            object_id: Some(51),
-                            routing_bucket: Some(5),
-                            band_id: None,
-                            generation: Some(5),
-                            sha256: None,
-                        },
+                        address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51), Some(5), Some(5), None, None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,

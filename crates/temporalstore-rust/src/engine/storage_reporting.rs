@@ -57,7 +57,7 @@ fn object_lifecycle_report_from_entries(
         .filter(|entry| {
             let routing_bucket = entry
                 .address
-                .routing_bucket
+                .routing_bucket()
                 .unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
             selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
         })
@@ -70,10 +70,10 @@ fn object_lifecycle_report_from_entries(
     for entry in &entries {
         let expected_object_id = expected_live_page_object_id(shard_id, entry);
         expected_object_ids.insert(expected_object_id);
-        if entry.address.object_id.is_none() || entry.address.routing_bucket.is_none() {
+        if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
             missing_owner_page_refs = missing_owner_page_refs.saturating_add(1);
         }
-        match entry.address.object_id {
+        match entry.address.object_id() {
             Some(actual_object_id) => {
                 actual_object_owners
                     .entry(actual_object_id)
@@ -128,13 +128,13 @@ pub(super) fn bucket_dump_entries_by_key(
         .filter(|entry| {
             let routing_bucket = entry
                 .address
-                .routing_bucket
+                .routing_bucket()
                 .unwrap_or_else(|| routing_bucket_for_key(&entry.object_key));
             selected_buckets.is_empty() || selected_buckets.contains(&routing_bucket)
         })
         .map(|entry| {
             let component = entry.component.unwrap_or_default();
-            let page_id = entry.address.page_id.unwrap_or_else(|| {
+            let page_id = entry.address.page_id().unwrap_or_else(|| {
                 stable_page_object_id(
                     shard_id,
                     &entry.kind,
@@ -163,7 +163,7 @@ pub(super) fn bucket_storage_summaries(
     for entry in collect_live_page_entries(shard) {
         let routing_bucket = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
             routing_bucket,
@@ -179,7 +179,7 @@ pub(super) fn bucket_storage_summaries(
             .entry(routing_bucket)
             .or_default()
             .insert(entry.address.page_slab_id);
-        if let Some(zone_id) = entry.address.band_id {
+        if let Some(zone_id) = entry.address.band_id() {
             summary.last_compacted_zone = Some(
                 summary
                     .last_compacted_zone
@@ -266,20 +266,10 @@ pub(super) fn native_packed_page_index_bytes(
     bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
     let page_size = if page.deleted { 0 } else { page.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&BlockAddress {
-        page_slab_id: page.page_slab_id,
-        offset: page.offset,
-        length: page.length,
-        page_id: page.page_id,
-        object_id: page.object_id,
-        routing_bucket: Some(page.routing_bucket),
-        generation: page.page_id.or(page.object_id),
-        band_id: page.zone_id,
-        sha256: page.checksum.as_deref().and_then(|text| {
+    let address = physical_address_word(&BlockAddress::from_parts(page.page_slab_id, page.offset, page.length, page.page_id, page.object_id, Some(page.routing_bucket), page.page_id.or(page.object_id), page.zone_id, page.checksum.as_deref().and_then(|text| {
             let mut bytes = [0u8; 32];
             hex::decode_to_slice(text.as_bytes(), &mut bytes).ok().map(|_| bytes)
-        }),
-    });
+        })));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
@@ -355,12 +345,12 @@ pub(super) fn storage_physical_index_report(
 
     let mut missing_routing_bucket_count = 0usize;
     for entry in collect_live_page_entries(shard) {
-        if entry.address.routing_bucket.is_none() {
+        if entry.address.routing_bucket().is_none() {
             missing_routing_bucket_count = missing_routing_bucket_count.saturating_add(1);
         }
         let routing_bucket = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets
             .entry(routing_bucket)
@@ -380,9 +370,9 @@ pub(super) fn storage_physical_index_report(
             page_slab_id: entry.address.page_slab_id,
             offset: entry.address.offset,
             length: entry.address.length,
-            page_id: entry.address.page_id,
-            object_id: entry.address.object_id,
-            zone_id: entry.address.band_id,
+            page_id: entry.address.page_id(),
+            object_id: entry.address.object_id(),
+            zone_id: entry.address.band_id(),
             checksum: entry.address.sha256_hex(),
             dirty: entry.dirty,
             deleted: entry.deleted,
@@ -431,9 +421,9 @@ pub(super) fn storage_physical_index_report(
                 page_slab_id: page.address.page_slab_id,
                 offset: page.address.offset,
                 length: page.address.length,
-                page_id: page.address.page_id,
+                page_id: page.address.page_id(),
                 object_id: Some(page.object_id),
-                zone_id: page.address.band_id,
+                zone_id: page.address.band_id(),
                 checksum: page.address.sha256_hex(),
                 dirty: page.dirty,
                 deleted: page.deleted,
@@ -637,7 +627,7 @@ pub(super) fn bucket_object_page_ownership_report(
     let entries = collect_live_page_entries(shard);
     report.page_ref_count = entries.len();
     for entry in entries {
-        let routing_bucket = entry.address.routing_bucket.unwrap_or_default();
+        let routing_bucket = entry.address.routing_bucket().unwrap_or_default();
         if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
             continue;
         }
@@ -735,7 +725,7 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
     for entry in collect_live_page_entries(shard) {
         let routing_bucket = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         by_bucket.entry(routing_bucket).or_default().insert(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -745,10 +735,10 @@ pub(super) fn bucket_generation_fingerprints_by_bucket(shard: &ShardState) -> BT
             entry.address.page_slab_id,
             entry.address.offset,
             entry.address.length,
-            entry.address.page_id.unwrap_or_default(),
-            entry.address.object_id.unwrap_or_default(),
-            entry.address.routing_bucket.unwrap_or(routing_bucket),
-            entry.address.generation.unwrap_or_default(),
+            entry.address.page_id().unwrap_or_default(),
+            entry.address.object_id().unwrap_or_default(),
+            entry.address.routing_bucket().unwrap_or(routing_bucket),
+            entry.address.generation().unwrap_or_default(),
             entry.address.sha256_hex().unwrap_or_default()
         ));
     }

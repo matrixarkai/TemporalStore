@@ -89,7 +89,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             live_page_ref_count = live_page_ref_count.saturating_add(1);
             object_ids.insert(page.object_id);
             *object_ref_counts.entry(page.object_id).or_default() += 1;
-            if page.address.object_id != Some(page.object_id) {
+            if page.address.object_id() != Some(page.object_id) {
                 missing_object_owner_refs = missing_object_owner_refs.saturating_add(1);
             }
             let object = objects

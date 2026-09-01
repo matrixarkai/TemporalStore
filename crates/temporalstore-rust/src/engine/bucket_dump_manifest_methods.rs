@@ -610,7 +610,7 @@ impl TemporalEngine {
         let live_page_entries = collect_live_page_entries(&restored)
             .into_iter()
             .filter(|entry| {
-                let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+                let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
                     self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                 });
                 manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket)
@@ -777,7 +777,7 @@ impl TemporalEngine {
             if let Ok(restored) = crate::engine::decode_index_bytes(&manifest.index_bytes) {
                 let manifest_buckets = manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>();
                 for entry in collect_live_page_entries(&restored) {
-                    let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+                    let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
                         self.routing_bucket_for_key(manifest.shard_id, &entry.object_key)
                     });
                     if manifest_buckets.is_empty() || manifest_buckets.contains(&routing_bucket) {

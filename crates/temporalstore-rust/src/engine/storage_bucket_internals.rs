@@ -227,7 +227,7 @@ pub(super) fn live_page_entry(
         // A page materialized in the block store carries a real page_id; a page
         // backed only by the hot/append-log buffer does not. Evaluate before the
         // `address` field moves it.
-        log_backed: address.page_id.is_none(),
+        log_backed: address.page_id().is_none(),
         address,
         dirty: false,
         deleted: false,
@@ -240,12 +240,12 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.band_id.unwrap_or(address.page_slab_id),
+        zone_id: address.band_id().unwrap_or(address.page_slab_id),
         slab_id: address.page_slab_id,
-        page_id: address.page_id.unwrap_or(address.page_slab_id),
+        page_id: address.page_id().unwrap_or(address.page_slab_id),
         offset: address.offset,
         length: address.length,
-        generation: address.object_id.unwrap_or(0),
+        generation: address.object_id().unwrap_or(0),
     }
 }
 
@@ -255,7 +255,7 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.band_id.unwrap_or(address.page_slab_id),
+        zone_id: address.band_id().unwrap_or(address.page_slab_id),
         block_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
@@ -297,7 +297,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 timestamp_range: None,
                 page_addresses: vec![page_address],
                 append_watermark: entry.address.offset,
-                generation: entry.address.object_id.unwrap_or(0),
+                generation: entry.address.object_id().unwrap_or(0),
             }
         })
         .collect();
@@ -310,10 +310,10 @@ pub(super) fn storage_index_snapshot_with_samples(
             StorageBlockIndexEntrySample {
                 band: entry
                     .address
-                    .band_id
+                    .band_id()
                     .unwrap_or(entry.address.page_slab_id),
                 checksum: entry.address.sha256_hex().unwrap_or_default(),
-                generation: entry.address.object_id.unwrap_or(0),
+                generation: entry.address.object_id().unwrap_or(0),
                 page_address,
                 block_address,
             }
@@ -339,7 +339,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 object_key: entry.object_key.clone(),
                 page_chain: Vec::new(),
                 tombstone: entry.deleted,
-                generation: entry.address.object_id.unwrap_or(0),
+                generation: entry.address.object_id().unwrap_or(0),
             });
         if sample.page_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
             sample
@@ -347,7 +347,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         sample.tombstone |= entry.deleted;
-        sample.generation = sample.generation.max(entry.address.object_id.unwrap_or(0));
+        sample.generation = sample.generation.max(entry.address.object_id().unwrap_or(0));
     }
     snapshot.object_index_entry_samples = object_entries
         .into_iter()
@@ -381,9 +381,9 @@ pub(super) fn storage_watermark_snapshot_with_samples(
     for entry in collect_live_page_entries(shard) {
         let bucket_id = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        let generation = entry.address.object_id.unwrap_or(0);
+        let generation = entry.address.object_id().unwrap_or(0);
         bucket_watermarks
             .entry(bucket_id)
             .and_modify(|current| *current = (*current).max(generation))
@@ -453,7 +453,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
         .take(MAX_STORAGE_GC_SAMPLES)
         .map(|entry| StorageTombstoneSample {
             ref_id: storage_gc_ref(entry),
-            generation: entry.address.object_id.unwrap_or(0),
+            generation: entry.address.object_id().unwrap_or(0),
             deleted_at_ms: now,
             reason: "object_tombstone".to_string(),
         })
@@ -524,7 +524,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     entries.sort_by(|left, right| {
         (
             left.address
-                .band_id
+                .band_id()
                 .unwrap_or(left.address.page_slab_id),
             left.address.page_slab_id,
             left.address.offset,
@@ -534,7 +534,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             .cmp(&(
                 right
                     .address
-                    .band_id
+                    .band_id()
                     .unwrap_or(right.address.page_slab_id),
                 right.address.page_slab_id,
                 right.address.offset,
@@ -583,10 +583,10 @@ pub(super) fn storage_topology_snapshot_with_samples(
     for entry in &entries {
         let zone_id = entry
             .address
-            .band_id
+            .band_id()
             .unwrap_or(entry.address.page_slab_id);
         let slab_id = entry.address.page_slab_id;
-        let generation = entry.address.object_id.unwrap_or(0);
+        let generation = entry.address.object_id().unwrap_or(0);
         let zone = zones.entry(zone_id).or_default();
         zone.slabs.insert(slab_id);
         zone.generation = zone.generation.max(generation);
@@ -627,7 +627,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
 
         let bucket_id = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets.entry(bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(generation);
@@ -866,13 +866,13 @@ pub(super) fn rebuild_bucket_page_ownership(
         .collect();
     shard.bucket_index.bucket_map.clear();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
             continue;
         }
-        let object_id = entry.address.object_id.unwrap_or_else(|| {
+        let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_page_object_id(
                 shard_id,
                 &entry.kind,
@@ -1286,8 +1286,8 @@ pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> Arc<str> {
         entry.address.page_slab_id,
         entry.address.offset,
         entry.address.length,
-        entry.address.page_id.unwrap_or_default(),
-        entry.address.generation.unwrap_or_default()
+        entry.address.page_id().unwrap_or_default(),
+        entry.address.generation().unwrap_or_default()
     ))
 }
 
@@ -1306,10 +1306,10 @@ pub(super) fn page_physical_identity_key(
         address.page_slab_id,
         address.offset,
         address.length,
-        address.page_id,
-        address.object_id,
-        address.routing_bucket,
-        address.generation,
+        address.page_id(),
+        address.object_id(),
+        address.routing_bucket(),
+        address.generation(),
     )
 }
 
@@ -1346,10 +1346,10 @@ pub(super) fn upsert_bucket_index_page_with(
     stage: bool,
 ) {
     let routing_bucket = address
-        .routing_bucket
+        .routing_bucket()
         .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
     let object_id = address
-        .object_id
+        .object_id()
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
     // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
@@ -1372,7 +1372,7 @@ pub(super) fn upsert_bucket_index_page_with(
         object_key: object_key.to_string(),
         kind: kind.to_string(),
         component,
-        log_backed: address.page_id.is_none(),
+        log_backed: address.page_id().is_none(),
         address,
         dirty,
         deleted: false,
@@ -1541,16 +1541,16 @@ pub(super) fn sync_bucket_index_object_pages(
 
     for address in unique_addresses.into_values() {
         let routing_bucket = address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
         let object_id = address
-            .object_id
+            .object_id()
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
         let entry = LivePageEntry {
             object_key: object_key.to_string(),
             kind: kind.to_string(),
             component: None,
-            log_backed: address.page_id.is_none(),
+            log_backed: address.page_id().is_none(),
             address,
             dirty,
             deleted: false,
@@ -1924,10 +1924,10 @@ pub(super) fn rebuild_bucket_first_index(
         .collect();
     let mut bucket_index = CoreIndex::default();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
-        let object_id = entry.address.object_id.unwrap_or_else(|| {
+        let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_page_object_id(
                 shard_id,
                 &entry.kind,
@@ -2171,7 +2171,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                             entry.address.page_slab_id,
                             entry.address.offset,
                             entry.address.length,
-                            entry.address.routing_bucket,
+                            entry.address.routing_bucket(),
                         );
                         warm_batch.push((key, bytes.clone()));
                     }
@@ -2380,7 +2380,7 @@ pub(super) fn insert_timestamped_secondary_view(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         );
         warm_batch.push((key, bytes.clone()));
     }
@@ -2409,7 +2409,7 @@ pub(super) fn insert_timestamped_secondary_view(
                 slot.insert(address.clone());
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if address.generation.unwrap_or(0) >= slot.get().generation.unwrap_or(0) {
+                if address.generation().unwrap_or(0) >= slot.get().generation().unwrap_or(0) {
                     slot.insert(address.clone());
                 }
             }
@@ -2445,7 +2445,7 @@ pub(super) fn insert_context_event_views(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         );
         warm_batch.push((key, bytes.clone()));
     }
@@ -2467,7 +2467,7 @@ pub(super) fn insert_context_event_views(
                 slot.insert(address.clone());
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if address.generation.unwrap_or(0) >= slot.get().generation.unwrap_or(0) {
+                if address.generation().unwrap_or(0) >= slot.get().generation().unwrap_or(0) {
                     slot.insert(address.clone());
                 }
             }
@@ -2495,16 +2495,16 @@ pub(super) fn validate_bucket_ownership_index(
         let expected_object_id = expected_live_page_object_id(shard_id, &entry);
         let expected_routing_bucket =
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
-        let expected_page_id = entry.address.page_id;
+        let expected_page_id = entry.address.page_id();
         let object_mismatch = entry
             .address
-            .object_id
+            .object_id()
             .is_some_and(|actual| actual != expected_object_id);
         let bucket_mismatch = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .is_some_and(|actual| actual != expected_routing_bucket);
-        if entry.address.object_id.is_none() || entry.address.routing_bucket.is_none() {
+        if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
             validation.missing_owner_page_refs =
                 validation.missing_owner_page_refs.saturating_add(1);
         }
@@ -2518,7 +2518,7 @@ pub(super) fn validate_bucket_ownership_index(
                         page.address.page_slab_id == entry.address.page_slab_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
-                            && page.address.page_id == expected_page_id
+                            && page.address.page_id() == expected_page_id
                             && page.model_id == entry.kind
                     })
             });
@@ -2534,9 +2534,9 @@ pub(super) fn validate_bucket_ownership_index(
                     page_slab_id: entry.address.page_slab_id,
                     offset: entry.address.offset,
                     expected_object_id,
-                    actual_object_id: entry.address.object_id,
+                    actual_object_id: entry.address.object_id(),
                     expected_routing_bucket,
-                    actual_routing_bucket: entry.address.routing_bucket,
+                    actual_routing_bucket: entry.address.routing_bucket(),
                 });
         }
     }

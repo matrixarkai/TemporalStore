@@ -73,17 +73,7 @@ impl LocalBlockStore {
         }
         let path = slab_path(&inner.root, inner.page_slab_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let address = BlockAddress {
-            page_slab_id: inner.page_slab_id,
-            offset: inner.write_offset,
-            length: record.bytes.len() as u64,
-            page_id: Some(page_id),
-            object_id,
-            routing_bucket,
-            generation: Some(page_id),
-            band_id: Some(band_id),
-            sha256: Some(sha256_bytes(bytes)),
-        };
+        let address = BlockAddress::from_parts(inner.page_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id), Some(band_id), Some(sha256_bytes(bytes)));
         file.write_all(&record.bytes)?;
         file.flush()?;
         // Two INDEPENDENT relaxations:
@@ -182,17 +172,7 @@ impl LocalBlockStore {
                 let path = slab_path(&inner.root, inner.page_slab_id);
                 file = Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
-            let address = BlockAddress {
-                page_slab_id: inner.page_slab_id,
-                offset: inner.write_offset,
-                length: record.bytes.len() as u64,
-                page_id: Some(page_id),
-                object_id,
-                routing_bucket,
-                generation: Some(page_id),
-                band_id: Some(band_id),
-                sha256: Some(sha256_bytes(&bytes)),
-            };
+            let address = BlockAddress::from_parts(inner.page_slab_id, inner.write_offset, record.bytes.len() as u64, Some(page_id), object_id, routing_bucket, Some(page_id), Some(band_id), Some(sha256_bytes(&bytes)));
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
             }
