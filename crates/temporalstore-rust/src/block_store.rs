@@ -1695,12 +1695,32 @@ mod address_size_tests {
             Some(0),
         );
         let json = serde_json::to_value(&address).unwrap();
-        assert_eq!(json["page_segment_id"], 5);
-        assert_eq!(json["routing_slot"], 3);
-        assert_eq!(json["band_id"], 0, "a present zero must still be written");
+        // The wire uses short keys; the long spellings survive only as read aliases.
+        assert_eq!(json["ps"], 5, "written as the short key");
+        assert_eq!(json["rs"], 3);
+        assert_eq!(json["b"], 0, "a present zero must still be written");
+        assert!(
+            json.get("page_segment_id").is_none(),
+            "the long spelling is an alias for reading, not a name for writing"
+        );
         assert!(json.get("present").is_none(), "presence bits must not reach the wire");
         let round_tripped: BlockAddress = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped, address);
+
+        // And the other direction: a document written with the long spellings still loads, which
+        // is what the aliases are for.
+        let legacy = serde_json::json!({
+            "page_segment_id": 5,
+            "offset": 64,
+            "length": 128,
+            "page_id": 1,
+            "object_id": 2,
+            "routing_slot": 3,
+            "generation": 4,
+            "band_id": 0,
+        });
+        let from_legacy: BlockAddress = serde_json::from_value(legacy).unwrap();
+        assert_eq!(from_legacy, address, "an older document must still load");
     }
 }
 

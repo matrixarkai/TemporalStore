@@ -4358,12 +4358,27 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     shard.bucket_index.rebuild_object_page_lookup();
     let rebuilt = &shard.bucket_index.object_page_lookup;
 
-    let missing: Vec<&String> = rebuilt.keys().filter(|key| !maintained.contains_key(*key)).collect();
-    let extra: Vec<&String> = maintained.keys().filter(|key| !rebuilt.contains_key(*key)).collect();
-    let differing: Vec<&String> = rebuilt
+    // Identity is (model, object) now rather than one concatenated key, so the comparison
+    // names both halves instead of a composite.
+    let missing: Vec<String> = rebuilt
         .iter()
-        .filter(|(key, refs)| maintained.get(*key).map(|held| held != *refs).unwrap_or(false))
-        .map(|(key, _)| key)
+        .filter(|(model, object, _)| maintained.get(model, object).is_none())
+        .map(|(model, object, _)| format!("{model}/{object}"))
+        .collect();
+    let extra: Vec<String> = maintained
+        .iter()
+        .filter(|(model, object, _)| rebuilt.get(model, object).is_none())
+        .map(|(model, object, _)| format!("{model}/{object}"))
+        .collect();
+    let differing: Vec<String> = rebuilt
+        .iter()
+        .filter(|(model, object, refs)| {
+            maintained
+                .get(model, object)
+                .map(|held| held != *refs)
+                .unwrap_or(false)
+        })
+        .map(|(model, object, _)| format!("{model}/{object}"))
         .collect();
     assert!(
         missing.is_empty() && extra.is_empty() && differing.is_empty(),

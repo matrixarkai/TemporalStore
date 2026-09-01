@@ -304,7 +304,13 @@ fn control_api_reads_and_scans_index_log_stream() {
         .get("address")
         .or_else(|| hash_page.get("a"))
         .expect("the recorded page carries its address");
-    assert_eq!(address["page_segment_id"], serde_json::json!(0));
+    // The address writes short keys now; accept either so this test says something about the
+    // recorded page rather than about the current spelling.
+    let slab = address
+        .get("ps")
+        .or_else(|| address.get("page_segment_id"))
+        .expect("the address names the slab it lives in");
+    assert_eq!(*slab, serde_json::json!(0));
     assert!(served["strings"].get("k1").is_some());
 }
 

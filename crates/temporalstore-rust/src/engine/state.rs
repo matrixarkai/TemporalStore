@@ -334,7 +334,132 @@ pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
 /// reports. That question is precisely why the per-component map could not simply be dropped in
 /// favour of a range scan over the other: a scan of a map keyed by (object, component) cannot
 /// count distinct objects without walking every entry.
-pub(super) type ObjectPageLookup = BTreeMap<String, ObjectPageRefs>;
+/// Pages by object, nested under the model that owns them.
+///
+/// Flat, this was keyed by a `model|object` concatenation: a string built for every stored object
+/// and rebuilt for every lookup. Measured at 37 B per object -- more than either copy of the object
+/// key itself -- and unshareable, because it is a different string from the key it contains.
+///
+/// Nested, the outer key is the model, which is already a shared pointer, and nothing is
+/// concatenated. A lookup walks two maps instead of building a string.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    from = "BTreeMap<String, ObjectPageRefs>",
+    into = "BTreeMap<String, ObjectPageRefs>"
+)]
+pub(super) struct ObjectPageLookup {
+    by_model: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectPageRefs>>,
+}
+
+impl ObjectPageLookup {
+    pub(super) fn get(&self, model_id: &str, object_key: &str) -> Option<&ObjectPageRefs> {
+        self.by_model.get(model_id)?.get(object_key)
+    }
+
+    pub(super) fn get_mut(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+    ) -> Option<&mut ObjectPageRefs> {
+        self.by_model.get_mut(model_id)?.get_mut(object_key)
+    }
+
+    /// The entry for this object, created empty if absent. Takes the model by shared pointer so
+    /// the outer key costs nothing to store.
+    pub(super) fn entry(
+        &mut self,
+        model_id: &Arc<str>,
+        object_key: &str,
+    ) -> &mut ObjectPageRefs {
+        let objects = self.by_model.entry(Arc::clone(model_id)).or_default();
+        if !objects.contains_key(object_key) {
+            objects.insert(Arc::from(object_key), ObjectPageRefs::default());
+        }
+        objects.get_mut(object_key).expect("just inserted")
+    }
+
+    pub(super) fn remove(&mut self, model_id: &str, object_key: &str) -> Option<ObjectPageRefs> {
+        let objects = self.by_model.get_mut(model_id)?;
+        let removed = objects.remove(object_key);
+        if objects.is_empty() {
+            self.by_model.remove(model_id);
+        }
+        removed
+    }
+
+    /// The number of objects, which is what the flat map's length meant.
+    pub(super) fn len(&self) -> usize {
+        self.by_model.values().map(BTreeMap::len).sum()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.by_model.values().all(BTreeMap::is_empty)
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.by_model.clear();
+    }
+
+    pub(super) fn values(&self) -> impl Iterator<Item = &ObjectPageRefs> {
+        self.by_model.values().flat_map(BTreeMap::values)
+    }
+
+    /// Model and object for every entry, for the places that used to read the composite key.
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Arc<str>, &ObjectPageRefs)> {
+        self.by_model.iter().flat_map(|(model, objects)| {
+            objects.iter().map(move |(object, refs)| (model, object, refs))
+        })
+    }
+}
+
+/// One part of the flat key: a decimal length, a colon, the bytes, a bar. Length-prefixed, so a
+/// value containing the separator cannot be mistaken for a boundary.
+fn take_lookup_part(input: &str) -> Option<(&str, &str)> {
+    let colon = input.find(':')?;
+    let len: usize = input[..colon].parse().ok()?;
+    let start = colon + 1;
+    let end = start.checked_add(len)?;
+    if input.len() <= end || input.as_bytes()[end] != b'|' {
+        return None;
+    }
+    Some((&input[start..end], &input[end + 1..]))
+}
+
+impl From<BTreeMap<String, ObjectPageRefs>> for ObjectPageLookup {
+    fn from(flat: BTreeMap<String, ObjectPageRefs>) -> Self {
+        let mut nested: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectPageRefs>> = BTreeMap::new();
+        for (key, refs) in flat {
+            // A key that does not parse is skipped rather than guessed at: inventing a model for
+            // it would file the object somewhere no lookup would ever look.
+            let Some((model, rest)) = take_lookup_part(&key) else {
+                continue;
+            };
+            let Some((object, tail)) = take_lookup_part(rest) else {
+                continue;
+            };
+            if !tail.is_empty() {
+                continue;
+            }
+            nested
+                .entry(Arc::from(model))
+                .or_default()
+                .insert(Arc::from(object), refs);
+        }
+        Self { by_model: nested }
+    }
+}
+
+impl From<ObjectPageLookup> for BTreeMap<String, ObjectPageRefs> {
+    fn from(nested: ObjectPageLookup) -> Self {
+        let mut flat = BTreeMap::new();
+        for (model, objects) in nested.by_model {
+            for (object, refs) in objects {
+                flat.insert(object_component_lookup_key(&model, &object), refs);
+            }
+        }
+        flat
+    }
+}
 
 /// The page refs of one object, grouped by component and ordered by it.
 ///
@@ -588,8 +713,7 @@ impl CoreIndex {
         let added = {
             let entry = self
                 .object_page_lookup
-                .entry(object_component_lookup_key(&page.model_id, &page.object_key))
-                .or_default();
+                .entry(&page.model_id, &page.object_key);
             let value = PageLookupRef {
                 routing_bucket,
                 page_ref_key,
@@ -625,7 +749,7 @@ impl CoreIndex {
         component: Option<&str>,
     ) -> Option<&[PageLookupRef]> {
         self.object_page_lookup
-            .get(&object_component_lookup_key(model_id, object_key))
+            .get(model_id, object_key)
             .and_then(|entry| entry.refs_for(component))
     }
 
@@ -635,8 +759,7 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
     ) -> Option<&ObjectPageRefs> {
-        self.object_page_lookup
-            .get(&object_component_lookup_key(model_id, object_key))
+        self.object_page_lookup.get(model_id, object_key)
     }
 
     pub(super) fn remove_object_page_lookup_entry(
@@ -645,21 +768,21 @@ impl CoreIndex {
         object_key: &str,
         component: Option<&str>,
     ) {
-        let lookup_key = object_component_lookup_key(model_id, object_key);
+
         // One vector element IS this component's entire set of refs. What this replaces had to
         // seek a range with an empty-string sentinel and take_while on the component, because the
         // per-component map flattened every component of an object into one ordered set -- so a
         // component's refs could only be found by range, not by index. Nesting deletes that.
         let mut removed = 0usize;
         let mut now_empty = false;
-        if let Some(entry) = self.object_page_lookup.get_mut(&lookup_key) {
+        if let Some(entry) = self.object_page_lookup.get_mut(model_id, object_key) {
             if let Ok(at) = entry.position(component) {
                 removed = entry.by_component.remove(at).refs.len();
             }
             now_empty = entry.by_component.is_empty();
         }
         if now_empty {
-            self.object_page_lookup.remove(&lookup_key);
+            self.object_page_lookup.remove(model_id, object_key);
         }
         if removed > 0 {
             if let Some(total) = self.object_component_page_refs.as_mut() {
