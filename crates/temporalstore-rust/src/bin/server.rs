@@ -128,12 +128,25 @@ fn main() {
     let local_state_present =
         local_shard_state_present(&[&cache_dir, &block_store_dir, &index_dir]);
     let block_store_options = block_store_options_from_env();
-    let engine = TemporalEngine::with_local_dirs_and_block_store_options(
+    // Resolved BEFORE the engine is built, because the cache's shape depends on it: the disk
+    // cache tier exists to span the distance to shared storage, and there is no such distance
+    // when the durable copy is this node's own disk. Resolving after construction (where this
+    // used to sit) meant every deployment paid for a disk tier whether or not it could help.
+    let storage_decision = temporalstore_rust::StorageBackendConfig::from_env().resolve_decision();
+    let storage_backend = storage_decision.backend.clone();
+    let disk_cache_tier = storage_backend.wants_disk_cache_tier();
+    info!(
+        backend = %storage_backend.describe(),
+        disk_cache_tier,
+        "cache tier follows the storage backend"
+    );
+    let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
         cache_memory_bytes,
         cache_dir,
         block_store_dir,
         index_dir,
         block_store_options,
+        disk_cache_tier,
     );
     // Join-empty mode (TS_SERVER_JOIN_EMPTY): register as a server but load and
     // self-register no shard, waiting for the metaserver to place shards here via
@@ -177,8 +190,6 @@ fn main() {
     // `auto` (the default) probes a configured TS_MATRIXOBJECT_ENDPOINT and only
     // selects the shared MatrixObject store when it is reachable, otherwise it
     // degrades to shared-path/raft — the `reason` records exactly which and why.
-    let storage_decision = temporalstore_rust::StorageBackendConfig::from_env().resolve_decision();
-    let storage_backend = storage_decision.backend.clone();
     info!(
         backend = %storage_backend.describe(),
         replication = ?storage_backend.replication_mode(),

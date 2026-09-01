@@ -145,8 +145,46 @@ impl TemporalEngine {
         index_dir: impl Into<PathBuf>,
         block_store_options: BlockStoreOptions,
     ) -> Self {
+        Self::with_local_dirs_block_store_options_and_disk_cache(
+            memory_capacity_bytes,
+            cache_dir,
+            block_store_dir,
+            index_dir,
+            block_store_options,
+            true,
+        )
+    }
+
+    /// As above, but `disk_cache_tier == false` builds a MEMORY-ONLY cache.
+    ///
+    /// The tiering policy's disk capacities default to 512 MB of pmem and 16 GB of SSD, so a
+    /// node that never wanted a disk tier still preallocates for one. Zeroing both leaves the
+    /// memory tier untouched and stops the disk tier existing at all -- which is what takes the
+    /// embedded key-value store out of the process, since it is only there to back that tier.
+    pub fn with_local_dirs_block_store_options_and_disk_cache(
+        memory_capacity_bytes: usize,
+        cache_dir: impl Into<PathBuf>,
+        block_store_dir: impl Into<PathBuf>,
+        index_dir: impl Into<PathBuf>,
+        block_store_options: BlockStoreOptions,
+        disk_cache_tier: bool,
+    ) -> Self {
+        let cache = if disk_cache_tier {
+            MultiLayerCache::new(memory_capacity_bytes, cache_dir)
+        } else {
+            MultiLayerCache::with_tiering_policy(
+                cache_dir,
+                matrixcache::CacheTieringPolicy {
+                    memory_capacity_bytes,
+                    pmem_capacity_bytes: 0,
+                    ssd_capacity_bytes: 0,
+                    ..Default::default()
+                },
+                matrixcache::CacheBlockOptions::default(),
+            )
+        };
         Self::with_cache_block_store_and_index_dir(
-            MultiLayerCache::new(memory_capacity_bytes, cache_dir),
+            cache,
             LocalBlockStore::with_options(block_store_dir, block_store_options),
             index_dir,
         )
