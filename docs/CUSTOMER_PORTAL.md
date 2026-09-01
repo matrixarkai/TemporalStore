@@ -791,6 +791,56 @@ every fifteen seconds is a self-inflicted load on the store it is meant to be wa
 
 ---
 
+## Deployment
+
+The storage directories, the metaserver address and the topology are **not** editable from the
+settings form, and that is deliberate: repointing a running deployment's storage from a browser does
+not reconfigure it, it strands its data. But "cannot be changed here" and "cannot be chosen at all"
+are different things, and only the first was ever true. Choosing happens when a deployment is
+*launched*, so that is where the chooser lives.
+
+| Shape | What it is | Storage |
+| --- | --- | --- |
+| One box | Everything in a single process, no metaserver, no peers. The default, and it needs no configuration to work. | Local disk: EBS, instance SSD, or whatever the machine has |
+| Replicated (Raft) | An odd number of nodes replicating through Raft, each with its own disk. | Local disk, plus a separate Raft write-ahead log directory |
+| Shared storage | Nodes are stateless in front of one shared store. | MatrixObject by default, or a shared filesystem path |
+
+`GET /v1/admin/deployment` lists the shapes and reports the backend this deployment is **actually
+running**, read from the datanode's own `temporalstore_storage_backend` metric rather than derived
+from configuration. `POST /v1/admin/deployment/plan` composes a choice and returns the environment,
+an env file, what is blocked, and what will differ from what was asked. Neither route changes this
+process.
+
+### Why the plan reports a resolved backend and not just the requested one
+
+Three choices produce a deployment that starts, serves, and is not the one that was selected — with
+no error raised anywhere:
+
+* `TS_STORAGE_BACKEND=shared` with no `TS_SHARED_STORE_DIR` **falls through to auto-detection**
+  rather than failing. Ask for shared storage, get whatever auto picks.
+* `TS_STORAGE_BACKEND=matrixobject` on a build without that feature compiled in takes the same
+  fall-through, reached a different way.
+* Standalone is **derived**, not defaulted: `!(meta_addr_is_real || TS_DISTRIBUTED)`. A metaserver
+  address arriving from a config file or a systemd drop-in is enough on its own to turn a one-box
+  deployment into a distributed one. A one-box plan therefore pins `TS_STANDALONE=1` rather than
+  leaving it to the default, so that cannot happen quietly.
+
+The engine records **why** it chose a backend in a startup log line and nowhere else, so the portal
+reports the outcome and says plainly that the reason is not readable over HTTP.
+
+The chooser also never asserts that MatrixObject is unavailable. A live backend of `matrixobject`
+proves the feature is compiled in; anything else is silence, because auto reaches other backends for
+several reasons on a build that has it. Turning a missing datanode into a claim about the build
+would print a false statement next to a storage choice.
+
+### Keys
+
+Key **names** are part of a plan; key **values** never are. The plan document can be shown, copied,
+exported and diffed without carrying a credential through any of those. Values are entered in the
+settings form above, which stores them owner-only and never returns them from any read.
+
+---
+
 ## Metrics
 
 ### The scrape
