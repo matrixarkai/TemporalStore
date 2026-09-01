@@ -1935,6 +1935,7 @@ async fn leader_snapshot_upload_records_meta_and_bootstraps_replica_from_uri() {
     let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
     let meta = SingleNodeMeta::default();
     meta.register(RegisterShardRequest {
+        registered_at_ms: 0,
         shard_id: 22,
         server_addr: "raft://node-1".to_string(),
     });
@@ -2052,6 +2053,7 @@ async fn external_snapshot_bootstrap_rejects_stale_local_replica_before_download
     let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
     let meta = SingleNodeMeta::default();
     meta.register(RegisterShardRequest {
+        registered_at_ms: 0,
         shard_id: 24,
         server_addr: "raft://node-1".to_string(),
     });

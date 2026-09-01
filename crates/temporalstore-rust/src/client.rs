@@ -811,12 +811,12 @@ impl TemporalStoreClient {
     ) -> TemporalStoreTable {
         let namespace = namespace.into();
         let table_name = table_name.into();
-        let combine_name = table_combine_name(&namespace, &table_name);
+        let combined_name = table_combine_name(&namespace, &table_name);
         self.inner
             .tables
             .write()
             .expect("client table cache lock poisoned")
-            .insert(combine_name, options.clone());
+            .insert(combined_name.clone(), options.clone());
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
@@ -829,6 +829,7 @@ impl TemporalStoreClient {
             table_name,
             shard_id: self.inner.options.default_shard_id,
             options,
+            combined_name,
         }
     }
 
@@ -850,12 +851,14 @@ impl TemporalStoreClient {
     ) -> Option<TemporalStoreTable> {
         let namespace = namespace.into();
         let table_name = table_name.into();
+        let combined_name = table_combine_name(&namespace, &table_name);
+        // A read, so it shares the lock with every request doing the same.
         let options = self
             .inner
             .tables
             .read()
             .expect("client table cache lock poisoned")
-            .get(&table_combine_name(&namespace, &table_name))
+            .get(&combined_name)
             .cloned()?;
         Some(TemporalStoreTable {
             client: self.clone(),
@@ -863,6 +866,7 @@ impl TemporalStoreClient {
             table_name,
             shard_id: self.inner.options.default_shard_id,
             options,
+            combined_name,
         })
     }
 
@@ -1011,6 +1015,12 @@ pub struct TemporalStoreTable {
     /// reads the copy the metaserver sync keeps current -- this one never changes, so
     /// anything reading it directly is frozen at open time.
     options: TableOptions,
+    /// This handle's key into the client's table map, built once.
+    ///
+    /// It is `namespace` and `table_name` joined, and neither changes for the
+    /// life of the handle -- but it was rebuilt, and allocated, on every
+    /// request that asked for the live options.
+    combined_name: String,
 }
 
 impl TemporalStoreTable {
@@ -1046,7 +1056,7 @@ impl TemporalStoreTable {
             .tables
             .read()
             .expect("client table cache lock poisoned")
-            .get(&table_combine_name(&self.namespace, &self.table_name))
+            .get(&self.combined_name)
             .cloned()
             .unwrap_or_else(|| self.options.clone())
     }
@@ -1441,14 +1451,13 @@ impl TemporalStoreTable {
         if self.client.inner.options.meta_addr.is_none() {
             return Ok(());
         }
-        let key = table_combine_name(&self.namespace, &self.table_name);
         let due = self
             .client
             .inner
             .meta_sync_tables
             .lock()
             .expect("client meta sync table lock poisoned")
-            .get(&key)
+            .get(&self.combined_name)
             .map(|state| state.next_sync_after_unix_ms <= now_unix_ms())
             .unwrap_or(false);
         if due {

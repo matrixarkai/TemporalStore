@@ -348,6 +348,50 @@ export MATRIXARK_EMBEDDING_VECTOR_SCALE=100000     # integer vectors, ranking un
 # and run the encoder as four small processes rather than one large one
 ```
 
+## 10c. Lexical postings cost 12.6% and contribute nothing measurable
+
+Postings are a second index built alongside the vectors. Measured against 374 chunks of real
+documentation with English and Chinese queries, they changed no outcome:
+
+```
+strategy                hit@1   hit@5   Chinese hit@5
+embeddings only          1/8     4/8        1/2
+embeddings + lexical     1/8     4/8        1/2
+lexical only             1/8     1/8        0/2
+```
+
+Identical with and without. Lexical alone found one answer in eight and **none of the Chinese ones**,
+because term matching does not split CJK — a Chinese query has almost no lexical surface to match.
+
+Their cost, on one 1 MB skill document:
+
+```
+                records   written      amplification
+postings on       7,574   11,806 KB       11.3x
+postings off      5,020   10,318 KB        9.8x
+                 -2,554   -12.6%       -1.52 GB per 1000 documents
+```
+
+The distribution shows why they cannot help. Of 2,554 posting lists holding 25,100 references, the
+**largest ten hold 57% of all references, and the biggest names 2,510 chunks — every chunk in the
+document.** The median list names exactly one. A list that matches everything cannot discriminate,
+and a list that matches one chunk is a per-chunk record with nothing aggregated. Nearly all the bytes
+sit at one of those two useless extremes.
+
+To turn them off:
+
+```bash
+export MATRIXARK_INDEX_POSTING_LISTS=0
+export MATRIXARK_INDEX_KEYWORD_LIMIT=0
+export MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK=0
+export MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD=0
+export MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK=0
+```
+
+Keep them for a corpus that is heavily identifier-driven — exact SKU codes, error numbers, symbol
+names — where token matching genuinely carries signal that an embedding blurs. For prose playbooks in
+mixed English and Chinese, they are cost without return.
+
 ## 10b. Window, text cap and chunk size are one decision
 
 These three must agree, and the measured answer is not the intuitive one. A cap below the window

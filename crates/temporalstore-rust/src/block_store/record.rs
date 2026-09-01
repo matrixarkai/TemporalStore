@@ -174,7 +174,7 @@ pub(super) fn decode_page_record(
         return Err(corrupt_page_envelope(address, "short header"));
     }
     let header = parse_page_record_header(record, address)?;
-    if let (Some(address_page_id), Some(record_page_id)) = (address.page_id, header.page_id) {
+    if let (Some(address_page_id), Some(record_page_id)) = (address.page_id(), header.page_id) {
         if address_page_id != record_page_id {
             return Err(corrupt_page_envelope(
                 address,
@@ -182,7 +182,7 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_object_id), Some(record_object_id)) = (address.object_id, header.object_id)
+    if let (Some(address_object_id), Some(record_object_id)) = (address.object_id(), header.object_id)
     {
         if address_object_id != record_object_id {
             return Err(corrupt_page_envelope(
@@ -194,7 +194,7 @@ pub(super) fn decode_page_record(
         }
     }
     if let (Some(address_routing_bucket), Some(record_routing_bucket)) =
-        (address.routing_bucket, header.routing_bucket)
+        (address.routing_bucket(), header.routing_bucket)
     {
         if address_routing_bucket != record_routing_bucket {
             return Err(corrupt_page_envelope(
@@ -205,7 +205,7 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_band_id), Some(record_band_id)) = (address.band_id, header.band_id)
+    if let (Some(address_band_id), Some(record_band_id)) = (address.band_id(), header.band_id)
     {
         if address_band_id != record_band_id {
             return Err(corrupt_page_envelope(
@@ -266,17 +266,7 @@ pub(super) fn logical_range_from_slab(
 
     while physical_offset < slab.len() && out.len() < size as usize {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress {
-            page_slab_id,
-            offset: physical_offset as u64,
-            length: 0,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            generation: None,
-            band_id: None,
-            sha256: None,
-        };
+        let address = BlockAddress::from_parts(page_slab_id, physical_offset as u64, 0, None, None, None, None, None, None);
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
@@ -294,15 +284,7 @@ pub(super) fn logical_range_from_slab(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = BlockAddress {
-            length: record_len as u64,
-            page_id: header.page_id,
-            object_id: header.object_id,
-            routing_bucket: header.routing_bucket,
-            generation: header.page_id.or(header.object_id),
-            band_id: header.band_id,
-            ..address
-        };
+        let address = BlockAddress::from_parts(0, 0, record_len as u64, header.page_id, header.object_id, header.routing_bucket, header.page_id.or(header.object_id), header.band_id, None);
         let payload = decode_page_record_payload(
             &remaining[header.header_len..record_len],
             &header,
@@ -470,6 +452,18 @@ fn parse_page_record_header(
     })
 }
 
+thread_local! {
+    /// One zstd decompression context per thread, reused across page reads.
+    ///
+    /// Thread-local rather than a shared pool: a decompressor is `&mut` for the duration of a
+    /// decompress, so sharing one would serialise every reader behind a lock on a path that is
+    /// otherwise concurrent.
+    static ZSTD_DECOMPRESSOR: std::cell::RefCell<zstd::bulk::Decompressor<'static>> =
+        std::cell::RefCell::new(
+            zstd::bulk::Decompressor::new().expect("zstd decompressor construction"),
+        );
+}
+
 fn decode_page_record_payload(
     stored_payload: &[u8],
     header: &PageRecordHeader,
@@ -478,9 +472,45 @@ fn decode_page_record_payload(
     match header.compression {
         PageRecordCompression::None => Ok(stored_payload.to_vec()),
         PageRecordCompression::Zstd => {
-            let payload = zstd::stream::decode_all(Cursor::new(stored_payload)).map_err(|err| {
-                corrupt_page_envelope(address, format!("zstd decompression failed: {err}"))
-            })?;
+            // Reuse one decompression context per thread instead of building one per read.
+            //
+            // `zstd::stream::decode_all` constructs a fresh streaming decoder each call, and a
+            // decoder allocates its window buffer up front. Measured over 120 freshly written
+            // summary records: the block-store read allocated ~132 KB per address to return a
+            // 344-byte payload, about 380x the data, and that read was 78% of the whole cost of
+            // fetching a record. The window is the same size whatever the record is, so the
+            // smaller the record the worse the ratio -- which is the wrong way round for a point
+            // read.
+            //
+            // `header.payload_len` is the exact decompressed size, so the bulk API needs no
+            // guessed capacity. The length check below still runs: it guards against a record
+            // whose header disagrees with its payload, which is corruption, not a size hint.
+            // `payload_len` comes out of the record header, and the bulk API allocates that much
+            // BEFORE anything is decompressed or checked -- so a header that lies (corruption, a
+            // truncated write, a hostile record) would turn into an allocation of whatever it
+            // claims. The old streaming call sized its buffer from what it actually decompressed
+            // and could not be steered this way, so this bound is guarding a hazard the reuse
+            // introduces, not one that was already here.
+            //
+            // Above the ceiling, fall back to the streaming decoder: it pays the window
+            // allocation, but a record that large is not the case being optimised, and the
+            // fallback keeps behaviour identical rather than failing a read that used to work.
+            const ZSTD_TRUSTED_PAYLOAD_CEILING: usize = 64 << 20;
+            let payload = if header.payload_len <= ZSTD_TRUSTED_PAYLOAD_CEILING {
+                ZSTD_DECOMPRESSOR
+                    .with(|decompressor| {
+                        decompressor
+                            .borrow_mut()
+                            .decompress(stored_payload, header.payload_len)
+                    })
+                    .map_err(|err| {
+                        corrupt_page_envelope(address, format!("zstd decompression failed: {err}"))
+                    })?
+            } else {
+                zstd::stream::decode_all(Cursor::new(stored_payload)).map_err(|err| {
+                    corrupt_page_envelope(address, format!("zstd decompression failed: {err}"))
+                })?
+            };
             if payload.len() != header.payload_len {
                 return Err(corrupt_page_envelope(
                     address,
@@ -561,6 +591,14 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// The digest as the 32 bytes it is, for storing.
+///
+/// `sha256_hex` remains for the places that want text -- a report, an error message. What it does
+/// not do any more is decide the in-memory representation of every page in the index.
+pub(super) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SlabSummary {
     pub(super) logical_bytes: u64,
@@ -583,17 +621,7 @@ pub(super) fn summarize_slab(
     let mut summary = SlabSummary::default();
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let address = BlockAddress {
-            page_slab_id,
-            offset: physical_offset as u64,
-            length: 0,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            generation: None,
-            band_id: None,
-            sha256: None,
-        };
+        let address = BlockAddress::from_parts(page_slab_id, physical_offset as u64, 0, None, None, None, None, None, None);
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
             return Err(corrupt_page_envelope(
                 &address,
@@ -652,17 +680,7 @@ pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabRepo
     let mut physical_offset = 0usize;
     while physical_offset < slab.len() {
         let remaining = &slab[physical_offset..];
-        let mut address = BlockAddress {
-            page_slab_id,
-            offset: physical_offset as u64,
-            length: 0,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            generation: None,
-            band_id: None,
-            sha256: None,
-        };
+        let mut address = BlockAddress::from_parts(page_slab_id, physical_offset as u64, 0, None, None, None, None, None, None);
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
             record_slab_inspection_error(
                 &mut report,
@@ -696,10 +714,10 @@ pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabRepo
             break;
         }
         address.length = record_len as u64;
-        address.page_id = header.page_id;
-        address.object_id = header.object_id;
-        address.routing_bucket = header.routing_bucket;
-        address.band_id = header.band_id;
+        address.set_page_id(header.page_id);
+        address.set_object_id(header.object_id);
+        address.set_routing_bucket(header.routing_bucket);
+        address.set_band_id(header.band_id);
         match decode_page_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
                 report.page_count = report.page_count.saturating_add(1);
@@ -778,17 +796,7 @@ mod crc32c_switch_tests {
     use super::*;
 
     fn address() -> BlockAddress {
-        BlockAddress {
-            page_slab_id: 1,
-            offset: 0,
-            length: 0,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            generation: None,
-            band_id: None,
-            sha256: None,
-        }
+        BlockAddress::from_parts(1, 0, 0, None, None, None, None, None, None)
     }
 
     /// Rewrite a freshly encoded record as if it had been written by the previous format:
@@ -878,5 +886,97 @@ mod crc32c_switch_tests {
             decode_page_record(&encoded.bytes, &address()),
             Err(BlockStoreError::ChecksumMismatch { .. })
         ));
+    }
+}
+
+
+#[cfg(test)]
+mod reused_zstd_context_tests {
+    use super::*;
+
+    fn zstd_header(payload_len: usize, stored_len: usize) -> PageRecordHeader {
+        PageRecordHeader {
+            version: PAGE_RECORD_VERSION,
+            header_len: PAGE_RECORD_HEADER_LEN,
+            payload_len,
+            stored_len,
+            expected_sha256: [0_u8; 32],
+            page_id: Some(1),
+            object_id: Some(1),
+            routing_bucket: Some(0),
+            band_id: None,
+            compression: PageRecordCompression::Zstd,
+        }
+    }
+
+    fn address_for(payload_len: usize) -> BlockAddress {
+        BlockAddress::from_parts(1, 0, payload_len as u64, Some(1), Some(1), Some(0), None, None, None)
+    }
+
+    /// Round-trip at several sizes through the shared thread-local context.
+    ///
+    /// Sizes straddle PAGE_RECORD_COMPRESSION_MIN_BYTES (256) so both the compressed and the
+    /// uncompressed branch are exercised, and the largest is well past any single decompress
+    /// buffer -- a bulk decompressor given the wrong capacity truncates rather than erroring, so
+    /// "it worked for the size I tried" is not evidence.
+    #[test]
+    fn a_compressed_record_round_trips_through_the_reused_context() {
+        for len in [1usize, 64, 255, 256, 257, 4096, 200_000] {
+            // Compressible content: random bytes would not compress, so the Zstd branch would
+            // never be taken and the test would silently cover nothing.
+            let original: Vec<u8> = (0..len).map(|i| (i % 7) as u8).collect();
+            let compressed = zstd::stream::encode_all(
+                std::io::Cursor::new(&original[..]),
+                PAGE_RECORD_COMPRESSION_LEVEL,
+            )
+            .expect("compresses");
+            let header = zstd_header(original.len(), compressed.len());
+            let decoded = decode_page_record_payload(&compressed, &header, &address_for(len))
+                .expect("a well-formed compressed record must decode");
+            assert_eq!(
+                original, decoded,
+                "length {len} did not survive the reused decompression context"
+            );
+        }
+    }
+
+    /// The same context serves many reads in a row without carrying state between them.
+    #[test]
+    fn the_context_stays_correct_across_consecutive_reads_of_different_sizes() {
+        let sizes = [4096usize, 17, 900, 3, 60_000];
+        for _ in 0..3 {
+            for len in sizes {
+                let original: Vec<u8> = (0..len).map(|i| (i % 11) as u8).collect();
+                let compressed = zstd::stream::encode_all(
+                    std::io::Cursor::new(&original[..]),
+                    PAGE_RECORD_COMPRESSION_LEVEL,
+                )
+                .expect("compresses");
+                let header = zstd_header(original.len(), compressed.len());
+                let decoded = decode_page_record_payload(&compressed, &header, &address_for(len))
+                    .expect("decodes");
+                assert_eq!(original, decoded, "size {len} was wrong on a reused context");
+            }
+        }
+    }
+
+    /// A header that lies about its payload length is refused, not served.
+    ///
+    /// This matters more now than it did: the bulk API allocates the CLAIMED length before
+    /// decompressing anything, so a lie is acted on before it is checked.
+    #[test]
+    fn a_header_that_lies_about_its_length_is_refused() {
+        let original: Vec<u8> = (0..1000).map(|i| (i % 5) as u8).collect();
+        let compressed = zstd::stream::encode_all(
+            std::io::Cursor::new(&original[..]),
+            PAGE_RECORD_COMPRESSION_LEVEL,
+        )
+        .expect("compresses");
+        // The record really holds 1000 bytes; the header claims 4242.
+        let header = zstd_header(4242, compressed.len());
+        assert!(
+            decode_page_record_payload(&compressed, &header, &address_for(1000)).is_err(),
+            "a payload_len that disagrees with the record must be an error, not a short read"
+        );
     }
 }

@@ -43,9 +43,11 @@ pub(crate) mod eviction_sampler;
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
 pub(crate) use storage_manager_cycle::cross_shard_reclaim_guard_enabled;
+#[cfg(test)]
+pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
 pub use storage_bucket_internals::{
-    bucket_page_index_visits, bucket_visit_sites, live_page_scan_entries,
+    bucket_page_index_visits, bucket_visit_sites, layout_by_caller, live_page_scan_entries,
     reset_bucket_page_index_visits, reset_live_page_scan_entries,
 };
 mod compaction;
@@ -178,6 +180,35 @@ fn wal_resident_page_floor(limit: usize) -> usize {
 }
 
 impl TemporalEngine {
+    /// Rebuild the bucket first-index once, for a caller that deferred it across a window.
+    ///
+    /// Only meaningful after an `IngestReconstructWindow` has held off the per-record rebuilds;
+    /// calling it otherwise just repeats work the writes already did.
+    pub(crate) fn reconstruct_bucket_index_now(&self, shard_id: ShardId) {
+        let (start_routing_bucket, end_routing_bucket) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
+            .unwrap_or((0, u32::MAX));
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return;
+        };
+        storage_bucket_internals::rebuild_bucket_first_index(
+            shard_id,
+            shard,
+            start_routing_bucket,
+            end_routing_bucket,
+        );
+        // The rebuild above just recomputed every bucket's object index by scanning that bucket's
+        // page index. The full sweep's own rebuild would scan the same pages again, from the same
+        // source, with nothing in between that could change the answer -- so the flags refresh,
+        // and the duplicate scan does not.
+        storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
+    }
+
     /// Mirror the deletions this engine emits on its own -- eviction drops, expiry sweeps --
     /// to the same place request-path writes go.
     ///
@@ -715,7 +746,29 @@ impl TemporalEngine {
             // O(store) rebuild on EVERY record -> O(n^2). The single reconstruct
             // rebuilds the first-index once at the end, so deferring here is
             // correctness-preserving.
-            let rebuilt_bucket_index = !defer_bucket_index_reconstruct()
+            // Maintain the index for the keys this write touched, and rebuild only if that did
+            // not cover them.
+            //
+            // A context write does not register its page, so the branch below fired a full
+            // O(store) rebuild for every one -- the last term in an add that grew with the corpus.
+            // Feature and Sequence writes already maintain on the write path, and replay already
+            // maintains these same kinds; this closes the one path that did neither.
+            //
+            // `sync_context_pages_for_object` mirrors `collect_model_live_page_entries` arm for
+            // arm and reports whether it found anything, so a write it does not cover still gets
+            // the rebuild rather than a quietly stale index. An empty bucket_map still rebuilds:
+            // maintenance updates an index, it does not construct one.
+            let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
+                && !delta_command_keys.is_empty()
+                && delta_command_keys.iter().all(|object_key| {
+                    storage_bucket_internals::sync_context_pages_for_object(
+                        shard,
+                        request.shard_id,
+                        object_key,
+                    )
+                });
+            let rebuilt_bucket_index = !maintained_bucket_index
+                && !defer_bucket_index_reconstruct()
                 && (!command_updates_bucket_index_directly(&command)
                     || shard.bucket_index.bucket_map.is_empty());
             if rebuilt_bucket_index {
@@ -931,7 +984,6 @@ impl TemporalEngine {
                 // the live in-memory shard between them, and cold reload folds base + deltas.
                 let (items, upsert_record) = match upsert_components
                     .as_ref()
-                    .filter(|_| upsert_deltas_enabled())
                 {
                     Some(components) => (
                         collect_upsert_index_items(
@@ -1387,7 +1439,7 @@ impl TemporalEngine {
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket))
+            address.routing_bucket()))
     }
 
     #[doc(hidden)]
@@ -1747,7 +1799,7 @@ fn bulk_ingest_mode() -> bool {
 /// and the deferred context (model-map) records are append-only until the single
 /// reconstruct folds them in (bulk: flush_shard_index(); replay: replay_wal_into_shard()).
 fn defer_bucket_index_reconstruct() -> bool {
-    bulk_ingest_mode() || replaying_wal()
+    bulk_ingest_mode() || replaying_wal() || coalescing_index_reconstruct()
 }
 
 /// Whether load_shard should eagerly warm the in-memory cache tier from the page
@@ -2024,24 +2076,6 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
 /// one of them lands through the page-upsert path (one new page per component, predecessor
 /// replaced). `None` = the command's write shape is not a pure upsert (deletes, features,
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
-/// Emission gate for upsert delta records. ON by default; TS_INDEXLOG_UPSERT_DELTAS=0 is the
-/// escape hatch. The gate was OFF while a multi-restart scale store that reconstructed EMPTY
-/// on reload was attributed to the fold of a large upsert-record log. The scale
-/// reload-equality suite (tests/upsert_reload_equality.rs: thousands of batch-committed
-/// upsert records, config-log present, threshold dumps, SIGKILL restarts across two
-/// generations, verified under BOTH recovery modes) plus an engine-level reload of the
-/// preserved damaged store under every mode/artifact combination showed the fold reconstructs
-/// the full served view; the observed emptiness came from the serving layer answering
-/// vacuously (a discarded shard-load failure served as an empty store) and is fixed there.
-fn upsert_deltas_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("TS_INDEXLOG_UPSERT_DELTAS")
-            .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
-            .unwrap_or(true)
-    })
-}
-
 fn command_upsert_components(
     command: &Command,
 ) -> Option<Vec<(&'static str, String, Option<String>)>> {
@@ -2087,11 +2121,11 @@ fn collect_upsert_index_items(
         };
         let Some(address) = address else { continue };
         let routing_bucket = address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| {
                 page_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
             });
-        let object_id = address.object_id.unwrap_or_else(|| {
+        let object_id = address.object_id().unwrap_or_else(|| {
             stable_page_object_id(shard_id, kind, object_key, component.as_deref())
         });
         let page_ref_key = format!(
@@ -2102,8 +2136,8 @@ fn collect_upsert_index_items(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.page_id.unwrap_or_default(),
-            address.generation.unwrap_or_default()
+            address.page_id().unwrap_or_default(),
+            address.generation().unwrap_or_default()
         );
         items.push(crate::index_log::IndexItem {
             kind: crate::index_log::IndexItemKind::Page,
@@ -2113,9 +2147,9 @@ fn collect_upsert_index_items(
             model_id: (*kind).to_string(),
             component: component.clone(),
             object_id,
-            page_id: address.page_id.unwrap_or(0),
+            page_id: address.page_id().unwrap_or(0),
             size: address.length,
-            in_log: address.page_id.is_none(),
+            in_log: address.page_id().is_none(),
             deleted: false,
             address: Some(address),
         });
@@ -2155,7 +2189,7 @@ fn collect_command_index_items(
                 model_id: page.model_id.clone(),
                 component: page.component.clone(),
                 object_id: page.object_id,
-                page_id: page.address.page_id.unwrap_or(0),
+                page_id: page.address.page_id().unwrap_or(0),
                 address: Some(page.address.clone()),
                 size: page.address.length,
                 in_log: page.log_backed,
@@ -2485,6 +2519,46 @@ pub(super) fn resolve_now_ms() -> u64 {
     REPLAY_CLOCK_MS
         .with(|cell| cell.get())
         .unwrap_or_else(now_ms)
+}
+
+thread_local! {
+    static COALESCING_INDEX_RECONSTRUCT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn coalescing_index_reconstruct() -> bool {
+    COALESCING_INDEX_RECONSTRUCT.with(|cell| cell.get())
+}
+
+/// Hold the per-record index reconstruct for the span of ONE logical ingest.
+///
+/// A context ingest issues about eight writes, and no `Command::Context*` appears in
+/// `command_updates_bucket_index_directly`, so each one fires `rebuild_bucket_first_index` --
+/// which walks every live page in the shard. Measured end to end: 5 762 400 page visits across
+/// 600 adds, the per-add cost doubling as the corpus doubles, and latency degrading 11.79x over a
+/// run. With the reconstruct deferred the same run is FLAT at 0.97x and 26.6x faster on the last
+/// thirty adds.
+///
+/// This is the same mechanism bulk backfill and WAL replay already use, scoped to one ingest
+/// instead of a whole session: the window defers, and the caller reconstructs ONCE as it closes.
+/// It cuts eight reconstructs to one. It does NOT make an add O(1) in the corpus -- the single
+/// remaining reconstruct still walks the store -- and that needs the context write path to
+/// maintain the index the way `StringSet` does.
+///
+/// A guard rather than a pair of calls so an early return cannot leave the window open: a leaked
+/// window would silently stop reconstructing for the rest of the thread's life.
+pub(crate) struct IngestReconstructWindow;
+
+impl IngestReconstructWindow {
+    pub(crate) fn open() -> Self {
+        COALESCING_INDEX_RECONSTRUCT.with(|cell| cell.set(true));
+        Self
+    }
+}
+
+impl Drop for IngestReconstructWindow {
+    fn drop(&mut self) {
+        COALESCING_INDEX_RECONSTRUCT.with(|cell| cell.set(false));
+    }
 }
 
 struct WalReplayGuard;
@@ -3181,17 +3255,7 @@ fn append_value(
     if !async_storage {
         return page_store.append_with_page_metadata(bytes, object_id, routing_bucket);
     }
-    let address = BlockAddress {
-        page_slab_id: HOT_PAGE_SLAB_ID,
-        offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
-        length: bytes.len() as u64,
-        page_id: None,
-        object_id,
-        routing_bucket,
-        generation: object_id,
-        band_id: None,
-        sha256: None,
-    };
+    let address = BlockAddress::from_parts(HOT_PAGE_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None, None);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
     if block_in_wal::enabled() {
@@ -3206,7 +3270,7 @@ fn append_value(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket),
+            address.routing_bucket()),
         bytes,
     );
     Ok(address)
@@ -3360,7 +3424,7 @@ fn read_page_bytes(
         address.page_slab_id,
         address.offset,
         address.length,
-        address.routing_bucket);
+        address.routing_bucket());
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
     }
@@ -3383,7 +3447,7 @@ fn read_page_bytes(
         if block_in_wal::enabled() {
             if let Some(bytes) =
                 address
-                    .object_id
+                    .object_id()
                     .and_then(|object_id| block_in_wal::read_page(page_store, shard_id, object_id))
             {
                 let _ = cache.put(cache_key, bytes.clone());

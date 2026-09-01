@@ -46,7 +46,30 @@ pub struct RaftFailoverTrigger {
 /// live (Normal) servers to notify. Deterministic — triggers ordered by dead
 /// node id then address; targets ordered by address. Returns an empty plan when
 /// there are no frozen servers or no live targets (nothing safe to drive).
-pub fn compute_raft_failover_triggers(servers: &[ServerMetaInfo]) -> Vec<RaftFailoverTrigger> {
+/// A server as the failover planner sees it.
+///
+/// The planner needs to know which node is which and whether it is serving. A
+/// server record also carries one shard load and one serving state per shard
+/// the node holds, and cloning those to read three fields cost 4.7ms a tick on
+/// 32 nodes holding 1000 shards each.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailoverMember {
+    pub server_addr: String,
+    pub node_id: u64,
+    pub state: MetaEntityState,
+}
+
+impl FailoverMember {
+    pub fn of(server: &ServerMetaInfo) -> Self {
+        Self {
+            server_addr: server.server_addr.clone(),
+            node_id: server.node_id,
+            state: server.state,
+        }
+    }
+}
+
+pub fn compute_raft_failover_triggers(servers: &[FailoverMember]) -> Vec<RaftFailoverTrigger> {
     let mut live_targets: Vec<String> = servers
         .iter()
         .filter(|server| server.state == MetaEntityState::Normal)
@@ -60,7 +83,7 @@ pub fn compute_raft_failover_triggers(servers: &[ServerMetaInfo]) -> Vec<RaftFai
         return Vec::new();
     }
 
-    let mut dead: Vec<&ServerMetaInfo> = servers
+    let mut dead: Vec<&FailoverMember> = servers
         .iter()
         .filter(|server| server.state == MetaEntityState::Frozen)
         .collect();
@@ -85,7 +108,11 @@ impl SingleNodeMeta {
     /// re-elect. Pure read of the shared meta state.
     pub fn plan_raft_failover(&self) -> Vec<RaftFailoverTrigger> {
         let state = self.inner.read().expect("meta lock poisoned");
-        let servers = state.servers.values().cloned().collect::<Vec<_>>();
+        let servers = state
+            .servers
+            .values()
+            .map(FailoverMember::of)
+            .collect::<Vec<_>>();
         compute_raft_failover_triggers(&servers)
     }
 }
@@ -94,8 +121,13 @@ impl SingleNodeMeta {
 mod tests {
     use super::*;
 
-    fn server(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
+    fn server(addr: &str, node_id: u64, state: MetaEntityState) -> FailoverMember {
+        FailoverMember::of(&server_record(addr, node_id, state))
+    }
+
+    fn server_record(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
         ServerMetaInfo {
+            registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,
             numa_nodes: Vec::new(),

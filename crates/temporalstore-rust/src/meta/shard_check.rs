@@ -435,6 +435,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "quiet".to_string(),
                 node_id: 1,
@@ -504,6 +505,7 @@ mod tests {
     /// A healthy, reporting server that boots long before any test clock.
     fn server(addr: &str, serving: &[(ShardId, &str)]) -> ServerMetaInfo {
         ServerMetaInfo {
+            registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,
             numa_nodes: Vec::new(),

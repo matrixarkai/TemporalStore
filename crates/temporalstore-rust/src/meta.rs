@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -176,6 +176,26 @@ pub struct ShardLocation {
     pub state: MetaEntityState,
     #[serde(default)]
     pub latest_snapshot: Option<ShardSnapshotRef>,
+    /// When this shard was first registered.
+    ///
+    /// `last_heartbeat_ms` is reset every time it registers again, and
+    /// `boot_time_ms` is when its process started -- neither answers how long
+    /// it has been part of the cluster. Registering again keeps the original:
+    /// a node that restarted has not newly joined.
+    #[serde(default)]
+    pub registered_at_ms: u64,
+    /// Where this shard in particular should live.
+    ///
+    /// A table can express a preferred location, and every shard in it inherits
+    /// that. There was no way to say anything about one shard: a single hot
+    /// shard that wants its own hardware, or one shard whose data has to stay
+    /// somewhere its siblings need not, had to be expressed by pinning the
+    /// whole table or not at all.
+    ///
+    /// Empty means "whatever the table says", which is what every existing
+    /// shard means.
+    #[serde(default)]
+    pub preferred_location: String,
 }
 
 /// Take one shard out of service, or return it.
@@ -184,10 +204,25 @@ pub struct ShardStateRequest {
     pub shard_id: ShardId,
 }
 
+/// Where a single shard should live. An empty location releases the pin and
+/// returns the shard to whatever its table prefers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardPinRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub location: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterShardRequest {
     pub shard_id: ShardId,
     pub server_addr: String,
+    /// When the metaserver first saw this, stamped by the metaserver on the way
+    /// in and carried here so a replayed registration keeps the original time
+    /// rather than restamping itself to the moment of the replay. Anything a
+    /// caller puts here is overwritten.
+    #[serde(default)]
+    pub registered_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -257,6 +292,12 @@ pub struct RegisterServerRequest {
     /// does not report them, which is every server built before this existed.
     #[serde(default)]
     pub numa_nodes: Vec<NumaNode>,
+    /// When the metaserver first saw this, stamped by the metaserver on the way
+    /// in and carried here so a replayed registration keeps the original time
+    /// rather than restamping itself to the moment of the replay. Anything a
+    /// caller puts here is overwritten.
+    #[serde(default)]
+    pub registered_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -391,6 +432,14 @@ pub struct ServerMetaInfo {
     /// does not send them, so the shard-divergence check declines to judge it.
     #[serde(default)]
     pub reports_shard_states: bool,
+    /// When this server was first registered.
+    ///
+    /// `last_heartbeat_ms` is reset every time it registers again, and
+    /// `boot_time_ms` is when its process started -- neither answers how long
+    /// it has been part of the cluster. Registering again keeps the original:
+    /// a node that restarted has not newly joined.
+    #[serde(default)]
+    pub registered_at_ms: u64,
     /// What `shard_loads` and `shard_states` add up to, summarised when the
     /// server reports them.
     ///
@@ -502,6 +551,12 @@ pub struct RegisterProxyRequest {
     pub config_version: u64,
     #[serde(default)]
     pub binary_version: String,
+    /// When the metaserver first saw this, stamped by the metaserver on the way
+    /// in and carried here so a replayed registration keeps the original time
+    /// rather than restamping itself to the moment of the replay. Anything a
+    /// caller puts here is overwritten.
+    #[serde(default)]
+    pub registered_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -554,6 +609,14 @@ pub struct ProxyMetaInfo {
     pub state: MetaEntityState,
     pub config_version: u64,
     pub last_heartbeat_ms: u64,
+    /// How many heartbeats this proxy has sent since it registered.
+    ///
+    /// Separate from `last_heartbeat_ms` because registration stamps that clock, so it cannot
+    /// answer "has this proxy ever reported in" -- every registered proxy reads non-zero from
+    /// the moment it appears. The staleness checks want the timestamp; the question of whether
+    /// a proxy is capacity or merely a registration wants this.
+    #[serde(default)]
+    pub heartbeats_total: u64,
     #[serde(default)]
     pub frozen_since_ms: u64,
     #[serde(default)]
@@ -563,6 +626,14 @@ pub struct ProxyMetaInfo {
     pub freeze_reason: FreezeReason,
     pub binary_version: String,
     /// Boot time last reported by this proxy; `0` when it has never reported one.
+    /// When this proxy was first registered.
+    ///
+    /// `last_heartbeat_ms` is reset every time it registers again, and
+    /// `boot_time_ms` is when its process started -- neither answers how long
+    /// it has been part of the cluster. Registering again keeps the original:
+    /// a node that restarted has not newly joined.
+    #[serde(default)]
+    pub registered_at_ms: u64,
     /// Mirrors `ServerMetaInfo::boot_time_ms`.
     #[serde(default)]
     pub boot_time_ms: u64,
@@ -774,6 +845,86 @@ pub struct TableServingOptionsPatch {
     pub connect_timeout_ms: Option<u64>,
 }
 
+/// How many resources there are, and how many are in each state.
+///
+/// A scrape reports exactly this about tables, namespaces and proxy groups and
+/// nothing else, but it was cloning every one of them -- names and serving
+/// options included -- to call `.len()` and filter on the state field.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateTally {
+    pub normal: u64,
+    pub frozen: u64,
+    pub dropped: u64,
+}
+
+impl StateTally {
+    fn record(&mut self, state: MetaEntityState) {
+        match state {
+            MetaEntityState::Normal => self.normal += 1,
+            MetaEntityState::Frozen => self.frozen += 1,
+            MetaEntityState::Dropped => self.dropped += 1,
+        }
+    }
+
+    /// Every resource counted, whatever state it is in.
+    ///
+    /// The three states are the whole of `MetaEntityState`, so this is the
+    /// count the listing's `.len()` used to give.
+    pub fn total(&self) -> u64 {
+        self.normal + self.frozen + self.dropped
+    }
+
+    /// How many are in the state of this name, named as
+    /// [`MetaEntityState::as_str`] names it.
+    pub fn in_state(&self, state: &str) -> u64 {
+        match state {
+            "normal" => self.normal,
+            "frozen" => self.frozen,
+            "dropped" => self.dropped,
+            _ => 0,
+        }
+    }
+}
+
+/// One server, reduced to what a scrape reports about it.
+///
+/// A server record carries its shard loads, its stat loads and its shard
+/// serving states -- one entry per shard it holds, and the serving states carry
+/// strings. A scrape reads none of them, so none of them are here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerScrapeRow {
+    pub server_addr: String,
+    pub state: MetaEntityState,
+    pub reported_record_count: u64,
+    pub reported_storage_bytes: u64,
+    pub last_meta_topology_version: u64,
+    pub rejected_total: u64,
+    pub timed_out_total: u64,
+    pub canceled_total: u64,
+}
+
+/// One proxy, reduced the same way.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyScrapeRow {
+    pub proxy_addr: String,
+    pub state: MetaEntityState,
+    pub restart_count: u64,
+}
+
+/// Everything a scrape needs, taken in one pass under one read lock.
+///
+/// The scrape used to make five separate listing calls, each taking the lock
+/// again, so its numbers described five consecutive moments rather than one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaMetricsReport {
+    pub status: Status,
+    pub tables: StateTally,
+    pub namespaces: StateTally,
+    pub proxy_groups: StateTally,
+    pub servers: Vec<ServerScrapeRow>,
+    pub proxies: Vec<ProxyScrapeRow>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GetTableTopologyRequest {
     pub namespace: String,
@@ -785,6 +936,31 @@ pub struct GetTableTopologyRequest {
     /// empty value leaves the order exactly as it was.
     #[serde(default)]
     pub client_location: String,
+}
+
+impl GetTableTopologyRequest {
+    /// Ask only whether a table can be served, and at what version.
+    ///
+    /// A caller that wants the version or just the status does not need the
+    /// shard list, and building one is the whole cost of the answer. Measured
+    /// through the open-table route, the cost was the size of the table --
+    /// 28.9us at 50 shards, 114.6us at 200, 434.9us at 800 -- and asking this
+    /// way is 0.5us at every one of them.
+    ///
+    /// This is the ordinary request with the version set past anything a table
+    /// can hold, which is the existing answer for a caller that is already
+    /// current: every missing, dropped and frozen check still runs and still
+    /// returns exactly what it returned before, and the answer stops before the
+    /// shard list. Written this way so the status cannot drift from the status
+    /// the full answer gives -- it is the same code producing it.
+    pub fn status_only(namespace: String, table_name: String) -> Self {
+        Self {
+            namespace,
+            table_name,
+            old_topology_version: u64::MAX,
+            client_location: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -938,6 +1114,26 @@ pub struct ShardListEntry {
     pub namespace: String,
     pub table_name: String,
     pub latest_snapshot: Option<ShardSnapshotRef>,
+    /// Whether the metaserver considers this shard served.
+    ///
+    /// A shard can be taken out of service on its own, and the listing had no
+    /// way to show it: you could freeze a shard and then not see, here, that it
+    /// was frozen.
+    #[serde(default)]
+    pub state: MetaEntityState,
+    /// Whether the owning server still reports this shard as loaded.
+    ///
+    /// Freezing a shard is a decision the metaserver records immediately, but
+    /// the datanode holding it has work to do before it has really let go. Until
+    /// then the shard is frozen in the metadata and still resident on the node,
+    /// and nothing said which. For a shard that is still serving this reads the
+    /// other way: an owner that is not holding it is a divergence.
+    ///
+    /// `None` means the owner does not report shard states at all, which is not
+    /// the same as reporting that it holds nothing -- the same distinction the
+    /// divergence check makes before it is willing to judge a server.
+    #[serde(default)]
+    pub owner_reports_loaded: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1126,6 +1322,8 @@ pub enum MetaMutation {
     SetNamespaceState(AddNamespaceRequest, MetaEntityState),
     /// Replace the set of names held back from creation.
     SetReservedNames(ReservedNames),
+    /// Pin one shard to a location, or release it with an empty one.
+    SetShardPreferredLocation(ShardPinRequest),
     /// Mute or resume metadata change. Recorded like any other mutation so it
     /// replays in order and reaches raft peers; the guard is deliberately not
     /// applied during replay, because the log only ever contains mutations that
@@ -1159,7 +1357,26 @@ pub struct MetaMutationRecord {
 #[derive(Debug, Clone)]
 pub struct LocalMetaMutationLog {
     path: PathBuf,
-    write_lock: Arc<Mutex<()>>,
+    /// The handle records are appended through, opened once.
+    ///
+    /// Opening the file per record cost more than it looked like: with the
+    /// barrier split out so writers can share one, a record was opening it
+    /// twice.
+    write_lock: Arc<Mutex<Option<File>>>,
+    /// A second handle for the barrier, so it can run without the write lock
+    /// and let the next writer get its bytes down meanwhile. Syncing is per
+    /// file, not per handle, so this covers what the other one wrote.
+    sync_file: Arc<Mutex<Option<File>>>,
+    /// How many records have been written to the file.
+    ///
+    /// Written under `write_lock`, so it counts the records whose bytes have
+    /// reached the file in the order the lock granted.
+    written: Arc<AtomicU64>,
+    /// How many records a completed sync has covered.
+    ///
+    /// Guarded by its own lock rather than `write_lock`, so a writer waiting for
+    /// durability is not holding up the writer behind it.
+    synced: Arc<Mutex<u64>>,
 }
 
 impl LocalMetaMutationLog {
@@ -1171,43 +1388,156 @@ impl LocalMetaMutationLog {
         Ok(Self {
             path,
             write_lock: Arc::default(),
+            sync_file: Arc::default(),
+            written: Arc::default(),
+            synced: Arc::default(),
         })
     }
 
     pub fn append(&self, mutation: &MetaMutation, at_ms: u64) -> io::Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .expect("meta mutation log lock poisoned");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
-        let record = MetaMutationRecord {
-            at_ms,
-            mutation: mutation.clone(),
+        // The bytes reach the file in the order the write lock grants, and the
+        // record is numbered by that order.
+        let mine = {
+            let mut handle = self
+                .write_lock
+                .lock()
+                .expect("meta mutation log lock poisoned");
+            let file = match handle.as_mut() {
+                Some(file) => file,
+                None => handle.insert(
+                    OpenOptions::new().create(true).append(true).open(&self.path)?,
+                ),
+            };
+            let record = MetaMutationRecord {
+                at_ms,
+                mutation: mutation.clone(),
+            };
+            serde_json::to_writer(&mut *file, &record).map_err(io::Error::other)?;
+            file.write_all(b"\n")?;
+            self.written.fetch_add(1, Ordering::SeqCst) + 1
         };
-        serde_json::to_writer(&mut file, &record).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
+        self.sync_through(mine)
+    }
+
+    /// Return once a sync that began after record `mine` was written has
+    /// completed.
+    ///
+    /// The barrier a writer needs is not its own: any sync beginning after its
+    /// bytes reached the file covers them, because the file is append-only and
+    /// the writes are ordered. So a writer that finds its record already covered
+    /// has nothing to do, and one that does not takes the barrier for everything
+    /// written so far -- including the writers still queued behind it.
+    fn sync_through(&self, mine: u64) -> io::Result<()> {
+        let mut synced = self.synced.lock().expect("meta mutation log sync poisoned");
+        if *synced >= mine {
+            // Somebody else's barrier already covered this record.
+            return Ok(());
+        }
+        // Read before the barrier, published after it. The other order would
+        // tell a writer its bytes were durable while the sync was still running.
+        let covered = self.written.load(Ordering::SeqCst);
+        let mut handle = self
+            .sync_file
+            .lock()
+            .expect("meta mutation log sync handle poisoned");
+        let file = match handle.as_mut() {
+            Some(file) => file,
+            None => handle.insert(
+                OpenOptions::new().create(true).append(true).open(&self.path)?,
+            ),
+        };
         crate::durability_metrics::record_barrier("meta_log_append");
         file.sync_data()?;
+        *synced = (*synced).max(covered);
         Ok(())
     }
 
+    /// Read the log back.
+    ///
+    /// A partial record at the END is what a crash partway through an append
+    /// leaves behind, and it is dropped rather than refused. That record was
+    /// never acknowledged: a writer only returns once a sync covering its bytes
+    /// has completed, so nothing was promised to anybody about it. Refusing the
+    /// whole file for it meant a metaserver whose metadata was entirely durable
+    /// except for a fraction of one record would not start.
+    ///
+    /// A line that does not parse with records AFTER it is a different thing.
+    /// Those later records WERE acknowledged, and stopping there would discard
+    /// them silently, so that is still an error. The distinction is the whole
+    /// point: the tail is expected, the middle is not.
+    /// Read the log back, repairing a torn tail if there is one.
+    ///
+    /// A partial record at the END is what a crash partway through an append
+    /// leaves behind. It is dropped rather than refused: that record was never
+    /// acknowledged, because a writer only returns once a sync covering its
+    /// bytes has completed, so nothing was promised to anybody about it.
+    /// Refusing the whole file for it meant a metaserver whose metadata was
+    /// entirely durable except for a fraction of one record would not start.
+    ///
+    /// The fragment is also REMOVED, not merely skipped. Appends open the file
+    /// for append and write at the end; left in place, the fragment would be
+    /// spliced onto the front of the next record and stop that line parsing.
+    /// That line would then be the last one, so the following restart would
+    /// drop it as a torn tail -- silently losing a write that WAS acknowledged.
+    /// Truncating to the end of the last record that parsed means the next
+    /// append starts on a record boundary.
+    ///
+    /// A line that does not parse with records AFTER it is a different thing.
+    /// Those later records were acknowledged, and stopping there would discard
+    /// them silently, so that is still an error. The tail is expected; the
+    /// middle is not.
     pub fn load(&self) -> io::Result<Vec<MetaMutationRecord>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
-        let file = OpenOptions::new().read(true).open(&self.path)?;
+        let text = fs::read_to_string(&self.path)?;
         let mut mutations = Vec::new();
-        for line in BufReader::new(file).lines() {
-            let line = line?;
+        // Where the last record that parsed ends, including its newline. This is
+        // the only point the file can be safely cut back to.
+        let mut good_end = 0usize;
+        let mut offset = 0usize;
+        // Held rather than returned: a line that does not parse is only a torn
+        // tail if nothing follows it. Anything following turns it into an error.
+        let mut unparsed: Option<(usize, String)> = None;
+        for (number, line) in text.split('\n').enumerate() {
+            let line_end = (offset + line.len() + 1).min(text.len());
+            offset += line.len() + 1;
             if line.trim().is_empty() {
                 continue;
             }
-            let record =
-                serde_json::from_str::<MetaMutationRecord>(&line).map_err(io::Error::other)?;
-            mutations.push(record);
+            if let Some((bad_number, message)) = unparsed.take() {
+                return Err(io::Error::other(format!(
+                    "meta mutation log {}: line {} does not parse and more lines follow it, \
+                     so it is not a torn tail: {}",
+                    self.path.display(),
+                    bad_number + 1,
+                    message
+                )));
+            }
+            match serde_json::from_str::<MetaMutationRecord>(line) {
+                Ok(record) => {
+                    mutations.push(record);
+                    good_end = line_end;
+                }
+                Err(err) => unparsed = Some((number, err.to_string())),
+            }
+        }
+        if let Some((number, message)) = unparsed {
+            tracing::warn!(
+                path = %self.path.display(),
+                line = number + 1,
+                recovered = mutations.len(),
+                truncated_to = good_end,
+                error = %message,
+                "metadata log ends in a partial record; it was never acknowledged, so it is \
+                 dropped and the file is cut back to the last whole record"
+            );
+            let file = OpenOptions::new().write(true).open(&self.path)?;
+            file.set_len(good_end as u64)?;
+            // The cut has to survive the crash that follows it, or the fragment
+            // comes back and the next append splices onto it again.
+            crate::durability_metrics::record_barrier("meta_log_truncate");
+            file.sync_all()?;
         }
         Ok(mutations)
     }
@@ -1439,10 +1769,13 @@ impl SingleNodeMeta {
         &self.metrics
     }
 
-    pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
+    pub fn register(&self, mut request: RegisterShardRequest) -> RegisterShardResponse {
         if let Some(status) = self.meta_change_refusal() {
             return RegisterShardResponse { status };
         }
+        // Stamped here, so the recorded mutation carries the metaserver's clock
+        // and a replay keeps the original rather than restamping itself.
+        request.registered_at_ms = now_ms();
         self.record_mutation(MetaMutation::RegisterShard(request.clone()));
         self.apply_register(request)
     }
@@ -1454,9 +1787,19 @@ impl SingleNodeMeta {
             .shards
             .get(&request.shard_id)
             .and_then(|location| location.latest_snapshot.clone());
+        // Registering a shard again -- to move it, or after a restart -- does
+        // not make it a new shard.
+        let registered_at_ms = state
+            .shards
+            .get(&request.shard_id)
+            .map(|location| location.registered_at_ms)
+            .filter(|first| *first != 0)
+            .unwrap_or(request.registered_at_ms);
         state.shards.insert(
             request.shard_id,
             ShardLocation {
+                registered_at_ms,
+                preferred_location: String::new(),
                 state: MetaEntityState::Normal,
                 shard_id: request.shard_id,
                 server_addr: request.server_addr.clone(),
@@ -1743,6 +2086,46 @@ impl SingleNodeMeta {
             .then(|| Status::error("name_reserved", format!("table name {table} is reserved")))
     }
 
+    /// Pin one shard to a location, overriding what its table prefers. An
+    /// empty location releases the pin.
+    pub fn pin_shard(&self, request: ShardPinRequest) -> AckResponse {
+        if let Some(status) = self.meta_change_refusal() {
+            return AckResponse { status };
+        }
+        self.record_mutation(MetaMutation::SetShardPreferredLocation(request.clone()));
+        self.apply_pin_shard(request)
+    }
+
+    pub(crate) fn apply_pin_shard(&self, request: ShardPinRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(shard) = state.shards.get_mut(&request.shard_id) else {
+            return AckResponse {
+                status: Status::error("shard_not_found", "shard is not registered"),
+            };
+        };
+        if shard.preferred_location == request.location {
+            return AckResponse {
+                status: Status::error("not_modified", "shard location preference is unchanged"),
+            };
+        }
+        shard.preferred_location = request.location.clone();
+        // Placement is derived on read, so the version bump is what makes the
+        // planners reconsider where this shard belongs.
+        record_topology_event(
+            &mut state,
+            "shard_preferred_location",
+            format!("shard:{}", request.shard_id),
+            if request.location.is_empty() {
+                "released".to_string()
+            } else {
+                format!("location={}", request.location)
+            },
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     /// The recorded change history, oldest first.
     ///
     /// Every metadata change records one of these, and the only way to see them
@@ -1854,6 +2237,9 @@ impl SingleNodeMeta {
             }
             MetaMutation::SetReservedNames(reserved) => {
                 self.apply_set_reserved_names(reserved).status
+            }
+            MetaMutation::SetShardPreferredLocation(request) => {
+                self.apply_pin_shard(request).status
             }
             MetaMutation::SetMetaChangeMuted(muted) => {
                 self.apply_set_meta_change_muted(muted).status
@@ -2041,10 +2427,112 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_heartbeat_summarises_every_list_it_carries() {
+        // These five are folded before the metaserver's write lock is taken, so
+        // the reader waiting on that lock is not also waiting on a walk of one
+        // datanode's whole shard list. Only two of them had any coverage, and
+        // the fold is only safe if all five still say what the lists say.
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+
+        let state_for = |shard_id: u64, serving_state: &str, records: u64, bytes: u64| {
+            ServerShardServingState {
+                shard_id,
+                serving_state: serving_state.to_string(),
+                total_records: records as usize,
+                storage_bytes: bytes,
+                ..ServerShardServingState::default()
+            }
+        };
+
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "node-a".to_string(),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![
+                    ShardLoad {
+                        shard_id: 1,
+                        key_count: 10,
+                        memory_bytes: 100,
+                    },
+                    ShardLoad {
+                        shard_id: 2,
+                        key_count: 7,
+                        memory_bytes: 250,
+                    },
+                ],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                // "serving" scores 0 and "failed" scores 3, so the worst is 3 --
+                // a max, not a sum, which is the one of the five that would not
+                // survive being folded the wrong way.
+                shard_states: vec![
+                    state_for(1, "serving", 40, 4_000),
+                    state_for(2, "failed", 2, 500),
+                ],
+            })
+            .status
+            .ok);
+
+        let server = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered");
+        assert_eq!(server.load_key_count, 17);
+        assert_eq!(server.load_memory_bytes, 350);
+        assert_eq!(server.reported_record_count, 42);
+        assert_eq!(server.reported_storage_bytes, 4_500);
+        assert_eq!(server.worst_shard_state_penalty, 3);
+
+        // And a later heartbeat replaces them rather than accumulating.
+        assert!(meta
+            .server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "node-a".to_string(),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count: 1,
+                    memory_bytes: 2,
+                }],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: vec![state_for(1, "serving", 3, 4)],
+            })
+            .status
+            .ok);
+        let server = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == "node-a")
+            .expect("registered");
+        assert_eq!(server.load_key_count, 1);
+        assert_eq!(server.load_memory_bytes, 2);
+        assert_eq!(server.reported_record_count, 3);
+        assert_eq!(server.reported_storage_bytes, 4);
+        assert_eq!(server.worst_shard_state_penalty, 0);
+    }
+
+    #[test]
     fn metaserver_tracks_servers_heartbeats_and_shard_routes() {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "127.0.0.1:18001".to_string(),
                 node_id: 1,
@@ -2056,6 +2544,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 7,
                 server_addr: "127.0.0.1:18001".to_string(),
             })
@@ -2155,10 +2644,71 @@ mod tests {
     }
 
     #[test]
+    fn a_proxy_that_only_registered_is_not_treated_as_capacity() {
+        // `is_idle_candidate` is written to keep a proxy that has never reported in out of a
+        // group -- "a registration, not capacity". It tested `last_heartbeat_ms != 0`, and
+        // registration stamps that clock, so every registered proxy passed and the rule was
+        // never in force. A proxy that registered and died was attached to a group and counted
+        // as serving capacity until the failure detector caught up.
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
+                proxy_addr: "silent".to_string(),
+                namespace: "ns".to_string(),
+                location: "zone-a".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.put_proxy_group(PutProxyGroupRequest {
+                drop_percent: 0,
+                group: "front".to_string(),
+                namespace: "ns".to_string(),
+                location: String::new(),
+                instance_num: 1,
+            })
+            .status
+            .ok
+        );
+
+        // It has registered and nothing more, so it is not capacity yet.
+        let plan = meta.plan_proxy_calibration_now(ProxyCalibrationOptions::default());
+        assert!(
+            !plan.attach.iter().any(|item| item.proxy_addr == "silent"),
+            "a proxy that has only registered must not be attached, got {:?}",
+            plan.attach
+        );
+
+        // One heartbeat is the difference between a registration and capacity.
+        assert!(
+            meta.proxy_heartbeat(ProxyHeartbeatRequest {
+                boot_time_ms: 1,
+                proxy_addr: "silent".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        let plan = meta.plan_proxy_calibration_now(ProxyCalibrationOptions::default());
+        assert!(
+            plan.attach.iter().any(|item| item.proxy_addr == "silent"),
+            "once it has reported in it is capacity and the group should claim it, got {:?}",
+            plan.attach
+        );
+    }
+
+    #[test]
     fn metaserver_preflight_reports_inventory_and_frozen_resources() {
         let meta = SingleNodeMeta::default();
         assert!(
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "server-a".to_string(),
                 node_id: 7,
@@ -2170,6 +2720,7 @@ mod tests {
         );
         assert!(
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "zone-a".to_string(),
@@ -2181,6 +2732,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: "server-a".to_string(),
             })
@@ -2229,6 +2781,7 @@ mod tests {
     fn metaserver_freezes_stale_servers_from_heartbeat_age() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "stale".to_string(),
             node_id: 1,
@@ -2249,6 +2802,7 @@ mod tests {
     fn metaserver_failure_detector_loop_freezes_stale_servers_and_proxies() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "stale-server".to_string(),
             node_id: 1,
@@ -2256,6 +2810,7 @@ mod tests {
             binary_version: "v".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "stale-proxy".to_string(),
             namespace: "ns".to_string(),
             location: "z".to_string(),
@@ -2284,6 +2839,7 @@ mod tests {
         // still believes it serves, and reads routed there will all miss.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -2327,6 +2883,7 @@ mod tests {
         // Re-registering is how a datanode says it is ready to be trusted again.
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -2348,6 +2905,7 @@ mod tests {
         // convict the entire fleet on upgrade.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -2379,6 +2937,7 @@ mod tests {
 
     fn register(meta: &SingleNodeMeta, addr: &str) -> AckResponse {
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: addr.to_string(),
             node_id: 1,
@@ -2411,6 +2970,7 @@ mod tests {
         // history at all.
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-1:9000".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -2466,6 +3026,7 @@ mod tests {
         let meta = SingleNodeMeta::default().with_conviction_lock(true);
         let register_proxy = || {
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2539,6 +3100,7 @@ mod tests {
         register(&meta, "server-a");
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2577,6 +3139,7 @@ mod tests {
         register(&meta, "server-b");
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2682,6 +3245,7 @@ mod tests {
         let meta = SingleNodeMeta::default().with_conviction_lock(true);
         let register_proxy = || {
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: "ns".to_string(),
                 location: "rack-1".to_string(),
@@ -2729,6 +3293,7 @@ mod tests {
         for (index, addr) in servers.iter().enumerate() {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
                     node_id: index as u64 + 1,
@@ -2823,6 +3388,7 @@ mod tests {
         ] {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
                     node_id: 1,
@@ -2883,6 +3449,7 @@ mod tests {
         for (addr, location) in servers {
             assert!(meta
                 .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: addr.to_string(),
                     node_id: 1,
@@ -3071,6 +3638,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -3092,6 +3660,7 @@ mod tests {
     fn stop_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3099,6 +3668,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -3151,6 +3721,7 @@ mod tests {
 
         let meta = SingleNodeMeta::default().with_conviction_lock(true);
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3162,6 +3733,7 @@ mod tests {
         // It restarts and registers again; the lock does not stand in its way.
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -3231,6 +3803,7 @@ mod tests {
         assert!(stopped_server(&meta).freeze_cooldown_until_ms <= now_ms());
         assert!(meta
             .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -3248,6 +3821,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -3270,6 +3844,7 @@ mod tests {
     fn muted_meta_with_a_server() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3314,6 +3889,7 @@ mod tests {
             (
                 "register_server",
                 meta.register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "node-b".to_string(),
                     node_id: 2,
@@ -3370,6 +3946,7 @@ mod tests {
         // restarts cannot rejoin until an operator resumes.
         let meta = muted_meta_with_a_server();
         let rejoin = meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3410,6 +3987,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
                 node_id: 1,
@@ -3535,6 +4113,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (addr, node_id, location) in [("node-a", 1, "rack-1"), ("node-b", 2, "rack-2")] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: addr.to_string(),
                 node_id,
@@ -3555,6 +4134,7 @@ mod tests {
             serving_options: TableServingOptions::default(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: "node-a".to_string(),
         });
@@ -3635,6 +4215,7 @@ mod tests {
         // against must still be told where its shards should go.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3663,6 +4244,7 @@ mod tests {
         // simply not been told about yet.
         let meta = owned_shard_meta();
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: "node-ghost".to_string(),
         });
@@ -3683,6 +4265,7 @@ mod tests {
         .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
@@ -3703,6 +4286,7 @@ mod tests {
             serving_options: TableServingOptions::default(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: "node-a".to_string(),
         });
@@ -3814,6 +4398,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (index, addr) in ["node-a", "node-b"].into_iter().enumerate() {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
                 location: "rack-1".to_string(),
@@ -3835,12 +4420,14 @@ mod tests {
         });
         for shard_id in 1..=4 {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: if shard_id % 2 == 1 { "node-a" } else { "node-b" }.to_string(),
             });
         }
         // Registered, but inside no table's id range.
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 99,
             server_addr: "node-a".to_string(),
         });
@@ -4031,6 +4618,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for index in 0..12u64 {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: format!("node-{index:02}"),
                 node_id: index + 1,
                 location: format!("region-{}/zone-{}", index % 3, index),
@@ -4085,6 +4673,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (index, location) in ["east/a", "east/b", "west/c", "east/d"].into_iter().enumerate() {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: format!("node-{index}"),
                 node_id: index as u64 + 1,
                 location: location.to_string(),
@@ -4137,6 +4726,7 @@ mod tests {
     fn bus_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -4465,6 +5055,7 @@ mod tests {
     /// lookup: retention only purges a shard when it can name the table.
     fn resolves_to(meta: &SingleNodeMeta, shard_id: ShardId) -> Option<String> {
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id,
             server_addr: "node-a".to_string(),
         });
@@ -4532,6 +5123,7 @@ mod tests {
     fn counted_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -4551,6 +5143,7 @@ mod tests {
             serving_options: TableServingOptions::default(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: "node-a".to_string(),
         });
@@ -4682,6 +5275,7 @@ mod tests {
 
     fn register_with(meta: &SingleNodeMeta, addr: &str, numa_nodes: Vec<NumaNode>) {
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -4885,6 +5479,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         register_with(&meta, "node-a", domains(8));
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-b".to_string(),
             node_id: 2,
             location: "rack-2".to_string(),
@@ -4936,6 +5531,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -4960,6 +5556,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "proxy-a".to_string(),
                 namespace: String::new(),
                 location: "rack-1".to_string(),
@@ -4982,6 +5579,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         let register = || {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: "node-a".to_string(),
                 node_id: 1,
                 location: "rack-1".to_string(),
@@ -5014,6 +5612,7 @@ mod tests {
         // dropping an already dropped server cannot hold off collection.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -5031,6 +5630,7 @@ mod tests {
     fn namespaced_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -5051,6 +5651,7 @@ mod tests {
                 serving_options: TableServingOptions::default(),
             });
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: index as ShardId + 1,
                 server_addr: "node-a".to_string(),
             });
@@ -5109,7 +5710,84 @@ mod tests {
     }
 
     #[test]
-    fn a_namespace_that_still_holds_a_table_is_not_dropped() {
+fn counting_a_namespace_tables_agrees_with_counting_them_one_by_one() {
+        let meta = SingleNodeMeta::default();
+        // Three namespaces holding different numbers of tables, one holding
+        // none at all, and a dropped table that must not be counted.
+        for (namespace, table_name) in [
+            ("alpha", "a1"),
+            ("alpha", "a2"),
+            ("alpha", "a3"),
+            ("beta", "b1"),
+            ("gamma", "g1"),
+            ("gamma", "dropped"),
+        ] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: namespace.to_string(),
+                    table_name: table_name.to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "empty".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "gamma".to_string(),
+                table_name: "dropped".to_string(),
+            })
+            .status
+            .ok);
+
+        let listed = meta.list_namespaces();
+        assert!(listed.status.ok);
+
+        // Recomputed the long way: for each namespace, walk every table. This
+        // is what the listing used to do, and the tally has to match it.
+        let tables = meta.list_tables().tables;
+        for namespace in &listed.namespaces {
+            let counted_one_by_one = tables
+                .iter()
+                .filter(|table| {
+                    table.namespace == namespace.namespace
+                        && table.state != MetaEntityState::Dropped
+                })
+                .count();
+            assert_eq!(
+                namespace.table_count, counted_one_by_one,
+                "namespace {} was tallied as {} but holds {}",
+                namespace.namespace, namespace.table_count, counted_one_by_one
+            );
+        }
+
+        // And the counts are what they should be, so this is not agreeing on
+        // zero everywhere.
+        let count_of = |wanted: &str| {
+            listed
+                .namespaces
+                .iter()
+                .find(|namespace| namespace.namespace == wanted)
+                .unwrap_or_else(|| panic!("{wanted} is missing from the listing"))
+                .table_count
+        };
+        assert_eq!(count_of("alpha"), 3);
+        assert_eq!(count_of("beta"), 1);
+        assert_eq!(count_of("gamma"), 1, "the dropped table was counted");
+        assert_eq!(count_of("empty"), 0);
+    }
+
+    #[test]
+        fn a_namespace_that_still_holds_a_table_is_not_dropped() {
         // Dropping the namespace out from under a live table would leave the
         // table addressable by name but unreachable through its namespace.
         let meta = namespaced_meta();
@@ -5174,7 +5852,259 @@ mod tests {
     }
 
     #[test]
-    fn namespace_state_survives_snapshot_and_replay() {
+fn counting_resources_agrees_with_listing_them_and_counting_those() {
+        let meta = SingleNodeMeta::default();
+
+        // A server that has heartbeated, so its row has something in it, and a
+        // frozen one so the states are spread.
+        for node in 0..2u64 {
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
+                    numa_nodes: Vec::new(),
+                    server_addr: format!("node-{node}"),
+                    node_id: node + 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: format!("node-{node}"),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: node + 1,
+                    key_count: 7 + node,
+                    memory_bytes: 4096,
+                }],
+                shard_stat_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad {
+                    rejected_total: 3 + node,
+                    timed_out_total: 1,
+                    canceled_total: 2,
+                    last_meta_topology_version: 9,
+                    ..Default::default()
+                },
+                // The record and storage counters a scrape reports are summed
+                // from these, not from the loads above.
+                shard_states: vec![ServerShardServingState {
+                    shard_id: node + 1,
+                    total_records: 11 + node as usize,
+                    storage_bytes: 2048,
+                    ..Default::default()
+                }],
+            });
+        }
+        assert!(meta
+            .freeze_server(StateChangeRequest {
+                endpoint: "node-1".to_string(),
+                freeze_cooldown_ms: 0,
+                reason: FreezeReason::Unresponsive,
+            })
+            .status
+            .ok);
+
+        // Tables in all three states.
+        for table_name in ["kept", "frozen", "dropped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: table_name.to_string(),
+                    first_shard_id: 1,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "frozen".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped".to_string(),
+            })
+            .status
+            .ok);
+
+        // Namespaces in all three states.
+        for namespace in ["kept-ns", "frozen-ns", "dropped-ns"] {
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: namespace.to_string(),
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .freeze_namespace(AddNamespaceRequest {
+                namespace: "frozen-ns".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .drop_namespace(AddNamespaceRequest {
+                namespace: "dropped-ns".to_string(),
+            })
+            .status
+            .ok);
+
+        // Proxy groups, one kept and one dropped.
+        for group in ["kept-group", "dropped-group"] {
+            assert!(meta
+                .put_proxy_group(PutProxyGroupRequest {
+                    group: group.to_string(),
+                    namespace: "ns".to_string(),
+                    location: String::new(),
+                    instance_num: 1,
+                    drop_percent: 0,
+                })
+                .status
+                .ok);
+        }
+        assert!(meta
+            .drop_proxy_group(DropProxyGroupRequest {
+                group: "dropped-group".to_string(),
+            })
+            .status
+            .ok);
+
+        let tallies = meta.metrics_report();
+        assert!(tallies.status.ok);
+
+        // Counted against listing them and counting those, which is what the
+        // scrape did before -- for every state, and for the total.
+        let tables = meta.list_tables().tables;
+        let namespaces = meta.list_namespaces().namespaces;
+        let proxy_groups = meta.list_proxy_groups().groups;
+        assert_eq!(tallies.tables.total(), tables.len() as u64, "table total");
+        assert_eq!(
+            tallies.namespaces.total(),
+            namespaces.len() as u64,
+            "namespace total"
+        );
+        assert_eq!(
+            tallies.proxy_groups.total(),
+            proxy_groups.len() as u64,
+            "proxy group total"
+        );
+        for state in ["normal", "frozen", "dropped"] {
+            assert_eq!(
+                tallies.tables.in_state(state),
+                tables
+                    .iter()
+                    .filter(|table| table.state.as_str() == state)
+                    .count() as u64,
+                "tables in state {state}"
+            );
+            assert_eq!(
+                tallies.namespaces.in_state(state),
+                namespaces
+                    .iter()
+                    .filter(|namespace| namespace.state.as_str() == state)
+                    .count() as u64,
+                "namespaces in state {state}"
+            );
+            assert_eq!(
+                tallies.proxy_groups.in_state(state),
+                proxy_groups
+                    .iter()
+                    .filter(|group| group.state.as_str() == state)
+                    .count() as u64,
+                "proxy groups in state {state}"
+            );
+        }
+
+        // And the states are actually spread, so the agreement above is not
+        // every count being equal to zero.
+        assert_eq!(tallies.tables.normal, 1);
+        assert_eq!(tallies.tables.frozen, 1);
+        assert_eq!(tallies.tables.dropped, 1);
+        assert_eq!(tallies.namespaces.frozen, 1);
+        assert_eq!(tallies.namespaces.dropped, 1);
+
+        // A name nothing uses counts as nothing, rather than falling into one
+        // of the three.
+        assert_eq!(tallies.tables.in_state("loading"), 0);
+
+        // The server and proxy rows carry what the scrape reports, for every
+        // server and proxy there is, and they agree with the full records.
+        let full_servers = meta.list_servers().servers;
+        let full_proxies = meta.list_proxies().proxies;
+        assert_eq!(tallies.servers.len(), full_servers.len(), "a server is missing");
+        assert_eq!(tallies.proxies.len(), full_proxies.len(), "a proxy is missing");
+        for full in &full_servers {
+            let row = tallies
+                .servers
+                .iter()
+                .find(|row| row.server_addr == full.server_addr)
+                .unwrap_or_else(|| panic!("{} has no row", full.server_addr));
+            assert_eq!(row.state, full.state, "{} state", full.server_addr);
+            assert_eq!(
+                row.reported_record_count, full.reported_record_count,
+                "{} record count",
+                full.server_addr
+            );
+            assert_eq!(
+                row.reported_storage_bytes, full.reported_storage_bytes,
+                "{} storage bytes",
+                full.server_addr
+            );
+            assert_eq!(
+                row.last_meta_topology_version, full.runtime_load.last_meta_topology_version,
+                "{} topology version",
+                full.server_addr
+            );
+            assert_eq!(
+                row.rejected_total, full.runtime_load.rejected_total,
+                "{} rejected",
+                full.server_addr
+            );
+            assert_eq!(
+                row.timed_out_total, full.runtime_load.timed_out_total,
+                "{} timed out",
+                full.server_addr
+            );
+            assert_eq!(
+                row.canceled_total, full.runtime_load.canceled_total,
+                "{} canceled",
+                full.server_addr
+            );
+        }
+        for full in &full_proxies {
+            let row = tallies
+                .proxies
+                .iter()
+                .find(|row| row.proxy_addr == full.proxy_addr)
+                .unwrap_or_else(|| panic!("{} has no row", full.proxy_addr));
+            assert_eq!(row.state, full.state, "{} state", full.proxy_addr);
+            assert_eq!(
+                row.restart_count, full.restart_count,
+                "{} restart count",
+                full.proxy_addr
+            );
+        }
+        // The counters are not all zero, so the agreement above means
+        // something.
+        assert!(
+            tallies
+                .servers
+                .iter()
+                .any(|row| row.reported_record_count > 0),
+            "no server reported a record count, so the row check proves nothing"
+        );
+    }
+
+    #[test]
+        fn namespace_state_survives_snapshot_and_replay() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("namespace-mutations.jsonl");
         {
@@ -5201,6 +6131,7 @@ mod tests {
     fn live_two_shard_table() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -5221,6 +6152,7 @@ mod tests {
         });
         for shard_id in [100, 101] {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });
@@ -5363,6 +6295,7 @@ mod tests {
     fn shard_meta() -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -5383,6 +6316,7 @@ mod tests {
         });
         for shard_id in [1, 2] {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });
@@ -5455,6 +6389,7 @@ mod tests {
         let meta = shard_meta();
         meta.freeze_shard(shard(1));
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-b".to_string(),
             node_id: 2,
             location: "rack-2".to_string(),
@@ -5515,6 +6450,7 @@ mod tests {
         {
             let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 5,
                 server_addr: "node-a".to_string(),
             });
@@ -5723,6 +6659,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for (addr, location) in [("node-a", "rack-1"), ("node-b", "rack-2")] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: 1,
                 location: location.to_string(),
@@ -5826,6 +6763,7 @@ mod tests {
         .enumerate()
         {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 server_addr: addr.to_string(),
                 node_id: index as u64 + 1,
                 location: location.to_string(),
@@ -5877,10 +6815,396 @@ mod tests {
         }
     }
 
+    fn join_server(meta: &SingleNodeMeta, addr: &str) -> Status {
+        meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
+            server_addr: addr.to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        })
+        .status
+    }
+
+    fn server_joined_at(meta: &SingleNodeMeta, addr: &str) -> u64 {
+        meta.list_servers()
+            .servers
+            .into_iter()
+            .find(|server| server.server_addr == addr)
+            .expect("registered")
+            .registered_at_ms
+    }
+
+    #[test]
+    fn a_server_records_when_it_first_joined() {
+        // `last_heartbeat_ms` is reset on every registration and `boot_time_ms`
+        // is when the process started; neither answers how long this node has
+        // been part of the cluster.
+        let meta = SingleNodeMeta::default();
+        assert!(join_server(&meta, "node-a").ok);
+        assert!(server_joined_at(&meta, "node-a") > 0);
+    }
+
+    #[test]
+    fn a_server_that_restarts_has_not_newly_joined() {
+        // The whole value of the field: registering again must not reset it, or
+        // it degrades into "when did this process last start", which is what
+        // boot_time_ms already says.
+        let meta = SingleNodeMeta::default();
+        assert!(join_server(&meta, "node-a").ok);
+        let first = server_joined_at(&meta, "node-a");
+
+        assert!(join_server(&meta, "node-a").ok);
+        assert_eq!(server_joined_at(&meta, "node-a"), first);
+    }
+
+    #[test]
+    fn a_proxy_that_comes_back_keeps_its_original_join() {
+        let meta = SingleNodeMeta::default();
+        let join = || {
+            meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "rack-1".to_string(),
+                config_version: 0,
+                binary_version: "v1".to_string(),
+            })
+        };
+        assert!(join().status.ok);
+        let first = meta.list_proxies().proxies[0].registered_at_ms;
+        assert!(first > 0);
+        assert!(join().status.ok);
+        assert_eq!(meta.list_proxies().proxies[0].registered_at_ms, first);
+    }
+
+    #[test]
+    fn moving_a_shard_does_not_make_it_a_new_shard() {
+        // A shard is registered again to move it between servers. That is the
+        // same shard, and its age should say so.
+        let meta = SingleNodeMeta::default();
+        meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
+            shard_id: 1,
+            server_addr: "node-a".to_string(),
+        });
+        let first = meta.get(1).location.expect("registered").registered_at_ms;
+        assert!(first > 0);
+
+        meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
+            shard_id: 1,
+            server_addr: "node-b".to_string(),
+        });
+        let moved = meta.get(1).location.expect("registered");
+        assert_eq!(moved.server_addr, "node-b");
+        assert_eq!(moved.registered_at_ms, first, "the move reset the age");
+    }
+
+    #[test]
+    fn a_join_time_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("joined-mutations.jsonl");
+        let first;
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(join_server(&meta, "node-a").ok);
+            first = server_joined_at(&meta, "node-a");
+
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+            assert_eq!(server_joined_at(&peer, "node-a"), first);
+        }
+        // Replay re-runs the registration, so this pins that a replayed join
+        // does not silently restamp itself to the time of the replay.
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(server_joined_at(&recovered, "node-a"), first);
+    }
+
+    /// A two-shard table, its shards registered, with servers in two zones.
+    fn pinnable(table_preference: &str) -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        for (index, (addr, location)) in [("node-a", "east/zone-a"), ("node-b", "west/zone-b")]
+            .into_iter()
+            .enumerate()
+        {
+            meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
+                server_addr: addr.to_string(),
+                node_id: index as u64 + 1,
+                location: location.to_string(),
+                binary_version: "v1".to_string(),
+                numa_nodes: Vec::new(),
+            });
+        }
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "orders".to_string(),
+            first_shard_id: 1,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions {
+                preferred_location: table_preference.to_string(),
+                ..TableServingOptions::default()
+            },
+        });
+        for shard_id in [1, 2] {
+            meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
+                shard_id,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        meta
+    }
+
+    fn pin(meta: &SingleNodeMeta, shard_id: ShardId, location: &str) -> Status {
+        meta.pin_shard(ShardPinRequest {
+            shard_id,
+            location: location.to_string(),
+        })
+        .status
+    }
+
+    fn wanted(meta: &SingleNodeMeta, shard_id: ShardId) -> String {
+        meta.shard_placements()
+            .get(&shard_id)
+            .map(|placement| placement.preferred_location.clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn one_shard_can_be_pinned_without_moving_its_siblings() {
+        // The whole point: a table could be pinned, a shard could not, so a
+        // single hot shard wanting its own hardware meant pinning everything.
+        let meta = pinnable("");
+        assert!(pin(&meta, 1, "west/zone-b").ok);
+        assert_eq!(wanted(&meta, 1), "west/zone-b");
+        assert_eq!(wanted(&meta, 2), "", "the sibling was pinned too");
+    }
+
+    #[test]
+    fn a_shards_own_pin_overrides_what_its_table_prefers() {
+        let meta = pinnable("east/zone-a");
+        assert_eq!(wanted(&meta, 1), "east/zone-a");
+        assert!(pin(&meta, 1, "west/zone-b").ok);
+        assert_eq!(wanted(&meta, 1), "west/zone-b");
+        assert_eq!(wanted(&meta, 2), "east/zone-a", "the sibling stopped following the table");
+    }
+
+    #[test]
+    fn releasing_a_pin_returns_the_shard_to_its_table() {
+        // An empty location is the release, not a pin to nowhere.
+        let meta = pinnable("east/zone-a");
+        assert!(pin(&meta, 1, "west/zone-b").ok);
+        assert!(pin(&meta, 1, "").ok);
+        assert_eq!(wanted(&meta, 1), "east/zone-a");
+    }
+
+    #[test]
+    fn pinning_is_rejected_when_unknown_or_unchanged() {
+        let meta = pinnable("");
+        assert_eq!(pin(&meta, 99, "east/zone-a").code, "shard_not_found");
+        assert!(pin(&meta, 1, "east/zone-a").ok);
+        assert_eq!(pin(&meta, 1, "east/zone-a").code, "not_modified");
+    }
+
+    #[test]
+    fn a_muted_metaserver_will_not_pin_a_shard() {
+        let meta = pinnable("");
+        assert!(meta.set_meta_change_muted(true).status.ok);
+        assert_eq!(pin(&meta, 1, "east/zone-a").code, "meta_change_muted");
+    }
+
+    #[test]
+    fn a_pin_survives_snapshot_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("pin-mutations.jsonl");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
+                shard_id: 7,
+                server_addr: "node-a".to_string(),
+            });
+            assert!(pin(&meta, 7, "east/zone-a").ok);
+
+            let peer = SingleNodeMeta::default();
+            assert!(peer.install_snapshot(meta.export_snapshot()).status.ok);
+            assert_eq!(
+                peer.get(7).location.expect("registered").preferred_location,
+                "east/zone-a"
+            );
+        }
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.get(7).location.expect("registered").preferred_location,
+            "east/zone-a"
+        );
+    }
+
+    #[test]
+    fn a_pin_to_a_location_with_no_live_server_does_not_strand_the_shard() {
+        // The existing rule for table preferences, which a per-shard pin has to
+        // inherit: a preference must not be able to take a shard out of service.
+        let meta = pinnable("");
+        assert!(pin(&meta, 1, "nowhere/at-all").ok);
+        let placements = meta.shard_placements();
+        assert!(placements.contains_key(&1), "the shard fell out of placement");
+        let plans = meta.plan_placement_aware_rebalance(AutoRebalanceOptions::default());
+        // Every planned owner is a live server, so a pin naming a place with
+        // none cannot pull the shard anywhere.
+        let live = meta
+            .list_servers()
+            .servers
+            .into_iter()
+            .map(|server| server.server_addr)
+            .collect::<std::collections::BTreeSet<_>>();
+        for plan in &plans {
+            assert!(
+                live.contains(&plan.to_server),
+                "planned a move to a server that is not live: {plan:?}"
+            );
+        }
+    }
+
+    /// One shard registered to a server that has not said anything yet.
+    fn drainable() -> SingleNodeMeta {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+            numa_nodes: Vec::new(),
+        });
+        meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
+            shard_id: 1,
+            server_addr: "node-a".to_string(),
+        });
+        meta
+    }
+
+    /// A heartbeat reporting exactly the shards named as loaded.
+    fn report_loaded(meta: &SingleNodeMeta, loaded: &[ShardId]) {
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "node-a".to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            shard_stat_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: loaded
+                .iter()
+                .map(|shard_id| ServerShardServingState {
+                    shard_id: *shard_id,
+                    serving_state: "serving".to_string(),
+                    worker_index: 0,
+                    worker_threads: 1,
+                    loaded: true,
+                    readonly: false,
+                    load_version: 1,
+                    table_name: "ns.orders".to_string(),
+                    shard_uri: String::new(),
+                    start_routing_bucket: 0,
+                    end_routing_bucket: u32::MAX,
+                    total_records: 0,
+                    storage_bytes: 0,
+                    cache_memory_bytes: 0,
+                    storage: ShardCanonicalStorageStats::default(),
+                    block_store_bytes_written: 0,
+                    wal_sequence: 0,
+                    dirty_object_count: 0,
+                    dirty_bucket_count: 0,
+                })
+                .collect(),
+        });
+    }
+
+    fn only_shard(meta: &SingleNodeMeta) -> ShardListEntry {
+        meta.list_shards(ListShardsRequest::default())
+            .shards
+            .into_iter()
+            .next()
+            .expect("one shard")
+    }
+
+    #[test]
+    fn the_listing_says_whether_a_shard_is_serving() {
+        // A shard can be taken out of service on its own, and the listing had
+        // no way to show it.
+        let meta = drainable();
+        assert_eq!(only_shard(&meta).state, MetaEntityState::Normal);
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 1 }).status.ok);
+        assert_eq!(only_shard(&meta).state, MetaEntityState::Frozen);
+    }
+
+    #[test]
+    fn a_frozen_shard_still_held_by_its_owner_is_not_drained_yet() {
+        // Freezing is recorded the moment it is asked for, but the datanode
+        // holding the shard has work to do before it has really let go. Until
+        // now nothing distinguished "frozen and gone" from "frozen and still
+        // resident".
+        let meta = drainable();
+        report_loaded(&meta, &[1]);
+        assert!(meta.freeze_shard(ShardStateRequest { shard_id: 1 }).status.ok);
+
+        let entry = only_shard(&meta);
+        assert_eq!(entry.state, MetaEntityState::Frozen);
+        assert_eq!(
+            entry.owner_reports_loaded,
+            Some(true),
+            "the owner still holds it, and the listing should say so"
+        );
+    }
+
+    #[test]
+    fn once_the_owner_lets_go_the_shard_reads_as_drained() {
+        let meta = drainable();
+        report_loaded(&meta, &[1]);
+        meta.freeze_shard(ShardStateRequest { shard_id: 1 });
+        assert_eq!(only_shard(&meta).owner_reports_loaded, Some(true));
+
+        // The next heartbeat no longer names it.
+        report_loaded(&meta, &[]);
+        assert_eq!(only_shard(&meta).owner_reports_loaded, Some(false));
+    }
+
+    #[test]
+    fn a_server_that_never_reports_is_not_read_as_reporting_nothing() {
+        // The distinction the divergence check already makes before it is
+        // willing to judge a server: silence is not a claim.
+        let meta = drainable();
+        assert_eq!(
+            only_shard(&meta).owner_reports_loaded,
+            None,
+            "silence was read as an empty report"
+        );
+    }
+
+    #[test]
+    fn a_serving_shard_its_owner_does_not_hold_is_visible_too() {
+        // The same field read the other way round: this is a divergence, and
+        // it shows up in the listing rather than only in a checker's report.
+        let meta = drainable();
+        report_loaded(&meta, &[2]);
+        let entry = only_shard(&meta);
+        assert_eq!(entry.state, MetaEntityState::Normal);
+        assert_eq!(entry.owner_reports_loaded, Some(false));
+    }
+
     /// A proxy attached to a group serving one namespace.
     fn shedding_meta(drop_percent: u8) -> SingleNodeMeta {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "tenant".to_string(),
             location: "rack-1".to_string(),
@@ -6101,11 +7425,351 @@ mod tests {
     }
 
     #[test]
+    fn the_learned_shard_index_answers_what_the_scan_answered() {
+        // The index exists because asking every table which shard it owns, once
+        // per shard, cost shards times tables on a background round. It is only
+        // worth having if it says the same thing -- including for two tables
+        // whose ranges overlap, which the scan resolved by table map order.
+        use crate::meta::topology_helpers::{shard_owning_tables, table_for_shard};
+
+        for overlapping in [false, true] {
+            let meta = SingleNodeMeta::default();
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: "ns".to_string()
+                })
+                .status
+                .ok);
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+
+            // "a" owns 100..108. "b" owns 108..116, or 104..112 when the ranges
+            // are made to overlap.
+            let second_first = if overlapping { 104 } else { 108 };
+            for (name, first) in [("a", 100u64), ("b", second_first)] {
+                assert!(meta
+                    .add_table(AddTableRequest {
+                        namespace: "ns".to_string(),
+                        table_name: name.to_string(),
+                        first_shard_id: first,
+                        shard_count: 8,
+                        replica_count: 1,
+                        partition_version: 0,
+                        serving_options: TableServingOptions::default(),
+                    })
+                    .status
+                    .ok);
+            }
+            // Registered shards across both ranges, and two that no table owns.
+            for shard_id in [100u64, 103, 104, 107, 108, 111, 115, 200, 99] {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        registered_at_ms: 0,
+                        shard_id,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+
+            let state = meta.inner.read().expect("meta lock poisoned");
+            let learned = shard_owning_tables(&state);
+            for shard_id in state.shards.keys() {
+                let scanned = table_for_shard(&state, *shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                let indexed = learned
+                    .get(shard_id)
+                    .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+                assert_eq!(
+                    indexed, scanned,
+                    "shard {shard_id} resolved differently (overlapping={overlapping})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tombstone_with_no_stamp_is_still_left_alone() {
+        // Retention starts from the drop stamps now instead of walking every
+        // resource. That is the same set only because a tombstone with no stamp
+        // is never collected -- it predates the stamps, and treating it as
+        // infinitely old would forget the whole history on the first round after
+        // an upgrade. The scan used to produce it as a candidate for the planner
+        // to reject; starting from the stamps it is simply not a candidate, and
+        // the outcome has to stay identical.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        for name in ["stamped", "unstamped"] {
+            assert!(meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                    first_shard_id: if name == "stamped" { 10 } else { 20 },
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 0,
+                    serving_options: TableServingOptions::default(),
+                })
+                .status
+                .ok);
+            assert!(meta
+                .delete_table(DeleteTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: name.to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Take the stamp away from one of them, which is what an upgrade from
+        // before the stamps existed leaves behind.
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            let key = dropped_key("table", &table_key("ns", "unstamped"));
+            assert!(state.dropped_since_ms.remove(&key).is_some());
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(
+            report.plan.tables,
+            vec![table_key("ns", "stamped")],
+            "the stamped tombstone is collected and the unstamped one is not"
+        );
+
+        let remaining = meta
+            .list_tables()
+            .tables
+            .into_iter()
+            .map(|table| table.table_name)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining, vec!["unstamped".to_string()]);
+    }
+
+    #[test]
+    fn a_stamp_for_a_resource_that_is_gone_is_not_reported_as_a_purge() {
+        // The round starts from the drop stamps, so a stamp left behind for a
+        // resource that is no longer in the state would become a candidate, and
+        // the round would report forgetting something that was already gone --
+        // the plan is what the metrics and the operator read.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        {
+            let mut state = meta.inner.write().expect("meta lock poisoned");
+            state
+                .dropped_since_ms
+                .insert(dropped_key("table", &table_key("ns", "vanished")), 1);
+            state
+                .dropped_since_ms
+                .insert(dropped_key("server", "node-gone"), 1);
+        }
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert!(
+            report.plan.is_empty(),
+            "reported purging resources that were not there: {:?}",
+            report.plan
+        );
+    }
+
+    #[test]
+    fn a_purged_table_still_takes_its_shard_routes_with_it() {
+        // A round with nothing to collect no longer derives who owns each shard
+        // or which table owns each shard -- neither can change what an empty
+        // round returns, and deriving them walked every registered shard. The
+        // risk in that is a round which does have something to collect quietly
+        // losing the shard routes, and the planner's own test supplies those
+        // maps ready-made, so it would not notice.
+        let dir = tempfile::tempdir().unwrap();
+        let meta = SingleNodeMeta::with_mutation_log(dir.path().join("meta.log")).unwrap();
+        assert!(meta
+            .add_namespace(AddNamespaceRequest {
+                namespace: "ns".to_string()
+            })
+            .status
+            .ok);
+        assert!(meta
+            .register_server(RegisterServerRequest {
+                registered_at_ms: 0,
+                numa_nodes: Vec::new(),
+                server_addr: "node-a".to_string(),
+                node_id: 1,
+                location: "rack-1".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok);
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+                first_shard_id: 400,
+                shard_count: 3,
+                replica_count: 1,
+                partition_version: 0,
+                serving_options: TableServingOptions::default(),
+            })
+            .status
+            .ok);
+        for shard_id in [400u64, 401, 402] {
+            assert!(meta
+                .register(RegisterShardRequest {
+                    registered_at_ms: 0,
+                    shard_id,
+                    server_addr: "node-a".to_string(),
+                })
+                .status
+                .ok);
+        }
+
+        // Nothing is dropped yet, so the round has nothing to say about shards.
+        let quiet = meta.plan_meta_retention_now(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(quiet.is_empty(), "{quiet:?}");
+
+        assert!(meta
+            .delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "gone".to_string(),
+            })
+            .status
+            .ok);
+
+        let report = meta.purge_expired_meta(MetaRetentionOptions {
+            server_retention_ms: 0,
+            proxy_retention_ms: 0,
+            table_retention_ms: 0,
+            max_purges_per_round: 20,
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.plan.tables, vec![table_key("ns", "gone")]);
+        assert_eq!(
+            report.plan.shards,
+            vec![400, 401, 402],
+            "the purged table's shard routes were left behind"
+        );
+        assert!(
+            meta.list_shards(ListShardsRequest {
+                server_addr: String::new(),
+                after_shard_id: 0,
+                limit: 0,
+            })
+            .shards
+            .is_empty(),
+            "the routes are still in the state"
+        );
+    }
+
+    #[test]
+    fn writers_share_a_barrier_without_losing_a_record() {
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(LocalMetaMutationLog::new(dir.path().join("meta.log")).unwrap());
+
+        // One writer on its own is covered by its own barrier, and its record is
+        // readable the moment append returns.
+        log.append(
+            &MetaMutation::RegisterShard(RegisterShardRequest {
+                registered_at_ms: 0,
+                shard_id: 1,
+                server_addr: "solo".to_string(),
+            }),
+            10,
+        )
+        .unwrap();
+        assert_eq!(log.load().unwrap().len(), 1, "the first record is not there");
+
+        let writers = 8usize;
+        let each = 12usize;
+        let mut handles = Vec::new();
+        for w in 0..writers {
+            let log = Arc::clone(&log);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..each {
+                    log.append(
+                        &MetaMutation::RegisterShard(RegisterShardRequest {
+                            registered_at_ms: 0,
+                            shard_id: (w * each + i) as u64 + 100,
+                            server_addr: format!("node-{w}"),
+                        }),
+                        i as u64,
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Every record every writer was told was durable is in the log, once.
+        let records = log.load().unwrap();
+        assert_eq!(
+            records.len(),
+            writers * each + 1,
+            "a record a writer was told had landed is missing"
+        );
+        let mut shard_ids = records
+            .iter()
+            .filter_map(|record| match &record.mutation {
+                MetaMutation::RegisterShard(request) => Some(request.shard_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        shard_ids.sort_unstable();
+        shard_ids.dedup();
+        assert_eq!(
+            shard_ids.len(),
+            writers * each + 1,
+            "a record was written twice or read back wrong"
+        );
+
+        // How many barriers this took is deliberately not asserted. The
+        // barrier counter is process-wide and every other test in the binary
+        // adds to it, so a count read here says nothing about this log -- and a
+        // test that passes alone and fails in the suite is worse than no test.
+        // What matters is above: every record a writer was told had landed is
+        // in the log, exactly once.
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "cooldown-server".to_string(),
             node_id: 1,
@@ -6113,6 +7777,7 @@ mod tests {
             binary_version: "v".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "cooldown-proxy".to_string(),
             namespace: "ns".to_string(),
             location: "z".to_string(),
@@ -6144,6 +7809,7 @@ mod tests {
         );
         assert_eq!(
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "cooldown-server".to_string(),
                 node_id: 1,
@@ -6156,6 +7822,7 @@ mod tests {
         );
         assert_eq!(
             meta.register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "cooldown-proxy".to_string(),
                 namespace: "ns".to_string(),
                 location: "z".to_string(),
@@ -6218,6 +7885,7 @@ mod tests {
     fn metaserver_serves_table_topology_and_version_not_modified() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
@@ -6225,6 +7893,7 @@ mod tests {
             binary_version: String::new(),
         });
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s2".to_string(),
             node_id: 2,
@@ -6232,6 +7901,7 @@ mod tests {
             binary_version: String::new(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 10,
             server_addr: "s1".to_string(),
         });
@@ -6359,6 +8029,7 @@ mod tests {
     fn metaserver_freeze_table_blocks_topology_update_and_finish_load_until_unfrozen() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
@@ -6708,6 +8379,7 @@ mod tests {
             ("warm", 100, 100),
         ] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
@@ -6759,6 +8431,7 @@ mod tests {
             ("degraded", 0, 0, true),
         ] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
@@ -6810,6 +8483,112 @@ mod tests {
     }
 
     #[test]
+    fn asking_only_for_status_gives_the_same_answer_without_the_shards() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
+            numa_nodes: Vec::new(),
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        for (namespace, table_name) in [
+            ("ns", "normal"),
+            ("ns", "frozen"),
+            ("ns", "dropped"),
+            ("frozen-ns", "in-frozen-ns"),
+        ] {
+            meta.add_table(AddTableRequest {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                first_shard_id: 1,
+                shard_count: 4,
+                replica_count: 1,
+                partition_version: 1,
+                serving_options: Default::default(),
+            });
+        }
+        for shard in 1..=4u64 {
+            meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
+                shard_id: shard,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        meta.freeze_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "frozen".to_string(),
+        });
+        meta.delete_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "dropped".to_string(),
+        });
+        meta.freeze_namespace(AddNamespaceRequest {
+            namespace: "frozen-ns".to_string(),
+        });
+
+        for (namespace, table_name) in [
+            ("ns", "normal"),
+            ("ns", "frozen"),
+            ("ns", "dropped"),
+            ("frozen-ns", "in-frozen-ns"),
+            ("ns", "never-created"),
+            ("no-such-ns", "never-created"),
+        ] {
+            let full = meta.get_table_topology(GetTableTopologyRequest {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                old_topology_version: 0,
+                client_location: String::new(),
+            });
+            let cheap = meta.get_table_topology(GetTableTopologyRequest::status_only(
+                namespace.to_string(),
+                table_name.to_string(),
+            ));
+
+            // Whatever the full answer says about whether this table can be
+            // served, the cheap one says the same. Opening and closing a table
+            // report this status straight back to the caller.
+            assert_eq!(
+                cheap.status.ok, full.status.ok,
+                "{namespace}.{table_name}: the two answers disagree on ok"
+            );
+            assert_eq!(
+                cheap.status.code, full.status.code,
+                "{namespace}.{table_name}: the two answers disagree on the code"
+            );
+            // And the version, which is what opening a table reads.
+            assert_eq!(
+                cheap.table.as_ref().map(|table| table.topology_version),
+                full.table.as_ref().map(|table| table.topology_version),
+                "{namespace}.{table_name}: the two answers disagree on the version"
+            );
+            // The point of asking this way: no shard list is built. If this
+            // ever carries shards again the saving is gone, and that is not
+            // something a timing assertion could tell you reliably.
+            assert!(
+                cheap.shards.is_empty(),
+                "{namespace}.{table_name}: the cheap answer built a shard list"
+            );
+        }
+
+        // The full answer really does carry shards for a servable table, so the
+        // check above is not passing because there was nothing to build.
+        let full = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "normal".to_string(),
+            old_topology_version: 0,
+            client_location: String::new(),
+        });
+        assert_eq!(
+            full.shards.len(),
+            4,
+            "the full answer stopped carrying shards, so this test proves nothing"
+        );
+    }
+
+    #[test]
     fn metaserver_topology_avoids_unhealthy_shard_serving_states() {
         let meta = SingleNodeMeta::default();
         for (server_addr, serving_state) in [
@@ -6818,6 +8597,7 @@ mod tests {
             ("serving", "serving"),
         ] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
@@ -6874,6 +8654,7 @@ mod tests {
             ("zone-b-hot", "zone-b", 10_000, 10_000),
         ] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
@@ -6926,6 +8707,7 @@ mod tests {
             ("10.0.0.2:18001", "zone-c", 10_000, 10_000),
         ] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
@@ -6976,6 +8758,7 @@ mod tests {
             ("10.0.0.1:18002", "zone-b", 20, 20),
         ] {
             meta.register_server(RegisterServerRequest {
+                registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: server_addr.to_string(),
                 node_id: 0,
@@ -7023,6 +8806,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         assert!(meta
             .register_proxy(RegisterProxyRequest {
+                registered_at_ms: 0,
                 proxy_addr: "127.0.0.1:17000".to_string(),
                 namespace: "ns".to_string(),
                 location: String::new(),
@@ -7068,6 +8852,7 @@ mod tests {
     fn metaserver_tracks_proxy_heartbeat_config_changes() {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "p1".to_string(),
             namespace: "ns".to_string(),
             location: "z1".to_string(),
@@ -7113,6 +8898,7 @@ mod tests {
     fn metaserver_finish_load_updates_shard_route() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
@@ -7140,6 +8926,7 @@ mod tests {
         let snapshot_path = dir.path().join("scheduler-finish-load-snapshot.json");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
@@ -7281,6 +9068,7 @@ mod tests {
         let log_path = dir.path().join("control-plane-parity.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
@@ -7374,6 +9162,7 @@ mod tests {
         assert_eq!(missing.status.code, "server_not_found");
 
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "s1".to_string(),
             node_id: 1,
@@ -7421,12 +9210,195 @@ mod tests {
     }
 
     #[test]
+    fn a_log_cut_off_mid_record_still_brings_the_metaserver_back() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(meta
+                .register_server(RegisterServerRequest {
+                    registered_at_ms: 0,
+                    numa_nodes: Vec::new(),
+                    server_addr: "node-a".to_string(),
+                    node_id: 1,
+                    location: "rack-1".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .status
+                .ok);
+            for shard in 1..=3u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        registered_at_ms: 0,
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+
+        // What a process dying partway through an append leaves: a record that
+        // starts and stops, with no newline after it.
+        let mut file = OpenOptions::new().append(true).open(&log_path).unwrap();
+        file.write_all(b"{\"at_ms\":123,\"mutation\":{\"RegisterSha").unwrap();
+        drop(file);
+
+        // It comes back, with everything that was acknowledged.
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("a torn last record must not stop the metaserver starting");
+        let listed = recovered.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        assert!(listed.status.ok);
+        let ids = listed
+            .shards
+            .iter()
+            .map(|entry| entry.shard_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "every shard acknowledged before the crash must come back"
+        );
+        assert_eq!(
+            recovered.list_servers().servers.len(),
+            1,
+            "the server registration was acknowledged before the crash"
+        );
+    }
+
+    #[test]
+    fn a_write_after_recovering_from_a_crash_survives_the_next_restart() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            for shard in 1..=2u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        registered_at_ms: 0,
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+        // A crash partway through an append.
+        let mut file = OpenOptions::new().append(true).open(&log_path).unwrap();
+        file.write_all(b"{\"at_ms\":9,\"mutation\":{\"RegisterSha").unwrap();
+        drop(file);
+
+        // Come back and keep serving, which is the whole point of recovering.
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path)
+                .expect("a torn last record must not stop the metaserver starting");
+            assert!(
+                meta.register(RegisterShardRequest {
+                    registered_at_ms: 0,
+                    shard_id: 3,
+                    server_addr: "node-a".to_string(),
+                })
+                .status
+                .ok,
+                "the registration after recovery was acknowledged"
+            );
+        }
+
+        // Restart again. Shard 3 was acknowledged AFTER the crash, so losing it
+        // here would be losing a write that was promised -- and losing it
+        // quietly, because the damaged line would be last and read as a torn
+        // tail. Leaving the fragment in the file is what caused that: the next
+        // append was spliced onto the end of it.
+        let again = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("the log must still be readable after recovering and writing");
+        let listed = again.list_shards(ListShardsRequest {
+            server_addr: String::new(),
+            after_shard_id: 0,
+            limit: 0,
+        });
+        assert!(listed.status.ok);
+        let ids = listed
+            .shards
+            .iter()
+            .map(|entry| entry.shard_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            vec![1, 2, 3],
+            "a write acknowledged after recovery was lost on the next restart"
+        );
+
+        // And the file itself is clean: every line parses, so no fragment is
+        // waiting to swallow the next record.
+        for (number, line) in fs::read_to_string(&log_path).unwrap().lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                serde_json::from_str::<MetaMutationRecord>(line).is_ok(),
+                "line {} of the recovered log does not parse: {line}",
+                number + 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_log_damaged_in_the_middle_is_refused_rather_than_half_read() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+        {
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            for shard in 1..=3u64 {
+                assert!(meta
+                    .register(RegisterShardRequest {
+                        registered_at_ms: 0,
+                        shard_id: shard,
+                        server_addr: "node-a".to_string(),
+                    })
+                    .status
+                    .ok);
+            }
+        }
+
+        // Damage a line that has records after it. Those later records were
+        // acknowledged, so stopping at the damage would lose them silently --
+        // which is the thing that must not happen quietly.
+        let text = fs::read_to_string(&log_path).unwrap();
+        let mut lines = text.lines().collect::<Vec<_>>();
+        assert!(lines.len() >= 3, "need a line with records after it");
+        lines[1] = "{ this is not a record";
+        fs::write(&log_path, lines.join("\n") + "\n").unwrap();
+
+        let refused = SingleNodeMeta::with_mutation_log(&log_path);
+        assert!(
+            refused.is_err(),
+            "damage with acknowledged records after it must be refused, not half-read"
+        );
+        let message = refused.err().unwrap().to_string();
+        assert!(
+            message.contains("not a torn tail"),
+            "the error should say why it is not simply a crash: {message}"
+        );
+    }
+
+    #[test]
     fn metaserver_mutation_log_recovers_routes_tables_and_state_changes() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("meta-mutations.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert!(meta.info().durable_mutation_log);
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
             node_id: 1,
@@ -7434,6 +9406,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "zone-a".to_string(),
@@ -7474,6 +9447,7 @@ mod tests {
         // to what this test checks: the mutation count and the recovered state
         // are the same either way.
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 10,
             server_addr: "server-a".to_string(),
         });
@@ -7516,13 +9490,29 @@ mod tests {
 
         let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert_eq!(
-            recovered.get(10).location.unwrap(),
-            ShardLocation {
-                state: MetaEntityState::Normal,
-                shard_id: 10,
-                server_addr: "server-a".to_string(),
-                latest_snapshot: None,
-            }
+            recovered.get(10).location.as_ref().map(|location| {
+                (
+                    location.shard_id,
+                    location.server_addr.clone(),
+                    location.state,
+                    location.latest_snapshot.clone(),
+                    location.preferred_location.clone(),
+                )
+            }),
+            Some((
+                10,
+                "server-a".to_string(),
+                MetaEntityState::Normal,
+                None,
+                String::new()
+            ))
+        );
+        // The join time is carried through replay rather than restamped, so it
+        // cannot be written into the expected value above -- only checked for
+        // having survived.
+        assert!(
+            recovered.get(10).location.expect("registered").registered_at_ms > 0,
+            "the shard's join time was lost in replay"
         );
         let recovered_tables = recovered.list_tables().tables;
         assert_eq!(recovered_tables.len(), 2);
@@ -7559,6 +9549,7 @@ mod tests {
         let log_path = dir.path().join("snapshot-meta.jsonl");
         let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 44,
             server_addr: "server-a".to_string(),
         });
@@ -7607,6 +9598,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
             node_id: 1,
@@ -7614,6 +9606,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-b".to_string(),
             node_id: 2,
@@ -7621,6 +9614,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 77,
             server_addr: "server-a".to_string(),
         });
@@ -7636,6 +9630,7 @@ mod tests {
             snapshot: latest_snapshot.clone(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "zone-a".to_string(),

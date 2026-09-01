@@ -163,41 +163,47 @@ fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
         block_slab_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
-        block_id: address.page_id,
-        object_id: address.object_id,
+        block_id: address.page_id(),
+        object_id: address.object_id(),
         // Deliberately dropped, exactly as the text encoding drops it: the item carries the
         // routing bucket, and `resolved_address` puts it back. Writing it here made the two
         // encodings of one record decode differently, which is a divergence whether or not
         // anything currently reads the difference.
         routing_bucket: None,
-        generation: address.generation,
-        band_id: address.band_id,
+        generation: address.generation(),
+        band_id: address.band_id(),
         // The digest, not its transcription. Half the bytes, same value.
         checksum: None,
-        checksum_raw: address
-            .sha256
-            .as_deref()
-            .and_then(checksum_to_raw),
+        // In memory the digest is already the 32 bytes this field wants, so there is no
+        // transcription left to undo.
+        checksum_raw: address.sha256.map(|digest| digest.to_vec()),
     }
 }
 
 fn address_from_proto(address: v1::WalBlockAddress) -> BlockAddress {
-    BlockAddress {
-        page_slab_id: address.block_slab_id,
-        offset: address.offset,
-        length: address.length,
-        page_id: address.block_id,
-        object_id: address.object_id,
-        routing_bucket: address.routing_bucket,
-        generation: address.generation,
-        band_id: address.band_id,
+    BlockAddress::from_parts(
+        address.block_slab_id,
+        address.offset,
+        address.length,
+        address.block_id,
+        address.object_id,
+        address.routing_bucket,
+        address.generation,
+        address.band_id,
         // Prefer the digest; fall back to the hex a record written before it carries.
-        sha256: address
+        address
             .checksum_raw
             .as_deref()
-            .map(checksum_from_raw)
-            .or(address.checksum),
-    }
+            .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
+            // A record written before  existed carries the hex instead; decode it
+            // to the same 32 bytes rather than keeping two shapes alive in memory.
+            .or_else(|| {
+                address.checksum.as_deref().and_then(|text| {
+                    let mut bytes = [0u8; 32];
+                    hex::decode_to_slice(text.as_bytes(), &mut bytes).ok().map(|_| bytes)
+                })
+            }),
+    )
 }
 /// The numeric key a component is carrying, if it is carrying one.
 ///
@@ -293,8 +299,8 @@ pub(crate) fn item_from_proto(item: v1::EngineWalItem) -> WalOutcomeItem {
             let mut address = address_from_proto(block);
             // Absent means "the same as the item's", which is the only thing it can mean: the
             // encoder omits it exactly when they match, and it is never otherwise unset.
-            if address.object_id.is_none() {
-                address.object_id = Some(object_id);
+            if address.object_id().is_none() {
+                address.set_object_id(Some(object_id));
             }
             address
         }),

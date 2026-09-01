@@ -429,11 +429,13 @@ INTERN_BUNDLE_EMIT_KEY = "__bundle__"  # emitted-token namespace for bundle side
 # records (model_ref/model_name/model_hash/provider/execution_mode) re-emitted on every serving batch
 # that carries a context_embedding, yet only a handful of distinct models exist per store. The read
 # path already latest-state-compacts them (compact_latest_context_state_records), so the duplicates are
-# pure durable-log bloat. With MATRIXARK_DEDUP_MODEL_REGISTRY ON we append at most one registry record
-# per distinct semantic identity (timestamp excluded); a genuine change to any model field is a new
-# identity and is still recorded. Serving/retrieval that reads model info still resolves it (>=1 record
-# per model survives). Flag OFF re-emits every batch (prior behaviour).
-DEDUP_MODEL_REGISTRY = bool_env("MATRIXARK_DEDUP_MODEL_REGISTRY", True)
+# pure durable-log bloat. At most one registry record is appended per distinct semantic identity
+# (timestamp excluded); a genuine change to any model field is a new identity and is still recorded.
+# Serving/retrieval that reads model info still resolves it (>=1 record per model survives).
+#
+# This was gated behind MATRIXARK_DEDUP_MODEL_REGISTRY during its rollout. The gate is gone: its OFF
+# path was the superseded behavior -- re-emitting every batch -- and keeping a switch for it only
+# preserved the option of choosing the worse one.
 
 # Phase-2 -- coalesce transient summary-dirty markers. A context_summary_dirty (status="pending")
 # marker means "this node's summary needs regeneration". One is emitted per (node prefix) on EVERY
@@ -441,13 +443,16 @@ DEDUP_MODEL_REGISTRY = bool_env("MATRIXARK_DEDUP_MODEL_REGISTRY", True)
 # though the refresh reconciliation only ever acts on the LATEST uncompleted pending marker per node
 # (it regenerates the node summary from all current events regardless of which marker triggered it) and
 # resolves a marker by matching a status="completed" marker on the same dirty_hash. With
-# MATRIXARK_COALESCE_SUMMARY_DIRTY ON we keep at most ONE outstanding (uncompleted) pending marker per
+# coalescing ON we keep at most ONE outstanding (uncompleted) pending marker per
 # (scope, node): a new pending marker is skipped while an uncompleted one is already durable, so the
 # node stays flagged for regen. CRASH-SAFE -- the one outstanding marker is durable, so a crash before
 # regen still triggers the refresh on recovery; once the summary regenerates (completion marker with
 # that dirty_hash) the next event re-marks the node afresh. Completion/refreshed markers are never
-# dropped. Flag OFF emits a marker per event (prior behaviour).
-COALESCE_SUMMARY_DIRTY = bool_env("MATRIXARK_COALESCE_SUMMARY_DIRTY", True)
+# dropped.
+#
+# This was gated behind MATRIXARK_COALESCE_SUMMARY_DIRTY during its rollout. The gate is gone: its
+# OFF path was the superseded behavior -- a marker per event, measured at ~5% of on-disk memory --
+# and a switch whose only setting anyone would choose is ON is not a switch.
 
 
 def _canonical_scope_key_of(record: Json) -> str:
@@ -4225,10 +4230,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
 
     def _filter_duplicate_model_registry(self, records: list[Json]) -> list[Json]:
         """Drop context_model_registry records whose semantic identity is already durably present.
-        Keeps at least one record per distinct model; a changed field is a new identity. No-op when the
-        flag is OFF."""
-        if not DEDUP_MODEL_REGISTRY:
-            return records
+        Keeps at least one record per distinct model; a changed field is a new identity."""
         if not any(isinstance(r, dict) and r.get("record_type") == "context_model_registry" for r in records):
             return records
         if not getattr(self, "_model_registry_seeded", False):
@@ -4282,9 +4284,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _coalesce_summary_dirty(self, records: list[Json]) -> list[Json]:
         """Drop redundant pending summary-dirty markers for a (scope, node) that already has an
         outstanding uncompleted marker. Completion / non-pending markers pass through. No-op when the
-        flag is OFF or the batch carries no pending markers."""
-        if not COALESCE_SUMMARY_DIRTY:
-            return records
+        batch carries no pending markers."""
         pending_in_batch = [
             r for r in records
             if isinstance(r, dict) and str(r.get("record_type") or "") == "context_summary_dirty"

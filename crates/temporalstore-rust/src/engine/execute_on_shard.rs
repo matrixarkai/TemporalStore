@@ -3368,20 +3368,17 @@ pub(crate) fn execute_on_shard(
                 .into_iter()
                 .filter_map(|node_hash| {
                     let object_key = context_summary_key(tenant_hash, node_hash, level);
-                    load_context_summaries(
-                        cache,
-                        page_store,
-                        shard_id,
-                        shard,
-                        &object_key,
-                        as_of_ms,
-                        Some(1),
+                    // Newest, not oldest. The series ascends with time, so the previous
+                    // `take(1).next()` returned the node's FIRST summary: once a node had been
+                    // re-summarised, scoring used the superseded embedding, and a stale vector of
+                    // the right width still scores a plausible cosine, so nothing surfaced it.
+                    load_newest_context_summary(
+                        cache, page_store, shard_id, shard, &object_key, as_of_ms,
                     )
-                    .into_iter()
-                    .next()
                     .filter(|summary| !summary.vector.is_empty())
                     .map(|summary| ContextSummaryVector {
                         node_hash,
+                        embedding_model_hash: summary.embedding_model_hash,
                         vector: summary.vector,
                     })
                 })

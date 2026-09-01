@@ -266,6 +266,7 @@ impl SingleNodeMeta {
         }
         self.metrics.record_reassignment(reason);
         self.record_mutation(MetaMutation::RegisterShard(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id,
             server_addr: to_server.to_string(),
         }));
@@ -277,6 +278,8 @@ impl SingleNodeMeta {
         state.shards.insert(
             shard_id,
             ShardLocation {
+                registered_at_ms: 0,
+                preferred_location: String::new(),
                 state: MetaEntityState::Normal,
                 shard_id,
                 server_addr: to_server.to_string(),

@@ -269,8 +269,7 @@ pub(super) fn wait_for_replica_value(
 }
 
 pub(super) fn free_local_addr() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().to_string()
+    crate::http::test_ports::unique_addr()
 }
 
 pub(super) fn topology_for_shard(
@@ -310,6 +309,7 @@ pub(super) fn topology_for_shard(
 
 pub(super) fn server_meta(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
     ServerMetaInfo {
+        registered_at_ms: 0,
         reported_record_count: 0,
         reported_storage_bytes: 0,
         numa_nodes: Vec::new(),

@@ -73,6 +73,7 @@ fn handle_manage_service_route(
                     meta,
                     register_server,
                     RegisterServerRequest {
+                        registered_at_ms: 0,
                         numa_nodes: Vec::new(),
                         server_addr: heartbeat_server_addr(&req),
                         node_id: 0,
@@ -120,6 +121,7 @@ fn handle_manage_service_route(
                     meta,
                     register_proxy,
                     RegisterProxyRequest {
+                        registered_at_ms: 0,
                         proxy_addr,
                         namespace,
                         location: req.location,
@@ -410,15 +412,12 @@ fn handle_master_service_route(
         }
         ("POST", "/MasterService/OpenTable") => {
             parse_or(&request.body, |req: MasterTableRequest| {
+                // Only the version is read out of this, so it does not ask
+                // for the shard list.
                 let topology = backend_call!(
                     meta,
                     get_table_topology,
-                    GetTableTopologyRequest {
-                        client_location: String::new(),
-                        namespace: req.namespace,
-                        table_name: req.table_name,
-                        old_topology_version: 0,
-                    }
+                    GetTableTopologyRequest::status_only(req.namespace, req.table_name)
                 );
                 MasterOpenTableResponse {
                     open_version: topology
@@ -432,15 +431,12 @@ fn handle_master_service_route(
         }
         ("POST", "/MasterService/CloseTable") => {
             parse_or(&request.body, |req: MasterTableRequest| {
+                // Only the status is read out of this, so it does not ask
+                // for the shard list.
                 let topology = backend_call!(
                     meta,
                     get_table_topology,
-                    GetTableTopologyRequest {
-                        client_location: String::new(),
-                        namespace: req.namespace,
-                        table_name: req.table_name,
-                        old_topology_version: 0,
-                    }
+                    GetTableTopologyRequest::status_only(req.namespace, req.table_name)
                 );
                 AckResponse {
                     status: topology.status,
@@ -470,6 +466,7 @@ fn handle_master_service_route(
                     meta,
                     register_server,
                     RegisterServerRequest {
+                        registered_at_ms: 0,
                         numa_nodes: Vec::new(),
                         server_addr,
                         node_id: req.node_id,

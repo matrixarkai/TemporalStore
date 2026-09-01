@@ -102,17 +102,17 @@ pub struct WalItem {
 /// the log id, and the length is the record's framed size. Nothing is looked up — the address
 /// alone locates the bytes.
 pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> BlockAddress {
-    BlockAddress {
-        page_slab_id: WAL_LOG_SLAB_ID,
-        offset: log_id,
-        length: log_size,
-        page_id: Some(u64::from(item.block_id)),
-        object_id: Some(u64::from(item.object_id)),
-        routing_bucket: u32::try_from(item.routing_bucket).ok(),
-        generation: None,
-        band_id: None,
-        sha256: None,
-    }
+    BlockAddress::from_parts(
+        WAL_LOG_SLAB_ID,
+        log_id,
+        log_size,
+        Some(u64::from(item.block_id)),
+        Some(u64::from(item.object_id)),
+        u32::try_from(item.routing_bucket).ok(),
+        None,
+        None,
+        None,
+    )
 }
 
 /// Sentinel slab id marking an address that resolves inside the WAL rather than a slab.
@@ -268,9 +268,9 @@ mod tests {
         assert!(is_wal_resident(address.page_slab_id));
         assert_eq!(address.offset, 4096, "the address IS the log id");
         assert_eq!(address.length, 512);
-        assert_eq!(address.routing_bucket, Some(11));
-        assert_eq!(address.page_id, Some(7));
-        assert_eq!(address.object_id, Some(3));
+        assert_eq!(address.routing_bucket(), Some(11));
+        assert_eq!(address.page_id(), Some(7));
+        assert_eq!(address.object_id(), Some(3));
     }
 
     #[test]

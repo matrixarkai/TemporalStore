@@ -4,6 +4,15 @@
 //! Storage lifecycle / WAL-reclaim / eviction methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+/// How many dirty-object keys the dump drain has looked at, across every call.
+///
+/// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
+/// deriving it as |dirty objects| x |buckets| is arithmetic about the code rather than a
+/// measurement of it. This counts what actually happens, which is the only version that keeps
+/// being true after someone changes the loop.
+pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 impl TemporalEngine {
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
         let bucket_summaries = self.bucket_storage_summaries(request.shard_id);
@@ -424,6 +433,19 @@ impl TemporalEngine {
                 .into_iter()
                 .map(|summary| (summary.routing_bucket, summary.dirty_generation))
                 .collect();
+        // Buckets this dump actually clears. Collected first so the dirty set is walked ONCE.
+        //
+        // The retain used to sit inside this loop, so every qualifying bucket walked every dirty
+        // object and re-hashed its key to recompute a routing bucket -- a bucket the caller
+        // already knew, and one that `mark_async_dirty_object` had computed on the line above the
+        // insert and thrown away. The work was |dirty objects| x |buckets|, to remove at most
+        // |dirty objects| entries: measured at 4 040 000 closure calls to clear 4 000 objects
+        // across 1 010 buckets, a 1010x amplification.
+        //
+        // Nothing in the per-bucket body depends on the dirty set having been cleared, and
+        // `current` was captured before any mutation, so hoisting the walk out is the same answer
+        // in one pass.
+        let mut cleared_buckets: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for bucket_id in manifest.bucket_ids.iter().copied() {
             let Some(&captured_generation) = captured.get(&bucket_id) else {
                 continue;
@@ -431,9 +453,7 @@ impl TemporalEngine {
             if current.get(&bucket_id).copied().unwrap_or_default() != captured_generation {
                 continue;
             }
-            shard.dirty_objects.retain(|key| {
-                page_routing_bucket(key, start_routing_bucket, end_routing_bucket) != bucket_id
-            });
+            cleared_buckets.insert(bucket_id);
             if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
@@ -445,6 +465,16 @@ impl TemporalEngine {
                     page.dirty = false;
                 }
             }
+        }
+        if !cleared_buckets.is_empty() {
+            shard.dirty_objects.retain(|key| {
+                DIRTY_DRAIN_VISITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                !cleared_buckets.contains(&page_routing_bucket(
+                    key,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                ))
+            });
         }
     }
 
@@ -1237,7 +1267,7 @@ impl TemporalEngine {
                     .filter_map(|entry| {
                         let bucket = entry
                             .address
-                            .routing_bucket
+                            .routing_bucket()
                             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
                         victim_buckets.contains(&bucket).then_some(entry.object_key)
                     })

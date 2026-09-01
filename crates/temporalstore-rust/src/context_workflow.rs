@@ -1103,13 +1103,24 @@ pub struct ContextFanoutPlanReport {
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
-    // Candidate nodes handed to the hybrid lexical pass instead of being scored: either the node
-    // record carries no vector at all, or its vector was made by a different encoder from the one
-    // doing the retrieve and is therefore not comparable. (Named for the retired separate-row
-    // fallback it once counted; the rows are gone, so any nonzero here means either the backfill
-    // has work to do or the embedding model has changed under the store.)
+    // Candidate nodes whose node record carries no vector at all -- un-embedded, scored by the
+    // hybrid lexical pass instead. (Named for the retired separate-row fallback it once
+    // counted; the rows are gone, so any nonzero here means the backfill has work to do.)
     #[serde(default)]
     pub l0_row_fallback_nodes: usize,
+    // Candidate vectors declined because their width did not match the query's, i.e. they were
+    // written in a different embedding space. Counted separately from the un-embedded ones above
+    // because the two ask for different repairs: an un-embedded node needs the backfill to run,
+    // whereas a width conflict means the store holds vectors from two encoders and re-embedding
+    // is the only fix. Nonzero here is the signal that would otherwise not exist -- comparing
+    // across embedding spaces raises no error on its own.
+    #[serde(default)]
+    pub embedding_width_conflict_nodes: usize,
+    /// Nodes declined because their vector was written by a DIFFERENT ENCODER at the same
+    /// width. Separate from the width count on purpose: two widths means a provider outage
+    /// seeded fallback vectors, while two encoders at one width means a model swap. Same
+    /// symptom, different cause, different fix.
+    pub embedding_model_conflict_nodes: usize,
     #[serde(default)]
     pub event_query_budget: usize,
     #[serde(default)]
@@ -1634,6 +1645,7 @@ pub(crate) fn extract_context_gated(
         text: l0.clone(),
         valid_from_ms: timestamp_ms,
         vector: Vec::new(),
+        embedding_model_hash: 0,
     };
     let mut summary_l1 = emit_l1.then(|| ContextSummary {
         node_hash,
@@ -1641,9 +1653,34 @@ pub(crate) fn extract_context_gated(
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
         vector: Vec::new(),
+        embedding_model_hash: 0,
     });
+    // What the node is SEARCHED by is not what it is SHOWN as. `l0` is the routing preview --
+    // title plus one sentence, 18 words -- and embedding it gave the node a vector built from
+    // about 25 tokens of a 512-token window. Traversal ranks nodes on that vector, so the node
+    // was represented by roughly 5% of what the encoder can read.
+    //
+    // `l1` is the same content with the most information-dense remaining sentences added, built
+    // for exactly this ("carries more content for broader traversal"). The node embeds that and
+    // keeps `l0` as its display text.
+    //
+    // Measured over 298 query pairs across 79 documents, e5-large at 512 dims, scoring nodes by
+    // the vector each text produces:
+    //
+    //     node vector embeds        hit@1    hit@5
+    //     L0 preview (57 chars)     73.8%    86.6%
+    //     L1 summary (376 chars)    73.5%    91.6%
+    //
+    // hit@1 is unchanged -- the top answer was already as good as the preview could make it --
+    // and hit@5 gains 5.0 points, which is what more signal in the vector buys: the right node
+    // is far likelier to be in the set at all.
+    //
+    // When L1 is emitted the same string was already being encoded for the level-2 summary, so
+    // the two calls become one and the vector is shared. Embedding is the slowest part of an
+    // ingest, so that is a third of the encoder work on this path.
+    let node_embedding_text = if emit_l1 { l1.as_str() } else { l0.as_str() };
     let mut embedding_inputs: Vec<(&str, u64, u32, &str)> =
-        vec![("node_l0", node_hash, 1, l0.as_str())];
+        vec![("node_l0", node_hash, 1, node_embedding_text)];
     if emit_l1 {
         embedding_inputs.push(("node_l1", node_hash, 2, l1.as_str()));
     }
@@ -1700,24 +1737,34 @@ pub(crate) fn extract_context_gated(
         // embedding_inputs order is node_l0, [node_l1], event_text, so the vectors line up
         // with their owners: index 0 is the L0 summary (and the node), index 1 the L1 summary
         // when emitted, and the event last.
+        //
+        // One encoder produced all of them, so its identity is computed once and stamped on
+        // every owner that takes a vector. The summaries need it as much as the node does: the
+        // retrieve pass scores an L1 summary vector too, and an unstamped one cannot be told
+        // apart from one the encoder in use wrote.
+        let embedding_model_hash = context_embedding_model_hash(&provider.embedding_model);
         if let Some(vector) = embedding_vectors.first() {
+            // The level-1 summary carries its own vector because that is the only place a
+            // summary's vector lives -- the embedding fold moved vectors off separate rows and
+            // onto the records that own them. Retrieval does not read it yet (it takes L0 from
+            // node.vector and only ever queries level 2 for summary vectors), and dropping the
+            // write on that basis is the exact mistake
+            // context_extract_stores_embedding_vectors_on_the_records_themselves exists to catch.
             summary_l0.vector = vector.clone();
+            summary_l0.embedding_model_hash = embedding_model_hash;
             // The node itself carries its L0 vector too: the traversal scores children from
             // node.vector first, and without this the happy path would leave it empty on every
             // fresh ingest -- only the drainer's deferred path would ever fill it, so the
             // fallback to the separate record could never be retired.
             node.vector = vector.clone();
-            // `provider.model` is the CHAT model. Hashing it here recorded something that does
-            // not identify the embedding model at all, and disagreed with the drainer, which
-            // hashes `provider.embedding_model` -- so an inline-embedded node and a
-            // drainer-embedded node carried different hashes for the same encoder, and neither
-            // pair could be compared.
-            node.embedding_model_hash =
-                context_embedding_model_hash(&provider.embedding_model);
+            node.embedding_model_hash = embedding_model_hash;
             node.embedding_updated_at_ms = timestamp_ms;
         }
         if let (Some(summary), Some(vector)) = (summary_l1.as_mut(), embedding_vectors.get(1)) {
             summary.vector = vector.clone();
+            // The one summary vector retrieval actually scores: level 2 is the only level the
+            // retrieve pass queries for vectors, so this stamp is what the guard there reads.
+            summary.embedding_model_hash = embedding_model_hash;
         }
         let event_vector_index = if emit_l1 { 2 } else { 1 };
         if let Some(vector) = embedding_vectors.get(event_vector_index) {
@@ -1910,6 +1957,13 @@ pub fn retrieve_context(
         }
     };
     trace_stage("query_embedding");
+    // The encoder that produced the query vector, read from the RAW request rather than the
+    // normalized provider: normalisation substitutes a mock sentinel for an absent
+    // embedding_model, and hashing that would conflict with everything a real ingest wrote,
+    // skipping every stored vector for any caller that carries no provider config. An unnamed
+    // encoder is unknown, and unknown never conflicts.
+    let active_embedding_model_hash =
+        context_embedding_model_hash(request.provider.embedding_model.trim());
     let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
     // node_l0 comes from the node records themselves: the vector lives on the node, which is
     // addressable by the hash already in hand -- no one-way ref hash to reconstruct, and no
@@ -1918,11 +1972,8 @@ pub fn retrieve_context(
     // because a single oversized command is rejected outright, not truncated, and an unscored
     // node silently collapses to the lexical/recency fallback.
     let mut l0_row_fallback: Vec<u64> = Vec::new();
-    // The encoder this retrieve is using. A stored vector made by a different one is not
-    // comparable, and a hash of 0 means "unknown" -- those must still be scored, or every store
-    // written before the hash existed would go dark.
-    let active_embedding_model_hash =
-        context_embedding_model_hash(&retrieval_provider.embedding_model);
+    let mut width_conflict_nodes = 0usize;
+    let mut model_conflict_nodes = 0usize;
     for chunk in node_hashes.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
         if chunk.is_empty() {
             continue;
@@ -1938,19 +1989,24 @@ pub fn retrieve_context(
         if let CommandResponse::ContextNodes { nodes } = response.response {
             for node in nodes {
                 returned.insert(node.node_hash);
-                let foreign_model = node.embedding_model_hash != 0
-                    && active_embedding_model_hash != 0
-                    && node.embedding_model_hash != active_embedding_model_hash;
-                // Width catches what the hash cannot: a store written before the hash existed
-                // carries 0 on both sides, is therefore not "foreign", and could still hold
-                // vectors of another width. Scoring those returns 0 and -- worse -- marks the
-                // node as scored, which is what excludes it from the lexical pass below.
-                let incomparable_width = node.vector.len() != query_embedding.len();
-                if node.vector.is_empty() || foreign_model || incomparable_width {
-                    // A vector that cannot be compared is treated exactly as an un-embedded node:
-                    // handed to the hybrid lexical pass, scoring nothing. Two encoders are often
-                    // the same width, so nothing else in the stack would have noticed the model
-                    // change; and two widths are not comparable at all.
+                if node.vector.is_empty() {
+                    l0_row_fallback.push(node.node_hash);
+                } else if context_embedding_width_conflicts(&query_embedding, &node.vector) {
+                    width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    l0_row_fallback.push(node.node_hash);
+                } else if context_embedding_model_conflicts(
+                    node.embedding_model_hash,
+                    active_embedding_model_hash,
+                ) {
+                    // Same width, different encoder: no length mismatch and no error, so this
+                    // branch is the only thing standing between a model swap and a plausible
+                    // cosine computed across two vector spaces. Hand it to the lexical pass.
+                    //
+                    // Handed over exactly as an un-embedded node is, which means NOT recording a
+                    // score: the lexical pass selects on the score COUNT being zero, not on the
+                    // score value, so a zero would mark the node scored and strand it at the
+                    // bottom of the ranking with no second chance.
+                    model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     l0_row_fallback.push(node.node_hash);
                 } else {
                     let score =
@@ -1988,13 +2044,23 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextSummaryVectors { vectors } = response.response {
             for entry in vectors {
-                // A summary vector carries no model hash -- ContextSummaryVector is node_hash plus
-                // vector -- so width is the only thing that can be checked here, and a same-width
-                // encoder swap is uncatchable at this level without a schema change. Skipping
-                // rather than scoring 0 matters as much as the check: `scores.1` is what the
-                // hybrid lexical pass reads to decide a node needs rescuing, so counting an
-                // incomparable vector would strand the node with no score of any kind.
-                if entry.vector.len() != query_embedding.len() {
+                if context_embedding_width_conflicts(&query_embedding, &entry.vector) {
+                    // Same reasoning as the node pass: skip entirely rather than record a zero,
+                    // so the count stays at zero and the lexical pass still owns this node.
+                    width_conflict_nodes = width_conflict_nodes.saturating_add(1);
+                    continue;
+                }
+                if context_embedding_model_conflicts(
+                    entry.embedding_model_hash,
+                    active_embedding_model_hash,
+                ) {
+                    // The node's own vector is declined above when its encoder was replaced,
+                    // which removed only ONE of this node's two routes into the ranking. Both
+                    // passes fill THIS map, so scoring the summary here would rank the node on a
+                    // cosine taken across two vector spaces AND mark it scored -- withdrawing the
+                    // lexical fallback the other guard deliberately handed it to. Skip without
+                    // recording, exactly as there.
+                    model_conflict_nodes = model_conflict_nodes.saturating_add(1);
                     continue;
                 }
                 let score =
@@ -2005,6 +2071,10 @@ pub fn retrieve_context(
             }
         }
     }
+    // Set after BOTH vector passes -- the node pass and the summary pass each contribute, and the
+    // node pass alone would under-report.
+    fanout_plan.embedding_width_conflict_nodes = width_conflict_nodes;
+    fanout_plan.embedding_model_conflict_nodes = model_conflict_nodes;
     trace_stage("summary_embedding_lookup");
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly

@@ -20,7 +20,8 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardReassignment, ShardReassignmentReason, ShardStateRequest, TopologyEventsRequest,
+    ListShardsRequest, ReservedNames, ShardCheckOptions, ShardChecker, ShardPinRequest,
+    ShardReassignment, ShardReassignmentReason, ShardStateRequest, TopologyEventsRequest,
     DropProxyGroupRequest, NotifyStopRequest, ProxyCalibrationOptions, PutProxyGroupRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
 };
@@ -1724,11 +1725,14 @@ fn handle(
 
 fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskScheduler) -> String {
     let stats = backend_call!(meta, stats);
-    let servers = backend_call!(meta, list_servers).servers;
-    let proxies = backend_call!(meta, list_proxies).proxies;
-    let namespaces = backend_call!(meta, list_namespaces).namespaces;
-    let tables = backend_call!(meta, list_tables).tables;
-    let proxy_groups = backend_call!(meta, list_proxy_groups).groups;
+    // One pass, one acquisition of the read lock. Tables, namespaces and proxy
+    // groups are reported by number and by state and never itemised, so they
+    // are counted in place; servers and proxies are itemised, but only by a few
+    // fields each, so they arrive without the per-shard lists a server record
+    // carries.
+    let report = backend_call!(meta, metrics_report);
+    let servers = &report.servers;
+    let proxies = &report.proxies;
     let reserved = backend_call!(meta, reserved_names).reserved;
     let scheduler_snapshot = scheduler.snapshot();
     let scheduler_executions = scheduler.executions();
@@ -1762,12 +1766,12 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     out.push_str("# HELP temporalstore_meta_inventory Current metaserver inventory counts.\n");
     out.push_str("# TYPE temporalstore_meta_inventory gauge\n");
     for (kind, value) in [
-        ("namespace", namespaces.len() as u64),
-        ("table", tables.len() as u64),
+        ("namespace", report.namespaces.total()),
+        ("table", report.tables.total()),
         ("server", servers.len() as u64),
         ("proxy", proxies.len() as u64),
         ("shard", stats.shard_count as u64),
-        ("proxy_group", proxy_groups.len() as u64),
+        ("proxy_group", report.proxy_groups.total()),
         ("reserved_namespace", reserved.namespaces.len() as u64),
         ("reserved_table", reserved.tables.len() as u64),
     ] {
@@ -1806,10 +1810,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "table"), ("state", state)],
-            tables
-                .iter()
-                .filter(|table| table.state.as_str() == state)
-                .count() as u64,
+            report.tables.in_state(state),
         );
         // A namespace has had a state since it became something an operator can
         // freeze and drop; nothing reported it.
@@ -1817,19 +1818,13 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "namespace"), ("state", state)],
-            namespaces
-                .iter()
-                .filter(|namespace| namespace.state.as_str() == state)
-                .count() as u64,
+            report.namespaces.in_state(state),
         );
         push_meta_metric(
             &mut out,
             "temporalstore_meta_resource_state",
             &[("resource", "proxy_group"), ("state", state)],
-            proxy_groups
-                .iter()
-                .filter(|group| group.state.as_str() == state)
-                .count() as u64,
+            report.proxy_groups.in_state(state),
         );
     }
     // The size of what each node is holding, which every heartbeat has carried
@@ -1841,7 +1836,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_server_records gauge
 ");
-    for server in &servers {
+    for server in servers {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_server_records",
@@ -1855,7 +1850,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_server_storage_bytes gauge
 ");
-    for server in &servers {
+    for server in servers {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_server_storage_bytes",
@@ -1878,12 +1873,12 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_server_applied_topology gauge
 ");
-    for server in &servers {
+    for server in servers {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_server_applied_topology",
             &[("server", server.server_addr.as_str())],
-            server.runtime_load.last_meta_topology_version,
+            server.last_meta_topology_version,
         );
     }
 
@@ -1899,11 +1894,11 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
 # TYPE temporalstore_meta_server_{name}_total counter
 "
         ));
-        for server in &servers {
+        for server in servers {
             let value = match name {
-                "rejected" => server.runtime_load.rejected_total,
-                "timed_out" => server.runtime_load.timed_out_total,
-                _ => server.runtime_load.canceled_total,
+                "rejected" => server.rejected_total,
+                "timed_out" => server.timed_out_total,
+                _ => server.canceled_total,
             };
             push_meta_metric(
                 &mut out,
@@ -1924,7 +1919,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     );
     out.push_str("# TYPE temporalstore_meta_proxy_restarts gauge
 ");
-    for proxy in &proxies {
+    for proxy in proxies {
         push_meta_metric(
             &mut out,
             "temporalstore_meta_proxy_restarts",
@@ -2303,6 +2298,29 @@ fn parse_meta_raft_nodes() -> Vec<ProductionRaftNode> {
         })
 }
 
+/// What to say about a metaserver raft group's node list, if anything.
+///
+/// A metaserver raft group is built entirely inside the process that starts it,
+/// and no meta raft entry is ever sent between processes. With one node that is
+/// simply the truth: the group is this process. With more, the list describes
+/// peers that will never be dialled -- and if a second metaserver is started
+/// from the same list it keeps its own metadata, makes the same node leader,
+/// and answers ok to writes the first never sees.
+///
+/// Returned rather than logged so it can be tested; the caller logs it.
+fn unreplicated_meta_raft_warning(nodes: &[ProductionRaftNode]) -> Option<String> {
+    if nodes.len() <= 1 {
+        return None;
+    }
+    Some(format!(
+        "metaserver raft is configured with {} nodes, but meta raft entries are never sent \
+         between processes: this group is built inside this process alone. One metaserver \
+         started from this list is consistent; a second one started from it keeps its own \
+         metadata and the two diverge silently.",
+        nodes.len()
+    ))
+}
+
 fn parse_meta_raft_node(index: usize, value: &str) -> Option<ProductionRaftNode> {
     if let Some((id, addr)) = value.split_once('=') {
         return Some(ProductionRaftNode {
@@ -2400,6 +2418,109 @@ mod tests {
         )
     }
 
+    #[test]
+    fn opening_and_closing_a_table_report_its_version_and_state() {
+        use temporalstore_rust::meta::{
+            AddTableRequest, DeleteTableRequest, GetTableTopologyRequest, RegisterServerRequest,
+            RegisterShardRequest,
+        };
+
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
+            numa_nodes: Vec::new(),
+            server_addr: "node-a".to_string(),
+            node_id: 1,
+            location: "rack-1".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "t".to_string(),
+            first_shard_id: 1,
+            shard_count: 4,
+            replica_count: 1,
+            partition_version: 1,
+            serving_options: Default::default(),
+        });
+        for shard in 1..=4u64 {
+            meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
+                shard_id: shard,
+                server_addr: "node-a".to_string(),
+            });
+        }
+        let expected_version = meta
+            .get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+                old_topology_version: 0,
+                client_location: String::new(),
+            })
+            .table
+            .expect("the table is there")
+            .topology_version;
+
+        let backend = MetaBackend::Single(meta);
+        let scheduler = MetaTaskScheduler::default();
+        let post = |path: &str, namespace: &str, table_name: &str| {
+            handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "POST".to_string(),
+                    path: path.to_string(),
+                    body: serde_json::to_vec(&serde_json::json!({
+                        "namespace": namespace,
+                        "table_name": table_name,
+                    }))
+                    .unwrap(),
+                },
+            )
+        };
+
+        // Opening reports the version the caller must quote to get a topology.
+        let (code, body) = post("/MasterService/OpenTable", "ns", "t");
+        assert_eq!(code, 200);
+        let opened: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            opened["open_version"].as_u64(),
+            Some(expected_version),
+            "opening a table reported the wrong version: {opened}"
+        );
+        assert_eq!(opened["status"]["ok"].as_bool(), Some(true));
+
+        // Closing reports whether it could be served.
+        let (code, body) = post("/MasterService/CloseTable", "ns", "t");
+        assert_eq!(code, 200);
+        let closed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(closed["status"]["ok"].as_bool(), Some(true));
+
+        // A table that was never created is refused by both, rather than
+        // answered with a zero version.
+        let (_, body) = post("/MasterService/OpenTable", "ns", "absent");
+        let missing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(missing["status"]["ok"].as_bool(), Some(false));
+        assert_eq!(missing["status"]["code"].as_str(), Some("table_not_found"));
+
+        let (_, body) = post("/MasterService/CloseTable", "ns", "absent");
+        let missing: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(missing["status"]["ok"].as_bool(), Some(false));
+
+        // And a dropped table is refused too, not reported as openable.
+        let dropped = match &backend {
+            MetaBackend::Single(meta) => meta.delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "t".to_string(),
+            }),
+            MetaBackend::Raft(_) => unreachable!("single-node backend"),
+        };
+        assert!(dropped.status.ok);
+        let (_, body) = post("/MasterService/OpenTable", "ns", "t");
+        let gone: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(gone["status"]["ok"].as_bool(), Some(false));
+    }
+
     fn node_body(node_id: u64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({ "node_id": node_id })).unwrap()
     }
@@ -2486,6 +2607,29 @@ mod tests {
             std::env::remove_var(key);
         }
         out
+    }
+
+    #[test]
+    fn a_meta_raft_group_says_it_does_not_span_processes() {
+        // The group is built inside the process that starts it and no meta raft
+        // entry is ever sent between processes, so a list of peers describes
+        // addresses that will never be dialled. One node is that truth stated
+        // plainly and needs nothing said; more than one is worth saying, because
+        // a second metaserver started from the same list diverges in silence.
+        let node = |node_id| ProductionRaftNode {
+            node_id,
+            addr: format!("10.0.0.{node_id}:17001"),
+        };
+        assert_eq!(unreplicated_meta_raft_warning(&[]), None);
+        assert_eq!(unreplicated_meta_raft_warning(&[node(1)]), None);
+
+        let warning = unreplicated_meta_raft_warning(&[node(1), node(2), node(3)])
+            .expect("three nodes is worth saying something about");
+        assert!(warning.contains("3"), "it should say how many: {warning}");
+        assert!(
+            warning.contains("diverge"),
+            "it should say what goes wrong: {warning}"
+        );
     }
 
     #[test]
@@ -2624,6 +2768,7 @@ mod tests {
 
     fn joined(meta: &SingleNodeMeta, addr: &str) {
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2696,6 +2841,7 @@ mod tests {
         // had no way to say so.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2718,6 +2864,7 @@ mod tests {
         // trap as the placement figures beside it.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2738,6 +2885,7 @@ mod tests {
     fn a_node_that_has_said_nothing_reports_nothing() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
             location: "rack-1".to_string(),
@@ -2755,6 +2903,7 @@ mod tests {
         // detected and reported; a proxy doing the same was silent.
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-a".to_string(),
             namespace: "ns".to_string(),
             location: "rack-1".to_string(),
@@ -2821,6 +2970,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for shard_id in [1, 2] {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });
@@ -2875,6 +3025,7 @@ mod tests {
         let meta = SingleNodeMeta::default();
         for shard_id in 1..=5 {
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id,
                 server_addr: "node-a".to_string(),
             });
@@ -2894,6 +3045,7 @@ mod tests {
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "metrics-server-a".to_string(),
             node_id: 1,
@@ -2901,6 +3053,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "metrics-proxy-a".to_string(),
             namespace: "metrics-ns".to_string(),
             location: "zone-a".to_string(),
@@ -3009,6 +3162,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-route-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-route-a".to_string(),
             node_id: 1,
@@ -3016,6 +3170,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 91,
             server_addr: "server-route-a".to_string(),
         });
@@ -3030,6 +3185,7 @@ mod tests {
             },
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-route-a".to_string(),
             namespace: "ns".to_string(),
             location: "zone-a".to_string(),
@@ -3143,6 +3299,7 @@ mod tests {
     fn metaserver_safe_mode_route_reports_frozen_cooldown_resources() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "safe-server".to_string(),
             node_id: 1,
@@ -3150,6 +3307,7 @@ mod tests {
             binary_version: "v1".to_string(),
         });
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "safe-proxy".to_string(),
             namespace: "ns".to_string(),
             location: "zone-a".to_string(),
@@ -3238,6 +3396,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "raft-server-a".to_string(),
                     node_id: 11,
@@ -3738,6 +3897,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: node_addr.clone(),
                     node_id: 9,

@@ -1222,7 +1222,7 @@ impl TemporalEngine {
                 shard_id,
                 &bytes,
                 Some(object_id),
-                address.routing_bucket,
+                address.routing_bucket(),
                 false,
             ) else {
                 continue;

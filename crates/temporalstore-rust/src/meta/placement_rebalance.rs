@@ -492,19 +492,30 @@ impl SingleNodeMeta {
     /// no constraint and is planned as unconstrained.
     pub fn shard_placements(&self) -> BTreeMap<ShardId, ShardPlacement> {
         let state = self.inner.read().expect("meta lock poisoned");
-        state
-            .shards
-            .keys()
-            .filter_map(|shard_id| {
-                let table = table_for_shard(&state, *shard_id)?;
+        shard_owning_tables(&state)
+            .into_iter()
+            .filter_map(|(shard_id, table)| {
                 if table.info.state != MetaEntityState::Normal {
                     return None;
                 }
+                // The shard's own pin wins over the table's, and an empty pin
+                // means it has none -- which is what every shard means until
+                // somebody says otherwise.
+                let pinned = state
+                    .shards
+                    .get(&shard_id)
+                    .map(|location| location.preferred_location.clone())
+                    .unwrap_or_default();
+                let preferred_location = if pinned.is_empty() {
+                    table.info.serving_options.preferred_location.clone()
+                } else {
+                    pinned
+                };
                 Some((
-                    *shard_id,
+                    shard_id,
                     ShardPlacement {
                         table_key: table_key(&table.info.namespace, &table.info.table_name),
-                        preferred_location: table.info.serving_options.preferred_location.clone(),
+                        preferred_location,
                     },
                 ))
             })

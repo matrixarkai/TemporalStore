@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from matrixark_mcp_core import record_vector
 import collections
 import queue
 import socket
@@ -751,7 +752,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 or record.get("ref_type") != "node"
                 or record.get("embedding_type") != "context_node"
                 or record.get("ref_hash") is None
-                or not isinstance(record.get("vector"), list)
+                or not record_vector(record)
                 or not record.get("vector")
             ):
                 continue

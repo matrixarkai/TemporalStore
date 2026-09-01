@@ -833,6 +833,7 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
                     text: text.to_string(),
                     valid_from_ms,
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
         });
@@ -1093,45 +1094,15 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
-        BlockAddress {
-            page_slab_id: 7,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(7, 0, 1, None, None, None, None, None, None),
     );
     shard.hashes.entry("hash".to_string()).or_default().insert(
         "field".to_string(),
-        BlockAddress {
-            page_slab_id: 8,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(8, 0, 1, None, None, None, None, None, None),
     );
     shard.sets.entry("set".to_string()).or_default().insert(
         b"member".to_vec(),
-        BlockAddress {
-            page_slab_id: 9,
-            offset: 0,
-            length: 1,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(9, 0, 1, None, None, None, None, None, None),
     );
     shard
         .features
@@ -1139,17 +1110,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             10,
-            BlockAddress {
-                page_slab_id: 10,
-                offset: 0,
-                length: 1,
-                page_id: None,
-                object_id: None,
-                routing_bucket: None,
-                band_id: None,
-                generation: None,
-                sha256: None,
-            },
+            BlockAddress::from_parts(10, 0, 1, None, None, None, None, None, None),
         );
     shard
         .features
@@ -1157,17 +1118,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             11,
-            BlockAddress {
-                page_slab_id: 11,
-                offset: 0,
-                length: 1,
-                page_id: None,
-                object_id: None,
-                routing_bucket: None,
-                band_id: None,
-                generation: None,
-                sha256: None,
-            },
+            BlockAddress::from_parts(11, 0, 1, None, None, None, None, None, None),
         );
     shard
         .control_state
@@ -1258,19 +1209,19 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
             .and_then(|fields| fields.get("f"))
             .expect("hash address");
         assert_eq!(
-            string_address.object_id,
+            string_address.object_id(),
             Some(stable_page_object_id(1, "string", "k", None))
         );
         assert_eq!(
-            string_address.routing_bucket,
+            string_address.routing_bucket(),
             Some(page_routing_bucket("k", 0, u32::MAX))
         );
         assert_eq!(
-            hash_address.object_id,
+            hash_address.object_id(),
             Some(stable_page_object_id(1, "hash", "h", Some("f")))
         );
         assert_eq!(
-            hash_address.routing_bucket,
+            hash_address.routing_bucket(),
             Some(page_routing_bucket("h", 0, u32::MAX))
         );
     }
@@ -1409,6 +1360,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 text: "compact summary".to_string(),
                 valid_from_ms: 52,
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             },
         },
         Command::CommonDelete {
@@ -1863,7 +1815,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == "owned")
             .expect("owned slot page");
-        page.address.object_id = Some(page.object_id.wrapping_add(1));
+        page.address.set_object_id(Some(page.object_id.wrapping_add(1)));
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -1925,7 +1877,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == "second")
             .expect("second slot page");
-        second.address.object_id = Some(first_object_id);
+        second.address.set_object_id(Some(first_object_id));
         first_object_id
     };
 
@@ -2197,7 +2149,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         )
     };
 
@@ -2417,27 +2369,27 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         .expect("hash address");
 
     assert_eq!(
-        string_address.object_id,
+        string_address.object_id(),
         Some(stable_page_object_id(1, "string", "k", None))
     );
     assert_eq!(
-        string_address.routing_bucket,
+        string_address.routing_bucket(),
         Some(page_routing_bucket("k", 10, 20))
     );
     assert_eq!(
-        string_address.band_id,
+        string_address.band_id(),
         Some(string_address.page_slab_id)
     );
     assert_eq!(
-        hash_address.object_id,
+        hash_address.object_id(),
         Some(stable_page_object_id(1, "hash", "h", Some("f")))
     );
     assert_eq!(
-        hash_address.routing_bucket,
+        hash_address.routing_bucket(),
         Some(page_routing_bucket("h", 10, 20))
     );
-    assert_eq!(hash_address.band_id, Some(hash_address.page_slab_id));
-    assert_ne!(string_address.object_id, hash_address.object_id);
+    assert_eq!(hash_address.band_id(), Some(hash_address.page_slab_id));
+    assert_ne!(string_address.object_id(), hash_address.object_id());
 }
 
 #[test]
@@ -3162,17 +3114,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "container-probe".to_string(),
-        BlockAddress {
-            page_slab_id: 7,
-            offset: 11,
-            length: 13,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(7, 11, 13, None, None, None, None, None, None),
     );
 
     // Container OFF: raw JSON, and JSON is what an older binary would have written.
@@ -3215,32 +3157,12 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for i in 0..64u64 {
         shard.strings.insert(
             format!("object-{i}"),
-            BlockAddress {
-                page_slab_id: i,
-                offset: i * 7,
-                length: i + 1,
-                page_id: Some(i),
-                object_id: Some(i * 3),
-                routing_bucket: Some((i % 8) as u32),
-                band_id: None,
-                generation: Some(i),
-                sha256: None,
-            },
+            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3), Some((i % 8) as u32), Some(i), None, None),
         );
     }
     shard.hashes.entry("hash-object".to_string()).or_default().insert(
         "component".to_string(),
-        BlockAddress {
-            page_slab_id: 9,
-            offset: 1,
-            length: 2,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            band_id: None,
-            generation: None,
-            sha256: None,
-        },
+        BlockAddress::from_parts(9, 1, 2, None, None, None, None, None, None),
     );
     shard.applied_wal_sequence = Some(4242);
 
@@ -3300,5 +3222,182 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
         "binary {} not smaller than json {}",
         binary.len(),
         plain.len()
+    );
+}
+
+
+/// Where does the cost of reading ONE summary go: fetching the bytes, or decoding them?
+///
+/// The command-level measurement says 253 allocations and 289 KB per candidate for a 4 KB summary
+/// -- a 70x amplification -- and two guesses about why have already been wrong, including one that
+/// made it worse. So split the read in half and count each half, and print how many points the
+/// extent holds, which settles whether siblings are being decoded at all.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_reading_one_summary_actually_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_reading_one_summary_actually_costs() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  text   points/extent   extent bytes   read allocs   read bytes   decode allocs   decode bytes
+"
+    );
+    for text_len in [16usize, 512, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let text = "s".repeat(text_len);
+        for node_hash in 1..=120u64 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertSummary {
+                    tenant_hash: 7201,
+                    summary: crate::types::ContextSummary {
+                        node_hash,
+                        level: 2,
+                        text: text.clone(),
+                        valid_from_ms: 1_000,
+                        vector: vec![0.25_f32; 16],
+                        embedding_model_hash: 0,
+                    },
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+
+        let address = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let key = super::context::context_summary_key(7201, 60, 2);
+            let series = shard
+                .context_summaries
+                .get(&key)
+                .expect("the summary series must exist, or this measures nothing");
+            series
+                .iter()
+                .next()
+                .map(|(_, address)| address.clone())
+                .expect("one entry")
+        };
+
+        // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
+        let _ = super::read_page_bytes(&engine.cache, &engine.page_store, 1, &address);
+
+        let read_probe = crate::alloc_probe::Probe::start();
+        let mut bytes = Vec::new();
+        for _ in 0..5 {
+            bytes = super::read_page_bytes(&engine.cache, &engine.page_store, 1, &address)
+                .expect("the page must read, or the split below is measuring a None");
+        }
+        let read = read_probe.stop();
+
+        let decode_probe = crate::alloc_probe::Probe::start();
+        let mut points = 0usize;
+        for _ in 0..5 {
+            points = match super::packed_pages::decode_feature_page_strict(&bytes) {
+                super::state::PackedFeaturePageDecode::Packed(p) => p.len(),
+                super::state::PackedFeaturePageDecode::Legacy => 1,
+                super::state::PackedFeaturePageDecode::Corrupt(_) => 0,
+            };
+        }
+        let decode = decode_probe.stop();
+
+        println!(
+            "  {text_len:>4}   {points:>13}   {:>12}   {:>11}   {:>10}   {:>13}   {:>12}",
+            bytes.len(),
+            read.allocs / 5,
+            read.alloc_bytes / 5,
+            decode.allocs / 5,
+            decode.alloc_bytes / 5,
+        );
+
+        // Cold walk over every address, which is what a batch read actually does: 120 distinct
+        // extents rather than one warm one. Warming a single address measures the best case and
+        // would report it as the cost.
+        let addresses: Vec<crate::block_store::BlockAddress> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            (1..=120u64)
+                .filter_map(|node_hash| {
+                    let key = super::context::context_summary_key(7201, node_hash, 2);
+                    shard
+                        .context_summaries
+                        .get(&key)
+                        .and_then(|series| series.iter().next())
+                        .map(|(_, address)| address.clone())
+                })
+                .collect()
+        };
+        assert_eq!(addresses.len(), 120, "every summary must be addressable");
+        let wal_resident = addresses
+            .iter()
+            .filter(|a| crate::wal_record::is_wal_resident(a.page_slab_id))
+            .count();
+        let with_page_id = addresses.iter().filter(|a| a.page_id().is_some()).count();
+        let distinct_slabs: std::collections::BTreeSet<u64> =
+            addresses.iter().map(|a| a.page_slab_id).collect();
+        println!(
+            "         {wal_resident}/120 wal_resident addresses, {with_page_id} carry a page_id, {} distinct slabs, block_in_wal enabled={}",
+            distinct_slabs.len(),
+            std::env::var("TS_BLOCK_IN_WAL").unwrap_or_else(|_| "unset(on)".to_string()),
+        );
+        let extent_total: u64 = addresses.iter().map(|a| a.length).sum();
+
+        let walk_probe = crate::alloc_probe::Probe::start();
+        let mut decoded = 0usize;
+        for address in &addresses {
+            if let Some(page) = super::read_page_bytes(&engine.cache, &engine.page_store, 1, address)
+            {
+                if let super::state::PackedFeaturePageDecode::Packed(points) =
+                    super::packed_pages::decode_feature_page_strict(&page)
+                {
+                    decoded += points.len();
+                }
+            }
+        }
+        let walk = walk_probe.stop();
+
+        // The block-store read alone, over the same addresses, on a store whose cache is already
+        // warm from the walk above -- so this is purely file seek + read_exact + decode.
+        let read_only_probe = crate::alloc_probe::Probe::start();
+        let mut read_bytes_total = 0usize;
+        for address in &addresses {
+            if let Ok(b) = engine.page_store.read(address) {
+                read_bytes_total += b.len();
+            }
+        }
+        let read_only = read_only_probe.stop();
+        println!(
+            "         block-store read alone: {} allocs/addr, {} bytes/addr ({} payload bytes returned in total)",
+            read_only.allocs / 120,
+            read_only.alloc_bytes / 120,
+            read_bytes_total,
+        );
+        println!(
+            "         cold walk over every address: {} allocs/addr, {} bytes/addr, {} extents totalling {} bytes, {decoded} points decoded",
+            walk.allocs / 120,
+            walk.alloc_bytes / 120,
+            addresses.len(),
+            extent_total,
+        );
+    }
+    println!(
+        "
+  points/extent > 1 means siblings ARE decoded for every read, and a page-granular cache pays.
+  points/extent == 1 means each record has its own extent and the cost is inside one record.
+"
     );
 }

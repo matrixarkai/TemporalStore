@@ -10,11 +10,16 @@ use super::helpers::*;
 #[test]
 fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
     let cluster = RaftCluster::new_single_shard(11, [1, 2, 3]);
-    let addr = "127.0.0.1:18431".to_string();
+    let addr = free_local_addr();
     std::thread::spawn({
         let cluster = cluster.clone();
         let addr = addr.clone();
-        move || serve(&addr, move |request| handle_raft_http(&cluster, request)).unwrap()
+        move || {
+            crate::http::test_ports::serve_reserved(&addr, move |request| {
+                handle_raft_http(&cluster, request)
+            })
+            .unwrap()
+        }
     });
     wait_for_http(&addr);
 
@@ -1528,7 +1533,7 @@ fn production_raft_runtime_replicates_over_separate_http_nodes() {
         let addr = node.addr.clone();
         let runtime_for_server = runtime.clone();
         thread::spawn(move || {
-            serve(&addr, move |request| {
+            crate::http::test_ports::serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/raft/propose") => {
                         match parse_json::<DistributedRaftProposeRequest>(&request.body) {

@@ -507,6 +507,79 @@ fn context_extract_stores_embedding_vectors_on_the_records_themselves() {
     }
 }
 
+#[test]
+fn an_ingested_summary_records_the_encoder_that_embedded_it() {
+    // The stamp the summary guard reads. Level 2 is the only summary level retrieval scores, so
+    // a vector written there without its encoder recorded is one the guard must wave through --
+    // and the check quietly stops applying to everything written from then on. Asserted on the
+    // records as they come back off the engine, not on the report, because the record is what a
+    // later retrieve actually reads.
+    let engine = test_engine();
+    let provider = ContextModelProviderConfig {
+        model: "deepseek-chat".to_string(),
+        embedding_model: "intfloat/multilingual-e5-large".to_string(),
+        ..ContextModelProviderConfig::default()
+    };
+    let expected = context_embedding_model_hash(&provider.embedding_model);
+    assert_ne!(
+        expected,
+        context_embedding_model_hash(&provider.model),
+        "chat and embedding models must hash apart, or a chat-model stamp would pass this"
+    );
+    assert_ne!(0, expected, "an unknown stamp would be waved through, not checked");
+
+    let report = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 79,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "summary-encoder".to_string(),
+            title: "note".to_string(),
+            body: "Checkout failed during payment. The risk score spiked sharply.                    The fraud team paused the account."
+                .to_string(),
+            timestamp_ms: 7,
+            provider: provider.clone(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    // Rich body -> L1 is warranted, so the level-2 summary exists and carries a vector.
+    assert_eq!(report.embedding_generation.requested_vector_count, 3);
+
+    for level in [1u32, 2] {
+        let summaries = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQuerySummaries {
+                    tenant_hash: 79,
+                    node_hash: report.node.node_hash,
+                    level,
+                    as_of_ms: 4_000_000_000_000,
+                    limit: None,
+                },
+            })
+            .response
+        {
+            CommandResponse::ContextSummaries { summaries, .. } => summaries,
+            other => panic!("expected summaries, got {other:?}"),
+        };
+        assert!(
+            !summaries.is_empty(),
+            "the extract wrote no level {level} summary"
+        );
+        for summary in &summaries {
+            assert!(
+                !summary.vector.is_empty(),
+                "level {level} summary has no vector, so there is nothing to identify"
+            );
+            assert_eq!(
+                expected, summary.embedding_model_hash,
+                "level {level} summary must record the encoder that produced its vector"
+            );
+        }
+    }
+}
+
 // shared-corpus: context_compression_secondary_index_query_debug_flow
 #[test]
 fn context_workflow_extracts_retrieves_and_injects_mock_context() {
@@ -2813,6 +2886,7 @@ fn a_resummarised_node_scores_on_its_newest_vector_not_its_first() {
                     text: text.to_string(),
                     valid_from_ms,
                     vector,
+                    embedding_model_hash: 0,
                 },
             },
         });
@@ -2968,6 +3042,7 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
                     text: summary.clone(),
                     valid_from_ms: at,
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
         });
@@ -3086,6 +3161,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
                     text: summary.clone(),
                     valid_from_ms: at,
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
         });
@@ -3697,6 +3773,7 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
                     text: summary.clone(),
                     valid_from_ms: at,
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
         });
@@ -3756,366 +3833,240 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
     );
 }
 
-
-// ---------------------------------------------------------------------------------------------
-// Changing the embedding model. Two encoders are frequently the SAME WIDTH -- all-MiniLM-L6-v2 and
-// BGE-M3 truncated to 384 are both 384 -- so a swap mixes two unrelated vector spaces with no
-// length mismatch anywhere to raise an error. Nothing in the logs, no failed request: retrieval
-// just quietly stops matching on anything ingested before the change. These three guards are what
-// stands between a customer picking a different encoder and that outcome.
-// ---------------------------------------------------------------------------------------------
-
-#[test]
-fn embedding_similarity_refuses_to_score_vectors_of_different_widths() {
-    // Scoring the shared prefix returns a perfectly plausible cosine -- and a plausible number is
-    // worse than none, because it RANKS. A wide vector whose first 16 elements happen to line up
-    // would outrank a correctly-scored one.
-    let short = vec![1.0_f32, 0.0, 0.0, 0.0];
-    let mut long = short.clone();
-    long.extend_from_slice(&[0.0, 0.0, 0.0, 0.0]);
-
-    assert_eq!(
-        0,
-        context_embedding_similarity_micros(&short, &long),
-        "a vector of another width was scored on its shared prefix"
-    );
-    assert_eq!(
-        0,
-        context_embedding_similarity_micros(&long, &short),
-        "the length check must hold whichever side is longer"
-    );
-
-    // The same-width path must still score, or this test would pass by refusing everything.
-    assert_eq!(
-        1_000_000,
-        context_embedding_similarity_micros(&short, &short),
-        "identical vectors must still score 1.0"
-    );
-    assert!(
-        context_embedding_similarity_micros(&long, &long) > 0,
-        "same-width vectors must still be compared"
-    );
-}
-
-#[test]
-fn embedding_model_hash_identifies_the_encoder_and_treats_unset_as_unknown() {
-    assert_ne!(
-        context_embedding_model_hash("encoder-alpha"),
-        context_embedding_model_hash("encoder-beta"),
-        "two encoders must not share a hash, or the guard cannot tell them apart"
-    );
-    assert_eq!(
-        context_embedding_model_hash("encoder-alpha"),
-        context_embedding_model_hash("  encoder-alpha  "),
-        "surrounding whitespace must not make the same encoder look like a different one"
-    );
-    // 0 means "unknown", and unknown must stay scoreable -- every store written before the hash
-    // existed carries 0, and refusing those would take an upgrade straight to dark retrieval.
-    assert_eq!(0, context_embedding_model_hash(""));
-    assert_eq!(0, context_embedding_model_hash("   "));
-    assert_ne!(0, context_embedding_model_hash("encoder-alpha"));
-}
-
-fn provider_with_encoder(chat: &str, encoder: &str) -> ContextModelProviderConfig {
-    ContextModelProviderConfig {
-        model: chat.to_string(),
-        embedding_model: encoder.to_string(),
-        ..ContextModelProviderConfig::default()
-    }
-}
-
-fn ingest_with_encoder(
-    engine: &TemporalEngine,
-    tenant_hash: u64,
-    provider: ContextModelProviderConfig,
-) -> u64 {
-    let extract = extract_context(
-        engine,
-        ContextExtractRequest {
-            shard_id: 1,
-            tenant_hash,
-            source_kind: ContextSourceKind::Chat,
-            source_id: "encoder-swap".to_string(),
-            title: "Deployment note".to_string(),
-            body: "The observability dashboard for the Northstar rollout lives in Grafana."
-                .to_string(),
-            timestamp_ms: 5_000,
-            provider,
-        },
-    );
-    assert!(extract.status.ok, "{:?}", extract.status);
-    extract.node.node_hash
-}
-
-#[test]
-fn ingest_records_the_embedding_model_not_the_chat_model() {
-    // These are two different fields and were two different values. Hashing `provider.model` --
-    // the CHAT model -- recorded something that does not identify the encoder at all, and
-    // disagreed with the drainer, which hashes `provider.embedding_model`. So an inline-embedded
-    // node and a drainer-embedded node carried different hashes for the SAME encoder, and the
-    // retrieve guard could not compare them: it either skipped vectors that were fine or scored
-    // vectors that were not.
-    let engine = test_engine();
-    let node_hash = ingest_with_encoder(
-        &engine,
-        20260830,
-        provider_with_encoder("chat-alpha", "encoder-beta"),
-    );
-
-    let node = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextGetNode {
-            tenant_hash: 20260830,
-            node_hash,
-        },
-    });
-    let stored = match node.response {
-        CommandResponse::ContextNode { node: Some(node), .. } => node,
-        other => panic!("expected the node back, got {other:?}"),
-    };
-    assert!(
-        !stored.vector.is_empty(),
-        "nothing was embedded, so the hash assertions below would pass on an empty happy path"
-    );
-    assert_eq!(
-        context_embedding_model_hash("encoder-beta"),
-        stored.embedding_model_hash,
-        "the node did not record the encoder that made its vector"
-    );
-    assert_ne!(
-        context_embedding_model_hash("chat-alpha"),
-        stored.embedding_model_hash,
-        "the node recorded the chat model, which says nothing about the vector"
-    );
-}
-
-#[test]
-fn ingest_and_the_drainer_agree_on_what_a_given_encoder_hashes_to() {
-    // The two paths that write this field must derive it from the same input. When they did not,
-    // whether a node was comparable depended on which path happened to embed it.
-    let engine = test_engine();
-    let node_hash = ingest_with_encoder(
-        &engine,
-        20260831,
-        provider_with_encoder("chat-alpha", "encoder-beta"),
-    );
-    let node = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextGetNode {
-            tenant_hash: 20260831,
-            node_hash,
-        },
-    });
-    let stored = match node.response {
-        CommandResponse::ContextNode { node: Some(node), .. } => node,
-        other => panic!("expected the node back, got {other:?}"),
-    };
-    let drainer_hash = context_embedding_model_hash(
-        &provider_with_encoder("chat-alpha", "encoder-beta").embedding_model,
-    );
-    assert_ne!(0, drainer_hash);
-    assert_eq!(
-        drainer_hash, stored.embedding_model_hash,
-        "the inline path and the deferred path disagree about the same encoder"
-    );
-}
-
-fn retrieve_with_encoder(
+/// Builds a store in which the ONLY vector a node owns sits on its level-2 summary: the node
+/// record itself carries none. That is what isolates this to the summary pass -- the node pass
+/// can decline nothing here, because there is nothing there to decline.
+fn seed_summary_only_vector_node(
     engine: &TemporalEngine,
     tenant_hash: u64,
     node_hash: u64,
-    provider: ContextModelProviderConfig,
-) -> ContextRetrieveReport {
-    retrieve_context(
-        engine,
+    name: &str,
+    text: &str,
+    at: u64,
+    vector: Vec<f32>,
+    model_hash: u64,
+) {
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode {
+            tenant_hash,
+            node: ContextNode {
+                node_hash,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: name.to_string(),
+                l0: text.to_string(),
+                status: 0,
+                last_event_time_ms: at,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                // Deliberately un-embedded: no ContextSetNodeEmbedding follows.
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+                embedding_updated_at_ms: 0,
+            },
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    // Level 1 carries the display text the L0 block is packed from.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertSummary {
+            tenant_hash,
+            summary: ContextSummary {
+                node_hash,
+                level: 1,
+                text: text.to_string(),
+                valid_from_ms: at,
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+            },
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    // Level 2 is the only level retrieval queries for summary vectors.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertSummary {
+            tenant_hash,
+            summary: ContextSummary {
+                node_hash,
+                level: 2,
+                text: text.to_string(),
+                valid_from_ms: at,
+                vector,
+                embedding_model_hash: model_hash,
+            },
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+}
+
+#[test]
+fn a_summary_vector_from_another_encoder_is_declined_and_counted() {
+    // The node pass declines a node whose OWN vector came from a replaced encoder, but a node is
+    // scored twice in one retrieve and the second route ran unguarded: the level-2 summary vector
+    // is scored into the SAME map. A model swap still reached the ranking through the summary.
+    //
+    // Neither node here carries a vector of its own, so the node pass cannot be what decides the
+    // outcome. The impostor's summary carries the query vector verbatim -- a perfect cosine, at
+    // the same width, so the width check passes it -- and its text cannot win the lexical pass.
+    // If it takes the single summary slot, it was scored across two vector spaces.
+    let engine = test_engine();
+    const TENANT: u64 = 6031;
+    const EVENT_TIME: u64 = 1_781_700_000_000;
+    let provider = ContextModelProviderConfig::default();
+    let query = "how do we deploy the ingest service";
+    let query_vector = query::context_query_embedding(&provider, query).unwrap();
+    let ours = context_embedding_model_hash(&provider.embedding_model);
+    let theirs = context_embedding_model_hash("some-other-encoder");
+    assert_ne!(ours, theirs, "the two encoders must hash apart, or this proves nothing");
+
+    // Close to the query but not identical, so a perfect cosine would outrank it.
+    let mut near = query_vector.clone();
+    near[0] += 0.35;
+    near[1] -= 0.15;
+
+    for (node_hash, name, text, at, vector, model_hash) in [
+        (
+            41u64,
+            "matching",
+            "release runbook notes",
+            EVENT_TIME,
+            near.clone(),
+            ours,
+        ),
+        (
+            42u64,
+            "impostor",
+            "totally unrelated wording",
+            EVENT_TIME + 500,
+            query_vector.clone(),
+            theirs,
+        ),
+    ] {
+        assert_eq!(
+            query_vector.len(),
+            vector.len(),
+            "both vectors must be the same width, or this tests the width check instead"
+        );
+        seed_summary_only_vector_node(
+            &engine, TENANT, node_hash, name, text, at, vector, model_hash,
+        );
+    }
+
+    let retrieve = retrieve_context(
+        &engine,
         ContextRetrieveRequest {
             shard_id: 1,
-            tenant_hash,
-            // The local workflow refuses a retrieve that names no nodes rather than walking the
-            // whole tenant, so the caller supplies the one it just ingested.
-            node_hashes: vec![node_hash],
-            query: "observability dashboard".to_string(),
+            tenant_hash: TENANT,
+            node_hashes: vec![41, 42],
+            query: query.to_string(),
             start_time_ms: 0,
-            end_time_ms: 10_000,
+            end_time_ms: EVENT_TIME + 1_000,
             max_events: 8,
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
-            max_summary_nodes: 32,
-            max_event_nodes: 16,
+            max_summary_nodes: 1,
+            max_event_nodes: 4,
             prefer_current_agent: false,
-            current_agent_scope_key: "agent:codex".to_string(),
+            current_agent_scope_key: "agent:test".to_string(),
             provider,
         },
-    )
-}
-
-#[test]
-fn retrieve_does_not_score_a_vector_made_by_another_encoder() {
-    // The whole failure mode in one test: same width, different space, no error anywhere. A node
-    // embedded by one encoder and queried by another must be handed to the hybrid lexical pass --
-    // treated exactly as an un-embedded node -- rather than scored against a query vector from an
-    // unrelated space.
-    let engine = test_engine();
-    let node_hash = ingest_with_encoder(
-        &engine,
-        20260832,
-        provider_with_encoder("chat-alpha", "encoder-alpha"),
     );
-
-    let same = retrieve_with_encoder(
-        &engine,
-        20260832,
-        node_hash,
-        provider_with_encoder("chat-alpha", "encoder-alpha"),
-    );
-    assert!(same.status.ok, "{:?}", same.status);
-    assert!(
-        same.fanout_plan.summary_candidate_nodes > 0,
-        "no candidate nodes at all, so the counts below would be vacuously equal"
+    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    let summary_nodes: Vec<u64> = retrieve
+        .blocks
+        .iter()
+        .filter(|block| block.tier == ContextTier::L0)
+        .map(|block| block.node_hash)
+        .collect();
+    assert_eq!(
+        vec![41u64], summary_nodes,
+        "a summary vector from another encoder must not take the slot on a perfect but meaningless cosine"
     );
     assert_eq!(
-        0, same.fanout_plan.l0_row_fallback_nodes,
-        "a node embedded by the encoder doing the retrieve must be scored, not skipped"
+        1, retrieve.fanout_plan.embedding_model_conflict_nodes,
+        "the declined summary vector has to be COUNTED, and counted as a MODEL conflict"
     );
-
-    let foreign = retrieve_with_encoder(
-        &engine,
-        20260832,
-        node_hash,
-        provider_with_encoder("chat-alpha", "encoder-beta"),
-    );
-    assert!(foreign.status.ok, "{:?}", foreign.status);
     assert_eq!(
-        same.fanout_plan.summary_candidate_nodes, foreign.fanout_plan.summary_candidate_nodes,
-        "the two retrieves must consider the same nodes, or the comparison is between two \
-         different searches"
-    );
-    assert!(
-        foreign.fanout_plan.l0_row_fallback_nodes > 0,
-        "a vector made by a different encoder was scored against this query -- the two are the \
-         same width and no length mismatch would have caught it"
+        0, retrieve.fanout_plan.embedding_width_conflict_nodes,
+        "these vectors are the same width -- charging this to the width counter would send an operator hunting a provider outage that did not happen"
     );
 }
 
 #[test]
-fn retrieve_still_scores_vectors_whose_encoder_was_never_recorded() {
-    // 0 means unknown, not foreign. Every store written before the hash existed carries 0, so
-    // refusing those would turn an upgrade into silently dark retrieval -- the same outcome the
-    // guard exists to prevent.
+fn a_summary_vector_with_no_recorded_encoder_is_still_scored() {
+    // Every summary already on disk decodes with a zero hash, because the field did not exist
+    // when it was written. Zero means unknown, and unknown must keep scoring: tightening this
+    // check to refuse it would take the summary pass dark for every existing store at once --
+    // silently, since an unscored node just falls through to the lexical pass and still returns
+    // SOMETHING. Same store as the test above with both hashes left unrecorded, and here the
+    // perfect cosine is SUPPOSED to win.
     let engine = test_engine();
-    let node_hash = ingest_with_encoder(
-        &engine,
-        20260833,
-        provider_with_encoder("chat-alpha", "encoder-alpha"),
-    );
-    let node = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextGetNode {
-            tenant_hash: 20260833,
-            node_hash,
-        },
-    });
-    let mut stored = match node.response {
-        CommandResponse::ContextNode { node: Some(node), .. } => node,
-        other => panic!("expected the node back, got {other:?}"),
-    };
-    assert!(!stored.vector.is_empty());
-    // Rewrite it the way a store predating the field looks.
-    let vector = stored.vector.clone();
-    stored.embedding_model_hash = 0;
-    let put = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextUpsertNode {
-            tenant_hash: 20260833,
-            node: stored,
-        },
-    });
-    assert!(put.status.ok, "{:?}", put.status);
-    let reread = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextGetNode {
-            tenant_hash: 20260833,
-            node_hash,
-        },
-    });
-    match reread.response {
-        CommandResponse::ContextNode { node: Some(node), .. } => {
-            assert_eq!(0, node.embedding_model_hash, "the rewrite did not take");
-            assert_eq!(vector, node.vector, "the rewrite dropped the vector it was testing");
-        }
-        other => panic!("expected the node back, got {other:?}"),
+    const TENANT: u64 = 6032;
+    const EVENT_TIME: u64 = 1_781_700_000_000;
+    let provider = ContextModelProviderConfig::default();
+    let query = "how do we deploy the ingest service";
+    let query_vector = query::context_query_embedding(&provider, query).unwrap();
+
+    let mut near = query_vector.clone();
+    near[0] += 0.35;
+    near[1] -= 0.15;
+
+    for (node_hash, name, text, at, vector) in [
+        (
+            41u64,
+            "matching",
+            "release runbook notes",
+            EVENT_TIME,
+            near.clone(),
+        ),
+        (
+            42u64,
+            "impostor",
+            "totally unrelated wording",
+            EVENT_TIME + 500,
+            query_vector.clone(),
+        ),
+    ] {
+        seed_summary_only_vector_node(&engine, TENANT, node_hash, name, text, at, vector, 0);
     }
 
-    let report = retrieve_with_encoder(
+    let retrieve = retrieve_context(
         &engine,
-        20260833,
-        node_hash,
-        provider_with_encoder("chat-alpha", "encoder-beta"),
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: TENANT,
+            node_hashes: vec![41, 42],
+            query: query.to_string(),
+            start_time_ms: 0,
+            end_time_ms: EVENT_TIME + 1_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+            max_summary_nodes: 1,
+            max_event_nodes: 4,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:test".to_string(),
+            provider,
+        },
     );
-    assert!(report.status.ok, "{:?}", report.status);
-    assert!(report.fanout_plan.summary_candidate_nodes > 0);
+    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    let summary_nodes: Vec<u64> = retrieve
+        .blocks
+        .iter()
+        .filter(|block| block.tier == ContextTier::L0)
+        .map(|block| block.node_hash)
+        .collect();
     assert_eq!(
-        0, report.fanout_plan.l0_row_fallback_nodes,
-        "a vector whose encoder was never recorded was refused -- unknown is not foreign"
+        vec![42u64], summary_nodes,
+        "an unrecorded encoder is unknown, and unknown must keep being scored"
     );
-}
-
-
-#[test]
-fn retrieve_falls_back_on_a_width_mismatch_even_when_no_encoder_was_recorded() {
-    // The hash check cannot see this one: a store written before the field existed carries 0 on
-    // both sides, so nothing is "foreign", and it can still hold vectors of another width --
-    // `mixed_dimensions` is a state the product reports, so this is not hypothetical.
-    //
-    // Scoring it returns 0, and the damage is not the 0: the call site counts the node as scored,
-    // and the hybrid lexical pass only rescues nodes that were never scored. The node ends up with
-    // no cosine and no lexical score either.
-    let engine = test_engine();
-    let node_hash = ingest_with_encoder(
-        &engine,
-        20260834,
-        provider_with_encoder("chat-alpha", "encoder-alpha"),
-    );
-    let node = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextGetNode {
-            tenant_hash: 20260834,
-            node_hash,
-        },
-    });
-    let mut stored = match node.response {
-        CommandResponse::ContextNode { node: Some(node), .. } => node,
-        other => panic!("expected the node back, got {other:?}"),
-    };
-    assert!(!stored.vector.is_empty());
-
-    // A vector of another width, with no encoder recorded -- exactly what an older store holds.
-    stored.vector = vec![0.5_f32; stored.vector.len() * 2];
-    stored.embedding_model_hash = 0;
-    let put = engine.execute(ExecuteRequest {
-        shard_id: 1,
-        command: Command::ContextUpsertNode {
-            tenant_hash: 20260834,
-            node: stored,
-        },
-    });
-    assert!(put.status.ok, "{:?}", put.status);
-
-    let report = retrieve_with_encoder(
-        &engine,
-        20260834,
-        node_hash,
-        provider_with_encoder("chat-alpha", "encoder-alpha"),
-    );
-    assert!(report.status.ok, "{:?}", report.status);
-    assert!(
-        report.fanout_plan.summary_candidate_nodes > 0,
-        "no candidates, so the count below would be vacuously zero"
-    );
-    assert!(
-        report.fanout_plan.l0_row_fallback_nodes > 0,
-        "a vector of another width was scored and counted as scored, which is what keeps the \
-         hybrid lexical pass from rescuing the node"
+    assert_eq!(
+        0, retrieve.fanout_plan.embedding_model_conflict_nodes,
+        "a zero hash is not a conflict and must not be counted as one"
     );
 }

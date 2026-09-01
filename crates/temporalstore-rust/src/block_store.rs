@@ -62,28 +62,250 @@ pub enum BlockStoreError {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct BlockAddress {
+/// Which optional parts an address carries.
+///
+/// Five `Option`s cost 72 bytes to wrap values of 8, 8, 4, 8 and 8. A `u64` has no spare bit
+/// pattern to mean "absent", so each one pays a whole extra word for its tag, and every page in
+/// the index holds an address for the life of the shard.
+///
+/// A sentinel would be cheaper and is NOT available here: `0` is a legitimate `band_id` and a
+/// legitimate `routing_slot` -- there is a test asserting `band_id == Some(0)` -- so "zero means
+/// absent" would silently erase real values. A byte of presence bits costs almost nothing and
+/// cannot make that mistake.
+///
+/// This is the shape the design being followed uses: one byte carrying `dirty`, `page_in_log` and
+/// its reserved bits, rather than an optional wrapped around each.
+const ADDRESS_HAS_PAGE_ID: u8 = 1 << 0;
+const ADDRESS_HAS_OBJECT_ID: u8 = 1 << 1;
+const ADDRESS_HAS_ROUTING_BUCKET: u8 = 1 << 2;
+const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
+const ADDRESS_HAS_BAND_ID: u8 = 1 << 4;
+
+/// The address as it travels on the wire and on disk -- unchanged, field names, renames and
+/// aliases included.
+///
+/// `BlockAddress` converts through this both ways, which is what keeps the packing an in-memory
+/// concern rather than a format change: an index written before this loads, and one written after
+/// stays readable by anything expecting the old shape.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+struct BlockAddressWire {
     #[serde(rename = "page_segment_id")]
+    page_slab_id: u64,
+    offset: u64,
+    length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "routing_slot")]
+    routing_bucket: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generation: Option<u64>,
+    #[serde(
+        default,
+        alias = "extent_id",
+        alias = "zone_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    band_id: Option<u64>,
+    #[serde(
+        default,
+        alias = "checksum",
+        skip_serializing_if = "Option::is_none",
+        with = "hex_digest"
+    )]
+    sha256: Option<[u8; 32]>,
+}
+
+impl From<BlockAddressWire> for BlockAddress {
+    fn from(wire: BlockAddressWire) -> Self {
+        BlockAddress::from_parts(
+            wire.page_slab_id,
+            wire.offset,
+            wire.length,
+            wire.page_id,
+            wire.object_id,
+            wire.routing_bucket,
+            wire.generation,
+            wire.band_id,
+            wire.sha256,
+        )
+    }
+}
+
+impl From<BlockAddress> for BlockAddressWire {
+    fn from(address: BlockAddress) -> Self {
+        Self {
+            page_slab_id: address.page_slab_id,
+            offset: address.offset,
+            length: address.length,
+            page_id: address.page_id(),
+            object_id: address.object_id(),
+            routing_bucket: address.routing_bucket(),
+            generation: address.generation(),
+            band_id: address.band_id(),
+            sha256: address.sha256,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "BlockAddressWire", into = "BlockAddressWire")]
+pub struct BlockAddress {
     pub page_slab_id: u64,
     pub offset: u64,
     pub length: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub object_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "routing_slot")]
-    pub routing_bucket: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<u64>,
-    #[serde(default, alias = "extent_id", alias = "zone_id", skip_serializing_if = "Option::is_none")]
-    pub band_id: Option<u64>,
-    #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
-    pub sha256: Option<String>,
+    page_id: u64,
+    object_id: u64,
+    generation: u64,
+    band_id: u64,
+    routing_bucket: u32,
+    /// Which of the five above are actually set. See `ADDRESS_HAS_*`.
+    present: u8,
+    /// The page's digest, as the 32 bytes it is rather than 64 characters of hex behind a
+    /// pointer. The wire form stays hex; see `hex_digest`.
+    pub sha256: Option<[u8; 32]>,
 }
 
 impl BlockAddress {
+    /// Build an address from the parts a caller has, in the order the struct literal used to take
+    /// them. The presence bits are derived here so no caller has to know they exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        page_slab_id: u64,
+        offset: u64,
+        length: u64,
+        page_id: Option<u64>,
+        object_id: Option<u64>,
+        routing_bucket: Option<u32>,
+        generation: Option<u64>,
+        band_id: Option<u64>,
+        sha256: Option<[u8; 32]>,
+    ) -> Self {
+        let mut present = 0u8;
+        if page_id.is_some() {
+            present |= ADDRESS_HAS_PAGE_ID;
+        }
+        if object_id.is_some() {
+            present |= ADDRESS_HAS_OBJECT_ID;
+        }
+        if routing_bucket.is_some() {
+            present |= ADDRESS_HAS_ROUTING_BUCKET;
+        }
+        if generation.is_some() {
+            present |= ADDRESS_HAS_GENERATION;
+        }
+        if band_id.is_some() {
+            present |= ADDRESS_HAS_BAND_ID;
+        }
+        Self {
+            page_slab_id,
+            offset,
+            length,
+            page_id: page_id.unwrap_or_default(),
+            object_id: object_id.unwrap_or_default(),
+            generation: generation.unwrap_or_default(),
+            band_id: band_id.unwrap_or_default(),
+            routing_bucket: routing_bucket.unwrap_or_default(),
+            present,
+            sha256,
+        }
+    }
+
+    pub fn page_id(&self) -> Option<u64> {
+        (self.present & ADDRESS_HAS_PAGE_ID != 0).then_some(self.page_id)
+    }
+
+    pub fn object_id(&self) -> Option<u64> {
+        (self.present & ADDRESS_HAS_OBJECT_ID != 0).then_some(self.object_id)
+    }
+
+    pub fn routing_bucket(&self) -> Option<u32> {
+        (self.present & ADDRESS_HAS_ROUTING_BUCKET != 0).then_some(self.routing_bucket)
+    }
+
+    pub fn generation(&self) -> Option<u64> {
+        (self.present & ADDRESS_HAS_GENERATION != 0).then_some(self.generation)
+    }
+
+    pub fn band_id(&self) -> Option<u64> {
+        (self.present & ADDRESS_HAS_BAND_ID != 0).then_some(self.band_id)
+    }
+
+    pub fn set_page_id(&mut self, value: Option<u64>) {
+        self.page_id = value.unwrap_or_default();
+        self.set_present(ADDRESS_HAS_PAGE_ID, value.is_some());
+    }
+
+    pub fn set_object_id(&mut self, value: Option<u64>) {
+        self.object_id = value.unwrap_or_default();
+        self.set_present(ADDRESS_HAS_OBJECT_ID, value.is_some());
+    }
+
+    pub fn set_routing_bucket(&mut self, value: Option<u32>) {
+        self.routing_bucket = value.unwrap_or_default();
+        self.set_present(ADDRESS_HAS_ROUTING_BUCKET, value.is_some());
+    }
+
+    pub fn set_generation(&mut self, value: Option<u64>) {
+        self.generation = value.unwrap_or_default();
+        self.set_present(ADDRESS_HAS_GENERATION, value.is_some());
+    }
+
+    pub fn set_band_id(&mut self, value: Option<u64>) {
+        self.band_id = value.unwrap_or_default();
+        self.set_present(ADDRESS_HAS_BAND_ID, value.is_some());
+    }
+
+    fn set_present(&mut self, bit: u8, on: bool) {
+        if on {
+            self.present |= bit;
+        } else {
+            self.present &= !bit;
+        }
+    }
+}
+
+/// A digest is 32 bytes in memory and hex on the wire.
+///
+/// Keeping the wire form makes this change invisible to anything that reads a persisted index, in
+/// both directions: the same hex string is written, and a hex string is what is read.
+mod hex_digest {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &Option<[u8; 32]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(bytes) => serializer.serialize_str(&hex::encode(bytes)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; 32]>, D::Error> {
+        // A digest that is not 32 bytes of hex is not a digest. Reading it as absent rather than
+        // failing keeps a malformed one from making a whole index unloadable -- the read path
+        // treats a missing digest as "unverified", which is what a corrupt one deserves too.
+        let raw = Option::<String>::deserialize(deserializer)?;
+        Ok(raw.and_then(|text| {
+            let mut bytes = [0u8; 32];
+            hex::decode_to_slice(text.as_bytes(), &mut bytes)
+                .ok()
+                .map(|_| bytes)
+        }))
+    }
+}
+
+impl BlockAddress {
+    /// The digest as the hex text every reporting path quotes.
+    pub fn sha256_hex(&self) -> Option<String> {
+        self.sha256.as_ref().map(hex::encode)
+    }
+
     pub fn compact_slab_id(&self) -> Option<u32> {
         u32::try_from(self.page_slab_id).ok()
     }
@@ -97,17 +319,17 @@ impl BlockAddress {
     }
 
     pub fn from_compact_slab_address(compact_slab_address: u64, length: u64) -> Self {
-        Self {
-            page_slab_id: compact_extract_band_id(compact_slab_address) as u64,
-            offset: compact_extract_band_offset(compact_slab_address) as u64,
+        Self::from_parts(
+            compact_extract_band_id(compact_slab_address) as u64,
+            compact_extract_band_offset(compact_slab_address) as u64,
             length,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            generation: None,
-            band_id: None,
-            sha256: None,
-        }
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 }
 
@@ -1366,6 +1588,93 @@ impl Default for LocalBlockStore {
 }
 
 #[cfg(test)]
+mod address_size_tests {
+    use super::*;
+
+    /// The shape this replaced, declared here so the comparison is measured rather than argued.
+    /// Rust has no spare bit pattern in a `u64` to mean "absent", so each `Option` pays a whole
+    /// extra word for its tag; five of them is the cost being removed.
+    #[allow(dead_code)]
+    struct OptionalShape {
+        page_slab_id: u64,
+        offset: u64,
+        length: u64,
+        page_id: Option<u64>,
+        object_id: Option<u64>,
+        routing_bucket: Option<u32>,
+        generation: Option<u64>,
+        band_id: Option<u64>,
+        sha256: Option<[u8; 32]>,
+    }
+
+    #[test]
+    fn address_is_smaller_than_the_optional_shape() {
+        let packed = std::mem::size_of::<BlockAddress>();
+        let optional = std::mem::size_of::<OptionalShape>();
+        assert!(
+            packed < optional,
+            "packing should shrink the address: {packed} vs {optional}"
+        );
+        // Guards the win rather than merely observing it: every page in the index holds one of
+        // these for the life of the shard, so a regression here is a per-page regression.
+        assert!(packed <= 104, "address grew to {packed} bytes");
+    }
+
+    /// A presence bit is not the same as a zero value. `0` is a legitimate `band_id` and a
+    /// legitimate `routing_slot`, so "zero means absent" would erase real values -- this is why
+    /// the byte exists instead of a sentinel.
+    #[test]
+    fn zero_is_distinguishable_from_absent() {
+        let zero = BlockAddress::from_parts(1, 0, 0, None, None, Some(0), None, Some(0), None);
+        let absent = BlockAddress::from_parts(1, 0, 0, None, None, None, None, None, None);
+        assert_eq!(zero.band_id(), Some(0));
+        assert_eq!(zero.routing_bucket(), Some(0));
+        assert_eq!(absent.band_id(), None);
+        assert_eq!(absent.routing_bucket(), None);
+        assert_ne!(zero, absent);
+    }
+
+    /// Clearing a value must clear its bit, or the next read reports a stale one as present.
+    #[test]
+    fn setters_track_presence_both_ways() {
+        let mut address =
+            BlockAddress::from_parts(1, 0, 0, Some(7), None, None, None, None, None);
+        assert_eq!(address.page_id(), Some(7));
+        address.set_page_id(None);
+        assert_eq!(address.page_id(), None);
+        address.set_page_id(Some(9));
+        assert_eq!(address.page_id(), Some(9));
+        address.set_object_id(Some(3));
+        assert_eq!(address.object_id(), Some(3));
+        assert_eq!(address.page_id(), Some(9), "one setter disturbed another");
+    }
+
+    /// The packing is an in-memory concern: the serialized form must be unchanged, including the
+    /// renames an older index on disk was written with.
+    #[test]
+    fn wire_form_survives_the_packing() {
+        let address = BlockAddress::from_parts(
+            5,
+            64,
+            128,
+            Some(1),
+            Some(2),
+            Some(3),
+            Some(4),
+            Some(0),
+            None,
+        );
+        let json = serde_json::to_value(&address).unwrap();
+        assert_eq!(json["page_segment_id"], 5);
+        assert_eq!(json["routing_slot"], 3);
+        assert_eq!(json["band_id"], 0, "a present zero must still be written");
+        assert!(json.get("present").is_none(), "presence bits must not reach the wire");
+        let round_tripped: BlockAddress = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, address);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1424,8 +1733,8 @@ mod tests {
         assert_eq!(reopened.read(&a2).unwrap(), b"record-two");
         // A new append lands right after the fenced prefix and does not reuse a page id.
         let a3 = reopened.append(b"record-three").unwrap();
-        assert_ne!(a3.page_id, a1.page_id);
-        assert_ne!(a3.page_id, a2.page_id);
+        assert_ne!(a3.page_id(), a1.page_id());
+        assert_ne!(a3.page_id(), a2.page_id());
         assert_eq!(reopened.read(&a3).unwrap(), b"record-three");
     }
 
@@ -1761,7 +2070,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"verified-page").unwrap();
-        assert_eq!(address.sha256, Some(sha256_hex(b"verified-page")));
+        assert_eq!(address.sha256_hex(), Some(sha256_hex(b"verified-page")));
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
         let path = slab_path(dir.path(), address.page_slab_id);
@@ -1784,11 +2093,11 @@ mod tests {
         assert_eq!(address.page_slab_id, 0);
         assert_eq!(address.offset, 0);
         assert!(address.length > b"address-contract".len() as u64);
-        assert_eq!(address.page_id, Some(0));
-        assert_eq!(address.object_id, Some(4242));
-        assert_eq!(address.routing_bucket, Some(17));
-        assert_eq!(address.band_id, Some(0));
-        assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
+        assert_eq!(address.page_id(), Some(0));
+        assert_eq!(address.object_id(), Some(4242));
+        assert_eq!(address.routing_bucket(), Some(17));
+        assert_eq!(address.band_id(), Some(0));
+        assert_eq!(address.sha256_hex(), Some(sha256_hex(b"address-contract")));
         assert_eq!(address.compact_slab_id(), Some(0));
         assert_eq!(address.compact_slab_offset(), Some(0));
         assert_eq!(address.compact_slab_address(), Some(0));
@@ -1808,15 +2117,20 @@ mod tests {
             "page_segment_id": address.page_slab_id,
             "offset": address.offset,
             "length": address.length,
-            "page_id": address.page_id,
-            "object_id": address.object_id,
-            "routing_slot": address.routing_bucket,
+            "page_id": address.page_id(),
+            "object_id": address.object_id(),
+            "routing_slot": address.routing_bucket(),
             // generation is a canonical, always-present field on write (append sets
             // Some(page_id)) and on read (record decode derives it), so the legacy
             // alias JSON must carry it or the round-trip deserializes to None.
-            "generation": address.generation,
-            "band_id": address.band_id,
-            "checksum": address.sha256,
+            "generation": address.generation(),
+            "band_id": address.band_id(),
+            // The legacy document carries the digest as HEX, which is what the alias means and
+            // what a record written before the digest became bytes actually holds. Passing the
+            // bytes here would build a document no old writer ever produced -- an array where the
+            // alias expects a string -- and test the round-trip against a shape that never
+            // existed.
+            "checksum": address.sha256_hex(),
         });
         let from_checksum_alias: BlockAddress = serde_json::from_value(legacy_alias_json).unwrap();
         assert_eq!(from_checksum_alias, address);
@@ -1835,7 +2149,7 @@ mod tests {
 
         assert!(raw.starts_with(PAGE_RECORD_MAGIC));
         assert_eq!(raw[8], PAGE_RECORD_VERSION);
-        assert_eq!(address.page_id, Some(0));
+        assert_eq!(address.page_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
     }
 
@@ -1845,13 +2159,13 @@ mod tests {
         let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         let second = store.append(b"second").unwrap();
-        assert_eq!(first.page_id, Some(0));
-        assert_eq!(second.page_id, Some(1));
+        assert_eq!(first.page_id(), Some(0));
+        assert_eq!(second.page_id(), Some(1));
 
         let reopened = LocalBlockStore::new(dir.path());
         let third = reopened.append(b"third").unwrap();
 
-        assert_eq!(third.page_id, Some(2));
+        assert_eq!(third.page_id(), Some(2));
         assert_eq!(reopened.read(&third).unwrap(), b"third");
     }
 
@@ -1868,7 +2182,7 @@ mod tests {
         store.install_slab(4, &restored_bytes).unwrap();
         let next = store.append(b"next").unwrap();
 
-        assert_eq!(next.page_id, Some(2));
+        assert_eq!(next.page_id(), Some(2));
         assert_eq!(store.read(&next).unwrap(), b"next");
     }
 
@@ -1877,7 +2191,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let mut address = store.append(b"identity-checked-page").unwrap();
-        address.page_id = Some(address.page_id.unwrap() + 1);
+        address.set_page_id(Some(address.page_id().unwrap() + 1));
 
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
@@ -1891,22 +2205,22 @@ mod tests {
             .append_with_page_metadata(b"object-page", Some(42), Some(7))
             .unwrap();
 
-        assert_eq!(address.object_id, Some(42));
-        assert_eq!(address.routing_bucket, Some(7));
-        assert_eq!(address.band_id, Some(0));
+        assert_eq!(address.object_id(), Some(42));
+        assert_eq!(address.routing_bucket(), Some(7));
+        assert_eq!(address.band_id(), Some(0));
         assert_eq!(store.read(&address).unwrap(), b"object-page");
 
-        address.object_id = Some(43);
+        address.set_object_id(Some(43));
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
-        address.object_id = Some(42);
-        address.routing_bucket = Some(8);
+        address.set_object_id(Some(42));
+        address.set_routing_bucket(Some(8));
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
-        address.routing_bucket = Some(7);
-        address.band_id = Some(1);
+        address.set_routing_bucket(Some(7));
+        address.set_band_id(Some(1));
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
@@ -1919,10 +2233,10 @@ mod tests {
         let roll = store.roll_slab().unwrap();
         let second = store.append(b"second-band").unwrap();
 
-        assert_eq!(first.band_id, Some(first.page_slab_id));
-        assert_eq!(second.band_id, Some(second.page_slab_id));
-        assert_eq!(second.band_id, Some(roll.new_page_slab_id));
-        assert_ne!(first.band_id, second.band_id);
+        assert_eq!(first.band_id(), Some(first.page_slab_id));
+        assert_eq!(second.band_id(), Some(second.page_slab_id));
+        assert_eq!(second.band_id(), Some(roll.new_page_slab_id));
+        assert_ne!(first.band_id(), second.band_id());
     }
 
     #[test]
@@ -1937,14 +2251,14 @@ mod tests {
         assert_eq!(bands.len(), 2);
         assert_eq!(bands[0].page_slab_id, first.page_slab_id);
         assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
-        assert_eq!(bands[0].first_page_id, first.page_id);
-        assert_eq!(bands[0].last_page_id, first.page_id);
+        assert_eq!(bands[0].first_page_id, first.page_id());
+        assert_eq!(bands[0].last_page_id, first.page_id());
         assert!(bands[0].created_unix_ms.is_some());
         assert!(bands[0].updated_unix_ms.is_some());
         assert_eq!(bands[1].page_slab_id, second.page_slab_id);
         assert_eq!(bands[1].state, BlockStoreBandState::Active);
-        assert_eq!(bands[1].first_page_id, second.page_id);
-        assert_eq!(bands[1].last_page_id, second.page_id);
+        assert_eq!(bands[1].first_page_id, second.page_id());
+        assert_eq!(bands[1].last_page_id, second.page_id());
         assert!(bands[1].created_unix_ms.is_some());
         assert!(bands[1].updated_unix_ms.is_some());
         assert!(band_manifest_path(dir.path()).exists());
@@ -2103,14 +2417,14 @@ mod tests {
         assert_eq!(bands.len(), 2);
         assert_eq!(bands[0].page_slab_id, first.page_slab_id);
         assert_eq!(bands[0].state, BlockStoreBandState::Sealed);
-        assert_eq!(bands[0].first_page_id, first.page_id);
-        assert_eq!(bands[0].last_page_id, first.page_id);
+        assert_eq!(bands[0].first_page_id, first.page_id());
+        assert_eq!(bands[0].last_page_id, first.page_id());
         assert!(bands[0].created_unix_ms.is_some());
         assert!(bands[0].updated_unix_ms.is_some());
         assert_eq!(bands[1].page_slab_id, second.page_slab_id);
         assert_eq!(bands[1].state, BlockStoreBandState::Active);
-        assert_eq!(bands[1].first_page_id, second.page_id);
-        assert_eq!(bands[1].last_page_id, second.page_id);
+        assert_eq!(bands[1].first_page_id, second.page_id());
+        assert_eq!(bands[1].last_page_id, second.page_id());
         assert!(bands[1].created_unix_ms.is_some());
         assert!(bands[1].updated_unix_ms.is_some());
         assert!(band_manifest_path(dir.path()).exists());
@@ -2173,8 +2487,8 @@ mod tests {
         assert!(sealed.has_corruption);
         assert_eq!(sealed.first_error_offset, Some(readable_prefix));
         assert_eq!(sealed.readable_prefix_physical_bytes, readable_prefix);
-        assert_eq!(sealed.first_page_id, first.page_id);
-        assert_eq!(sealed.last_page_id, first.page_id);
+        assert_eq!(sealed.first_page_id, first.page_id());
+        assert_eq!(sealed.last_page_id, first.page_id());
         assert!(sealed
             .first_error
             .as_deref()
@@ -2357,8 +2671,8 @@ mod tests {
         assert_eq!(before_gc.sealed_bands, 1);
         assert_eq!(before_gc.band_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(before_gc.stream_record_count, 3);
-        assert_eq!(before_gc.first_page_id, first.page_id);
-        assert_eq!(before_gc.last_page_id, third.page_id);
+        assert_eq!(before_gc.first_page_id, first.page_id());
+        assert_eq!(before_gc.last_page_id, third.page_id());
         assert!(before_gc.page_id_continuity_ready);
         assert!(before_gc.band_manifest_rebuild_ready);
         assert!(before_gc.zone_stats_ready);
@@ -2418,8 +2732,8 @@ mod tests {
         assert!(!report.purge_lifecycle_ready);
         assert!(report.logical_bytes >= third_payload.len() as u64);
         assert_eq!(report.stream_record_count, 1);
-        assert_eq!(report.first_page_id, third.page_id);
-        assert_eq!(report.last_page_id, third.page_id);
+        assert_eq!(report.first_page_id, third.page_id());
+        assert_eq!(report.last_page_id, third.page_id());
         assert!(report.page_id_continuity_ready);
         assert!(report.blockers.is_empty());
         assert!(report
@@ -2483,8 +2797,8 @@ mod tests {
         );
         assert!(!reports[0].has_corruption);
         assert_eq!(reports[0].first_error_offset, None);
-        assert_eq!(reports[0].first_page_id, first.page_id);
-        assert_eq!(reports[0].last_page_id, second.page_id);
+        assert_eq!(reports[0].first_page_id, first.page_id());
+        assert_eq!(reports[0].last_page_id, second.page_id());
         assert_eq!(reports[0].block_index_count, 2);
         assert_eq!(reports[0].block_index_entries.len(), 2);
         assert_eq!(
@@ -2505,7 +2819,7 @@ mod tests {
             reports[0].block_index_entries[0].compact_slab_offset,
             first.compact_slab_offset()
         );
-        assert_eq!(reports[0].block_index_entries[0].block_id, first.page_id);
+        assert_eq!(reports[0].block_index_entries[0].block_id, first.page_id());
         assert_eq!(
             reports[0].block_index_entries[0].block_size,
             first_payload.len() as u64
@@ -2514,10 +2828,10 @@ mod tests {
         assert!(!reports[0].block_index_entries[0].dirty);
         assert!(!reports[0].block_index_entries[0].deleted);
         assert!(!reports[0].block_index_entries[0].block_in_log);
-        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256);
+        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256_hex());
         assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
         assert_eq!(reports[0].block_index_entries[1].length, second.length);
-        assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id);
+        assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id());
         assert_eq!(reports[0].first_error, None);
     }
 
@@ -2591,8 +2905,8 @@ mod tests {
         assert_eq!(reports[0].readable_prefix_physical_bytes, first.length);
         assert!(reports[0].has_corruption);
         assert_eq!(reports[0].first_error_offset, Some(first.length));
-        assert_eq!(reports[0].first_page_id, first.page_id);
-        assert_eq!(reports[0].last_page_id, first.page_id);
+        assert_eq!(reports[0].first_page_id, first.page_id());
+        assert_eq!(reports[0].last_page_id, first.page_id());
         let error = reports[0]
             .first_error
             .as_ref()
@@ -2685,17 +2999,7 @@ mod tests {
     fn page_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let legacy_address = BlockAddress {
-            page_slab_id: 0,
-            offset: 0,
-            length: b"alteredpage".len() as u64,
-            page_id: None,
-            object_id: None,
-            routing_bucket: None,
-            generation: None,
-            band_id: None,
-            sha256: None,
-        };
+        let legacy_address = BlockAddress::from_parts(0, 0, b"alteredpage".len() as u64, None, None, None, None, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.page_slab_id),
             b"alteredpage",

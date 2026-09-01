@@ -3,6 +3,23 @@
 
 #![doc = include_str!("../README.md")]
 
+#[cfg(test)]
+pub mod alloc_probe;
+
+// Tests only, and only under the `alloc-probe` feature. RSS cannot resolve a per-request
+// allocation change -- 71% of the proxy's resident memory was measured as allocator retention
+// rather than live data -- so memory claims about a request path need the allocations counted
+// directly.
+//
+// Feature-gated rather than always-on in tests: with this installed unconditionally, a full
+// single-threaded run turned 17 socket-bound proxy and raft tests red that pass individually, as a
+// group, and in a full run without it. Two atomics on every allocation in the process is enough to
+// disturb tests that wait on sockets, and an instrument that changes the result of the suite
+// checking the change is worse than no instrument.
+#[cfg(all(test, feature = "alloc-probe"))]
+#[global_allocator]
+static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::CountingAllocator;
+
 pub mod bytes_serde;
 pub mod block_store;
 pub mod checksum;

@@ -6,10 +6,11 @@
 use super::*;
 
 impl SingleNodeMeta {
-    pub fn register_server(&self, request: RegisterServerRequest) -> AckResponse {
+    pub fn register_server(&self, mut request: RegisterServerRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
+        request.registered_at_ms = now_ms();
         self.record_mutation(MetaMutation::RegisterServer(request.clone()));
         self.apply_register_server(request)
     }
@@ -46,6 +47,14 @@ impl SingleNodeMeta {
             }
         }
         let now = now_ms();
+        // Kept from the first registration: a node that restarted and
+        // registered again has not newly joined the cluster.
+        let registered_at_ms = state
+            .servers
+            .get(&request.server_addr)
+            .map(|server| server.registered_at_ms)
+            .filter(|first| *first != 0)
+            .unwrap_or(request.registered_at_ms);
         let server_addr = request.server_addr.clone();
         state.servers.insert(
             server_addr.clone(),
@@ -79,6 +88,7 @@ impl SingleNodeMeta {
                 shard_stat_loads: Vec::new(),
                 runtime_load: ServerRuntimeLoad::default(),
                 shard_states: Vec::new(),
+                registered_at_ms,
             },
         );
         // Coming back clears the drop clock. Without this the tombstone
@@ -169,6 +179,34 @@ impl SingleNodeMeta {
     }
 
     pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
+        // Folded before the lock is taken. These are summaries of the lists the
+        // request carries, and they used to be computed inside the critical
+        // section -- so every topology read waited behind a walk of one
+        // datanode's entire shard list, five times over. A datanode reporting
+        // 10k shards held the global write lock for tens of microseconds per
+        // heartbeat doing arithmetic that needed nothing from the state.
+        let load_key_count: u64 = request.shard_loads.iter().map(|load| load.key_count).sum();
+        let load_memory_bytes: u64 = request
+            .shard_loads
+            .iter()
+            .map(|load| load.memory_bytes)
+            .sum();
+        let reported_record_count: u64 = request
+            .shard_states
+            .iter()
+            .map(|reported| reported.total_records as u64)
+            .sum();
+        let reported_storage_bytes: u64 = request
+            .shard_states
+            .iter()
+            .map(|reported| reported.storage_bytes as u64)
+            .sum();
+        let worst_shard_state_penalty = request
+            .shard_states
+            .iter()
+            .map(|state| placement_shard_state_penalty(&state.serving_state))
+            .max()
+            .unwrap_or_default();
         let mut state = self.inner.write().expect("meta lock poisoned");
         self.counters.server_heartbeat_total.fetch_add(1, Ordering::Relaxed);
         let topology_version = state.topology_version;
@@ -223,30 +261,13 @@ impl SingleNodeMeta {
         server.reports_shard_states =
             server.reports_shard_states || !request.shard_states.is_empty();
         server.shard_states = request.shard_states;
-        // Summarised here, where the lists change, so that the read path does
-        // not have to walk them.
-        server.load_key_count = server.shard_loads.iter().map(|load| load.key_count).sum();
-        server.load_memory_bytes = server
-            .shard_loads
-            .iter()
-            .map(|load| load.memory_bytes)
-            .sum();
-        server.reported_record_count = server
-            .shard_states
-            .iter()
-            .map(|reported| reported.total_records as u64)
-            .sum();
-        server.reported_storage_bytes = server
-            .shard_states
-            .iter()
-            .map(|reported| reported.storage_bytes as u64)
-            .sum();
-        server.worst_shard_state_penalty = server
-            .shard_states
-            .iter()
-            .map(|state| placement_shard_state_penalty(&state.serving_state))
-            .max()
-            .unwrap_or_default();
+        // Summarised so the read path does not have to walk the lists. Folded
+        // above, before the lock, over the same values these fields now hold.
+        server.load_key_count = load_key_count;
+        server.load_memory_bytes = load_memory_bytes;
+        server.reported_record_count = reported_record_count;
+        server.reported_storage_bytes = reported_storage_bytes;
+        server.worst_shard_state_penalty = worst_shard_state_penalty;
         let server_state = server.state.as_str().to_string();
         let anchored = server.reported_boot_time_ms;
         if rebooted {
@@ -268,10 +289,11 @@ impl SingleNodeMeta {
         }
     }
 
-    pub fn register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
+    pub fn register_proxy(&self, mut request: RegisterProxyRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
             return AckResponse { status };
         }
+        request.registered_at_ms = now_ms();
         self.record_mutation(MetaMutation::RegisterProxy(request.clone()));
         self.apply_register_proxy(request)
     }
@@ -280,6 +302,12 @@ impl SingleNodeMeta {
         let mut state = self.inner.write().expect("meta lock poisoned");
         self.counters.proxy_register_total.fetch_add(1, Ordering::Relaxed);
         let proxy_addr = request.proxy_addr.clone();
+        let registered_at_ms = state
+            .proxies
+            .get(&request.proxy_addr)
+            .map(|proxy| proxy.registered_at_ms)
+            .filter(|first| *first != 0)
+            .unwrap_or(request.registered_at_ms);
         if let Some(existing) = state.proxies.get(&request.proxy_addr) {
             let now = now_ms();
             if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
@@ -306,6 +334,7 @@ impl SingleNodeMeta {
         state.proxies.insert(
             request.proxy_addr.clone(),
             ProxyMetaInfo {
+                heartbeats_total: 0,
                 freeze_reason: FreezeReason::Unspecified,
                 group: String::new(),
                 proxy_addr: request.proxy_addr,
@@ -319,6 +348,7 @@ impl SingleNodeMeta {
                 binary_version: request.binary_version,
                 boot_time_ms: 0,
                 restart_count: 0,
+                registered_at_ms,
             },
         );
         // Coming back clears the drop clock. Without this the tombstone
@@ -368,6 +398,7 @@ impl SingleNodeMeta {
             };
         }
         proxy.last_heartbeat_ms = now_ms();
+        proxy.heartbeats_total = proxy.heartbeats_total.saturating_add(1);
         // A changed boot time on an address we already know means the proxy restarted
         // in place. Heartbeats never stopped, so this is the only signal that its route
         // cache and config were reset underneath us.

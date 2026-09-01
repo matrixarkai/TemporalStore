@@ -8,6 +8,10 @@ pub fn ingest_extract_context(
     engine: &TemporalEngine,
     request: ContextIngestExtractRequest,
 ) -> ContextIngestExtractReport {
+    // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
+    // Context* write would otherwise rebuild the first-index over every live page in the shard --
+    // eight walks of the store for one add.
+    let reconstruct_window = crate::engine::IngestReconstructWindow::open();
     let policy = ContextWorkflowPolicy::default();
     let mut extracts = Vec::new();
     let mut failed_sources = Vec::new();
@@ -55,6 +59,12 @@ pub fn ingest_extract_context(
             });
         }
     }
+
+    // No reconstruct: the writes above maintain the index themselves now, so the window has
+    // nothing to catch up on. It stays open across the ingest only to keep the per-record
+    // fallback rebuild from firing for a write maintenance does not cover -- and if one is not
+    // covered, the fallback runs at that write, not here.
+    drop(reconstruct_window);
 
     node_hashes.sort_unstable();
     node_hashes.dedup();

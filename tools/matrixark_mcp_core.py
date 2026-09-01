@@ -9,6 +9,9 @@ adapter that can be replaced with TemporalStore RPC calls later.
 """
 
 from __future__ import annotations
+import base64 as _base64
+import struct as _struct
+from struct import error as struct_error
 
 import argparse
 import secrets
@@ -379,6 +382,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_session_commit": {"context:ingest"},
     "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
+    "matrixark_embedding_status": {"context:retrieve"},
     "matrixark_forget": {"context:forget"},
     "matrixark_delete": {"context:forget"},
     "matrixark_reset": {"context:forget"},
@@ -396,8 +400,6 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_auth_sso_login": set(),
     "matrixark_list_resources": {"resource:read"},
     "matrixark_list_skills": {"skill:read"},
-    # A read about the store's own encoding state, gated like any other read of it.
-    "matrixark_embedding_status": {"context:retrieve"},
     "matrixark_update_skill": {"skill:manage"},
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},
@@ -2040,7 +2042,15 @@ SERVING_RESOURCE_METADATA_FIELDS = {
     "heading",
     "heading_slug",
     "heading_path",
-    "source_locator",
+    # `source_locator` is deliberately absent: every chunk record carries it at the TOP level
+    # (both resource_chunk_record and skill_section_record set it unconditionally), and storing
+    # it here as well cost 290.8 KB per 1 MB skill -- 3.7% of the ingest -- byte-identical to the
+    # copy beside it. Readers of the metadata copy are all fallbacks of the form
+    # `record.get("source_locator") or metadata.get("source_locator")`, which cannot fire while
+    # the top-level field is present.
+    #
+    # `heading` stays: skill_section_record sets it at the top level but resource_chunk_record
+    # does not, so for a resource chunk this is the only copy.
     "content_hash",
     "token_estimate",
     "row_start",
@@ -2087,7 +2097,11 @@ def serving_resource_metadata(metadata: Json) -> Json:
         if key in sanitized and sanitized[key] not in (None, "", [], {})
     }
     serving["raw_storage_policy"] = sanitized.get("raw_storage_policy", "raw_uri_only")
-    serving["raw_bytes_stored"] = False
+    # `raw_bytes_stored` is a per-document fact and a constant False on every chunk of a
+    # document, 27 B a row -- 66.2 KB per 1 MB skill. It is not carried here because
+    # nothing reads it from a chunk: every mention inside a metadata dict is an
+    # ASSIGNMENT, and every read takes the top-level field with a False default, which
+    # the manifest record supplies.
     parse_warnings = normalize_parse_warnings(sanitized)
     if parse_warnings:
         serving["parse_warning_count"] = len(parse_warnings)
@@ -2556,10 +2570,13 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             record = dict(base)
             record["ref_hashes"] = ref_chunk
             record["posting_part"] = part
-            if len(ref_chunk) == 1:
-                record["ref_hash"] = ref_chunk[0]
-            else:
-                record.pop("ref_hash", None)
+            # `ref_hashes` is the one place a posting names what it points at. The singular
+            # `ref_hash` restated it on every single-ref row, and `chunk_hash` restated it again;
+            # the serving accessor reads neither when the list is present, and `index_hash` is
+            # derived from the list, so both are dropped rather than written three ways. Older
+            # rows still resolve -- the fallbacks that read them are unchanged.
+            record.pop("ref_hash", None)
+            record.pop("chunk_hash", None)
             if len(record.get("node_hashes", [])) == 1:
                 record["node_hash"] = record["node_hashes"][0]
             else:
@@ -3159,80 +3176,34 @@ try:  # package path
         _API_EMBEDDING_PROVIDERS,
         api_embedding_for_text,
         api_embedding_for_texts,
-        embedding_for_text,
-        embeddings_for_texts,
     )
 except ImportError:  # top-level path (direct tools/ execution)
     from matrixark_mcp_embeddings import (
         _API_EMBEDDING_PROVIDERS,
         api_embedding_for_text,
         api_embedding_for_texts,
-        embedding_for_text,
-        embeddings_for_texts,
     )
 
 
-# NOTE: this module deliberately does NOT define its own `embedding_for_text`.
-# It used to, and that copy silently drifted behind the one in matrixark_mcp_embeddings:
-# it took no `role` (so instruction prefixes were never applied) and skipped
-# `truncate_embedding` (so the configured dimension was ignored). Because the retrieve
-# adapter does `from matrixark_mcp_core import *`, the wildcard bound THIS copy, and a
-# caller passing role="query" raised TypeError -- every /v1/retrieve returned 500.
-# Import the canonical one above; do not reintroduce a local definition.
-
-def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
-    """Batch-friendly embedding helper with the same cache as embedding_for_text."""
-    if not texts:
-        return []
-    model = embedding_model_name()
-    results: list[list[float] | None] = []
-    missing: list[tuple[int, str]] = []
-    with _EMBEDDING_VECTOR_CACHE_LOCK:
-        for index, text in enumerate(texts):
-            cached = _EMBEDDING_VECTOR_CACHE.get((model, text))
-            if cached is None:
-                results.append(None)
-                missing.append((index, text))
-            else:
-                results.append(list(cached))
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if missing and provider in _API_EMBEDDING_PROVIDERS:
-        vectors = api_embedding_for_texts([text for _index, text in missing], provider)
-        with _EMBEDDING_VECTOR_CACHE_LOCK:
-            if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
-                _EMBEDDING_VECTOR_CACHE.clear()
-            for (index, text), vector in zip(missing, vectors):
-                materialized = [round(float(value), 6) for value in vector]
-                _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
-                results[index] = materialized
-    elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
-            "MATRIXARK_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-        try:
-            encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
-            if encoder is None:
-                from sentence_transformers import SentenceTransformer  # type: ignore
-
-                encoder = SentenceTransformer(model_ref)
-                _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
-            vectors = encoder.encode([text for _index, text in missing], normalize_embeddings=True, show_progress_bar=False)
-            with _EMBEDDING_VECTOR_CACHE_LOCK:
-                if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
-                    _EMBEDDING_VECTOR_CACHE.clear()
-                for (index, text), vector in zip(missing, vectors):
-                    materialized = [round(float(value), 6) for value in vector]
-                    _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
-                    results[index] = materialized
-        except Exception:
-            for index, text in missing:
-                results[index] = embedding_for_text(text)
-    else:
-        for index, text in missing:
-            results[index] = embedding_for_text(text)
-    return [list(item or []) for item in results]
-
+# These delegate rather than duplicate. This module used to carry its own copies of
+# embedding_for_text and embeddings_for_texts, with their own _EMBEDDING_VECTOR_CACHE, and because
+# the serving modules pull this module in with `import *`, the copies here were the ones that
+# actually ran. Improvements made to matrixark_mcp_embeddings therefore did nothing in production:
+# the LRU eviction that replaced a clear-the-whole-cache policy landed in the copy nobody called,
+# and adding the query/passage role there produced a TypeError at the call site, which is how the
+# duplication was found at all.
+#
+# One implementation, imported here, so a fix applies once.
+try:  # package path
+    from tools.matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_for_text,
+        embeddings_for_texts,
+    )
+except ImportError:  # top-level path (direct tools/ execution)
+    from matrixark_mcp_embeddings import (  # noqa: F401
+        embedding_for_text,
+        embeddings_for_texts,
+    )
 
 def _env_int(name: str, default: int) -> int:
     """Read an integer env var, treating empty or unparseable as unset.
@@ -3300,6 +3271,84 @@ def _int8_scale(dims: int) -> float:
     if dims <= 0:
         return 127.0
     return 127.0 * math.sqrt(dims) / 8.0
+
+
+# base64 of int16 little-endian, instead of JSON decimal digits. A 512-dim vector at
+# scale=1e4 is 2,745 bytes as JSON text and 1,368 as base64 int16 -- the same integers, half
+# the bytes, because JSON spends a character per digit on numbers no human reads.
+#
+# int16 fits by construction: at scale=1e4 the largest value a UNIT vector can produce is
+# 10,000 (all mass on one axis), against a signed range of 32,767. Measured over 500 real
+# vectors the range was -1,649..3,036.
+#
+# Default ON. Measured on a 1 MB skill: vectors 2,727 -> 1,374 bytes, the whole ingest
+# 12.6 MB -> 9.2 MB, amplification 11.8x -> 8.6x, 12.6 GB -> 9.2 GB per thousand documents.
+# The footprint stops being vector-dominated: 59.5% -> 44.6%.
+#
+# This was gated off until every reader went through decode_stored_vector, because the failure
+# mode is silent rather than loud: a reader that expects a list and receives a string does not
+# raise, it reads the vector as absent, and the node simply stops being scored. Twenty-four
+# extraction sites and five isinstance(..., list) checks -- one on the context-node path, one
+# skipping context_node embeddings outright -- had to be fixed first.
+#
+# Set MATRIXARK_EMBEDDING_VECTOR_BASE64=0 to write lists again. Reads accept both forms either
+# way, so a store written under one setting serves under the other.
+EMBEDDING_VECTOR_BASE64 = os.environ.get(
+    "MATRIXARK_EMBEDDING_VECTOR_BASE64", "1"
+).strip().lower() not in {"0", "false", "no", "off", ""}
+
+_VECTOR_BASE64_PREFIX = "i16:"
+_VECTOR_INT8_PREFIX = "i8:"
+
+
+def encode_stored_vector(values: list) -> Any:
+    """The stored form of an already-compacted vector: a list, or a tagged base64 string.
+
+    Width follows the values. int8 vectors fit in a byte, and packing them as int16 would waste
+    half of every element -- the encoding and the container have to agree or the smaller encoding
+    buys nothing. The tag records which was used, so a store holding both serves both.
+    """
+    if not EMBEDDING_VECTOR_BASE64 or not values:
+        return values
+    try:
+        ints = [int(v) for v in values]
+    except (ValueError, TypeError):
+        return values          # a float encoding cannot use this container
+    try:
+        if all(-128 <= v <= 127 for v in ints):
+            return _VECTOR_INT8_PREFIX + _base64.b64encode(
+                _struct.pack("<%db" % len(ints), *ints)).decode("ascii")
+        packed = _struct.pack("<%dh" % len(ints), *ints)
+    except (struct_error, ValueError, TypeError):
+        # Outside int16 as well -- a scale too large for this container. Store the list rather
+        # than lose precision silently.
+        return values
+    return _VECTOR_BASE64_PREFIX + _base64.b64encode(packed).decode("ascii")
+
+
+def decode_stored_vector(value: Any) -> list:
+    """Read a stored vector in either form.
+
+    Dual read is the whole point: a store written before this existed holds lists, and one
+    written with it holds tagged strings. Both must serve, and a reader that silently treated
+    the string form as "no vector" would stop scoring those nodes with nothing to notice.
+    """
+    if isinstance(value, str):
+        if value.startswith(_VECTOR_INT8_PREFIX):
+            blob = _base64.b64decode(value[len(_VECTOR_INT8_PREFIX):])
+            return list(_struct.unpack("<%db" % len(blob), blob))
+        if value.startswith(_VECTOR_BASE64_PREFIX):
+            blob = _base64.b64decode(value[len(_VECTOR_BASE64_PREFIX):])
+            return list(_struct.unpack("<%dh" % (len(blob) // 2), blob))
+        return []
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def record_vector(record: Json) -> list:
+    """The vector on a record, in either stored form."""
+    return decode_stored_vector((record or {}).get("vector"))
 
 
 def compact_embedding_vector(vector: list[float]) -> list[float]:

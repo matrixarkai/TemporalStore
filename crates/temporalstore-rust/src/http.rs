@@ -265,7 +265,39 @@ where
     S: Fn(&RequestHead, &mut StreamTransfer) -> StreamAction + Send + Sync + 'static,
     H: Fn(HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
 {
-    let listener = TcpListener::bind(addr)?;
+    serve_listener_with_stream_handler(TcpListener::bind(addr)?, stream_handler, handler)
+}
+
+/// Like [`serve`], but on a listener the caller has already bound.
+///
+/// Choosing a port by binding, reading the address back, dropping the listener
+/// and handing the address on leaves the port owned by nobody until the server
+/// binds it again. On a machine running more than one server process, something
+/// else can take it inside that window, and the server then fails on `AddrInUse`
+/// long after the address was decided -- far from where the address was chosen,
+/// and usually reported as whatever the missing server broke downstream. Handing
+/// the bound listener straight over closes the window: the port is never unowned.
+pub fn serve_listener(
+    listener: TcpListener,
+    handler: impl Fn(HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
+) -> Result<(), HttpError> {
+    serve_listener_with_stream_handler(
+        listener,
+        |_head, _transfer| StreamAction::Declined,
+        handler,
+    )
+}
+
+/// [`serve_with_stream_handler`] on an already-bound listener. See [`serve_listener`].
+pub fn serve_listener_with_stream_handler<S, H>(
+    listener: TcpListener,
+    stream_handler: S,
+    handler: H,
+) -> Result<(), HttpError>
+where
+    S: Fn(&RequestHead, &mut StreamTransfer) -> StreamAction + Send + Sync + 'static,
+    H: Fn(HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
+{
     let stream_handler = Arc::new(stream_handler);
     let handler = Arc::new(handler);
     for stream in listener.incoming() {
@@ -942,5 +974,97 @@ mod tests {
             pool.borrow_mut().remove(&pool_key);
         });
         server.join().unwrap();
+    }
+}
+
+/// Loopback ports for tests that stand a real server up.
+///
+/// The crate's test binary is regularly running in more than one copy at a time:
+/// several worktrees share one machine, and a test run in one of them overlaps a
+/// test run in another. Ports written into the tests as literals collide across
+/// those processes -- whichever binary binds first wins, the other's server
+/// thread dies with `AddrInUse`, and the test that needed that server reports
+/// something else entirely: a counter that reads 0, a route that never resolves.
+/// The bind error is inside a spawned thread, so the failure libtest prints names
+/// only the consequence.
+///
+/// Ports here come from the OS instead, and the listener that reserved one is
+/// kept and handed to [`serve_listener`], so a reserved port is owned by this
+/// process from the moment it is chosen until the server accepts on it.
+#[cfg(test)]
+pub(crate) mod test_ports {
+    use super::{serve_listener, HttpError, HttpRequest};
+    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
+
+    struct Reservation {
+        addr: String,
+        /// Taken by the first [`serve_reserved`] on this address; `None` after.
+        listener: Option<TcpListener>,
+    }
+
+    fn table() -> &'static Mutex<HashMap<u64, Reservation>> {
+        static TABLE: OnceLock<Mutex<HashMap<u64, Reservation>>> = OnceLock::new();
+        TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    /// The address reserved for `key` in this process.
+    ///
+    /// Stable for the life of the process, so a test can name one address in as
+    /// many places as it likes -- the way a literal port number used to read --
+    /// while the port itself is whatever the OS had free.
+    pub(crate) fn reserved_addr(key: u64) -> String {
+        table()
+            .lock()
+            .unwrap()
+            .entry(key)
+            .or_insert_with(|| {
+                let listener =
+                    TcpListener::bind("127.0.0.1:0").expect("reserve a loopback port");
+                let addr = listener
+                    .local_addr()
+                    .expect("read the reserved port")
+                    .to_string();
+                Reservation {
+                    addr,
+                    listener: Some(listener),
+                }
+            })
+            .addr
+            .clone()
+    }
+
+    /// A reserved address no other caller will be handed.
+    ///
+    /// For a test that needs an address but has no reason to name it twice.
+    pub(crate) fn unique_addr() -> String {
+        static NEXT: AtomicU64 = AtomicU64::new(1 << 32);
+        reserved_addr(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Serve on `addr`, taking over the listener that reserved it.
+    ///
+    /// An address this table did not reserve -- or one already being served -- is
+    /// bound afresh, which is exactly what plain `serve` would have done.
+    pub(crate) fn serve_reserved(
+        addr: &str,
+        handler: impl Fn(HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
+    ) -> Result<(), HttpError> {
+        serve_listener(claim(addr)?, handler)
+    }
+
+    fn claim(addr: &str) -> Result<TcpListener, HttpError> {
+        if let Some(reserved) = table()
+            .lock()
+            .unwrap()
+            .values_mut()
+            .find(|reservation| reservation.addr == addr)
+            .and_then(|reservation| reservation.listener.take())
+        {
+            return Ok(reserved);
+        }
+        Ok(TcpListener::bind(addr)?)
     }
 }

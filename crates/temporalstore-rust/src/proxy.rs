@@ -2108,6 +2108,7 @@ fn proxy_addr_port(addr: &str) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::test_ports::{reserved_addr, serve_reserved, unique_addr};
 
     #[test]
     fn a_config_push_reaches_a_thread_that_already_cached_the_options() {
@@ -3340,6 +3341,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_328),
             node_id: 1,
@@ -3347,6 +3349,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_328),
         });
@@ -3378,6 +3381,7 @@ mod tests {
         assert_eq!(proxy.info().route_cache_size, 1);
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_329),
             node_id: 2,
@@ -3385,6 +3389,7 @@ mod tests {
             binary_version: "v-b".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_329),
         });
@@ -3454,6 +3459,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_340),
             node_id: 1,
@@ -3461,6 +3467,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_340),
         });
@@ -3504,6 +3511,7 @@ mod tests {
         }
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_341),
             node_id: 2,
@@ -3511,6 +3519,7 @@ mod tests {
             binary_version: "v-b".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_341),
         });
@@ -4049,7 +4058,7 @@ mod tests {
         let h = heartbeats.clone();
         let addr_for_thread = addr.clone();
         std::thread::spawn(move || {
-            serve(&addr_for_thread, move |request| {
+            serve_reserved(&addr_for_thread, move |request| {
                 match request.path.as_str() {
                     "/proxies/heartbeat" => {
                         h.fetch_add(1, Ordering::SeqCst);
@@ -4788,7 +4797,7 @@ mod tests {
         let calls = stats_calls.clone();
         let addr_for_thread = addr.clone();
         std::thread::spawn(move || {
-            serve(&addr_for_thread, move |request| match request.path.as_str() {
+            serve_reserved(&addr_for_thread, move |request| match request.path.as_str() {
                 "/shards" => {
                     calls.fetch_add(1, Ordering::SeqCst);
                     crate::http::json_response(
@@ -4802,6 +4811,10 @@ mod tests {
                                     namespace: "ns".to_string(),
                                     table_name: "tbl".to_string(),
                                     latest_snapshot: None,
+                                    state: crate::meta::MetaEntityState::Normal,
+                                    // This stub does not model a datanode
+                                    // reporting what it holds.
+                                    owner_reports_loaded: None,
                                 })
                                 .collect(),
                             next_after_shard_id: None,
@@ -4873,7 +4886,7 @@ mod tests {
         let gapped = test_addr(18_406);
         let gapped_for_thread = gapped.clone();
         std::thread::spawn(move || {
-            serve(&gapped_for_thread, move |request| match request.path.as_str() {
+            serve_reserved(&gapped_for_thread, move |request| match request.path.as_str() {
                 "/shards" => crate::http::json_response(
                     200,
                     &crate::meta::ListShardsResponse {
@@ -4887,6 +4900,10 @@ mod tests {
                                 namespace: "ns".to_string(),
                                 table_name: "tbl".to_string(),
                                 latest_snapshot: None,
+                                state: crate::meta::MetaEntityState::Normal,
+                                // This stub does not model a datanode reporting
+                                // what it holds.
+                                owner_reports_loaded: None,
                             })
                             .collect(),
                         next_after_shard_id: None,
@@ -5366,6 +5383,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_321),
             })
@@ -5896,6 +5914,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_318),
             })
@@ -5904,6 +5923,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 2,
                 server_addr: test_addr(18_319),
             })
@@ -5994,6 +6014,7 @@ mod tests {
         );
         assert!(
             meta.register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_321),
             })
@@ -6064,7 +6085,7 @@ mod tests {
         std::thread::spawn({
             let meta = meta.clone();
             move || {
-                serve(&meta_addr, move |request| {
+                serve_reserved(&meta_addr, move |request| {
                     match (request.method.as_str(), request.path.as_str()) {
                         ("POST", "/proxies/heartbeat") => {
                             let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
@@ -6117,6 +6138,7 @@ mod tests {
     fn proxy_heartbeat_applies_metaserver_config_version_like_native() {
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-config".to_string(),
             namespace: "serving-ns".to_string(),
             location: "zone-a".to_string(),
@@ -6127,7 +6149,7 @@ mod tests {
         std::thread::spawn({
             let meta = meta.clone();
             move || {
-                serve(&meta_addr, move |request| {
+                serve_reserved(&meta_addr, move |request| {
                     match (request.method.as_str(), request.path.as_str()) {
                         ("POST", "/proxies/heartbeat") => {
                             let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
@@ -6166,6 +6188,7 @@ mod tests {
     fn proxy_heartbeat_applies_metaserver_serving_policy_transition() {
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
+            registered_at_ms: 0,
             proxy_addr: "proxy-frozen-policy".to_string(),
             namespace: "policy-ns".to_string(),
             location: "zone-a".to_string(),
@@ -6181,7 +6204,7 @@ mod tests {
         std::thread::spawn({
             let meta = meta.clone();
             move || {
-                serve(&meta_addr, move |request| {
+                serve_reserved(&meta_addr, move |request| {
                     match (request.method.as_str(), request.path.as_str()) {
                         ("POST", "/proxies/heartbeat") => {
                             let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
@@ -6226,7 +6249,7 @@ mod tests {
         std::thread::spawn({
             let meta = meta.clone();
             move || {
-                serve(&meta_addr, move |request| {
+                serve_reserved(&meta_addr, move |request| {
                     match (request.method.as_str(), request.path.as_str()) {
                         ("POST", "/proxies/heartbeat") => {
                             let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
@@ -6264,7 +6287,7 @@ mod tests {
 
     fn start_server(addr: String, engine: TemporalEngine) {
         std::thread::spawn(move || {
-            serve(&addr, move |request| {
+            serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -6283,13 +6306,15 @@ mod tests {
 
     fn start_meta(addr: String, server_addr: String) {
         std::thread::spawn(move || {
-            serve(&addr, move |request| {
+            serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
                         &GetShardResponse {
                             status: Status::ok(),
                             location: Some(ShardLocation {
+                                registered_at_ms: 0,
+                                preferred_location: String::new(),
                                 state: crate::meta::MetaEntityState::Normal,
                                 shard_id: 1,
                                 server_addr: server_addr.clone(),
@@ -6318,7 +6343,7 @@ mod tests {
         let h = hits.clone();
         let addr_for_thread = addr.clone();
         std::thread::spawn(move || {
-            serve(&addr_for_thread, move |_request| {
+            serve_reserved(&addr_for_thread, move |_request| {
                 // First exchange answers immediately, so the socket lands in the pool.
                 // Everything after that accepts the request and goes quiet.
                 if h.fetch_add(1, Ordering::SeqCst) > 0 {
@@ -6375,7 +6400,7 @@ mod tests {
         let slow = test_addr(18_402);
         let slow_for_thread = slow.clone();
         std::thread::spawn(move || {
-            serve(&slow_for_thread, move |_request| {
+            serve_reserved(&slow_for_thread, move |_request| {
                 std::thread::sleep(Duration::from_millis(500));
                 crate::http::json_response(200, &Status::ok())
             })
@@ -6438,7 +6463,7 @@ mod tests {
         let slow = test_addr(18_396);
         let slow_for_thread = slow.clone();
         std::thread::spawn(move || {
-            serve(&slow_for_thread, move |_request| {
+            serve_reserved(&slow_for_thread, move |_request| {
                 std::thread::sleep(Duration::from_millis(500));
                 crate::http::json_response(200, &Status::ok())
             })
@@ -6506,7 +6531,7 @@ mod tests {
         let h = hits.clone();
         let slow_for_thread = slow.clone();
         std::thread::spawn(move || {
-            serve(&slow_for_thread, move |_request| {
+            serve_reserved(&slow_for_thread, move |_request| {
                 h.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(500));
                 json_response(200, &Status::ok())
@@ -6575,6 +6600,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_384),
             node_id: 1,
@@ -6582,6 +6608,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_384),
         });
@@ -6590,7 +6617,7 @@ mod tests {
         let tp = topo_posts.clone();
         let m = meta.clone();
         std::thread::spawn(move || {
-            serve(&addr, move |request| {
+            serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", path) if path.starts_with("/shards/") => {
                         let shard_id =
@@ -6681,6 +6708,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_380),
             node_id: 1,
@@ -6688,6 +6716,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_380),
         });
@@ -6697,7 +6726,7 @@ mod tests {
         let tp = topo_posts.clone();
         let m = meta.clone();
         std::thread::spawn(move || {
-            serve(&addr, move |request| {
+            serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", path) if path.starts_with("/shards/") => {
                         sg.fetch_add(1, Ordering::SeqCst);
@@ -6763,7 +6792,7 @@ mod tests {
 
     fn start_meta_service(addr: String, meta: crate::meta::SingleNodeMeta) {
         std::thread::spawn(move || {
-            serve(&addr, move |request| {
+            serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", path) if path.starts_with("/shards/") => {
                         let shard_id = path
@@ -6797,13 +6826,18 @@ mod tests {
         panic!("no key found for shard {shard_id}");
     }
 
+    /// The address these tests use where a literal port number used to be.
+    ///
+    /// `port` is no longer a port: it is the name of one address, and every call
+    /// with the same name in one process answers with the same OS-assigned
+    /// address. Fixed ports collided with the other copies of this test binary
+    /// that run on the same machine -- see `crate::http::test_ports`.
     fn test_addr(port: u16) -> String {
-        format!("127.0.0.1:{port}")
+        reserved_addr(u64::from(port))
     }
 
     fn free_local_addr() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().to_string()
+        unique_addr()
     }
 
     fn wait_for_http(addr: &str) {
@@ -6827,7 +6861,7 @@ mod tests {
         };
         use crate::ingestion::IngestionBatchRequest;
         std::thread::spawn(move || {
-            serve(&addr, move |request| {
+            serve_reserved(&addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/ingest/batch") => {
                         let req = parse_json::<IngestionBatchRequest>(&request.body).unwrap();
@@ -6944,6 +6978,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_374),
             node_id: 1,
@@ -6951,6 +6986,7 @@ mod tests {
             binary_version: "v-a".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_374),
         });
@@ -6987,6 +7023,7 @@ mod tests {
 
         // The shard moves to the second datanode.
         meta.register_server(crate::meta::RegisterServerRequest {
+            registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_375),
             node_id: 2,
@@ -6994,6 +7031,7 @@ mod tests {
             binary_version: "v-b".to_string(),
         });
         meta.register(RegisterShardRequest {
+            registered_at_ms: 0,
             shard_id: 1,
             server_addr: test_addr(18_375),
         });
@@ -7241,6 +7279,7 @@ mod tests {
             .ok);
         assert!(meta
             .register(RegisterShardRequest {
+                registered_at_ms: 0,
                 shard_id: 1,
                 server_addr: test_addr(18_360),
             })

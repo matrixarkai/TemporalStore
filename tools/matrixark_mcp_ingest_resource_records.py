@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import Json, clip_context_text, compact_embedding_vector, embedding_model_name, stable_hash
+    from tools.matrixark_mcp_core import Json, clip_context_text, compact_embedding_vector, encode_stored_vector, embedding_model_name, stable_hash
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, clip_context_text, compact_embedding_vector, embedding_model_name, stable_hash
+    from matrixark_mcp_core import Json, clip_context_text, compact_embedding_vector, encode_stored_vector, embedding_model_name, stable_hash
 
 try:
     from tools.matrixark_mcp_ingest_skill_records import (
@@ -261,7 +261,7 @@ def context_embedding_record(
         "node_path": node_path,
         "dim": len(vector),
         "model": embedding_model_name(),
-        "vector": compact_embedding_vector(vector),
+        "vector": encode_stored_vector(compact_embedding_vector(vector)),
         "scope": scope,
         "updated_at_ms": updated_at_ms,
     }

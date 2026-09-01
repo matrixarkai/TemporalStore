@@ -64,6 +64,110 @@ def _placement_is_derivable(record: Json) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------------------------- #
+# Backend metadata interning (write side gated, read side always on).
+#
+# `storage_options` is the largest field in the store -- 2,139 KB, 13.2% of all record bytes, with
+# NINE distinct values across 3,610 rows. `INTERN_METADATA_FIELDS` already names it and the local
+# JSONL codec already tokenises it; the primary store does not, so the optimisation landed on the
+# 4-copy/7-day mirror instead of the durable store.
+#
+# The write side is gated OFF. The read side always expands, so a store written with the flag ON
+# still reads correctly if the flag is later turned OFF -- the same asymmetry the JSONL codec uses.
+#
+# NOT yet established, which is why the default is OFF: the JSONL codec's crash-safety argument is
+# "the dict record precedes the data record under the event-log lock". The backend has no such
+# ordering; it would rely on the engine's batch append being atomic, which is a different claim and
+# is unverified. Do not flip this default until that is settled.
+# --------------------------------------------------------------------------------------------- #
+BACKEND_INTERN_METADATA = os.environ.get(
+    "MATRIXARK_INTERN_BACKEND_METADATA", "0").strip().lower() in {"1", "true", "yes", "on"}
+BACKEND_INTERN_FIELDS = ("storage_options",)
+BACKEND_INTERN_TOKEN_KEY = "_bi"
+BACKEND_INTERN_DICT_RECORD_TYPE = "matrixark_backend_intern_dict"
+
+
+def _backend_intern_token(value: Any) -> str:
+    return str(stable_hash(json.dumps(value, sort_keys=True, separators=(",", ":"))))
+
+
+def backend_intern_records(records: list[Json], emitted: set[str]) -> list[Json]:
+    """Replace the interned fields with a token, emitting any new sidecar record FIRST.
+
+    Returns the input unchanged when the flag is off, so the write path is byte-identical to today.
+    """
+    if not BACKEND_INTERN_METADATA:
+        return records
+    dict_records: list[Json] = []
+    encoded: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict) or record.get("record_type") == BACKEND_INTERN_DICT_RECORD_TYPE:
+            encoded.append(record)
+            continue
+        present = {f: record[f] for f in BACKEND_INTERN_FIELDS if f in record}
+        if not present:
+            encoded.append(record)
+            continue
+        out = dict(record)
+        tokens: Json = {}
+        for field, value in present.items():
+            token = _backend_intern_token(value)
+            tokens[field] = token
+            if token not in emitted:
+                emitted.add(token)
+                dict_records.append({
+                    "record_type": BACKEND_INTERN_DICT_RECORD_TYPE,
+                    "bi_field": field,
+                    "bi_token": token,
+                    "bi_value": value,
+                })
+            out.pop(field, None)
+        out[BACKEND_INTERN_TOKEN_KEY] = tokens
+        encoded.append(out)
+    return dict_records + encoded
+
+
+_BACKEND_INTERN_TABLE: dict[str, Any] = {}
+
+
+def backend_intern_learn(records: list[Json]) -> None:
+    """Absorb any sidecar records into the token table."""
+    for record in records:
+        if isinstance(record, dict) and record.get("record_type") == BACKEND_INTERN_DICT_RECORD_TYPE:
+            token = record.get("bi_token")
+            if isinstance(token, str):
+                _BACKEND_INTERN_TABLE[token] = record.get("bi_value")
+
+
+def backend_expand_records(records: list[Json]) -> list[Json]:
+    """Put the interned fields back. ALWAYS runs, flag or no flag.
+
+    A record with no token key is returned untouched, so a store written before this existed -- or
+    with the flag off -- expands as a no-op.
+    """
+    if not records:
+        return records
+    backend_intern_learn(records)
+    out: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict):
+            out.append(record)
+            continue
+        if record.get("record_type") == BACKEND_INTERN_DICT_RECORD_TYPE:
+            continue        # sidecars are storage, not data
+        tokens = record.get(BACKEND_INTERN_TOKEN_KEY)
+        if not isinstance(tokens, dict) or not tokens:
+            out.append(record)
+            continue
+        expanded = dict(record)
+        expanded.pop(BACKEND_INTERN_TOKEN_KEY, None)
+        for field, token in tokens.items():
+            if token in _BACKEND_INTERN_TABLE:
+                expanded[field] = _BACKEND_INTERN_TABLE[token]
+        out.append(expanded)
+    return out
+
+
 def slim_persisted_storage_route(record: Json) -> Json:
     """Persist the placement half of `storage_route`, not the derived half.
 

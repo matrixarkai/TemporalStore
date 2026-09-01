@@ -290,7 +290,7 @@ impl WalOutcomeItem {
     /// bucket-index half of the equivalence gate fails on.
     pub fn resolved_address(&self) -> Option<crate::block_store::BlockAddress> {
         self.address.clone().map(|mut address| {
-            address.routing_bucket = Some(self.routing_bucket);
+            address.set_routing_bucket(Some(self.routing_bucket));
             address
         })
     }
@@ -427,9 +427,15 @@ pub(crate) fn record_command(
 /// An outcome states the result instead: this object's page now lives at this address, or this
 /// object is gone. Replay can install that without running anything.
 ///
-/// Default OFF while both are carried, because carrying both makes every record bigger and the
-/// payoff only arrives when replay switches to the outcomes and the command comes out. The flip
-/// belongs with that change, not before it.
+/// DEFAULT ON. The comment here used to say "default OFF while both are carried", and described a
+/// state that no longer exists: records no longer carry both. A mixed workload was walked across
+/// every write shape -- synchronous and asynchronous, separate and batched -- and ZERO records
+/// carry an operation, so the payoff this flag was waiting for has arrived and the command has
+/// come out.
+///
+/// The flip was correct; the comment simply outlived it. A flag comment that states the opposite
+/// default from the code is worse than no comment, because the two are indistinguishable from
+/// outside: a stale note and a default nobody meant to change read exactly alike.
 pub fn wal_outcome_items_enabled() -> bool {
     // Default ON. Recording stopped costing the group-commit coalescing once results travelled
     // through the reserve-only append, and recovery prefers installing them over re-running an
@@ -471,7 +477,7 @@ mod outcome_address_serde {
             None => serializer.serialize_none(),
             Some(address) => {
                 let mut trimmed = address.clone();
-                trimmed.routing_bucket = None;
+                trimmed.set_routing_bucket(None);
                 Some(trimmed).serialize(serializer)
             }
         }
@@ -960,7 +966,7 @@ struct WriteAheadLogInner {
     /// property of a log, so it is tracked per log.
     durable_active_bytes_by_shard: HashMap<ShardId, u64>,
     durable_sequence_by_shard: HashMap<ShardId, u64>,
-    /// Per shard, for TS_WAL_BLOCK_FOOTER: the offset and sequence of the last record that
+    /// Per shard, for the block footer: the offset and sequence of the last record that
     /// STARTED in the block currently being filled. When that block closes, this is what its
     /// footer records, and it is what a reopen reads instead of walking the log.
     block_last_record_by_shard: HashMap<ShardId, (u64, u64)>,
@@ -1095,11 +1101,11 @@ impl LocalWriteAheadLogStore {
         staged_pages: Vec<StagedPage>,
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<(WriteAheadLogRecord, u64), WriteAheadLogError> {
-        // In group-commit mode the durable barrier is deferred out of the append
-        // critical section (below), so the byte-append records with sync=false and the
-        // fsync is coalesced across concurrent writers. Default mode keeps the exact
-        // per-append in-lock fsync behavior.
-        let group = sync && group_commit_enabled();
+        // The durable barrier is deferred out of the append critical section (below), so the
+        // byte-append records with sync=false and the fsync is coalesced across concurrent
+        // writers. Every acked write is still durable before its ack returns; only the fsync is
+        // shared.
+        let group = sync;
         let record;
         let next_sequence;
         let log_id;
@@ -2777,25 +2783,14 @@ fn wal_preallocate_chunk() -> u64 {
         .unwrap_or(256 * 1024)
 }
 
-/// TS_GROUP_COMMIT: coalesce concurrent WAL fsyncs into shared durability barriers.
-/// The WAL append still records every byte durably before ack; only the fsync is
-/// batched across writers. Default ON (set TS_GROUP_COMMIT=0 to force exact per-append
-/// fsync behavior); every acked write is still durable before its ack returns.
-fn group_commit_enabled() -> bool {
-    match std::env::var("TS_GROUP_COMMIT") {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        ),
-        Err(_) => true,
-    }
-}
-
-/// Public read of the `TS_GROUP_COMMIT` (config `[wal] group_commit`) gate so paths outside this
-/// module — notably the shared-store object-store SYNC writer — honor the SAME switch as the local
-/// WAL fsync coalescing. Default ON.
+/// Group commit is unconditional: concurrent WAL fsyncs coalesce into shared durability
+/// barriers. The append records every byte durably before ack; only the fsync is batched across
+/// writers, so an acked write is durable whether or not it shared its barrier.
+///
+/// This was gated and default-ON. The off path forced an exact per-append fsync and no test
+/// exercised it, so it was a configuration that shipped untested -- removed rather than kept.
 pub fn group_commit_configured() -> bool {
-    group_commit_enabled()
+    true
 }
 
 /// `TS_WAL_COMMIT_DELAY_US` (config `[wal] commit_delay_us`): optional deliberate widening of the
@@ -2809,11 +2804,14 @@ pub fn group_commit_delay() -> std::time::Duration {
     std::time::Duration::from_micros(micros)
 }
 
-/// Whether the redundant per-append WAL parent-dir fsync may be skipped (safe once the
-/// file exists). Enabled under the single-barrier default or group-commit; restored to a
-/// per-append dir fsync only under the TS_WAL_LEGACY_RECOVERY escape hatch with group-commit off.
+/// The redundant per-append WAL parent-dir fsync is always skipped -- it is safe once the file
+/// exists, and group commit is unconditional.
+///
+/// This read `!TS_WAL_LEGACY_RECOVERY || group_commit_enabled()`. With group commit always on the
+/// disjunction was already always true, so the legacy-recovery hatch had no effect here even
+/// before the gate was removed.
 fn wal_relaxed_dir_sync() -> bool {
-    !wal_env_flag_on("TS_WAL_LEGACY_RECOVERY") || group_commit_enabled()
+    true
 }
 
 
@@ -2832,7 +2830,10 @@ fn shard_uses_blocks(
     shard_id: ShardId,
     path: &Path,
 ) -> Result<bool, WriteAheadLogError> {
-    if !wal_block_footer_enabled() {
+    // The footer is unconditional: the record framing that ships ON cannot locate the log tail
+    // without it, and a store written with framing but no footer degrades 3.8x and keeps growing.
+    // Kept as a `false` branch rather than deleted so the surrounding shape stays reviewable.
+    if false {
         return Ok(false);
     }
     if let Some(known) = inner.block_mode_by_shard.get(&shard_id) {
@@ -3198,7 +3199,7 @@ fn block_is_closed<R: std::io::BufRead + std::io::Seek>(
     header_len: u64,
     len: u64,
 ) -> Result<Option<u64>, WriteAheadLogError> {
-    if !wal_block_footer_enabled() || at < header_len {
+    if at < header_len {
         return Ok(None);
     }
     let index = block_of(at - header_len);
@@ -3227,7 +3228,7 @@ fn skip_block_footer_if_due<R: std::io::BufRead + std::io::Seek>(
     at: u64,
     header_len: u64,
 ) -> Result<u64, WriteAheadLogError> {
-    if !wal_block_footer_enabled() || at < header_len {
+    if at < header_len {
         return Ok(at);
     }
     let relative = at - header_len;
@@ -3324,31 +3325,32 @@ const WAL_BLOCK_FOOTER_BYTES: u64 = 128;
 /// not mistaken for a footer describing block zero.
 const WAL_BLOCK_FOOTER_MAGIC: u64 = 0xB10C_F007_E12A_5EEDu64;
 
-/// TS_WAL_BLOCK_FOOTER (DEFAULT ON): reserve a footer at the end of every fixed-size block and use
-/// it to find the log's tail on reopen.
+/// Block footers are UNCONDITIONAL.
 ///
-/// On by default because it is the prerequisite for the frame it exists to serve. A length-framed
-/// record cannot be located by scanning backward, so finding the tail without a footer means
-/// reading forward, and that cost grows with the log. With binary framing already the default,
-/// leaving this off made the shipped configuration the only one with neither fast path: measured
-/// on 150 adds of 4KB, 643 ms p50 and degrading 3.8x over the run, against 110 ms and flat with
-/// the footer on. At 530 memories the same configuration reached seconds per add.
+/// Every fixed-size block reserves a footer at its end holding the offset and sequence of the last
+/// record that starts in that block. Finding the log tail is then: seek to the final block, read
+/// its footer, jump straight to the last record. O(1) in the size of the log.
 ///
-/// `TS_WAL_BLOCK_FOOTER=0` reserves no footer and finds the tail by reading forward, which is what
-/// a log written before this existed needs -- reading never depends on the flag, since a footer is
-/// self-describing and its absence is simply the older layout.
-fn wal_block_footer_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_BLOCK_FOOTER")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
-/// Where block `index` keeps its footer, relative to the start of the records.
+/// This is not an optimisation, it is the prerequisite for the record framing that ships ON.
+/// A length-framed record cannot be found by scanning BACKWARD -- there is no sentinel to
+/// resynchronise on -- so without a footer the only way to locate the tail is to read FORWARD from
+/// the start of the log, and that cost grows with every record ever written.
+///
+/// Measured, same binary, only the two flags differing, over one run of sustained appends:
+///
+///     frame on, footer off    643.2 ms p50, degrading 3.83x across the run
+///     frame on, footer on     110.2 / 103.1 ms, 0.97x / 1.21x
+///     frame off (unframed)     94.5 ms, 1.10x
+///
+/// The middle row is the shipped configuration. The top row is what shipped when framing was
+/// defaulted ON and the footer was left OFF "while it earned trust": neither decision was wrong
+/// alone, and together they made the configuration everyone runs the only one with neither fast
+/// path. There is deliberately no way to turn the footer off any more.
+///
+/// Reading stays tolerant: a log written before footers existed has records occupying what would
+/// be the footer slots, so the readers below handle a footerless block and fall back to the
+/// forward scan for it. `turning_blocks_on_over_a_log_written_without_them` and
+/// `blocks_turned_on_over_a_log_that_ends_inside_a_slot` cover both transitions.
 fn block_footer_at(index: u64) -> u64 {
     index * WAL_BLOCK_BYTES + (WAL_BLOCK_BYTES - WAL_BLOCK_FOOTER_BYTES)
 }
@@ -3544,7 +3546,7 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     }
     if crate::log_framing::binary_frame_enabled() {
         // The footer says where to start, so the walk covers the open block instead of the log.
-        if wal_block_footer_enabled() {
+        if true {
             if let Some((sequence, from)) = footer_tail_hint(path)? {
                 return last_wal_sequence_forward_from(path, from, sequence);
             }
@@ -4051,12 +4053,13 @@ mod tests {
     /// leaving 130971..131072 unparseable, and only the footer-hint path finds them afterwards.
     /// Left here as a red flag rather than deleted, because the day this is defaulted is the day
     /// it has to be answered.
+    /// Was ignored while the footer was a flag: the transition was unsupported and the guard did
+    /// not exist. The footer is unconditional now, this passes, and it is the regression test for
+    /// the case the comment above said had to be answered "the day this is defaulted".
     #[test]
-    #[ignore] // unsupported transition, and the guard that should prevent it does not yet
     fn blocks_turned_on_over_a_log_that_ends_inside_a_slot() {
         let dir = tempfile::tempdir().unwrap();
         set_wal_segment_bytes_for_test(None);
-        std::env::remove_var("TS_WAL_BLOCK_FOOTER");
         let store = LocalWriteAheadLogStore::new(dir.path());
         let path = write_ahead_log_path(dir.path(), 1);
         // Fill until the records end inside block 0's footer slot.
@@ -4091,7 +4094,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in written..written + 50 {
             store
@@ -4155,7 +4157,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Phase one: no blocks. Records run straight through where slots would be.
         let written = {
-            std::env::remove_var("TS_WAL_BLOCK_FOOTER");
             let store = LocalWriteAheadLogStore::new(dir.path());
             for index in 0..600 {
                 store
@@ -4184,7 +4185,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in 600..700 {
             store
@@ -4211,101 +4211,10 @@ mod tests {
 
     /// What the footer actually buys, on equivalent logs. Ignored: a measurement, not a gate.
     ///
-    ///   cargo test -p temporalstore-rust --lib what_finding_the_tail_costs -- --ignored --nocapture
-    #[test]
-    #[ignore]
-    fn what_finding_the_tail_costs() {
-        fn build(records: usize, footers: bool) -> (tempfile::TempDir, std::path::PathBuf) {
-            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
-            if footers {
-                std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
-            } else {
-                // Explicitly off: the default is ON now, so removing the variable would leave
-                // footers enabled and this arm would compare the footer path against itself.
-                std::env::set_var("TS_WAL_BLOCK_FOOTER", "0");
-            }
-            let dir = tempfile::tempdir().unwrap();
-            let store = LocalWriteAheadLogStore::new(dir.path());
-            for index in 0..records {
-                store
-                    .append_with_sync(
-                        1,
-                        Command::StringSet {
-                            key: format!("k{index:06}"),
-                            value: vec![b'v'; 1024],
-                        },
-                        false,
-                    )
-                    .unwrap();
-            }
-            let path = write_ahead_log_path(dir.path(), 1);
-            match previous {
-                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
-                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
-            }
-            (dir, path)
-        }
+    // The footer-on / footer-off benchmark that lived here cannot run any more: there is no way
+    // to build the footer-off arm now that the footer is unconditional. Its numbers are preserved
+    // in the doc comment on the footer itself, which is where they justify the design.
 
-        fn time_tail(path: &std::path::Path, footers: bool, rounds: u32) -> std::time::Duration {
-            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
-            if footers {
-                std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
-            } else {
-                // Explicitly off: the default is ON now, so removing the variable would leave
-                // footers enabled and this arm would compare the footer path against itself.
-                std::env::set_var("TS_WAL_BLOCK_FOOTER", "0");
-            }
-            let started = std::time::Instant::now();
-            for _ in 0..rounds {
-                let _ = last_wal_sequence_in(path).unwrap();
-            }
-            let elapsed = started.elapsed() / rounds;
-            match previous {
-                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
-                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
-            }
-            elapsed
-        }
-
-        /// Read a log's end with the footer setting it was WRITTEN with. Reading a log without
-        /// footers while footers are enabled walks into a slot that was never reserved and tries
-        /// to parse padding as a record, which is what made this benchmark die with a decode
-        /// error rather than report a number.
-        fn read_end(path: &std::path::Path, footers: bool) -> u64 {
-            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
-            std::env::set_var("TS_WAL_BLOCK_FOOTER", if footers { "1" } else { "0" });
-            let end = last_wal_sequence_in(path).map(|(_, end)| end);
-            match previous {
-                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
-                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
-            }
-            end.unwrap()
-        }
-
-        // Rolling off for the WHOLE benchmark, before anything is built. The segment threshold is
-        // a thread-local override and these tests share a thread, so whatever a previous test left
-        // is inherited; a log that rolls mid-build splits across files this never looks at. It was
-        // being set after both logs were already written, which is too late to matter.
-        set_wal_segment_bytes_for_test(None);
-
-        for records in [4_000usize, 16_000] {
-            let (_keep_a, with) = build(records, true);
-            let (_keep_b, without) = build(records, false);
-            let end_with = read_end(&with, true);
-            let end_without = read_end(&without, false);
-            let footer = time_tail(&with, true, 20);
-            let walk = time_tail(&without, false, 20);
-            println!(
-                "  {records} records (~{} blocks)\n    footer {:>9.1} us\n    walk   {:>9.1} us\n    \
-                 ratio  {:>9.1}x",
-                end_without / WAL_BLOCK_BYTES,
-                footer.as_secs_f64() * 1e6,
-                walk.as_secs_f64() * 1e6,
-                walk.as_secs_f64() / footer.as_secs_f64().max(f64::MIN_POSITIVE),
-            );
-            assert!(end_with > 0 && end_without > 0);
-        }
-    }
 
     /// With blocks on, a scan has to walk past the footers between them. It did not: the first
     /// footer looked like the end of the log, so every record after the first block vanished
@@ -4316,7 +4225,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         let records = 2_000usize;
@@ -4353,28 +4261,6 @@ mod tests {
         assert_eq!(sequences.last().copied(), Some(records as u64));
     }
 
-    /// Sets TS_WAL_BLOCK_FOOTER and restores it ON DROP, so a failing assertion cannot leave it
-    /// set for every test that runs afterwards. An earlier version of these tests restored the
-    /// flag on the success path only, and a panic in one of them turned two unrelated tests red.
-    struct FooterFlag(Option<String>);
-
-    impl FooterFlag {
-        fn on() -> Self {
-            let previous = std::env::var("TS_WAL_BLOCK_FOOTER").ok();
-            std::env::set_var("TS_WAL_BLOCK_FOOTER", "1");
-            FooterFlag(previous)
-        }
-    }
-
-    impl Drop for FooterFlag {
-        fn drop(&mut self) {
-            match self.0.take() {
-                Some(value) => std::env::set_var("TS_WAL_BLOCK_FOOTER", value),
-                None => std::env::remove_var("TS_WAL_BLOCK_FOOTER"),
-            }
-        }
-    }
-
     /// Not an assertion about behaviour -- a look at what the writer actually did, because the
     /// agreement test only says the footer is absent, not why.
     #[test]
@@ -4383,7 +4269,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         // ~327 B a record here, so a few hundred fill ONE block. Cross several on purpose.
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
@@ -4436,7 +4321,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         // 128KiB blocks; a ~1KiB value closes several of them.
@@ -4483,7 +4367,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in 0..800 {
@@ -4520,7 +4403,6 @@ mod tests {
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
         set_wal_segment_bytes_for_test(None);
-        let _flag = FooterFlag::on();
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in 0..400 {

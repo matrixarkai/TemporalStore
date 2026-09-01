@@ -246,7 +246,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         )
     };
     assert_eq!(
@@ -365,7 +365,7 @@ fn cache_replacement_policy_soak() {
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         )
     };
 
@@ -618,7 +618,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         )
     };
 
@@ -2726,7 +2726,7 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
     };
     assert_eq!(first_address, second_address);
     assert_eq!(
-        first_address.object_id,
+        first_address.object_id(),
         Some(stable_page_object_id(1, "feature", "packed-feature", None))
     );
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
@@ -2950,7 +2950,7 @@ fn feature_append_chunks_and_persists_timestamped_kv_pages() {
     let mut persisted_timestamps = Vec::new();
     for address in &addresses {
         assert_eq!(
-            address.object_id,
+            address.object_id(),
             Some(stable_page_object_id(1, "feature", "chunked-feature", None))
         );
         let bytes = engine.block_store().read(address).unwrap();

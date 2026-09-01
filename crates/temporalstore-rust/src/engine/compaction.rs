@@ -269,8 +269,8 @@ pub(super) fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, a
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
-            address.generation,
+            address.routing_bucket(),
+            address.generation(),
         ))
         .is_some()
 }
@@ -486,7 +486,7 @@ pub(super) fn compact_page_addresses<'a>(
             )
         })?;
         let new_address = page_store
-            .append_with_page_metadata(&bytes, address.object_id, address.routing_bucket)
+            .append_with_page_metadata(&bytes, address.object_id(), address.routing_bucket())
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
         let _ = cache.put(
@@ -495,8 +495,8 @@ pub(super) fn compact_page_addresses<'a>(
                 new_address.page_slab_id,
                 new_address.offset,
                 new_address.length,
-                new_address.routing_bucket,
-                new_address.generation,
+                new_address.routing_bucket(),
+                new_address.generation(),
             ),
             bytes,
         );
@@ -525,7 +525,7 @@ pub(super) fn compact_feature_page_addresses(
                 )
             })?;
         let new_address = page_store
-            .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_bucket)
+            .append_with_page_metadata(&bytes, old_address.object_id(), old_address.routing_bucket())
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
@@ -533,8 +533,8 @@ pub(super) fn compact_feature_page_addresses(
                 new_address.page_slab_id,
                 new_address.offset,
                 new_address.length,
-                new_address.routing_bucket,
-                new_address.generation,
+                new_address.routing_bucket(),
+                new_address.generation(),
             ),
             bytes,
         );

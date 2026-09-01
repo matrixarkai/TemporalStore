@@ -203,6 +203,8 @@ impl EndToEndWorkflow {
         let data = RaftCluster::new_single_shard(shard_id, data_nodes);
         let meta = MetaRaftCluster::new([100, 101, 102]);
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            registered_at_ms: 0,
+            preferred_location: String::new(),
             state: crate::meta::MetaEntityState::Normal,
             shard_id,
             server_addr: "raft://shard-leader".to_string(),

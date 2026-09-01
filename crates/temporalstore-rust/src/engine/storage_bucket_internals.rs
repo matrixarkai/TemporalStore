@@ -227,7 +227,7 @@ pub(super) fn live_page_entry(
         // A page materialized in the block store carries a real page_id; a page
         // backed only by the hot/append-log buffer does not. Evaluate before the
         // `address` field moves it.
-        log_backed: address.page_id.is_none(),
+        log_backed: address.page_id().is_none(),
         address,
         dirty: false,
         deleted: false,
@@ -240,12 +240,12 @@ pub(super) fn storage_page_address_sample(
 ) -> StoragePageAddressSample {
     StoragePageAddressSample {
         shard_id,
-        zone_id: address.band_id.unwrap_or(address.page_slab_id),
+        zone_id: address.band_id().unwrap_or(address.page_slab_id),
         slab_id: address.page_slab_id,
-        page_id: address.page_id.unwrap_or(address.page_slab_id),
+        page_id: address.page_id().unwrap_or(address.page_slab_id),
         offset: address.offset,
         length: address.length,
-        generation: address.object_id.unwrap_or(0),
+        generation: address.object_id().unwrap_or(0),
     }
 }
 
@@ -255,11 +255,11 @@ pub(super) fn storage_block_address_sample(
 ) -> StorageBlockAddressSample {
     StorageBlockAddressSample {
         shard_id,
-        zone_id: address.band_id.unwrap_or(address.page_slab_id),
+        zone_id: address.band_id().unwrap_or(address.page_slab_id),
         block_id: address.page_slab_id,
         offset: address.offset,
         length: address.length,
-        checksum: address.sha256.clone().unwrap_or_default(),
+        checksum: address.sha256_hex().unwrap_or_default(),
     }
 }
 
@@ -297,7 +297,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 timestamp_range: None,
                 page_addresses: vec![page_address],
                 append_watermark: entry.address.offset,
-                generation: entry.address.object_id.unwrap_or(0),
+                generation: entry.address.object_id().unwrap_or(0),
             }
         })
         .collect();
@@ -310,10 +310,10 @@ pub(super) fn storage_index_snapshot_with_samples(
             StorageBlockIndexEntrySample {
                 band: entry
                     .address
-                    .band_id
+                    .band_id()
                     .unwrap_or(entry.address.page_slab_id),
-                checksum: entry.address.sha256.clone().unwrap_or_default(),
-                generation: entry.address.object_id.unwrap_or(0),
+                checksum: entry.address.sha256_hex().unwrap_or_default(),
+                generation: entry.address.object_id().unwrap_or(0),
                 page_address,
                 block_address,
             }
@@ -339,7 +339,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 object_key: entry.object_key.clone(),
                 page_chain: Vec::new(),
                 tombstone: entry.deleted,
-                generation: entry.address.object_id.unwrap_or(0),
+                generation: entry.address.object_id().unwrap_or(0),
             });
         if sample.page_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
             sample
@@ -347,7 +347,7 @@ pub(super) fn storage_index_snapshot_with_samples(
                 .push(storage_page_address_sample(shard_id, &entry.address));
         }
         sample.tombstone |= entry.deleted;
-        sample.generation = sample.generation.max(entry.address.object_id.unwrap_or(0));
+        sample.generation = sample.generation.max(entry.address.object_id().unwrap_or(0));
     }
     snapshot.object_index_entry_samples = object_entries
         .into_iter()
@@ -381,9 +381,9 @@ pub(super) fn storage_watermark_snapshot_with_samples(
     for entry in collect_live_page_entries(shard) {
         let bucket_id = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
-        let generation = entry.address.object_id.unwrap_or(0);
+        let generation = entry.address.object_id().unwrap_or(0);
         bucket_watermarks
             .entry(bucket_id)
             .and_modify(|current| *current = (*current).max(generation))
@@ -453,7 +453,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
         .take(MAX_STORAGE_GC_SAMPLES)
         .map(|entry| StorageTombstoneSample {
             ref_id: storage_gc_ref(entry),
-            generation: entry.address.object_id.unwrap_or(0),
+            generation: entry.address.object_id().unwrap_or(0),
             deleted_at_ms: now,
             reason: "object_tombstone".to_string(),
         })
@@ -524,7 +524,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
     entries.sort_by(|left, right| {
         (
             left.address
-                .band_id
+                .band_id()
                 .unwrap_or(left.address.page_slab_id),
             left.address.page_slab_id,
             left.address.offset,
@@ -534,7 +534,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             .cmp(&(
                 right
                     .address
-                    .band_id
+                    .band_id()
                     .unwrap_or(right.address.page_slab_id),
                 right.address.page_slab_id,
                 right.address.offset,
@@ -583,10 +583,10 @@ pub(super) fn storage_topology_snapshot_with_samples(
     for entry in &entries {
         let zone_id = entry
             .address
-            .band_id
+            .band_id()
             .unwrap_or(entry.address.page_slab_id);
         let slab_id = entry.address.page_slab_id;
-        let generation = entry.address.object_id.unwrap_or(0);
+        let generation = entry.address.object_id().unwrap_or(0);
         let zone = zones.entry(zone_id).or_default();
         zone.slabs.insert(slab_id);
         zone.generation = zone.generation.max(generation);
@@ -627,7 +627,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
 
         let bucket_id = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| bucket_for_object(&entry.object_key, 0, u32::MAX));
         let bucket = buckets.entry(bucket_id).or_default();
         bucket.dirty_generation = bucket.dirty_generation.max(generation);
@@ -866,13 +866,13 @@ pub(super) fn rebuild_bucket_page_ownership(
         .collect();
     shard.bucket_index.bucket_map.clear();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
         if routing_bucket < start_routing_bucket || routing_bucket > end_routing_bucket {
             continue;
         }
-        let object_id = entry.address.object_id.unwrap_or_else(|| {
+        let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_page_object_id(
                 shard_id,
                 &entry.kind,
@@ -1025,6 +1025,136 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.context_compressions.is_empty()
 }
 
+/// Bring the bucket index up to date for ONE object key, across every context kind.
+///
+/// A context write does not register its page. The shard rebuilds the whole first-index afterwards
+/// instead -- `rebuild_bucket_first_index`, which walks every live page in the store -- and with
+/// several context writes per add that was the last term in an add that grows with the corpus.
+/// Measured before coalescing: 5 762 400 page visits across 600 adds, per-add cost doubling as the
+/// corpus doubled.
+///
+/// Feature and Sequence writes already maintain the index this way on the write path, and REPLAY
+/// already does it for these very kinds (`lifecycle.rs`, via the same `sync_bucket_index_object_pages`).
+/// The context write path was the one that did not.
+///
+/// The kinds and the maps below mirror `collect_model_live_page_entries` arm for arm, deliberately:
+/// maintenance and rebuild then derive from the same source and cannot disagree about which kind a
+/// page belongs to. `context_entity` composes its key from the collection key and the entity hash,
+/// which is exactly the sort of detail a hand-written command-to-kind mapping gets wrong.
+///
+/// Returns whether anything was synced, so the caller can fall back to a rebuild for a write this
+/// does not cover rather than silently leaving the index stale.
+/// Keys `sync_context_pages_for_object` found nothing for, recorded so they can be named.
+///
+/// One uncovered key forces a rebuild for the whole write, so what matters is WHICH keys are
+/// uncovered, not how many. Reading the command list to guess at them has already been wrong more
+/// than once in this area.
+#[cfg(test)]
+pub mod uncovered_maintenance {
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    pub(super) static UNCOVERED_MAINTENANCE_KEYS: Mutex<Option<BTreeSet<String>>> =
+        Mutex::new(None);
+
+    pub(super) fn note(object_key: &str) {
+        let mut guard = UNCOVERED_MAINTENANCE_KEYS.lock().expect("uncovered key tally poisoned");
+        guard.get_or_insert_with(BTreeSet::new).insert(object_key.to_string());
+    }
+
+    pub fn reset() {
+        *UNCOVERED_MAINTENANCE_KEYS.lock().expect("uncovered key tally poisoned") =
+            Some(BTreeSet::new());
+    }
+
+    pub fn snapshot() -> Vec<String> {
+        UNCOVERED_MAINTENANCE_KEYS
+            .lock()
+            .expect("uncovered key tally poisoned")
+            .as_ref()
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+pub(super) fn sync_context_pages_for_object(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    object_key: &str,
+) -> bool {
+    // Read every kind's live addresses first, so the shared borrow ends before the sync below
+    // takes a mutable one.
+    let mut groups: Vec<(&'static str, String, Vec<BlockAddress>)> = Vec::new();
+
+    if let Some(address) = shard.context_nodes.get(object_key) {
+        groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
+    }
+    for (kind, series) in [
+        ("context_event", &shard.context_events),
+        ("context_index", &shard.context_indexes),
+        ("context_audit", &shard.context_audits),
+        ("context_child", &shard.context_children),
+        ("context_summary", &shard.context_summaries),
+        ("context_compression", &shard.context_compressions),
+    ] {
+        if let Some(points) = series.get(object_key) {
+            let live = unique_timestamped_kv_page_addresses(points);
+            if !live.is_empty() {
+                groups.push((kind, object_key.to_string(), live));
+            }
+        }
+    }
+    // Entities live grouped by node but index one entry per entity, under the composed key.
+    if let Some(series) = shard.context_entities.get(object_key) {
+        for (entity_hash, address) in series.iter() {
+            groups.push((
+                "context_entity",
+                format!("{object_key}:{entity_hash}"),
+                vec![address.clone()],
+            ));
+        }
+    }
+
+    // A context node's page lives in `shard.hashes` under a single field, so the rebuild derives
+    // it as kind "hash" with that field as the component -- a different shape from the kinds
+    // above, which carry no component. It is filed here the same way the rebuild would file it.
+    let hash_fields: Vec<(String, BlockAddress)> = shard
+        .hashes
+        .get(object_key)
+        .map(|fields| {
+            fields
+                .iter()
+                .map(|(field, address)| (field.clone(), address.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let had_hash_pages = !hash_fields.is_empty();
+    for (field, address) in hash_fields {
+        // `stage: false` -- the write staged its own outcome under its own kind already, and a
+        // second one would have replay install the same page twice.
+        upsert_bucket_index_page_with(
+            shard,
+            shard_id,
+            "hash",
+            object_key,
+            Some(field),
+            address,
+            true,
+            false,
+        );
+    }
+
+    if groups.is_empty() && !had_hash_pages {
+        #[cfg(test)]
+        uncovered_maintenance::note(object_key);
+        return false;
+    }
+    for (kind, key, live) in groups {
+        sync_bucket_index_object_pages(shard, shard_id, kind, &key, live, true);
+    }
+    true
+}
+
 pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     entries.extend(
@@ -1156,8 +1286,8 @@ pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> Arc<str> {
         entry.address.page_slab_id,
         entry.address.offset,
         entry.address.length,
-        entry.address.page_id.unwrap_or_default(),
-        entry.address.generation.unwrap_or_default()
+        entry.address.page_id().unwrap_or_default(),
+        entry.address.generation().unwrap_or_default()
     ))
 }
 
@@ -1176,10 +1306,10 @@ pub(super) fn page_physical_identity_key(
         address.page_slab_id,
         address.offset,
         address.length,
-        address.page_id,
-        address.object_id,
-        address.routing_bucket,
-        address.generation,
+        address.page_id(),
+        address.object_id(),
+        address.routing_bucket(),
+        address.generation(),
     )
 }
 
@@ -1192,16 +1322,39 @@ pub(super) fn upsert_bucket_index_page(
     address: BlockAddress,
     dirty: bool,
 ) {
+    upsert_bucket_index_page_with(shard, shard_id, kind, object_key, component, address, dirty, true)
+}
+
+/// The same, with a say over whether an outcome is staged for the record.
+///
+/// A page write produces an outcome, and this is where that outcome is produced -- so a caller
+/// that WRITES a page wants `stage: true`, which is every existing caller.
+///
+/// Maintenance is different: the context write has already staged its own outcome, under its own
+/// kind. Registering the page it produced must not put a SECOND outcome in the log, because replay
+/// would then install the same page twice under two kinds. `stage: false` says "file this page in
+/// the index; the record already knows about it".
+#[allow(clippy::too_many_arguments)]
+pub(super) fn upsert_bucket_index_page_with(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: BlockAddress,
+    dirty: bool,
+    stage: bool,
+) {
     let routing_bucket = address
-        .routing_bucket
+        .routing_bucket()
         .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
     let object_id = address
-        .object_id
+        .object_id()
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
     // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
-    if crate::wal::wal_outcome_items_enabled() {
+    if stage && crate::wal::wal_outcome_items_enabled() {
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: kind.to_string(),
             object_key: object_key.to_string(),
@@ -1219,7 +1372,7 @@ pub(super) fn upsert_bucket_index_page(
         object_key: object_key.to_string(),
         kind: kind.to_string(),
         component,
-        log_backed: address.page_id.is_none(),
+        log_backed: address.page_id().is_none(),
         address,
         dirty,
         deleted: false,
@@ -1388,16 +1541,16 @@ pub(super) fn sync_bucket_index_object_pages(
 
     for address in unique_addresses.into_values() {
         let routing_bucket = address
-            .routing_bucket
+            .routing_bucket()
             .unwrap_or_else(|| page_routing_bucket(object_key, 0, u32::MAX));
         let object_id = address
-            .object_id
+            .object_id()
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
         let entry = LivePageEntry {
             object_key: object_key.to_string(),
             kind: kind.to_string(),
             component: None,
-            log_backed: address.page_id.is_none(),
+            log_backed: address.page_id().is_none(),
             address,
             dirty,
             deleted: false,
@@ -1482,8 +1635,60 @@ fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.len(), bucket.page_index.len());
 }
 
+/// Pages visited by `update_bucket_layout`, attributed to the CALL SITE that asked for it.
+///
+/// The visit counter lives inside the function, so it reports how much work was done and not who
+/// caused it -- and with ten callers that is the difference between a fix and a guess. Two guesses
+/// were spent on the wrong site before this existed: the per-insert rebuild (fixing it moved the
+/// counter by exactly zero) and narrowing the rebuild's bucket range (the range is only a hashing
+/// input; the function walks the whole shard regardless).
+///
+/// Only written under `#[cfg(test)]` -- it takes a lock, and `update_bucket_layout` is on a write
+/// path.
+pub mod layout_by_caller {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    pub(super) static LAYOUT_BY_CALLER: Mutex<Option<BTreeMap<String, u64>>> = Mutex::new(None);
+
+    #[cfg(test)]
+    pub(super) fn note(caller: &std::panic::Location<'static>, pages: usize) {
+        let mut guard = LAYOUT_BY_CALLER.lock().expect("layout caller tally poisoned");
+        *guard
+            .get_or_insert_with(BTreeMap::new)
+            .entry(format!("{}:{}", caller.file(), caller.line()))
+            .or_insert(0) += pages as u64;
+    }
+
+    pub fn reset() {
+        *LAYOUT_BY_CALLER.lock().expect("layout caller tally poisoned") = Some(BTreeMap::new());
+    }
+
+    /// Call sites and the pages each has caused to be visited, largest first.
+    pub fn snapshot() -> Vec<(String, u64)> {
+        let guard = LAYOUT_BY_CALLER.lock().expect("layout caller tally poisoned");
+        let mut rows: Vec<(String, u64)> = guard
+            .as_ref()
+            .map(|map| map.iter().map(|(k, v)| (k.clone(), *v)).collect())
+            .unwrap_or_default();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        rows
+    }
+}
+
+// `Location::caller()` in a function that is not `#[track_caller]` returns the location of the
+// `caller()` call itself, so the by-caller breakdown below reported this one line for all ten
+// callers -- it looked like attribution and was not. Applied only under `cfg(test)`, because the
+// attribute adds a hidden location argument at every call site and this is a write path.
+#[cfg_attr(test, track_caller)]
 pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.page_index.len());
+    // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
+    // because the visit counter lives INSIDE this function and so reports how much work happened
+    // without saying who asked for it -- with ten callers, that was the difference between a fix
+    // and a guess.
+    #[cfg(test)]
+    layout_by_caller::note(std::panic::Location::caller(), bucket.page_index.len());
     let live_object_ids: BTreeSet<u64> = bucket
         .page_index
         .values()
@@ -1522,6 +1727,7 @@ pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u3
 /// from page entries, where the set has NOT been maintained and must be derived. Those keep the
 /// scan. `bucket_object_index_already_matches_a_from_scratch_recompute` is the evidence for
 /// dropping it everywhere else.
+#[cfg_attr(test, track_caller)]
 fn refresh_one_bucket_runtime_flags(
     bucket: &mut BucketNode,
     now: u64,
@@ -1570,12 +1776,30 @@ fn refresh_one_bucket_runtime_flags(
 /// set of changed buckets is not known. On the per-write path use
 /// [`refresh_pending_bucket_runtime_flags`] instead -- this sweep on every write is what made
 /// ingestion quadratic in the corpus.
+#[cfg_attr(test, track_caller)]
 pub(super) fn refresh_bucket_runtime_flags(shard: &mut ShardState) {
     refresh_all_bucket_runtime_flags(shard, true);
 }
 
+/// The sweep, for a caller that has just rebuilt the bucket index from the page entries.
+///
+/// [`rebuild_bucket_first_index`] recomputes every bucket's object index and layout by scanning
+/// that bucket's page index. Running the full sweep with the rebuild still switched on immediately
+/// afterwards scans exactly the same pages a second time, from the same source, with nothing in
+/// between that could change the answer. The two showed up in the per-add attribution as a pair of
+/// counters that were equal at every corpus size -- 45 300 each over 150 adds, 180 600 each over
+/// 300, 721 200 each over 600 -- which is what the same scan run twice looks like.
+///
+/// The flags themselves (dirty, deleted, in_memory, ttl) are still refreshed; only the redundant
+/// object-index rescan is skipped.
+#[cfg_attr(test, track_caller)]
+pub(super) fn refresh_bucket_runtime_flags_after_reconstruct(shard: &mut ShardState) {
+    refresh_all_bucket_runtime_flags(shard, false);
+}
+
 /// The sweep, with the object-index rebuild made optional. See
 /// [`refresh_one_bucket_runtime_flags`] for when it can be skipped.
+#[cfg_attr(test, track_caller)]
 fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index: bool) {
     let now = now_ms();
     for bucket in shard.bucket_index.bucket_map.values_mut() {
@@ -1597,6 +1821,7 @@ fn refresh_all_bucket_runtime_flags(shard: &mut ShardState, rebuild_object_index
 /// function of its own pages plus the two shard-wide maps, and both of those are noted against the
 /// buckets they affect. `bucket_runtime_flags_match_full_sweep` in the engine tests checks that
 /// equivalence against a real workload rather than leaving it as an argument.
+#[cfg_attr(test, track_caller)]
 pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     if shard.buckets_pending_flag_refresh.is_empty() {
         return;
@@ -1699,10 +1924,10 @@ pub(super) fn rebuild_bucket_first_index(
         .collect();
     let mut bucket_index = CoreIndex::default();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_bucket = entry.address.routing_bucket.unwrap_or_else(|| {
+        let routing_bucket = entry.address.routing_bucket().unwrap_or_else(|| {
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
-        let object_id = entry.address.object_id.unwrap_or_else(|| {
+        let object_id = entry.address.object_id().unwrap_or_else(|| {
             stable_page_object_id(
                 shard_id,
                 &entry.kind,
@@ -1946,7 +2171,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                             entry.address.page_slab_id,
                             entry.address.offset,
                             entry.address.length,
-                            entry.address.routing_bucket,
+                            entry.address.routing_bucket(),
                         );
                         warm_batch.push((key, bytes.clone()));
                     }
@@ -2155,7 +2380,7 @@ pub(super) fn insert_timestamped_secondary_view(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         );
         warm_batch.push((key, bytes.clone()));
     }
@@ -2184,7 +2409,7 @@ pub(super) fn insert_timestamped_secondary_view(
                 slot.insert(address.clone());
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if address.generation.unwrap_or(0) >= slot.get().generation.unwrap_or(0) {
+                if address.generation().unwrap_or(0) >= slot.get().generation().unwrap_or(0) {
                     slot.insert(address.clone());
                 }
             }
@@ -2220,7 +2445,7 @@ pub(super) fn insert_context_event_views(
             address.page_slab_id,
             address.offset,
             address.length,
-            address.routing_bucket,
+            address.routing_bucket(),
         );
         warm_batch.push((key, bytes.clone()));
     }
@@ -2242,7 +2467,7 @@ pub(super) fn insert_context_event_views(
                 slot.insert(address.clone());
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if address.generation.unwrap_or(0) >= slot.get().generation.unwrap_or(0) {
+                if address.generation().unwrap_or(0) >= slot.get().generation().unwrap_or(0) {
                     slot.insert(address.clone());
                 }
             }
@@ -2270,16 +2495,16 @@ pub(super) fn validate_bucket_ownership_index(
         let expected_object_id = expected_live_page_object_id(shard_id, &entry);
         let expected_routing_bucket =
             page_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket);
-        let expected_page_id = entry.address.page_id;
+        let expected_page_id = entry.address.page_id();
         let object_mismatch = entry
             .address
-            .object_id
+            .object_id()
             .is_some_and(|actual| actual != expected_object_id);
         let bucket_mismatch = entry
             .address
-            .routing_bucket
+            .routing_bucket()
             .is_some_and(|actual| actual != expected_routing_bucket);
-        if entry.address.object_id.is_none() || entry.address.routing_bucket.is_none() {
+        if entry.address.object_id().is_none() || entry.address.routing_bucket().is_none() {
             validation.missing_owner_page_refs =
                 validation.missing_owner_page_refs.saturating_add(1);
         }
@@ -2293,7 +2518,7 @@ pub(super) fn validate_bucket_ownership_index(
                         page.address.page_slab_id == entry.address.page_slab_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
-                            && page.address.page_id == expected_page_id
+                            && page.address.page_id() == expected_page_id
                             && page.model_id == entry.kind
                     })
             });
@@ -2309,9 +2534,9 @@ pub(super) fn validate_bucket_ownership_index(
                     page_slab_id: entry.address.page_slab_id,
                     offset: entry.address.offset,
                     expected_object_id,
-                    actual_object_id: entry.address.object_id,
+                    actual_object_id: entry.address.object_id(),
                     expected_routing_bucket,
-                    actual_routing_bucket: entry.address.routing_bucket,
+                    actual_routing_bucket: entry.address.routing_bucket(),
                 });
         }
     }
