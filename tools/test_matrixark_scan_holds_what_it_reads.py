@@ -15,7 +15,7 @@ first changes ranking. Over 269 queries on real prose, dropping the lexical term
 -0.011 with a 95% interval of [-0.049, +0.027] -- indistinguishable -- at 21x less scoring time.
 That is a ranking decision to take deliberately, not a side effect of a footprint change.
 """
-import importlib
+import contextlib
 import os
 import sys
 import unittest
@@ -46,50 +46,62 @@ def _record():
     }
 
 
+@contextlib.contextmanager
+def _projection(enabled):
+    """Set the flag rather than reloading the module.
+
+    `matrixark_local_adapter_retrieval` and `matrixark_mcp_local_adapter` import each other, so a
+    reload builds a second module object while the adapter keeps the first one's mixin. That is
+    order-dependent, which makes these tests pass alone and fail in a suite, and can break
+    unrelated tests that resolve the mixin later.
+    """
+    previous = retrieval.RETRIEVAL_SCAN_PROJECTION
+    retrieval.RETRIEVAL_SCAN_PROJECTION = enabled
+    try:
+        yield retrieval
+    finally:
+        retrieval.RETRIEVAL_SCAN_PROJECTION = previous
+
+
 class TheScanCanHoldOnlyWhatItReads(unittest.TestCase):
     def test_it_is_off_by_default(self):
-        """Enabling it changes what downstream scoring can see, so it is opt-in."""
+        """Enabling it changes what downstream scoring can see, so it is opt-in.
+
+        The default is checked through the env parsing rather than by reading the live module
+        attribute, which an earlier test in the same process may have set -- and rather than by
+        setting it to False first, which would only assert what the test just did.
+        """
         os.environ.pop("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", None)
-        reloaded = importlib.reload(retrieval)
-        self.assertFalse(reloaded.RETRIEVAL_SCAN_PROJECTION)
-        record = _record()
-        self.assertEqual(record, reloaded.project_scan_record(record),
-                         "with the flag off a record must pass through untouched")
+        os.environ.pop("MATRIXARK_ONEBOX_EMBEDDING_FIRST", None)
+        self.assertFalse(retrieval.flag_enabled("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"))
+        self.assertFalse(retrieval.flag_enabled("MATRIXARK_ONEBOX_EMBEDDING_FIRST"))
+        with _projection(False) as mod:
+            record = _record()
+            self.assertEqual(record, mod.project_scan_record(record),
+                             "with the flag off a record must pass through untouched")
 
     def test_enabled_it_drops_what_the_scan_never_reads(self):
-        os.environ["MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"] = "1"
-        try:
-            reloaded = importlib.reload(retrieval)
+        with _projection(True) as reloaded:
+            _ignored = None
             projected = reloaded.project_scan_record(_record())
             for absent in ("text", "heading", "source_locator"):
                 self.assertNotIn(absent, projected,
                                  "%s is only needed to RETURN a hit" % absent)
-        finally:
-            os.environ.pop("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", None)
-            importlib.reload(retrieval)
 
     def test_enabled_it_keeps_everything_the_scan_reads(self):
         """The probe's field list, asserted rather than trusted."""
-        os.environ["MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"] = "1"
-        try:
-            reloaded = importlib.reload(retrieval)
+        with _projection(True) as reloaded:
+            _ignored = None
             projected = reloaded.project_scan_record(_record())
             for kept in ("record_type", "section_hash", "node_hash", "node_path", "scope",
                          "access_scope", "metadata", "embedding_meta", "vector"):
                 self.assertIn(kept, projected, "the scan reads %s" % kept)
-        finally:
-            os.environ.pop("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", None)
-            importlib.reload(retrieval)
 
     def test_the_vector_survives_projection(self):
         """A projection that dropped the embedding would defeat its own purpose."""
-        os.environ["MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"] = "1"
-        try:
-            reloaded = importlib.reload(retrieval)
+        with _projection(True) as reloaded:
+            _ignored = None
             self.assertEqual([0.5, 0.5], reloaded.project_scan_record(_record()).get("vector"))
-        finally:
-            os.environ.pop("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", None)
-            importlib.reload(retrieval)
 
 
 if __name__ == "__main__":

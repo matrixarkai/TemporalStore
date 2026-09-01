@@ -51,9 +51,24 @@ RETRIEVAL_SCAN_FIELDS = (
 
 # OFF by default. A projected record cannot serve the resource and skill scans' lexical, keyword and
 # origin terms, which read `text`; enabling this without hydrating those candidates changes ranking.
-RETRIEVAL_SCAN_PROJECTION = os.environ.get(
-    "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", "0"
-).strip().lower() not in {"0", "false", "no", "off", ""}
+def flag_enabled(name: str, default: str = "0") -> bool:
+    """Read a boolean environment switch.
+
+    Exposed so a test can assert the DEFAULT without reloading this module -- reloading it builds a
+    second module object while the adapter still holds the first one's mixin, which is
+    order-dependent and can break unrelated tests.
+    """
+    return os.environ.get(name, default).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+# The one-box baseline. It turns on the scan projection AND dense-only scoring together, because
+# each is unsound alone: the projection removes the text the lexical term reads, and dropping the
+# lexical term is what makes removing it safe.
+ONEBOX_EMBEDDING_FIRST = flag_enabled("MATRIXARK_ONEBOX_EMBEDDING_FIRST")
+
+RETRIEVAL_SCAN_PROJECTION = ONEBOX_EMBEDDING_FIRST or flag_enabled(
+    "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"
+)
 
 
 def project_scan_record(record):
