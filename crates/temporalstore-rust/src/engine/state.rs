@@ -366,16 +366,29 @@ impl ObjectPageLookup {
 
     /// The entry for this object, created empty if absent. Takes the model by shared pointer so
     /// the outer key costs nothing to store.
+    /// Takes both keys by shared pointer. The object key is the one the page entry already
+    /// holds, so filing a page adds a pointer rather than a second copy of its identity.
     pub(super) fn entry(
         &mut self,
         model_id: &Arc<str>,
-        object_key: &str,
+        object_key: &Arc<str>,
     ) -> &mut ObjectPageRefs {
         let objects = self.by_model.entry(Arc::clone(model_id)).or_default();
-        if !objects.contains_key(object_key) {
-            objects.insert(Arc::from(object_key), ObjectPageRefs::default());
+        if !objects.contains_key(object_key.as_ref()) {
+            objects.insert(Arc::clone(object_key), ObjectPageRefs::default());
         }
-        objects.get_mut(object_key).expect("just inserted")
+        objects
+            .get_mut(object_key.as_ref())
+            .expect("just inserted")
+    }
+
+    /// The address of the inner key allocation, so a test can assert that a page and this map
+    /// point at one copy of the object identity rather than two equal ones. Contents cannot tell
+    /// those apart; pointers can.
+    #[cfg(test)]
+    pub(super) fn key_ptr(&self, model_id: &str, object_key: &str) -> Option<*const u8> {
+        let (stored, _) = self.by_model.get(model_id)?.get_key_value(object_key)?;
+        Some(stored.as_ptr())
     }
 
     pub(super) fn remove(&mut self, model_id: &str, object_key: &str) -> Option<ObjectPageRefs> {
@@ -668,7 +681,7 @@ pub(super) enum BucketLayoutState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PageIndex {
-    pub(super) object_key: String,
+    pub(super) object_key: Arc<str>,
     pub(super) model_id: Arc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<Arc<str>>,
@@ -806,7 +819,7 @@ impl CoreIndex {
                     .map(|page| {
                         !page.deleted
                             && &*page.model_id == model_id
-                            && page.object_key == object_key
+                            && page.object_key == Arc::from(object_key)
                             && page.component.as_deref() == component
                             && same_page_address(&page.address, address)
                     })
@@ -822,7 +835,7 @@ impl CoreIndex {
             bucket.page_index.values().any(|page| {
                 !page.deleted
                     && &*page.model_id == model_id
-                    && page.object_key == object_key
+                    && page.object_key == Arc::from(object_key)
                     && page.component.as_deref() == component
                     && same_page_address(&page.address, address)
             })
@@ -933,7 +946,7 @@ mod component_lookup_tests {
     /// A page carrying nothing but the identity the lookup keys on.
     fn page(object: &str, component: Option<&str>) -> PageIndex {
         PageIndex {
-            object_key: object.to_string(),
+            object_key: Arc::from(object.to_string()),
             model_id: Arc::from("hash".to_string()),
             component: component.map(str::to_string).map(Arc::from),
             object_id: 0,

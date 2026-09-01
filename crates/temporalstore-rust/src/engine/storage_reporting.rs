@@ -360,7 +360,7 @@ pub(super) fn storage_physical_index_report(
                 ..StoragePhysicalBucketNode::default()
             });
         let mut page_index = StoragePhysicalPageIndex {
-            object_key: entry.object_key.clone(),
+            object_key: entry.object_key.clone().to_string(),
             model_id: entry.kind.clone().to_string(),
             component: entry.component.clone().map(|value| value.to_string()),
             routing_bucket,
@@ -402,7 +402,7 @@ pub(super) fn storage_physical_index_report(
         bucket.last_dump_sequence = runtime_bucket.last_dump_sequence;
         for page in runtime_bucket.page_index.values() {
             let already_present = bucket.page_indexes.iter().any(|existing| {
-                existing.object_key == page.object_key
+                existing.object_key.as_str() == page.object_key.as_ref()
                     && *existing.model_id == *page.model_id
                     && existing.component.as_deref() == page.component.as_deref()
                     && existing.page_slab_id == page.address.page_slab_id
@@ -412,7 +412,7 @@ pub(super) fn storage_physical_index_report(
                 continue;
             }
             let mut page_index = StoragePhysicalPageIndex {
-                object_key: page.object_key.clone(),
+                object_key: page.object_key.clone().to_string(),
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
                 routing_bucket: *routing_bucket,

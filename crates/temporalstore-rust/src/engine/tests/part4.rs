@@ -3844,14 +3844,14 @@ fn dirty_objects_versus_the_pages_own_dirty_flags() {
         .values()
         .flat_map(|bucket| bucket.page_index.values())
         .filter(|page| page.dirty)
-        .map(|page| page.object_key.clone())
+        .map(|page| page.object_key.to_string())
         .collect();
     let any_page_at_all: std::collections::BTreeSet<String> = shard
         .bucket_index
         .bucket_map
         .values()
         .flat_map(|bucket| bucket.page_index.values())
-        .map(|page| page.object_key.clone())
+        .map(|page| page.object_key.to_string())
         .collect();
 
     let in_set_not_flagged: Vec<&String> = shard
@@ -4306,7 +4306,7 @@ fn how_many_times_one_object_key_is_stored() {
     }
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, page) in bucket.page_index.iter() {
-            if page.object_key == sample {
+            if page.object_key.as_ref() == sample.as_str() {
                 allocations.insert(page.object_key.as_ptr());
                 holders += 1;
             }
@@ -4402,6 +4402,61 @@ fn the_nested_lookup_still_serializes_as_the_flat_composite() {
     assert_eq!(restored.len(), lookup.len());
 }
 
+/// The page entry and the lookup hold the SAME allocation of an object's key.
+///
+/// Compared by pointer, not by contents. Changing the field's type shares nothing on its own --
+/// the lookup previously called `Arc::from` and built a second allocation of text the page already
+/// owned, which is byte-for-byte identical from the outside and costs exactly as much as before.
+/// Only pointer identity can tell those apart.
+#[test]
+fn the_page_and_the_lookup_point_at_one_object_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("shared-object-{index:04}"),
+                value: vec![b'v'; 48],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut checked = 0usize;
+    let mut shared = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_ref_key, page) in bucket.page_index.iter() {
+            let Some(refs) = shard
+                .bucket_index
+                .object_page_lookup
+                .key_ptr(&page.model_id, page.object_key.as_ref())
+            else {
+                continue;
+            };
+            checked += 1;
+            if std::ptr::eq(refs, page.object_key.as_ptr()) {
+                shared += 1;
+            }
+        }
+    }
+
+    // Anti-vacuity: with nothing checked, "all shared" is true for free.
+    assert!(checked > 0, "no page was matched to a lookup entry; nothing was measured");
+    assert_eq!(
+        shared, checked,
+        "{shared} of {checked} pages share their key with the lookup; the rest hold a second copy"
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
@@ -4470,7 +4525,7 @@ fn page_index_identity_string_cardinality() {
             pages += 1;
             distinct_models.insert(page.model_id.as_ref());
             model_allocations.insert(std::sync::Arc::as_ptr(&page.model_id).cast::<u8>());
-            distinct_keys.insert(page.object_key.as_str());
+            distinct_keys.insert(page.object_key.as_ref());
             model_bytes += page.model_id.len();
             key_bytes += page.object_key.len();
             if let Some(component) = page.component.as_deref() {
@@ -10782,7 +10837,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (*bucket, ref_key.to_string()),
                         (
                             page.model_id.to_string(),
-                            page.object_key.clone(),
+                            page.object_key.to_string(),
                             page.component.as_ref().map(|name| name.to_string()),
                         ),
                     )
@@ -10816,7 +10871,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (*bucket, ref_key.to_string()),
                         (
                             page.model_id.to_string(),
-                            page.object_key.clone(),
+                            page.object_key.to_string(),
                             page.component.as_ref().map(|name| name.to_string()),
                         ),
                     )
