@@ -4513,3 +4513,46 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
 "
     );
 }
+
+
+/// Every context object key, byte for byte.
+///
+/// These keys are stored in the shard's model maps and in the bucket index, and every read compares
+/// one against keys already written. Building them directly instead of through `format!` saves an
+/// allocation each -- `format!` costs two, the String it returns plus one inside the formatting
+/// machinery -- but only if the bytes do not move. A changed byte here does not fail anything on its
+/// own: it makes existing records unfindable, which reads as data loss.
+#[test]
+fn context_object_keys_keep_their_exact_bytes() {
+    use super::context::*;
+
+    assert_eq!(context_node_key(81, 4242), "ctx:node:81:4242");
+    assert_eq!(context_event_key(81, 4242), "ctx:event:81:4242");
+    assert_eq!(context_audit_key(81, 4242), "ctx:audit:81:4242");
+    assert_eq!(context_dirty_key(81, 4242), "ctx:dirty:81:4242");
+    assert_eq!(context_embedding_dirty_key(81, 4242), "ctx:embdirty:81:4242");
+    assert_eq!(context_entity_key(81, 4242, 7), "ctx:entity:81:4242:7");
+    assert_eq!(context_entity_collection_key(81, 4242), "ctx:entity:81:4242");
+    assert_eq!(context_child_key(81, 4242), "ctx:child:81:4242");
+    assert_eq!(context_summary_key(81, 4242, 2), "ctx:summary:81:4242:2");
+    assert_eq!(context_compression_key(81, 4242), "ctx:compress:81:4242");
+
+    // Zero and the largest u64 both round-trip: a key builder that sized its buffer for typical
+    // values would truncate here, and truncation is exactly the silent kind of wrong.
+    assert_eq!(context_node_key(0, 0), "ctx:node:0:0");
+    assert_eq!(
+        context_node_key(u64::MAX, u64::MAX),
+        "ctx:node:18446744073709551615:18446744073709551615"
+    );
+    assert_eq!(
+        context_summary_key(u64::MAX, u64::MAX, u32::MAX),
+        "ctx:summary:18446744073709551615:18446744073709551615:4294967295"
+    );
+
+    // An entity key and its collection key share a prefix; the third part is what separates them,
+    // so one must never be mistaken for the other.
+    assert_ne!(context_entity_key(81, 4242, 7), context_entity_collection_key(81, 4242));
+
+    // Distinct inputs stay distinct across the colon: (1, 23) and (12, 3) must not collide.
+    assert_ne!(context_node_key(1, 23), context_node_key(12, 3));
+}
