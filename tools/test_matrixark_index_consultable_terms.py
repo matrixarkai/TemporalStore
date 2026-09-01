@@ -8,15 +8,20 @@ inference emits a fixed set of KINDS, so a term whose kind is outside that set c
 group, cannot intersect one, and cannot narrow a search or earn the hint boost -- whatever its
 value.
 
-On a 1 MB skill those terms were 1,418 KB of a 1,471 KB index, 15.7% of the whole ingest, written
-and scanned to affect nothing. Dropping them takes amplification 8.6x to 7.2x and makes embeddings
-the majority of the footprint (44.6% -> 53.0%), which is what an embedding-first store should look
-like.
+On a 1 MB skill the unreachable terms were a large share of a 1,471 KB index, written and scanned
+to affect nothing. The first cut of this filter claimed 1,418 KB by declaring only 14 kinds, but
+seven more were emitted with computed values and had to be given back -- `heading_slug` alone is
+990.7 KB. Measure the saving from the declared set, never from the first estimate.
 
 The danger is drift. The declared set and the inference are only correct TOGETHER: a kind added to
-the inference but not declared would be filtered out at ingest, and the query needing it would
-narrow to nothing with nothing to notice. The first test reads the kinds straight out of the
-inference source so that can only happen loudly.
+the inference but not declared is filtered out at ingest, and the query needing it narrows to
+nothing with nothing to notice. The first test reads the kinds straight out of the inference source
+so that can only happen loudly.
+
+That guard failed once, in the direction it exists to prevent. It scanned a fixed 12,000-character
+slice of a 21,839-character function, found 14 of the 21 kinds, and reported full coverage while
+seven were being dropped. It now takes the function's whole extent and asserts that extent -- a
+scan that silently stops early is the failure mode, so the length is checked, not assumed.
 """
 import os
 import re
@@ -44,8 +49,22 @@ class WhatAQueryCanAskFor(unittest.TestCase):
         with open(qa.__file__, encoding="utf-8") as handle:
             source = handle.read()
         start = source.index("def deterministic_secondary_index_filter_groups")
-        emitted = set(re.findall(r'context_index_name\("([a-z_]+)"', source[start:start + 12000]))
+        marker = chr(10) + "def "
+        end = source.find(marker, start + 4)
+        body = source[start:end if end != -1 else len(source)]
+        # The whole function, not a fixed slice. An earlier version read 12,000 characters of a
+        # 21,839-character function, saw 14 of its 21 kinds, and reported full coverage while
+        # seven were being dropped at ingest.
+        self.assertGreater(len(body), 12000,
+                           "the function is shorter than expected; check the extent, not the slice")
+        # Both call shapes: a literal value and a computed one. Matching only literals is how the
+        # six computed emissions were missed.
+        emitted = set(re.findall(r'context_index_name\(\s*"([a-z_]+)"', body))
         self.assertTrue(emitted, "found no emitted kinds -- the parse is wrong, not the code")
+        self.assertGreaterEqual(
+            len(emitted), 21,
+            "expected at least the 21 kinds this function emitted when the guard was written; "
+            "fewer means the parse stopped early again")
         missing = emitted - set(INFERABLE_SECONDARY_INDEX_KINDS)
         self.assertEqual(
             set(), missing,
@@ -56,10 +75,24 @@ class WhatAQueryCanAskFor(unittest.TestCase):
         for kind in sorted(INFERABLE_SECONDARY_INDEX_KINDS):
             self.assertTrue(index_term_is_consultable("%s:whatever" % kind))
 
-    def test_the_bulk_of_a_skill_ingest_is_not_consultable(self):
-        # These are what a skill actually wrote, and together they were 96.4% of its index.
-        for term in ("heading_slug:step-1", "keyword:checkout", "unit_kind:section",
-                     "resource_type:skill", "skill_name:acme", "relative_path:a/b.md"):
+    def test_the_seven_kinds_the_first_guard_missed_are_consultable(self):
+        """A named regression guard for the kinds a truncated scan let through.
+
+        Each of these is emitted by the inference with a COMPUTED value -- `context_index_name`
+        called on a variable rather than a literal -- and each sat past the 12,000-character
+        window the first guard read. A query inferring any of them narrowed to nothing.
+        """
+        for kind in ("heading_slug", "memory_selection_quality", "relative_path",
+                     "resource_type", "skill_tool", "skill_trigger", "unit_kind"):
+            self.assertIn(kind, INFERABLE_SECONDARY_INDEX_KINDS)
+            self.assertTrue(index_term_is_consultable("%s:whatever" % kind),
+                            "%s is emitted by the inference; filtering it at ingest makes a "
+                            "query that asks for it match nothing" % kind)
+
+    def test_terms_no_query_can_reach_are_still_dropped(self):
+        # What remains genuinely unreachable: no inference path emits either kind, so neither can
+        # appear in a group, intersect one, or earn the hint boost -- whatever its value.
+        for term in ("keyword:checkout", "skill_name:acme"):
             self.assertFalse(index_term_is_consultable(term),
                              "%s is filtered at ingest; if a query can now ask for it, the "
                              "declared set must say so" % term)
@@ -76,7 +109,7 @@ class WhatAQueryCanAskFor(unittest.TestCase):
         """
         groups = [{"entity_type:location"}, {"source_type:message"}]
         kept = {"entity_type:location", "source_type:message"}
-        dropped = {"heading_slug:step-1", "keyword:checkout", "skill_name:acme"}
+        dropped = {"keyword:checkout", "skill_name:acme"}
         self.assertEqual(
             passes_secondary_index_filters(kept, groups),
             passes_secondary_index_filters(kept | dropped, groups),
@@ -86,23 +119,43 @@ class WhatAQueryCanAskFor(unittest.TestCase):
         self.assertTrue(passes_secondary_index_filters(kept, groups))
 
 
+MODULE = "matrixark_mcp_ingest_resource_chunk_records"
+VARIABLE = "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS"
+
+
 class TheFilterIsOnAndActuallyFilters(unittest.TestCase):
-    def test_the_default_is_on(self):
-        os.environ.pop("MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS", None)
+    """Reading the flag's default means re-importing, which is only safe if it is undone.
+
+    These tests drop the module from `sys.modules` so its import-time flag is evaluated again.
+    Leaving the replacement behind hands every later importer a different module object than the
+    one its collaborators already hold, and they fail for reasons unrelated to themselves. Both
+    the module table and the environment are put back.
+    """
+
+    def setUp(self):
+        self._module = sys.modules.get(MODULE)
+        self._variable = os.environ.get(VARIABLE)
+
+    def tearDown(self):
+        sys.modules.pop(MODULE, None)
+        if self._module is not None:
+            sys.modules[MODULE] = self._module
+        os.environ.pop(VARIABLE, None)
+        if self._variable is not None:
+            os.environ[VARIABLE] = self._variable
+
+    def _reimport(self):
         import importlib
-        for name in [m for m in list(sys.modules) if m.startswith("matrixark_mcp_ingest_resource_chunk_records")]:
-            del sys.modules[name]
-        mod = importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
-        self.assertTrue(mod.INDEX_ONLY_CONSULTABLE_TERMS)
+        sys.modules.pop(MODULE, None)
+        return importlib.import_module(MODULE)
+
+    def test_the_default_is_on(self):
+        os.environ.pop(VARIABLE, None)
+        self.assertTrue(self._reimport().INDEX_ONLY_CONSULTABLE_TERMS)
 
     def test_the_escape_hatch_works(self):
-        import importlib
-        os.environ["MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS"] = "0"
-        for name in [m for m in list(sys.modules) if m.startswith("matrixark_mcp_ingest_resource_chunk_records")]:
-            del sys.modules[name]
-        mod = importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
-        self.assertFalse(mod.INDEX_ONLY_CONSULTABLE_TERMS)
-        os.environ.pop("MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS", None)
+        os.environ[VARIABLE] = "0"
+        self.assertFalse(self._reimport().INDEX_ONLY_CONSULTABLE_TERMS)
 
 
 if __name__ == "__main__":
