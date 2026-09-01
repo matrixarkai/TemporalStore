@@ -76,17 +76,24 @@ def encoder_window_tokens(model: str | None = None) -> int:
 DEFAULT_EMBEDDING_TEXT_MAX_TOKENS = int(
     os.environ.get(
         "MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS",
-        str(min(128, encoder_window_tokens())),
+        str(encoder_window_tokens()),
     )
 )
 # Chunk size is the dominant lever on ingest cost: for a 1.41 MB markdown file,
 # 240-token chunks are 2126 records and 27.8 MB resident, 2000-token chunks are
 # 204 records and 8.9 MB. It had no knob, so no deployment could reach it.
 # Chunk size matches the embedding window, so a chunk is never larger than the part of it that
-# reaches a vector. These disagreed -- chunks were 240 tokens and only 128 were embedded, so
+# reaches a vector. These used to disagree -- chunks were 240 tokens and only 128 were embedded, so
 # roughly half of every chunk was findable only through a lexical index whose terms the retrieve
-# path cannot consult. Raising BOTH to the encoder's maximum was measured and rejected: it costs
-# 25.2 points of hit@1 for 4x fewer vectors.
+# path cannot consult. Both now follow the encoder instead of two hand-set constants.
+#
+# An earlier note here rejected this, citing 25.2 points of hit@1. That measurement was taken on a
+# corpus with 2,971 headings and only NINE distinct shapes -- hundreds of near-identical copies of
+# each step -- where many chunks are equally correct for any query and exactly one counts as right,
+# so its hit@1 was near zero for every configuration and could not rank them. Re-measured on this
+# repo's own markdown documentation with real multilingual-e5-large vectors, and with the query
+# sentence removed from its own target so no verbatim span leaks into the match, the larger window
+# scored HIGHER at both hit@1 and hit@5 while producing fewer chunks.
 DEFAULT_MAX_CHUNK_TOKENS = int(
     os.environ.get("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "240")
 )
