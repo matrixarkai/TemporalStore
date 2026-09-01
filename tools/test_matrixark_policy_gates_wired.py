@@ -56,7 +56,6 @@ KNOWN_UNWIRED: Set[str] = {
     # comparison, not a presence check -- a knob that silently narrows results looks like it works.
     "return_all_candidates_enabled",
     "summarize_aggregation_only_nodes_enabled",
-    "traverse_sibling_sessions_enabled",
 }
 
 # The census found 14. If a refactor moves gates elsewhere this number drops and every "no unwired

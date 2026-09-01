@@ -341,5 +341,48 @@ class TurningSegmentsOffDoesNotLoseTheAnswerTest(unittest.TestCase):
                       "and the default-OFF behaviour change is not safe")
 
 
+class TraverseSiblingSessionsTest(unittest.TestCase):
+    """The one read-path knob wired here, checked across two sessions.
+
+    There is no new traversal logic: retrieval already takes `session_scope` (`prefer` or `only`)
+    from the request, then the ranking config, then a hardcoded default. The knob is the tenant's
+    answer, applied as a CEILING -- "whether retrieval descends into sessions other than the
+    current one" describes the deployment, so a per-request argument must not widen it.
+
+    Checked the way it is observed rather than by reading the resolved value: store in one session,
+    ask from another, and see whether the memory comes back. A test asserting the gate returns
+    False would pass even if nothing consumed it -- which is the exact defect this file exists for.
+    """
+
+    def _ask_across_sessions(self, tenant, knobs):
+        import matrixark_mcp_server as mcp
+        policy.set_tenant_policy(tenant, knobs)
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
+            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
+            first = {"tenant_id": tenant, "user_id": "u1", "session_id": "sessionA"}
+            second = {"tenant_id": tenant, "user_id": "u1", "session_id": "sessionB"}
+            for scope, text in ((first, "I am allergic to peanuts."),
+                                (second, "Today I went cycling.")):
+                server.call_tool("matrixark_ingest", {
+                    "scope": scope, "finalize": True,
+                    "messages": [{"role": "user", "content": text}]})
+                server.call_tool("matrixark_session_commit", {"scope": scope})
+            answer = server.call_tool("matrixark_retrieve",
+                                      {"scope": second, "query": "what am I allergic to?"})
+        return "peanut" in str(answer).lower()
+
+    def test_the_knob_decides_whether_another_session_is_reachable(self) -> None:
+        # Both directions asserted. "not found" alone would also hold if retrieval were broken
+        # outright, and "found" alone would hold if the knob were ignored.
+        self.assertTrue(
+            self._ask_across_sessions("sib_yes", {"traverse_sibling_sessions": True}),
+            "a memory in another session was unreachable even with sibling traversal ON, so the "
+            "check below cannot distinguish the knob working from retrieval being broken")
+        self.assertFalse(
+            self._ask_across_sessions("sib_no", {"traverse_sibling_sessions": False}),
+            "a tenant that declined sibling sessions still had another session searched")
+
+
 if __name__ == "__main__":
     unittest.main()
