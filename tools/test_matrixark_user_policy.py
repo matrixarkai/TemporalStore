@@ -450,5 +450,27 @@ def _read_builder() -> str:
         return handle.read()
 
 
+class OneRegistryTest(_PolicyTest):
+    """The per-user registry must not exist twice.
+
+    This file is reachable as `matrixark_tenant_policy` and as `tools.matrixark_tenant_policy`, and
+    Python treats those as two modules with their own module-level state. The tenant layer had
+    exactly this bug -- half the writes went to the registry the reader was not looking at, and
+    nothing said so. The per-user dict is new state in the same module, so it inherits the fix; this
+    holds it to that rather than assuming.
+    """
+
+    def test_a_user_policy_is_visible_through_either_import_name(self) -> None:
+        import importlib
+
+        try:
+            dotted = importlib.import_module("tools.matrixark_tenant_policy")
+        except Exception:  # pragma: no cover - the package form is not always importable
+            self.skipTest("the package import name is not available here")
+        self.assertIs(tp, dotted, "the module exists twice, so its registries do too")
+        tp.set_user_policy("acme", "alice", {"top_k_per_layer": 17})
+        self.assertEqual(17, dotted.resolve("top_k_per_layer", ACME_ALICE))
+
+
 if __name__ == "__main__":
     unittest.main()
