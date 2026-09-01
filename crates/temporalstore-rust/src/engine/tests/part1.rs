@@ -4556,3 +4556,100 @@ fn context_object_keys_keep_their_exact_bytes() {
     // Distinct inputs stay distinct across the colon: (1, 23) and (12, 3) must not collide.
     assert_ne!(context_node_key(1, 23), context_node_key(12, 3));
 }
+
+
+/// How much resident memory is the allocator holding rather than the store?
+///
+/// A proxy measured 444.9 MB resident against 128.6 MB of live data. The only `#[global_allocator]`
+/// in this tree is the test-only counting probe, so production runs on glibc malloc with no tuning:
+/// freed chunks sit in per-thread arenas and go back to the OS only when the heap top is free or
+/// `malloc_trim` is called. Nothing here calls it and nothing caps arenas.
+///
+/// This churns allocations in the shape the decode path produces, drops them, and reads RSS three
+/// times:
+///
+///   after the churn            -> what the work cost
+///   after dropping everything  -> what the allocator kept
+///   after `malloc_trim(0)`     -> what it returns when asked
+///
+/// RSS flat on the drop and falling on the trim means the retention is the allocator's, and a trim
+/// on an existing maintenance path recovers it. RSS falling on the drop means there is nothing to
+/// fix here.
+///
+///   cargo test -p temporalstore-rust --lib how_much_resident_memory_is_the_allocator_holding -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn how_much_resident_memory_is_the_allocator_holding() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    extern "C" {
+        /// glibc: release free heap above `pad` back to the OS. Returns non-zero if it freed any.
+        fn malloc_trim(pad: usize) -> i32;
+    }
+
+    fn resident_kb() -> u64 {
+        // The same source `wal.rs` reads. Zero means unreadable, which the assertions below catch
+        // rather than quietly reporting a 0 KB result as an improvement.
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.split_whitespace().next().map(str::to_string))
+                })
+            })
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0)
+    }
+
+    let baseline = resident_kb();
+    assert!(baseline > 0, "could not read VmRSS, so every number below would be fiction");
+
+    // The shapes a decode produces, at a size worth measuring: byte buffers off pages, the strings
+    // a record carries, and the float vectors. Held all at once, then dropped all at once.
+    {
+        let mut held: Vec<(Vec<u8>, String, Vec<f32>)> = Vec::with_capacity(20_000);
+        for index in 0..20_000_u32 {
+            held.push((
+                vec![(index % 251) as u8; 512],
+                format!("ctx:node:{index}:{index} a canonical name and some discarded text"),
+                vec![index as f32 / 1024.0; 384],
+            ));
+        }
+        let churned = resident_kb();
+        println!(
+            "
+  resident memory, KB
+    baseline                    {baseline:>9}
+    holding 20,000 records      {churned:>9}   (+{} KB)",
+            churned.saturating_sub(baseline),
+        );
+        assert!(
+            churned > baseline,
+            "holding 20,000 records did not raise RSS, so this probe is not measuring anything"
+        );
+    }
+
+    let dropped = resident_kb();
+    println!("    after dropping them all     {dropped:>9}   (+{} KB over baseline)",
+        dropped.saturating_sub(baseline));
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        let returned = unsafe { malloc_trim(0) };
+        let trimmed = resident_kb();
+        println!(
+            "    after malloc_trim(0)        {trimmed:>9}   (+{} KB over baseline, trim returned {returned})
+",
+            trimmed.saturating_sub(baseline),
+        );
+        let kept_after_drop = dropped.saturating_sub(baseline);
+        let kept_after_trim = trimmed.saturating_sub(baseline);
+        println!(
+            "  the allocator kept {kept_after_drop} KB after the drop and {kept_after_trim} KB after the trim:
+  a large fall here is memory a proxy could return on any maintenance tick, for one call.
+"
+        );
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    println!("    malloc_trim: not glibc on this target, so this half did not run\n");
+}
