@@ -139,7 +139,7 @@ pub(super) fn bucket_dump_entries_by_key(
                     shard_id,
                     &entry.kind,
                     &entry.object_key,
-                    (!component.is_empty()).then_some(component.as_str()),
+                    (!component.is_empty()).then_some(component.as_ref()),
                 )
             });
             (
@@ -365,7 +365,7 @@ pub(super) fn storage_physical_index_report(
         let mut page_index = StoragePhysicalPageIndex {
             object_key: entry.object_key.clone(),
             model_id: entry.kind.clone().to_string(),
-            component: entry.component.clone(),
+            component: entry.component.clone().map(|value| value.to_string()),
             routing_bucket,
             page_slab_id: entry.address.page_slab_id,
             offset: entry.address.offset,
@@ -406,7 +406,7 @@ pub(super) fn storage_physical_index_report(
             let already_present = bucket.page_indexes.iter().any(|existing| {
                 existing.object_key == page.object_key
                     && *existing.model_id == *page.model_id
-                    && existing.component == page.component
+                    && existing.component.as_deref() == page.component.as_deref()
                     && existing.page_slab_id == page.address.page_slab_id
                     && existing.offset == page.address.offset
             });
@@ -416,7 +416,7 @@ pub(super) fn storage_physical_index_report(
             let mut page_index = StoragePhysicalPageIndex {
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone().to_string(),
-                component: page.component.clone(),
+                component: page.component.clone().map(|value| value.to_string()),
                 routing_bucket: *routing_bucket,
                 page_slab_id: page.address.page_slab_id,
                 offset: page.address.offset,

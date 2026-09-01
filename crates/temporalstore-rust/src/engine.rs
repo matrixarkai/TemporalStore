@@ -2187,7 +2187,7 @@ fn collect_command_index_items(
                 page_ref_key: page_ref_key.to_string(),
                 object_key: page.object_key.clone(),
                 model_id: page.model_id.clone().to_string(),
-                component: page.component.clone(),
+                component: page.component.clone().map(|value| value.to_string()),
                 object_id: page.object_id,
                 page_id: page.address.page_id().unwrap_or(0),
                 address: Some(page.address.clone()),
@@ -2346,7 +2346,7 @@ fn fold_delta_page_items(
             bucket.page_index.retain(|_, page| {
                 !(page.model_id.as_ref() == item.model_id
                     && page.object_key == item.object_key
-                    && page.component == item.component)
+                    && page.component.as_deref() == item.component.as_deref())
             });
         }
     } else if !covered_keys.is_empty() {
@@ -2380,7 +2380,7 @@ fn fold_delta_page_items(
             PageIndex {
                 object_key: item.object_key.clone(),
                 model_id: Arc::from(item.model_id.clone()),
-                component: item.component.clone(),
+                component: item.component.clone().map(Arc::from),
                 object_id: item.object_id,
                 address,
                 dirty: false,
