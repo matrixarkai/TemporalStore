@@ -64,7 +64,7 @@ pub(super) fn model_compaction_policy_reports(
 
     let mut by_model = BTreeMap::<String, ModelStats>::new();
     for entry in entries {
-        let stats = by_model.entry(entry.kind.clone()).or_default();
+        let stats = by_model.entry(entry.kind.clone().to_string()).or_default();
         if entry.deleted {
             stats.deleted_page_refs = stats.deleted_page_refs.saturating_add(1);
         } else {

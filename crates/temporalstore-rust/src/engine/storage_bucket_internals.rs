@@ -200,7 +200,7 @@ impl StorageManagerPhaseExecutor {
 #[derive(Debug, Clone)]
 pub(super) struct LivePageEntry {
     pub(super) object_key: String,
-    pub(super) kind: String,
+    pub(super) kind: Arc<str>,
     pub(super) component: Option<String>,
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
@@ -222,7 +222,7 @@ pub(super) fn live_page_entry(
 ) -> LivePageEntry {
     LivePageEntry {
         object_key: object_key.into(),
-        kind: kind.into(),
+        kind: Arc::from(kind.into()),
         component,
         // A page materialized in the block store carries a real page_id; a page
         // backed only by the hot/append-log buffer does not. Evaluate before the
@@ -271,14 +271,14 @@ pub(super) fn storage_index_snapshot_with_samples(
     let mut entries = collect_live_page_entries(shard);
     entries.sort_by(|left, right| {
         (
-            left.kind.as_str(),
+            left.kind.as_ref(),
             left.object_key.as_str(),
             left.component.as_deref().unwrap_or(""),
             left.address.page_slab_id,
             left.address.offset,
         )
             .cmp(&(
-                right.kind.as_str(),
+                right.kind.as_ref(),
                 right.object_key.as_str(),
                 right.component.as_deref().unwrap_or(""),
                 right.address.page_slab_id,
@@ -327,15 +327,15 @@ pub(super) fn storage_index_snapshot_with_samples(
         .take(MAX_STORAGE_INDEX_SAMPLES.saturating_mul(4))
     {
         let key = (
-            entry.kind.clone(),
-            entry.kind.clone(),
+            entry.kind.to_string(),
+            entry.kind.to_string(),
             entry.object_key.clone(),
         );
         let sample = object_entries
             .entry(key)
             .or_insert_with(|| StorageObjectIndexEntrySample {
-                model: entry.kind.clone(),
-                table: entry.kind.clone(),
+                model: entry.kind.to_string(),
+                table: entry.kind.to_string(),
                 object_key: entry.object_key.clone(),
                 page_chain: Vec::new(),
                 tombstone: entry.deleted,
@@ -429,7 +429,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
     entries.sort_by(|left, right| {
         (
             left.deleted,
-            left.kind.as_str(),
+            left.kind.as_ref(),
             left.object_key.as_str(),
             left.component.as_deref().unwrap_or(""),
             left.address.page_slab_id,
@@ -437,7 +437,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
         )
             .cmp(&(
                 right.deleted,
-                right.kind.as_str(),
+                right.kind.as_ref(),
                 right.object_key.as_str(),
                 right.component.as_deref().unwrap_or(""),
                 right.address.page_slab_id,
@@ -528,7 +528,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
                 .unwrap_or(left.address.page_slab_id),
             left.address.page_slab_id,
             left.address.offset,
-            left.kind.as_str(),
+            left.kind.as_ref(),
             left.object_key.as_str(),
         )
             .cmp(&(
@@ -538,7 +538,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
                     .unwrap_or(right.address.page_slab_id),
                 right.address.page_slab_id,
                 right.address.offset,
-                right.kind.as_str(),
+                right.kind.as_ref(),
                 right.object_key.as_str(),
             ))
     });
@@ -972,7 +972,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     }
     let mut hashes = HashMap::<String, HashMap<String, BlockAddress>>::new();
     for entry in collect_bucket_index_live_page_entries(shard) {
-        if entry.deleted || entry.kind != "hash" {
+        if entry.deleted || entry.kind != Arc::from("hash") {
             continue;
         }
         hashes
@@ -1370,7 +1370,7 @@ pub(super) fn upsert_bucket_index_page_with(
     }
     let entry = LivePageEntry {
         object_key: object_key.to_string(),
-        kind: kind.to_string(),
+        kind: crate::engine::state::intern_kind(&mut shard.bucket_index.kind_pool, kind),
         component,
         log_backed: address.page_id().is_none(),
         address,
@@ -1509,7 +1509,7 @@ pub(super) fn sync_bucket_index_object_pages(
         };
         let before = bucket.page_index.len();
         bucket.page_index
-            .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
+            .retain(|_, page| !(page.model_id == Arc::from(kind) && page.object_key == object_key));
         if bucket.page_index.len() != before {
             removed_any = true;
             touched_buckets.insert(routing_bucket);
@@ -1548,7 +1548,7 @@ pub(super) fn sync_bucket_index_object_pages(
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
         let entry = LivePageEntry {
             object_key: object_key.to_string(),
-            kind: kind.to_string(),
+            kind: Arc::from(kind.to_string()),
             component: None,
             log_backed: address.page_id().is_none(),
             address,
@@ -2088,7 +2088,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut context_compressions = HashMap::<String, BTreeMap<u64, BlockAddress>>::new();
 
     for entry in entries {
-        match entry.kind.as_str() {
+        match entry.kind.as_ref() {
             "string" => {
                 saw_strings = true;
                 strings.insert(entry.object_key, entry.address);

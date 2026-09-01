@@ -132,8 +132,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !object.object_keys.contains(&page.object_key) {
                 object.object_keys.push(page.object_key.clone());
             }
-            if !object.model_ids.contains(&page.model_id) {
-                object.model_ids.push(page.model_id.clone());
+            if !object.model_ids.contains(&page.model_id.to_string()) {
+                object.model_ids.push(page.model_id.clone().to_string());
             }
         }
     }

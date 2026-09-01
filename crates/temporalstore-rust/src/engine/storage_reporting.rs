@@ -364,7 +364,7 @@ pub(super) fn storage_physical_index_report(
             });
         let mut page_index = StoragePhysicalPageIndex {
             object_key: entry.object_key.clone(),
-            model_id: entry.kind.clone(),
+            model_id: entry.kind.clone().to_string(),
             component: entry.component.clone(),
             routing_bucket,
             page_slab_id: entry.address.page_slab_id,
@@ -405,7 +405,7 @@ pub(super) fn storage_physical_index_report(
         for page in runtime_bucket.page_index.values() {
             let already_present = bucket.page_indexes.iter().any(|existing| {
                 existing.object_key == page.object_key
-                    && existing.model_id == page.model_id
+                    && *existing.model_id == *page.model_id
                     && existing.component == page.component
                     && existing.page_slab_id == page.address.page_slab_id
                     && existing.offset == page.address.offset
@@ -415,7 +415,7 @@ pub(super) fn storage_physical_index_report(
             }
             let mut page_index = StoragePhysicalPageIndex {
                 object_key: page.object_key.clone(),
-                model_id: page.model_id.clone(),
+                model_id: page.model_id.clone().to_string(),
                 component: page.component.clone(),
                 routing_bucket: *routing_bucket,
                 page_slab_id: page.address.page_slab_id,
@@ -606,7 +606,7 @@ pub(super) fn object_manager_runtime_report(
     ];
     report.packed_timestamped_page_count = collect_live_page_entries(shard)
         .iter()
-        .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_str()))
+        .filter(|entry| TIMESTAMPED_KINDS.contains(&entry.kind.as_ref()))
         .count() as u64;
     report.runtime_ready = report.blockers.is_empty();
     report
@@ -955,7 +955,7 @@ pub(super) fn storage_feature_page_layout_report(
             continue;
         }
         if !matches!(
-            entry.kind.as_str(),
+            entry.kind.as_ref(),
             "feature"
                 | "sequence"
                 | "context_event"
@@ -967,15 +967,15 @@ pub(super) fn storage_feature_page_layout_report(
         ) {
             continue;
         }
-        let family = family_reports.entry(entry.kind.clone()).or_insert_with(|| {
+        let family = family_reports.entry(entry.kind.clone().to_string()).or_insert_with(|| {
             StorageTimestampedPageFamilyReport {
-                kind: entry.kind.clone(),
+                kind: entry.kind.clone().to_string(),
                 ..StorageTimestampedPageFamilyReport::default()
             }
         });
         report.unique_timestamped_page_refs = report.unique_timestamped_page_refs.saturating_add(1);
         family.unique_page_refs = family.unique_page_refs.saturating_add(1);
-        if entry.kind == "feature" {
+        if entry.kind == Arc::from("feature") {
             report.unique_feature_page_refs = report.unique_feature_page_refs.saturating_add(1);
         }
         match page_store.read(&entry.address) {
@@ -984,7 +984,7 @@ pub(super) fn storage_feature_page_layout_report(
                     report.packed_timestamped_pages =
                         report.packed_timestamped_pages.saturating_add(1);
                     family.packed_pages = family.packed_pages.saturating_add(1);
-                    if entry.kind == "feature" {
+                    if entry.kind == Arc::from("feature") {
                         report.packed_feature_pages = report.packed_feature_pages.saturating_add(1);
                     }
                     for point in points {
@@ -1012,7 +1012,7 @@ pub(super) fn storage_feature_page_layout_report(
                     report.legacy_timestamped_value_pages =
                         report.legacy_timestamped_value_pages.saturating_add(1);
                     family.legacy_value_pages = family.legacy_value_pages.saturating_add(1);
-                    if entry.kind == "feature" {
+                    if entry.kind == Arc::from("feature") {
                         report.legacy_feature_value_pages =
                             report.legacy_feature_value_pages.saturating_add(1);
                     }
