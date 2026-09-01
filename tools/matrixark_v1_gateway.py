@@ -2334,9 +2334,12 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
     # through to auto-detection without erroring.
     live_backend = config_snapshot.get("live_storage_backend")
     if live_backend:
+        why = str(config_snapshot.get("live_storage_reason") or "").strip()
         add("storage_backend", "Storage backend", "ok",
             "The datanode resolved the " + str(live_backend) + " backend. This is what it is "
-            "running, not what was requested; the engine records why only in a startup log line.")
+            "running, not what was requested"
+            + ((" — " + why) if why else
+               ". This engine does not publish why it chose it; that is only in its startup log."))
     else:
         add("storage_backend", "Storage backend", "warn",
             "Could not read the datanode's backend, so what this deployment is storing to is "
@@ -2996,6 +2999,48 @@ def _build_direct_client(cfg: GatewayConfig) -> DirectBackendClient:
     )
 
 
+def _parse_prom_labels(line: str) -> Json:
+    """Labels of one Prometheus sample, honouring backslash escapes.
+
+    Splitting on "," and stripping quotes tears a value in half at its first escaped quote, and the
+    reason label carries paths and endpoint URLs, so that is a matter of when rather than whether.
+    """
+    start = line.find("{")
+    end = line.rfind("}")
+    if start < 0 or end < start:
+        return {}
+    out: Json = {}
+    key = ""
+    buf: List[str] = []
+    in_value = False
+    escaped = False
+    for ch in line[start + 1:end]:
+        if not in_value:
+            if ch == "=":
+                key = "".join(buf).strip()
+                buf = []
+            elif ch == '"' and not key:
+                continue
+            elif ch == '"':
+                in_value = True
+            elif ch == ",":
+                buf = []
+            else:
+                buf.append(ch)
+            continue
+        if escaped:
+            buf.append({"n": "\n", "\\": "\\", '"': '"'}.get(ch, ch))
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == '"':
+            out[key] = "".join(buf)
+            key, buf, in_value = "", [], False
+        else:
+            buf.append(ch)
+    return out
+
+
 def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
     """Which storage backend the datanode actually resolved. None => could not determine.
 
@@ -3021,20 +3066,25 @@ def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
         _safe_close(conn)
         if status >= 400:
             return None
-        for line in body.decode("utf-8", "replace").splitlines():
-            if not line.startswith("temporalstore_storage_backend{"):
-                continue
-            labels = line[line.find("{") + 1:line.find("}")]
-            parsed: Json = {}
-            for pair in labels.split(","):
-                if "=" in pair:
-                    key, _, value = pair.partition("=")
-                    parsed[key.strip()] = value.strip().strip('"')
-            if parsed.get("backend"):
-                return {"backend": parsed["backend"],
-                        "replication": parsed.get("replication", ""),
-                        "source": "datanode /metrics"}
-        return None
+        text = body.decode("utf-8", "replace")
+        outcome: Json = {}
+        reason = ""
+        for line in text.splitlines():
+            if line.startswith("temporalstore_storage_backend_info{"):
+                labels = _parse_prom_labels(line)
+                reason = labels.get("reason", "") or reason
+            elif line.startswith("temporalstore_storage_backend{"):
+                labels = _parse_prom_labels(line)
+                if labels.get("backend"):
+                    outcome = {"backend": labels["backend"],
+                               "replication": labels.get("replication", ""),
+                               "source": "datanode /metrics"}
+        if not outcome:
+            return None
+        # Absent on an engine older than the series. That is a fact about the deployment, not a
+        # failure, so the caller distinguishes "no reason published" from "could not reach it".
+        outcome["reason"] = reason
+        return outcome
     except Exception:
         return None
 
@@ -3323,9 +3373,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "catalogue": catalogue,
                 "live": live,
                 "live_detail": (
-                    "This deployment resolved the %s backend. The engine records WHY in a startup "
-                    "log line only, so the reason is not readable over HTTP."
-                    % live["backend"] if live else
+                    ("This deployment resolved the %s backend. %s" % (
+                        live["backend"],
+                        live.get("reason")
+                        or "This engine does not publish why it chose it; that is only in its "
+                           "startup log.")) if live else
                     "Could not read the datanode's backend. It publishes "
                     "temporalstore_storage_backend on /metrics; an unreachable datanode or a "
                     "gateway pointed at the wrong address both look like this."),
@@ -3530,6 +3582,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             if live:
                 config_snapshot = dict(config_snapshot)
                 config_snapshot["live_storage_backend"] = live.get("backend")
+                config_snapshot["live_storage_reason"] = live.get("reason") or ""
             checks = _readiness_checks(config_snapshot, counts, cfg,
                                        float(traffic.get("total_requests") or 0), imports)
             done = sum(1 for c in checks if c["status"] == "ok")
