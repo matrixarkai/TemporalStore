@@ -5002,18 +5002,58 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         with lock:
             self._event_member_index = None
 
-    def _maintain_event_membership_after_append(self, records: list[Json]) -> None:
-        """Keep the membership index coherent after a batch lands. Base (LOCAL) behavior: invalidate
-        the in-memory index so the next delete rebuilds it from the current live view -- correct even
-        under async extraction, since the rebuild sees whatever derivatives have committed by then.
-        The engine adapter overrides this to also write-through the durable ``event_members`` hash."""
+    def _merge_event_member_index(self, records: list[Json]) -> None:
+        """Fold an appended batch into the membership index instead of dropping it.
+
+        Sound because membership is ADDITIVE for these record types: an event contributes
+        itself, and a derivative contributes its identity ids to each source it names. Neither
+        can retract an entry another record already earned, so a union with what the batch
+        builds equals what a full rebuild would produce.
+
+        When no index is built yet this does nothing, and must: the next
+        ``_ensure_event_member_index`` builds from ``read_all()``, which already contains these
+        records. That is the property that makes the fast path unable to lose one."""
         if not records:
             return
+        # Read both through getattr, as `_invalidate_event_member_index` already does: an instance
+        # that never ran __init__ has neither, and no lock means no index, which by the rule above
+        # makes this a no-op rather than an error.
+        lock = getattr(self, "_event_member_index_lock", None)
+        if lock is None or getattr(self, "_event_member_index", None) is None:
+            return
+        with lock:
+            if self._event_member_index is None:
+                return
+            for event_id, members in build_event_member_index(records).items():
+                self._event_member_index.setdefault(event_id, set()).update(members)
+
+    def _maintain_event_membership_after_append(self, records: list[Json]) -> None:
+        """Keep the membership index coherent after a batch lands.
+
+        Base (LOCAL) behavior used to invalidate the whole index on every append that carried an
+        event, a tombstone or a derivative -- which is nearly every write. The next delete or
+        update then rebuilt it with ``build_event_member_index(self.read_all())``, a full-store
+        scan, so N writes interleaved with N deletes cost N full scans.
+
+        Appends now MERGE (membership is additive, see ``_merge_event_member_index``); only a
+        tombstone still invalidates, because it REMOVES live records and the index is built from
+        the live view -- folding a removal in as a union would leave members that no longer
+        exist, and a delete that consulted them would sweep the wrong identity set.
+
+        The engine adapter overrides this to also write-through the durable ``event_members``
+        hash."""
+        if not records:
+            return
+        additive: list[Json] = []
         for record in records:
             record_type = str(record.get("record_type") or "")
-            if record_type in ("context_event", MEMORY_TOMBSTONE_RECORD_TYPE) or record_type in _MEMORY_DERIVATIVE_RECORD_TYPES:
+            if record_type == MEMORY_TOMBSTONE_RECORD_TYPE:
                 self._invalidate_event_member_index()
                 return
+            if record_type == "context_event" or record_type in _MEMORY_DERIVATIVE_RECORD_TYPES:
+                additive.append(record)
+        if additive:
+            self._merge_event_member_index(additive)
 
     # --- Durable-persistence seam (engine adapter overrides these; LOCAL is in-memory only) --------
     def _lookup_persisted_event_members(self, event_id: str) -> set[str] | None:

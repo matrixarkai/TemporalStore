@@ -104,6 +104,30 @@ pub enum StorageBackend {
 }
 
 impl StorageBackend {
+    /// Whether the cache should keep a DISK tier beneath memory.
+    ///
+    /// A cache tier earns its cost from the latency it spans. With shared storage the durable
+    /// copy is on another machine (or a shared mount), and a local disk tier closes a real
+    /// millisecond-scale distance. With raft the durable copy is this node's own disk, so the
+    /// tier is a third copy of bytes the OS page cache already serves from the same device --
+    /// measured at 106 MB of cache against 21.6 MB of pages, 70% of everything on disk, to
+    /// shorten a distance that is already zero.
+    ///
+    /// So: shared storage caches to disk; one-box and raft run memory + their own disk.
+    /// `TS_CACHE_DISK_TIER` overrides either way for an operator who knows better.
+    pub fn wants_disk_cache_tier(&self) -> bool {
+        if let Ok(value) = std::env::var("TS_CACHE_DISK_TIER") {
+            let value = value.trim().to_ascii_lowercase();
+            if !value.is_empty() {
+                return !matches!(value.as_str(), "0" | "false" | "no" | "off");
+            }
+        }
+        match self {
+            StorageBackend::MatrixObject { .. } | StorageBackend::SharedPath { .. } => true,
+            StorageBackend::RaftReplication => false,
+        }
+    }
+
     /// The cluster-level replication mode implied by this backend.
     pub fn replication_mode(&self) -> ReplicationMode {
         match self {
@@ -856,5 +880,58 @@ mod tests {
         assert!(!default_endpoint_probe(&format!("127.0.0.1:{closed}")));
         // Unparseable endpoint -> unreachable.
         assert!(!default_endpoint_probe("   "));
+    }
+}
+
+#[cfg(test)]
+mod disk_cache_tier_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn shared_path() -> StorageBackend {
+        StorageBackend::SharedPath {
+            root: PathBuf::from("/mnt/shared"),
+            cluster_id: "c".to_string(),
+        }
+    }
+
+    fn matrixobject() -> StorageBackend {
+        StorageBackend::MatrixObject {
+            bucket: "b".to_string(),
+            cluster_id: "c".to_string(),
+        }
+    }
+
+    #[test]
+    fn shared_storage_keeps_the_disk_tier_and_local_storage_does_not() {
+        std::env::remove_var("TS_CACHE_DISK_TIER");
+        // Both halves asserted: a rule that only ever answered "false" would still satisfy the
+        // half this change is motivated by.
+        assert!(matrixobject().wants_disk_cache_tier());
+        assert!(shared_path().wants_disk_cache_tier());
+        assert!(!StorageBackend::RaftReplication.wants_disk_cache_tier());
+    }
+
+    #[test]
+    fn one_box_with_nothing_configured_gets_no_disk_tier() {
+        // With nothing configured the resolver returns RaftReplication -- the backend a single
+        // box and a raft node both land on -- so both run memory + their own disk.
+        std::env::remove_var("TS_CACHE_DISK_TIER");
+        let resolved = StorageBackendConfig::default().resolve();
+        assert_eq!(resolved, StorageBackend::RaftReplication);
+        assert!(!resolved.wants_disk_cache_tier());
+    }
+
+    #[test]
+    fn the_operator_override_wins_in_both_directions() {
+        std::env::set_var("TS_CACHE_DISK_TIER", "0");
+        assert!(!matrixobject().wants_disk_cache_tier());
+        std::env::set_var("TS_CACHE_DISK_TIER", "1");
+        assert!(StorageBackend::RaftReplication.wants_disk_cache_tier());
+        // An empty value must not be read as "off" -- it means "unset".
+        std::env::set_var("TS_CACHE_DISK_TIER", "");
+        assert!(!StorageBackend::RaftReplication.wants_disk_cache_tier());
+        assert!(matrixobject().wants_disk_cache_tier());
+        std::env::remove_var("TS_CACHE_DISK_TIER");
     }
 }
