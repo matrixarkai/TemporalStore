@@ -4161,6 +4161,89 @@ fn pages_of_one_kind_share_a_single_kind_string() {
     );
 }
 
+/// The observed range of every numeric field in a page address.
+///
+/// A field is only narrowable if something real bounds it. Slab geometry bounds a slab id, an
+/// offset within a slab and a page length; a hash bounds nothing. This reports the maximum each
+/// field actually reaches so the distinction is measured rather than assumed -- a field that looks
+/// small in one corpus because the corpus is small would otherwise read as narrowable.
+#[test]
+fn what_each_address_field_actually_ranges_over() {
+    const PAGES: usize = 3_000;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        2 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..PAGES {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("range-{index:07}"),
+                value: vec![b'v'; 96],
+            },
+        });
+    }
+    for object in 0..120 {
+        for field in 0..6 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("range-hash-{object:06}"),
+                    field: format!("f{field}"),
+                    value: vec![b'h'; 96],
+                },
+            });
+        }
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut pages = 0usize;
+    let (mut slab, mut offset, mut length) = (0u64, 0u64, 0u64);
+    let (mut page_id, mut object_id, mut generation, mut band) = (0u64, 0u64, 0u64, 0u64);
+    let mut routing = 0u32;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_key, page) in bucket.page_index.iter() {
+            pages += 1;
+            let a = &page.address;
+            slab = slab.max(a.page_slab_id);
+            offset = offset.max(a.offset);
+            length = length.max(a.length);
+            page_id = page_id.max(a.page_id().unwrap_or(0));
+            object_id = object_id.max(a.object_id().unwrap_or(0));
+            generation = generation.max(a.generation().unwrap_or(0));
+            band = band.max(a.band_id().unwrap_or(0));
+            routing = routing.max(a.routing_bucket().unwrap_or(0));
+        }
+    }
+    assert!(pages > 0, "no pages were recorded; nothing was measured");
+
+    let bits = |v: u64| if v == 0 { 0 } else { 64 - v.leading_zeros() };
+    println!(
+        "
+  address field ranges over {pages} pages (max observed, and bits to hold it):
+    page_slab_id  {slab:>22}  {:>2} bits   bounded by slab count
+    offset        {offset:>22}  {:>2} bits   bounded by slab size
+    length        {length:>22}  {:>2} bits   bounded by page size
+    page_id       {page_id:>22}  {:>2} bits
+    object_id     {object_id:>22}  {:>2} bits   a hash -- bounded by nothing
+    generation    {generation:>22}  {:>2} bits
+    band_id       {band:>22}  {:>2} bits
+    routing_slot  {routing:>22}  {:>2} bits   already u32
+
+    a maximum observed here is NOT a bound: it says a field is a candidate,
+    not that it is safe. Narrowing one needs the bound asserted where the
+    value is produced, so a violation fails loudly instead of truncating.
+",
+        bits(slab), bits(offset), bits(length), bits(page_id),
+        bits(object_id), bits(generation), bits(band), bits(u64::from(routing)),
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
@@ -8604,7 +8687,7 @@ fn what_a_live_record_is_made_of() {
             );
             if let Some(address) = item.resolved_address() {
                 println!(
-                    "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} band={:?} digest={} chars",
+                    "[census]   address: slab={} off={} len={} block_id={:?} object_id={:?} gen={:?} band={:?}",
                     address.page_slab_id,
                     address.offset,
                     address.length,
@@ -8612,7 +8695,6 @@ fn what_a_live_record_is_made_of() {
                     address.object_id(),
                     address.generation(),
                     address.band_id(),
-                    address.sha256.map(|digest| digest.len()).unwrap_or(0),
                 );
                 println!(
                     "[census]   item.object_id == address.object_id()? {}",
@@ -10355,7 +10437,6 @@ fn which_parts_of_a_page_address_are_populated() {
             routing_bucket += usize::from(a.routing_bucket().is_some());
             generation += usize::from(a.generation().is_some());
             band_id += usize::from(a.band_id().is_some());
-            sha256 += usize::from(a.sha256.is_some());
             compactable += usize::from(a.compact_slab_address().is_some());
         }
     }
@@ -10435,8 +10516,6 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
     let mut pages = 0usize;
     let mut routing_matches_bucket = 0usize;
     let mut object_id_matches_entry = 0usize;
-    let mut sha_heap = 0usize;
-    let mut sha_present = 0usize;
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {
         for page in bucket.page_index.values() {
             pages += 1;
@@ -10446,30 +10525,25 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
             if page.address.object_id() == Some(page.object_id) {
                 object_id_matches_entry += 1;
             }
-            if let Some(sha) = page.address.sha256.as_ref() {
-                sha_present += 1;
-                sha_heap += sha.len();
-            }
         }
     }
     assert!(pages > 0, "the workload must produce pages, or this measures nothing");
 
     let pct = |n: usize| 100.0 * n as f64 / pages as f64;
-    let sha_bytes = if sha_present > 0 { sha_heap as f64 / sha_present as f64 } else { 0.0 };
     println!(
         "
   {pages} pages
 
     address.routing_slot == the bucket it is filed under   {routing_matches_bucket:>6}  {:>5.1}%   (8 B)
     address.object_id    == the entry's own object_id      {object_id_matches_entry:>6}  {:>5.1}%  (16 B)
-    address.sha256 present                                 {sha_present:>6}  {:>5.1}%  (24 B inline + {sha_bytes:.0} B heap)
+    the digest is no longer held here at all -- it lives in the page envelope,
+    which is where a read already verifies against it
 
-    recoverable if both hold: {} B per page, of 339.6 B measured
+    recoverable if both hold: {} B per page, of 235.6 B measured
 ",
         pct(routing_matches_bucket),
         pct(object_id_matches_entry),
-        pct(sha_present),
-        8 + 16 + if sha_present == pages { 24 + sha_bytes as usize } else { 0 },
+        8 + 16,
     );
 
     // Report, with one thing asserted: a field that DISAGREES with its surroundings is a defect,

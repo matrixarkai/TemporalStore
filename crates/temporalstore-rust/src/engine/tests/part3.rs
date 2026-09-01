@@ -1874,7 +1874,7 @@ fn rebuild_bucket_page_ownership_preserves_dirty_watermarks() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "k".to_string(),
-        BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None, None),
+        BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None),
     );
     shard.bucket_index.bucket_map.insert(
         3,
@@ -2359,7 +2359,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                     model_id: Arc::from("string".to_string()),
                     component: None,
                     object_id: 30,
-                    address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None, None),
+                    address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None),
                     dirty: false,
                     deleted: false,
                     log_backed: true,
@@ -2388,7 +2388,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: Arc::from("feature".to_string()),
                         component: None,
                         object_id: 40,
-                        address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40), Some(4), Some(2), None, None),
+                        address: BlockAddress::from_parts(2, 0, 4, Some(2), Some(40), Some(4), Some(2), None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2401,7 +2401,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: Arc::from("feature".to_string()),
                         component: None,
                         object_id: 40,
-                        address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40), Some(4), Some(3), None, None),
+                        address: BlockAddress::from_parts(2, 4, 4, Some(3), Some(40), Some(4), Some(3), None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2430,7 +2430,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: Arc::from("hash".to_string()),
                         component: Some(Arc::from("a".to_string())),
                         object_id: 50,
-                        address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50), Some(5), Some(4), None, None),
+                        address: BlockAddress::from_parts(3, 0, 1, Some(4), Some(50), Some(5), Some(4), None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,
@@ -2443,7 +2443,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                         model_id: Arc::from("hash".to_string()),
                         component: Some(Arc::from("b".to_string())),
                         object_id: 51,
-                        address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51), Some(5), Some(5), None, None),
+                        address: BlockAddress::from_parts(3, 1, 1, Some(5), Some(51), Some(5), Some(5), None),
                         dirty: false,
                         deleted: false,
                         log_backed: true,

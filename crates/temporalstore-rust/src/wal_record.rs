@@ -111,7 +111,6 @@ pub fn block_address_from_item(log_id: u64, log_size: u64, item: &WalItem) -> Bl
         u32::try_from(item.routing_bucket).ok(),
         None,
         None,
-        None,
     )
 }
 

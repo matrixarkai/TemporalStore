@@ -176,7 +176,8 @@ fn address_to_proto(address: &BlockAddress) -> v1::WalBlockAddress {
         checksum: None,
         // In memory the digest is already the 32 bytes this field wants, so there is no
         // transcription left to undo.
-        checksum_raw: address.sha256.map(|digest| digest.to_vec()),
+        // The index does not hold a digest; the page envelope carries it.
+        checksum_raw: None,
     }
 }
 
@@ -190,19 +191,6 @@ fn address_from_proto(address: v1::WalBlockAddress) -> BlockAddress {
         address.routing_bucket,
         address.generation,
         address.band_id,
-        // Prefer the digest; fall back to the hex a record written before it carries.
-        address
-            .checksum_raw
-            .as_deref()
-            .and_then(|raw| <[u8; 32]>::try_from(raw).ok())
-            // A record written before  existed carries the hex instead; decode it
-            // to the same 32 bytes rather than keeping two shapes alive in memory.
-            .or_else(|| {
-                address.checksum.as_deref().and_then(|text| {
-                    let mut bytes = [0u8; 32];
-                    hex::decode_to_slice(text.as_bytes(), &mut bytes).ok().map(|_| bytes)
-                })
-            }),
     )
 }
 /// The numeric key a component is carrying, if it is carrying one.

@@ -130,7 +130,9 @@ impl LocalRaftWal {
                     .write(true)
                     .truncate(true)
                     .open(&tmp)?;
-                file.write_all(&crate::log_framing::encode_line(&bytes))?;
+                // Binary frame: the payload here is compressed bytes, and a text frame
+                // would let one ending in 0x0A be mistaken for its own terminator.
+                file.write_all(&crate::log_framing::encode_frame(&bytes))?;
                 file.sync_data()?;
             }
             fs::rename(&tmp, &path)?;
@@ -179,8 +181,9 @@ impl LocalRaftWal {
                 snapshot.last_included_index
             ))
         })?;
-        let payload = crate::log_framing::decode_line(raw.strip_suffix(b"\n").unwrap_or(&raw))
-            .map_err(io::Error::other)?;
+        // No newline stripping here: `decode_line` strips one itself for a text record, and
+        // doing it first would take a real byte off a binary payload that ends in 0x0A.
+        let payload = crate::log_framing::decode_line(&raw).map_err(io::Error::other)?;
         let payload = decompress_state_image(payload)?;
         let message = <crate::sdk::v1::WalStateImage as prost::Message>::decode(payload.as_ref())
             .map_err(io::Error::other)?;

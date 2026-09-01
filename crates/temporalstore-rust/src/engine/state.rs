@@ -814,7 +814,7 @@ mod component_lookup_tests {
             model_id: Arc::from("hash".to_string()),
             component: component.map(str::to_string).map(Arc::from),
             object_id: 0,
-            address: BlockAddress::from_parts(0, 0, 0, None, None, None, None, None, None),
+            address: BlockAddress::from_parts(0, 0, 0, None, None, None, None, None),
             dirty: false,
             deleted: false,
             log_backed: false,

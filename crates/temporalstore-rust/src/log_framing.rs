@@ -818,4 +818,34 @@ mod tests {
         line[position] ^= 0x01;
         assert!(decode_base_header(&line).is_err());
     }
+
+    /// A payload whose last byte is a newline survives the binary frame and not the text one.
+    ///
+    /// This is the defect that made a compressed state image occasionally unrestorable. The text
+    /// frame terminates records with a newline, so a payload ending in one loses that byte to the
+    /// terminator and comes back a byte short -- "declared N, actual N-1". Arbitrary bytes,
+    /// compressed data and protobuf among them, hit it by luck of their last byte, which is why it
+    /// surfaced as an intermittent restore failure rather than a consistent one.
+    #[test]
+    fn a_payload_ending_in_a_newline_round_trips_only_through_the_binary_frame() {
+        let payload = b"compressed-bytes-that-end-in\n".to_vec();
+        assert_eq!(*payload.last().unwrap(), b'\n', "the case under test");
+
+        let framed = encode_frame(&payload);
+        assert_eq!(
+            decode_line(&framed).unwrap(),
+            payload.as_slice(),
+            "the binary frame declares its own length, so the payload comes back whole"
+        );
+
+        // The text frame cannot carry it: a newline-delimited reader ends the record at the
+        // payload's own last byte, which is what the length check then catches.
+        let as_line = encode_line(&payload);
+        let first_newline = as_line.iter().position(|byte| *byte == b'\n').unwrap();
+        assert!(
+            decode_line(&as_line[..first_newline]).is_err(),
+            "a text-framed record cut at its payload's own newline must be REJECTED, not \
+             silently returned a byte short"
+        );
+    }
 }

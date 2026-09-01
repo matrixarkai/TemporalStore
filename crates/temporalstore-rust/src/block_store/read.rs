@@ -17,21 +17,12 @@ impl LocalBlockStore {
         let mut bytes = vec![0; address.length as usize];
         file.read_exact(&mut bytes)?;
         let decoded = decode_page_record(&bytes, address)?;
+        // `decode_page_record` just verified this payload against the digest stored in the
+        // page envelope, and cross-checked the record header's page id, object id and routing
+        // slot against this address. A second comparison against a digest carried in the index
+        // added nothing to either: the first covers corruption, the second covers an entry
+        // pointing at the wrong page.
         let bytes = decoded.payload;
-        if let Some(expected) = &address.sha256 {
-            // Compare the bytes; render hex only if they differ, which is the path that has a
-            // human on the other end of it.
-            let actual = sha256_bytes(&bytes);
-            if &actual != expected {
-                return Err(BlockStoreError::ChecksumMismatch {
-                    page_slab_id: address.page_slab_id,
-                    offset: address.offset,
-                    length: address.length,
-                    expected: hex::encode(expected),
-                    actual: hex::encode(actual),
-                });
-            }
-        }
         inner.stats.reads += 1;
         inner.stats.bytes_read += address.length;
         inner.stats.logical_bytes_read += decoded.logical_len as u64;

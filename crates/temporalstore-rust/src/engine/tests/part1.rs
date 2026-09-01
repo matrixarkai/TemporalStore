@@ -1106,15 +1106,15 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
-        BlockAddress::from_parts(7, 0, 1, None, None, None, None, None, None),
+        BlockAddress::from_parts(7, 0, 1, None, None, None, None, None),
     );
     shard.hashes.entry("hash".to_string()).or_default().insert(
         "field".to_string(),
-        BlockAddress::from_parts(8, 0, 1, None, None, None, None, None, None),
+        BlockAddress::from_parts(8, 0, 1, None, None, None, None, None),
     );
     shard.sets.entry("set".to_string()).or_default().insert(
         b"member".to_vec(),
-        BlockAddress::from_parts(9, 0, 1, None, None, None, None, None, None),
+        BlockAddress::from_parts(9, 0, 1, None, None, None, None, None),
     );
     shard
         .features
@@ -1122,7 +1122,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             10,
-            BlockAddress::from_parts(10, 0, 1, None, None, None, None, None, None),
+            BlockAddress::from_parts(10, 0, 1, None, None, None, None, None),
         );
     shard
         .features
@@ -1130,7 +1130,7 @@ fn live_page_slab_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             11,
-            BlockAddress::from_parts(11, 0, 1, None, None, None, None, None, None),
+            BlockAddress::from_parts(11, 0, 1, None, None, None, None, None),
         );
     shard
         .control_state
@@ -3138,7 +3138,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "container-probe".to_string(),
-        BlockAddress::from_parts(7, 11, 13, None, None, None, None, None, None),
+        BlockAddress::from_parts(7, 11, 13, None, None, None, None, None),
     );
 
     // Container OFF: raw JSON, and JSON is what an older binary would have written.
@@ -3181,12 +3181,12 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for i in 0..64u64 {
         shard.strings.insert(
             format!("object-{i}"),
-            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3), Some((i % 8) as u32), Some(i), None, None),
+            BlockAddress::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3), Some((i % 8) as u32), Some(i), None),
         );
     }
     shard.hashes.entry("hash-object".to_string()).or_default().insert(
         "component".to_string(),
-        BlockAddress::from_parts(9, 1, 2, None, None, None, None, None, None),
+        BlockAddress::from_parts(9, 1, 2, None, None, None, None, None),
     );
     shard.applied_wal_sequence = Some(4242);
 
