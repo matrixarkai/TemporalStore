@@ -1487,6 +1487,7 @@ fn handle(
                 &Status::error("raft_disabled", "meta raft is disabled"),
             ),
         },
+        ("GET", "/meta/raft/leader") => json_response(200, &meta.raft_leader()),
         ("GET", "/meta/raft/ready") => json_response(200, &meta.raft_ready()),
         ("GET", "/meta/raft/membership") => json_response(200, &meta.raft_membership()),
         ("POST", "/meta/raft/add_node") => parse_or(&request.body, |req: MetaRaftNodeRequest| {
@@ -2344,6 +2345,18 @@ fn unreplicated_meta_raft_warning(nodes: &[ProductionRaftNode]) -> Option<String
     ))
 }
 
+/// Which node leads the metaserver's raft group, and the address it was
+/// configured with.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct MetaRaftLeaderResponse {
+    status: Status,
+    leader_id: RaftNodeId,
+    /// Empty when there is no leader, or none with a configured address.
+    addr: String,
+    /// Whether this process is that node, so a caller can tell it has arrived.
+    is_local: bool,
+}
+
 fn parse_meta_raft_node(index: usize, value: &str) -> Option<ProductionRaftNode> {
     if let Some((id, addr)) = value.split_once('=') {
         return Some(ProductionRaftNode {
@@ -2736,6 +2749,33 @@ mod tests {
             warning.contains("diverge"),
             "it should say what goes wrong: {warning}"
         );
+    }
+
+    #[test]
+    fn the_metaserver_says_which_node_leads_and_where() {
+        // The raft status answers with a leader id and no address, and the
+        // addresses are configured and then reported nowhere -- so nothing
+        // could work out where to send a change. A number is not an endpoint.
+        let raft = with_scheduler_env(
+            &[(
+                "TS_META_RAFT_NODES",
+                "7=10.0.0.7:17001,8=10.0.0.8:17001,9=10.0.0.9:17001",
+            ), ("TS_META_RAFT_NODE_ID", "7")],
+            MetaBackend::from_env,
+        )
+        .expect("raft backend starts");
+        let leader = raft.raft_leader();
+        assert!(leader.status.ok, "{:?}", leader.status);
+        assert_eq!(leader.leader_id, 7, "the first node listed leads");
+        assert_eq!(leader.addr, "10.0.0.7:17001", "and it says where that is");
+        assert!(leader.is_local, "this process is that node");
+
+        // A metaserver that is not raft-backed has no leader to name, and says
+        // so rather than inventing one.
+        let single = MetaBackend::Single(SingleNodeMeta::default()).raft_leader();
+        assert!(!single.status.ok);
+        assert_eq!(single.status.code, "raft_disabled");
+        assert!(single.addr.is_empty());
     }
 
     #[test]

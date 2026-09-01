@@ -54,6 +54,35 @@ impl MetaBackend {
         }
     }
 
+    /// Who leads this metaserver's raft group, and where.
+    fn raft_leader(&self) -> MetaRaftLeaderResponse {
+        match self {
+            Self::Single(_) => MetaRaftLeaderResponse {
+                status: Status::error("raft_disabled", "meta raft is disabled"),
+                leader_id: 0,
+                addr: String::new(),
+                is_local: false,
+            },
+            Self::Raft(runtime) => match runtime.leader_endpoint() {
+                Some((leader_id, addr)) => MetaRaftLeaderResponse {
+                    status: Status::ok(),
+                    leader_id,
+                    addr,
+                    is_local: leader_id == runtime.local_node_id(),
+                },
+                None => MetaRaftLeaderResponse {
+                    status: Status::error(
+                        "leader_unavailable",
+                        "meta raft has no leader with a configured address",
+                    ),
+                    leader_id: 0,
+                    addr: String::new(),
+                    is_local: false,
+                },
+            },
+        }
+    }
+
     fn raft_status(&self) -> Option<RaftClusterStatus> {
         match self {
             Self::Single(_) => None,
