@@ -5822,6 +5822,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
                 text: "a summary".to_string(),
                 valid_from_ms: 1_787_270_073_000,
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             },
         },
         Command::ContextWriteCompressionEvent {

@@ -3378,6 +3378,7 @@ pub(crate) fn execute_on_shard(
                     .filter(|summary| !summary.vector.is_empty())
                     .map(|summary| ContextSummaryVector {
                         node_hash,
+                        embedding_model_hash: summary.embedding_model_hash,
                         vector: summary.vector,
                     })
                 })

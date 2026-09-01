@@ -833,6 +833,7 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
                     text: text.to_string(),
                     valid_from_ms,
                     vector: Vec::new(),
+                    embedding_model_hash: 0,
                 },
             },
         });
@@ -1409,6 +1410,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 text: "compact summary".to_string(),
                 valid_from_ms: 52,
                 vector: Vec::new(),
+                embedding_model_hash: 0,
             },
         },
         Command::CommonDelete {
@@ -3349,6 +3351,7 @@ fn what_reading_one_summary_actually_costs() {
                         text: text.clone(),
                         valid_from_ms: 1_000,
                         vector: vec![0.25_f32; 16],
+                        embedding_model_hash: 0,
                     },
                 },
             });

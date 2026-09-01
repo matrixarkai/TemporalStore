@@ -467,6 +467,11 @@ pub struct ContextChildRef {
 pub struct ContextSummaryVector {
     pub node_hash: u64,
     pub vector: Vec<f32>,
+    /// Which encoder produced `vector`, carried out alongside it. The retrieve path scores from
+    /// this response alone and never opens the summary record again, so without the hash here
+    /// the model check would have nothing to check.
+    #[serde(default)]
+    pub embedding_model_hash: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -489,6 +494,18 @@ pub struct ContextSummary {
     // vector and simply counts as un-embedded until the backfill re-embeds it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vector: Vec<f32>,
+    /// Which encoder produced `vector`, mirroring the field of the same name on `ContextNode`.
+    ///
+    /// A node whose own vector came from a replaced encoder is already declined, but that only
+    /// removed one of the two ways this node gets scored: the same retrieve pass also scores
+    /// this summary's vector, and it had no hash to check. That is worse than being un-embedded
+    /// rather than equal to it -- both passes fill ONE score map, so a summary score marks the
+    /// node scored and withdraws the lexical fallback the declined node was routed to.
+    ///
+    /// Zero means unknown -- a summary written before this field existed, or one carrying no
+    /// vector at all -- and unknown never conflicts, so existing stores keep scoring as they did.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub embedding_model_hash: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1053,6 +1070,13 @@ impl ContextWire for ContextSummary {
         encode_bytes_field(&mut out, 4, self.text.as_bytes());
         encode_varint_field(&mut out, 5, self.valid_from_ms);
         encode_vector_field(&mut out, &self.vector);
+        if self.embedding_model_hash != 0 {
+            encode_varint_field(
+                &mut out,
+                CONTEXT_EMBEDDING_MODEL_FIELD,
+                self.embedding_model_hash,
+            );
+        }
         out
     }
 
@@ -1064,6 +1088,7 @@ impl ContextWire for ContextSummary {
             text: String::new(),
             valid_from_ms: 0,
             vector: Vec::new(),
+            embedding_model_hash: 0,
         };
         while cursor < bytes.len() {
             let tag = decode_varint(bytes, &mut cursor)?;
@@ -1077,6 +1102,9 @@ impl ContextWire for ContextSummary {
                 }
                 (CONTEXT_VECTOR_INT8_FIELD, 2) => {
                     value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                }
+                (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
+                    value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -2757,6 +2785,7 @@ mod tests {
             text: "summary".to_string(),
             valid_from_ms: 1_000,
             vector: Vec::new(),
+            embedding_model_hash: 0x51A7,
         };
         assert_eq!(
             ContextSummary::decode_context_proto_value(&summary.encode_context_proto_value()),
