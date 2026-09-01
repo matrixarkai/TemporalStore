@@ -237,6 +237,10 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
         .lock()
         .expect("runtime stats lock poisoned")
         .gc_runs += 1;
+    // Hand back what this just released. `free` returns memory to the allocator, not to the kernel:
+    // measured here, dropping 46 MB returned 2.3% of it, and one trim returned 95% of the rest. GC
+    // is where a lot is released at once and nothing is waiting on the result.
+    let _ = crate::memory_trim::release_free_heap_to_os();
     GcResponse {
         status,
         shard_id: request.shard_id,
