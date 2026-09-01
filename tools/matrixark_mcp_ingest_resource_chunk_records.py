@@ -10,6 +10,7 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import (
+        candidate_index_terms,
         MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
         Json,
         context_index_name,
@@ -24,6 +25,7 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
+        candidate_index_terms,
         MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
         Json,
         context_index_name,
@@ -92,6 +94,14 @@ except ImportError:  # top-level path
 INDEX_ONLY_CONSULTABLE_TERMS = os.environ.get(
     "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS", "1"
 ).strip().lower() not in {"0", "false", "no", "off", ""}
+
+# A posting whose target the owner derives for itself is a restatement. Since the fold the owner
+# always carries its vector, which is the condition the prefilter's owner branch is gated on, so
+# that branch now reaches every chunk. Set MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS=0 to write
+# them again.
+INDEX_SKIP_OWNER_DERIVABLE_TERMS = os.environ.get(
+    "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 
 INDEX_POSTING_LISTS = os.environ.get(
     "MATRIXARK_INDEX_POSTING_LISTS", "1"
@@ -172,6 +182,9 @@ def append_resource_chunk_records(
     index_write_count = 0
     index_dropped_by_cap_count = 0
     for chunk, vector in zip(parsed_chunks, chunk_vectors):
+        # None for a chunk whose owner is not captured below; the derivable-term skip is
+        # gated on it, so an uncaptured owner simply keeps writing its postings.
+        owner_record = None
         resource_chunk_hashes.append(chunk.chunk_hash)
         source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
         chunk_metadata_source = {**chunk.metadata, "source_locator": source_locator}
@@ -185,7 +198,7 @@ def append_resource_chunk_records(
                 if section_heading
                 else chunk_metadata
             )
-            pending_records.append(
+            owner_record = (
                 # The record carries `heading` at the top level, so the copy inside its own
                 # metadata restates it on every chunk. Dropped only when the top-level field
                 # actually received the value, so a chunk without a heading is untouched.
@@ -208,12 +221,12 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
-        # For a skill this record is a byte-identical second copy of the section written just
+            pending_records.append(owner_record)
         # above. Retrieval skips it (`resource_chunk` + `resource_type == "skill"` is filtered out
         # of the resource/skill scan) and the dashboard now reads the section, so writing it costs
         # 42.1% of a skill ingest's bytes for a duplicate nobody reads.
         if skill_hash is None or not DEDUPE_SKILL_CHUNK_TEXT:
-            pending_records.append(
+            owner_record = (
                 resource_record_builders.resource_chunk_record(
                     import_task_hash=resource_import_task_hash,
                     chunk_hash=chunk.chunk_hash,
@@ -251,6 +264,7 @@ def append_resource_chunk_records(
                     updated_at_ms=envelope["ingestion_time_ms"],
                 )
             )
+            pending_records.append(owner_record)
         # A skill chunk used to store the SAME vector twice, once as embedding_type
         # resource_chunk and once as skill_section, with the same ref_hash. Retrieval keys
         # its vector map on ref_hash ALONE and both land in it, so the second copy only ever
@@ -318,11 +332,20 @@ def append_resource_chunk_records(
         # Drop terms no query can ask for. passes_secondary_index_filters only ever intersects a
         # candidate's terms with the groups infer_secondary_index_filter_groups produces, and that
         # inference emits a fixed set of KINDS -- so a term outside it cannot narrow a search or
-        # earn the hint boost whatever its value. On a 1 MB skill those terms are 96.4% of the
-        # index and 15.7% of the whole ingest, written and scanned to affect nothing.
+        # earn the hint boost whatever its value.
         if INDEX_ONLY_CONSULTABLE_TERMS:
             chunk_index_terms = [
                 term for term in chunk_index_terms if index_term_is_consultable(term)
+            ]
+        # Then drop the ones the owner can work out for itself. A chunk that carries its own
+        # vector is reached by the prefilter's owner branch, which recomputes these same terms
+        # with candidate_index_terms -- so a posting for one of them restates the record it
+        # points at. Gated on the vector actually being there, because that is what the branch
+        # is gated on: without it the owner is skipped and the posting is the only route.
+        if INDEX_SKIP_OWNER_DERIVABLE_TERMS and vector and owner_record is not None:
+            owner_derivable = candidate_index_terms(owner_record, {}, {})
+            chunk_index_terms = [
+                term for term in chunk_index_terms if term not in owner_derivable
             ]
         chunk_index_terms = take_secondary_index_terms(chunk_index_terms, secondary_index_budget)
         for index_name in chunk_index_terms:

@@ -53,7 +53,12 @@ def _ingest():
         raw_uri=path, raw_uri_hash=1, resource_type="skill", resource_manifest_hash=2,
         resource_import_task_hash=3, node_hash=4, node_path=["a"], access_scope={},
         deployment_scope="local", resource_record_scope={}, skill_hash=5, skill_name="s",
-        skill_metadata={},
+        # skill_trigger and skill_tool come from the manifest, not the chunk, so the owner
+        # cannot derive them and they are still written as postings. Terms the owner CAN
+        # derive no longer produce a row at all, so without these the fixture would have
+        # nothing to assert on.
+        skill_metadata={"triggers": ["refund_flow", "checkout"],
+                        "allowed_tools": ["matrixark_ingest"]},
         secondary_index_budget=core.new_secondary_index_budget(10000))
     os.unlink(path)
     return [r for r in writer.buf if r.get("record_type") == "context_index"]
