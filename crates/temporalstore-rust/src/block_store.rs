@@ -1728,7 +1728,11 @@ mod tests {
         assert_eq!(address.page_slab_id, 3);
         assert_eq!(address.offset, 128);
         assert_eq!(address.length, 126);
-        assert_eq!(address.sha256.map(|d| d[0]), Some(0xc3));
+        // The `checksum` above is a legacy key and is ignored rather than stored: the index holds
+        // no digest, and the page envelope carries the one a read verifies against. What matters
+        // here is that its presence does not stop the rest of the address from loading.
+        assert_eq!(address.page_id(), Some(9));
+        assert_eq!(address.band_id(), Some(4));
     }
 
     #[test]
@@ -1744,7 +1748,6 @@ mod tests {
             Some(545210715),
             Some(2),
             Some(4),
-            None,
         );
         let encoded = serde_json::to_string(&address).unwrap();
         // Not vacuous: the values must still be there before the size claim means anything.
