@@ -1642,6 +1642,16 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Administration", "method": "POST", "path": "/v1/admin/config/test", "scope": "admin",
      "summary": "Call the configured extraction and embedding endpoints and report what came back.",
      "body": {}},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/policy", "scope": "admin",
+     "summary": "One user's effective settings: every knob's value, which layer it came from "
+                "(user, tenant, environment or default), and whether a user may set it. The "
+                "tenant comes from the key. Query: user_id.",
+     "query": "user_id=alice"},
+    {"group": "Administration", "method": "POST", "path": "/v1/admin/policy", "scope": "admin",
+     "summary": "Change one user's settings. Applies to the next request with no restart, and is "
+                "written to the policy file when one is configured. Settings that decide what is "
+                "WRITTEN into the shared store are refused and named in the response.",
+     "body": {"user_id": "alice", "settings": {"top_k_per_layer": 24}}},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/models", "scope": "admin",
      "summary": "Models to choose from: a curated catalogue, what the configured endpoint says it "
                 "serves, and — for embeddings — what the stored vectors were actually made with. "
@@ -1977,6 +1987,60 @@ def embedding_picker_catalogue() -> List[Json]:
         }
         out.append(entry)
     return out
+
+
+def _tenant_policy_module():
+    """The policy registry, or None where it is not importable."""
+    try:
+        import matrixark_tenant_policy as policy_mod  # type: ignore
+
+        return policy_mod
+    except Exception:  # pragma: no cover - the registry is optional at import
+        try:
+            from tools import matrixark_tenant_policy as policy_mod  # type: ignore
+
+            return policy_mod
+        except Exception:
+            return None
+
+
+def _policy_view(policy_mod: Any, tenant_id: str, user_id: str) -> Json:
+    """Every knob's effective value for this user, where it came from, and whether they may set it.
+
+    The knob's own type, default and description travel with it so the portal renders a control
+    rather than a text box, and so the explanation for a setting lives next to the setting rather
+    than in a copy that drifts.
+    """
+    scope: Json = {"tenant_id": tenant_id}
+    if user_id:
+        scope["user_id"] = user_id
+    described = policy_mod.describe_effective_policy(scope)
+    knobs: Json = {}
+    for name, state in (described.get("knobs") or {}).items():
+        knob = policy_mod.KNOBS[name]
+        knobs[name] = {
+            **state,
+            "kind": knob.kind,
+            "default": knob.default,
+            "choices": sorted(knob.choices) if knob.choices else [],
+            "description": knob.description,
+        }
+    return {
+        "status": "ok",
+        "tenant": described.get("tenant", tenant_id),
+        "user": described.get("user", user_id),
+        "knobs": knobs,
+        "settable_per_user": sorted(policy_mod.READ_PATH_KNOBS),
+        # Where a change would be written, so "saved" can be an honest word.
+        "policy_file": policy_mod.policy_file_path(),
+        # Said once, here, rather than repeated beside every refused knob.
+        "why_some_are_tenant_only": (
+            "A store is shared by everyone in a tenant. A setting that changes what gets WRITTEN "
+            "into it cannot differ per user without leaving records of two shapes behind — and "
+            "unlike a setting, that does not go back when the setting does. Those stay at the "
+            "tenant level. The ones offered here decide how your own results are selected and "
+            "packed, and touch nobody else's data."),
+    }
 
 
 def _encoder_summary() -> Json:
@@ -3231,6 +3295,79 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 body["in_store"] = await _embedding_models_in_store(server, cfg, key, tenant,
                                                                    account)
                 body["change_warning"] = _EMBEDDING_CHANGE_WARNING
+            return await _json(send, 200, body)
+
+        # ---- per-user settings (auth + admin scope) -------------------------------------------
+        # The tenant comes from the KEY, never from the request: a caller must not be able to read
+        # or rewrite another tenant's settings by naming it.
+        if method in ("GET", "POST") and path == "/v1/admin/policy":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _usage_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            policy_mod = _tenant_policy_module()
+            if policy_mod is None:
+                return await _json(send, 503, {
+                    "error": "policy_unavailable",
+                    "detail": "The policy registry could not be loaded in this deployment.",
+                })
+            tenant_id = str(tenant or "").strip()
+            if not tenant_id:
+                return await _json(send, 400, {
+                    "error": "no_tenant",
+                    "detail": "This key is not bound to a tenant, so it has no settings to read.",
+                })
+
+            if method == "GET":
+                params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+                user_id = (params.get("user_id") or [""])[0].strip()
+                return await _json(send, 200,
+                                   _policy_view(policy_mod, tenant_id, user_id))
+
+            raw, too_big = await _read_body_capped(receive, 1 << 20)
+            if too_big or raw is None:
+                return await _json(send, 413, {"error": "body_too_large"})
+            try:
+                payload = json.loads(raw.decode("utf-8") or "{}")
+            except Exception:
+                return await _json(send, 400, {"error": "invalid_json"})
+            user_id = str(payload.get("user_id") or "").strip()
+            if not user_id:
+                return await _json(send, 400, {
+                    "error": "no_user",
+                    "detail": "Name the user these settings belong to.",
+                })
+            settings = payload.get("settings")
+            if not isinstance(settings, dict) or not settings:
+                return await _json(send, 400, {
+                    "error": "no_settings",
+                    "detail": "Send a non-empty settings object.",
+                })
+            asked = sorted(str(name) for name in settings)
+            try:
+                kept = await asyncio.to_thread(
+                    policy_mod.set_user_policy, tenant_id, user_id, settings)
+            except ValueError as exc:
+                return await _json(send, 400, {"error": "bad_request", "detail": str(exc)})
+            try:
+                persisted = await asyncio.to_thread(
+                    policy_mod.persist_user_policy, tenant_id, user_id, settings)
+            except Exception as exc:  # a write failure must not be reported as a save
+                persisted = False
+                _LOG.warning("user policy persist failed: %s", exc)
+            refused = [name for name in asked if name not in kept]
+            body = _policy_view(policy_mod, tenant_id, user_id)
+            body["applied"] = sorted(kept)
+            # Named individually. "Some of your settings were refused" leaves a customer to work
+            # out which, and the reason is the same for all of them.
+            body["refused"] = refused
+            body["persisted"] = bool(persisted)
+            if not persisted:
+                body["persist_note"] = (
+                    "Applied now, but not written anywhere: no policy file is configured "
+                    "(MATRIXARK_TENANT_POLICY_PATH), so this is lost when the service restarts.")
             return await _json(send, 200, body)
 
         # ---- monitoring assets (auth + admin scope) -------------------------------------------

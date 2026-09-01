@@ -57,6 +57,7 @@ _EXACT_ROUTES = frozenset({
     "/v1/admin/config", "/v1/admin/config/test", "/v1/admin/config/preset",
     "/v1/admin/scopes", "/v1/admin/embeddings",
     "/v1/admin/models",
+    "/v1/admin/policy",
     "/v1/admin/ingestion/records",
     "/v1/admin/events",
     "/v1/admin/config/export",

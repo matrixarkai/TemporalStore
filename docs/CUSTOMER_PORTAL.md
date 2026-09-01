@@ -523,6 +523,80 @@ could resend them. A bulk import from a server directory is the retryable-after-
 
 ---
 
+## Per-user settings
+
+A customer can tune retrieval for one person without changing it for anyone else. `GET
+/v1/admin/policy?user_id=alice` returns every knob with its effective value, **which layer supplied
+it**, and whether a user may set it; `POST` changes it. The tenant always comes from the key, never
+from the request — otherwise a caller reads or rewrites another tenant's settings by naming it.
+
+Resolution is **user → tenant → environment → built-in default**, through the same typed registry
+all three already used. A second store keyed differently would be a second thing to keep correct,
+and the two would drift on the edge cases the first one already handles.
+
+### What may vary per user, and what may not
+
+Not everything. A store is shared inside a tenant, so a per-user override that changes what gets
+**written** leaves one store holding records of two shapes — and unlike a setting, that does not go
+back when the setting does. It is the same failure as two writers disagreeing about the encoder:
+nobody notices until retrieval is quietly worse for everyone.
+
+So a knob declares the layer it belongs to, and **the default is `write`** — a knob added later
+without anyone considering this is refused per-user until someone says otherwise. Refusing a
+legitimate knob is visible and harmless; allowing a damaging one is neither. Twelve of the
+thirty-two are read-path today: the candidate ceilings, sibling-session traversal, pack de-duplication
+and the skill budget.
+
+`recall_reinforcement` is the one worth naming. It reads like a retrieval knob and it is a
+**writer** — measured, five searches produced 572 protection markers, about 114 writes per query —
+so per-user divergence there changes what survives pruning for the whole tenant. It stays
+tenant-level, and it is the reason the list was written by reading each knob rather than by
+pattern-matching names.
+
+A refusal names the knobs it refused rather than saying "some settings were rejected", and the
+refusal sits at the layer rather than at the API: a write-path knob hand-written into the policy
+file is dropped exactly as one submitted through the portal is.
+
+### Identity is the pair
+
+Per-user policy is keyed by **(tenant, user)**, never the user id alone — `alice` at two companies
+is two people, and a policy keyed on the bare id would serve one customer's settings to the other.
+A record carrying only half an identity is not stored at all. Both the human id and the scope hash
+answer to the same policy, because a served record usually carries only hashes.
+
+### Applied now, saved for later
+
+A change takes effect on the next request — no restart, no reconnect, and no effect on any other
+user. It is also written into the same policy file the tenant policy already uses, under a `users`
+section keyed tenant-then-user:
+
+```json
+{
+  "defaults": { "top_k_per_layer": 200 },
+  "tenants":  { "acme": { "top_k_per_layer": 100 } },
+  "users":    { "acme": { "alice": { "top_k_per_layer": 12 } } }
+}
+```
+
+Written through a temporary file and renamed into place, so a process that dies mid-write cannot
+leave a fragment the loader would serve as its "last good" copy. A file that is *corrupt* is never
+overwritten — the loader is still serving the last good version, and replacing it would destroy the
+only record of what was configured.
+
+When no policy file is configured there is nowhere to write, and the response says so rather than
+letting *applied* read as *saved*: a change that quietly vanishes on the next deploy is worse than
+one that was never offered, because the customer has stopped thinking about it.
+
+### One registry, checked
+
+Three knobs were defined twice — `top_k_per_layer` (24 then 240), `max_global_candidates` (2048 then
+20480), `max_selected_refs` (1000 then 10000). A dict comprehension keeps the last, so the earlier
+definitions were dead: editing one changed nothing and reading one to learn the default gave the
+wrong number. 35 call sites, 32 knobs. The duplicates are gone and the registry now raises on a
+repeated name instead of silently keeping whichever came last.
+
+---
+
 ## Which engine answered, and how it ranked
 
 One store, two implementations that rank differently:

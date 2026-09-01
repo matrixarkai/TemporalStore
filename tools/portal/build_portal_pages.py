@@ -182,6 +182,18 @@ EXTRA_CSS = """
                border-radius:0}
   .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
   .pane[hidden]{display:none}
+  .polrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
+          padding:9px 0;border-bottom:1px solid var(--line)}
+  .polrow:last-child{border-bottom:0}
+  .polrow .n{font-family:"IBM Plex Mono",monospace;font-size:12.5px;overflow-wrap:anywhere}
+  .polrow .d{grid-column:1/-1;font-size:12.5px;color:var(--faint);line-height:1.5;
+             margin-top:-4px;max-width:78ch}
+  .polrow input[type=text],.polrow select{width:120px;margin:0}
+  .polrow.locked{opacity:.72}
+  .src{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+       border-radius:4px;padding:2px 6px;background:var(--line);color:var(--muted)}
+  .src.user{background:var(--accent-soft);color:var(--accent)}
+  .src.tenant{background:var(--warn-soft);color:var(--warn)}
   .opgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:7px;
           margin-bottom:6px}
   .opbtn{text-align:left;background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
@@ -513,6 +525,32 @@ SETUP_BODY = """
     <div id="saveMsg" role="status" aria-live="polite"></div>
     <div class="hint" id="cfgTime"></div>
   </form>
+
+  <section>
+    <h2>Per-user settings <span class="aux" id="polAux"></span></h2>
+    <p class="hint" style="margin-top:0">What one person's retrieval does, without changing anyone
+      else's. Each row says where its current value came from — this user, the tenant, the
+      environment, or the built-in default — so a setting that looks wrong can be traced to the
+      layer that set it. Changes apply to the next request; no restart.</p>
+    <div class="grid2">
+      <div>
+        <label for="polUser">User</label>
+        <input id="polUser" type="text" placeholder="alice" spellcheck="false" autocomplete="off">
+      </div>
+      <div>
+        <label for="polFilter">Filter</label>
+        <input id="polFilter" type="search" placeholder="name or description" spellcheck="false">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="polLoad" class="ghost" type="button">Load this user</button>
+      <label class="check"><input type="checkbox" id="polOnlySettable" checked> only what a user
+        can set</label>
+    </div>
+    <div id="polMsg" role="status" aria-live="polite"></div>
+    <div id="polWhy" class="hint" hidden></div>
+    <div id="policy"><div class="empty">Name a user and load their settings.</div></div>
+  </section>
 
   <section>
     <h2>Recent changes</h2>
@@ -1178,6 +1216,131 @@ function liveStream(options) {
   $("probeModels").addEventListener("click", function () {
     say($("saveMsg"), "Asking the endpoints what they serve…", "info");
     loadModels(true).then(function () { say($("saveMsg"), "", "info"); });
+  });
+
+  /* ---------- per-user settings ---------- */
+  var policyView = null;
+
+  function loadPolicy() {
+    var user = $("polUser").value.trim();
+    if (!$("key").value.trim()) { say($("polMsg"), "Enter an admin key first.", "info"); return; }
+    if (!user) { say($("polMsg"), "Name a user first.", "info"); return; }
+    say($("polMsg"), "");
+    fetch("/v1/admin/policy?user_id=" + encodeURIComponent(user), { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { policyView = d; renderPolicy(); })
+      .catch(function (e) {
+        policyView = null;
+        $("policy").innerHTML = '<div class="empty">' +
+          esc(typeof e === "number" ? failure(e) : "Could not reach the gateway.") + "</div>";
+      });
+  }
+
+  function policyControl(name, knob) {
+    var id = "pol_" + name;
+    if (!knob.settable_per_user) {
+      /* Shown, not hidden: a customer looking for a setting needs to find it and learn where it
+         lives, rather than conclude it does not exist. */
+      return '<span class="hint" style="margin:0">tenant-level</span>';
+    }
+    if (knob.kind === "bool") {
+      return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
+        "<option value='0'" + (knob.value ? "" : " selected") + ">off</option>" +
+        "<option value='1'" + (knob.value ? " selected" : "") + ">on</option></select>";
+    }
+    if (knob.kind === "choice") {
+      return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
+        (knob.choices || []).map(function (c) {
+          return "<option value='" + esc(c) + "'" + (c === knob.value ? " selected" : "") + ">" +
+            esc(c) + "</option>";
+        }).join("") + "</select>";
+    }
+    return "<input type='text' id='" + id + "' data-knob='" + esc(name) + "' value='" +
+      esc(knob.value) + "' spellcheck='false'>";
+  }
+
+  function renderPolicy() {
+    var d = policyView;
+    if (!d) { return; }
+    $("polWhy").hidden = false;
+    $("polWhy").textContent = d.why_some_are_tenant_only;
+    $("polAux").textContent = d.policy_file
+      ? "saved to " + d.policy_file
+      : "no policy file configured — changes are lost on restart";
+    var query = $("polFilter").value.trim().toLowerCase();
+    var onlySettable = $("polOnlySettable").checked;
+    var names = Object.keys(d.knobs).sort();
+    var rows = names.filter(function (name) {
+      var knob = d.knobs[name];
+      if (onlySettable && !knob.settable_per_user) { return false; }
+      if (!query) { return true; }
+      return (name + " " + knob.description).toLowerCase().indexOf(query) >= 0;
+    }).map(function (name) {
+      var knob = d.knobs[name];
+      return '<div class="polrow' + (knob.settable_per_user ? "" : " locked") + '">' +
+        '<span class="n">' + esc(name) + "</span>" +
+        '<span class="src ' + esc(knob.source) + '">' + esc(knob.source) + "</span>" +
+        policyControl(name, knob) +
+        '<span class="d">' + esc(knob.description) + "</span></div>";
+    }).join("");
+    $("policy").innerHTML = (rows || '<div class="empty">Nothing matches.</div>') +
+      '<div class="actions"><button id="polSave" type="button">Save for ' +
+      esc(d.user || "this user") + "</button></div>";
+  }
+
+  function savePolicy() {
+    var d = policyView;
+    if (!d) { return; }
+    var settings = {};
+    Array.prototype.forEach.call($("policy").querySelectorAll("[data-knob]"), function (el) {
+      var name = el.dataset.knob, knob = d.knobs[name];
+      var raw = el.value;
+      var value = knob.kind === "bool" ? raw === "1"
+        : (knob.kind === "int" ? parseInt(raw, 10) : raw);
+      if (knob.kind === "int" && isNaN(value)) { return; }
+      /* Only what actually changed: sending the whole set would write a user override for every
+         knob, and then a later tenant change would never reach them. */
+      if (String(value) !== String(knob.value)) { settings[name] = value; }
+    });
+    if (!Object.keys(settings).length) {
+      say($("polMsg"), "Nothing changed.", "info");
+      return;
+    }
+    fetch("/v1/admin/policy", {
+      method: "POST",
+      headers: Object.assign({ "Content-Type": "application/json" }, auth()),
+      body: JSON.stringify({ user_id: $("polUser").value.trim(), settings: settings })
+    })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          say($("polMsg"), res.body.detail || res.body.error || "Save failed.", "err");
+          return;
+        }
+        policyView = res.body;
+        renderPolicy();
+        var applied = (res.body.applied || []).length;
+        var refused = res.body.refused || [];
+        var note = applied + " setting" + (applied === 1 ? "" : "s") + " applied" +
+          (res.body.persisted ? " and saved." : ".");
+        if (refused.length) {
+          note += " Refused, because these decide what is written into the store your whole " +
+            "tenant shares: " + refused.join(", ") + ".";
+        }
+        if (!res.body.persisted && res.body.persist_note) { note += " " + res.body.persist_note; }
+        say($("polMsg"), note, refused.length || !res.body.persisted ? "warn" : "ok");
+      })
+      .catch(function () { say($("polMsg"), "Could not reach the gateway.", "err"); });
+  }
+
+  $("polLoad").addEventListener("click", loadPolicy);
+  $("polUser").addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") { ev.preventDefault(); loadPolicy(); }
+  });
+  $("polFilter").addEventListener("input", renderPolicy);
+  $("polOnlySettable").addEventListener("change", renderPolicy);
+  $("policy").addEventListener("click", function (ev) {
+    if (ev.target && ev.target.id === "polSave") { savePolicy(); }
   });
 
   /* ---------- deployment inventory (read-only) ---------- */
