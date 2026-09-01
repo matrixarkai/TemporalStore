@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """Setting a tenant knob has to change what the deployment stores.
 
 Before this, it did not. The knob was in the registry, the portal offered it, `resolve()` returned

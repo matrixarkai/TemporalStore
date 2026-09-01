@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """A tenant-policy gate that nothing calls is a knob that resolves correctly and changes nothing.
 
 This is the worst shape a configuration surface can take. The knob is in the registry, the portal
