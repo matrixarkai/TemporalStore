@@ -568,12 +568,35 @@ fn a_node_and_its_level_two_summary_share_one_embedding() {
     };
     let summary = summaries.first().expect("the extract wrote a level-2 summary");
     assert_eq!(summary.text, report.l1, "the summary that embeds the node's own text");
+
+    // The NODE as stored, not as reported. The summary above came back through a page, and every
+    // stored vector form rounds -- four decimal places for the uniformly-scaled encoding that is
+    // on by default, a per-vector scale for the int8 one -- so the value in the report is not the
+    // value on disk. Comparing the two would not be asserting that one vector reached both
+    // owners; it would be asserting that the encoding is lossless, which it is not and is not
+    // meant to be.
+    //
+    // Reading the node back is also the stronger claim of the two: it says the shared vector
+    // reached the durable record, not merely the report that the extract returned.
+    let node = match engine
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNode {
+                tenant_hash: 81,
+                node_hash: report.node.node_hash,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextNode { node: Some(node), .. } => node,
+        other => panic!("expected the node back, got {other:?}"),
+    };
     assert!(
-        !report.node.vector.is_empty(),
+        !node.vector.is_empty(),
         "an empty node vector would make the comparison below vacuous"
     );
     assert_eq!(
-        summary.vector, report.node.vector,
+        summary.vector, node.vector,
         "the one vector `l1` produced belongs to both the node and its level-2 summary"
     );
 }
