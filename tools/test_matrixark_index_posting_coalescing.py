@@ -33,6 +33,12 @@ def _emit(coalesced, chunk_count=40):
     os.environ.update({
         "MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS": "500000",
         "MATRIXARK_INDEX_POSTING_LISTS": "1" if coalesced else "0",
+        # These tests are about the SHAPE of a posting -- coalescing, the ref cap, the
+        # singular/plural ref_hash rule -- not about which terms survive filtering. With the
+        # consultable-terms filter on, a small fixture emits one source_type posting carrying
+        # every chunk: no single-ref posting to assert on and the cap never approached. The
+        # filter has its own tests in test_matrixark_index_consultable_terms.
+        "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS": "0",
     })
     for name in [m for m in list(sys.modules) if m.startswith("matrixark_")]:
         del sys.modules[name]
