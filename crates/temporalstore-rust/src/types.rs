@@ -806,13 +806,13 @@ impl ContextWire for ContextNode {
                 (9, 2) => value.l1_ref = decode_string(bytes, &mut cursor)?,
                 (10, 2) => value.raw_metadata_ref = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
-                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_INT8_FIELD, 2) => {
-                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
-                    value.vector = unpack_scaled_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
                     value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
@@ -821,13 +821,13 @@ impl ContextWire for ContextNode {
                     value.embedding_updated_at_ms = decode_varint(bytes, &mut cursor)?
                 }
                 (CONTEXT_SUMMARY_VECTOR_FIELD, 2) => {
-                    value.summary_vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.summary_vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_SUMMARY_VECTOR_INT8_FIELD, 2) => {
-                    value.summary_vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.summary_vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_SUMMARY_VECTOR_SCALED_FIELD, 2) => {
-                    value.summary_vector = unpack_scaled_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.summary_vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_SUMMARY_VECTOR_VALID_FROM_FIELD, 0) => {
                     value.summary_vector_valid_from_ms = decode_varint(bytes, &mut cursor)?
@@ -909,13 +909,13 @@ impl ContextWire for ContextEvent {
                 (9, 5) => value.importance = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
                 (10, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
-                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_INT8_FIELD, 2) => {
-                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
-                    value.vector = unpack_scaled_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
                 (12, 0) => value
@@ -1131,13 +1131,13 @@ impl ContextWire for ContextEntity {
                     }
                 }
                 (CONTEXT_VECTOR_FIELD, 2) => {
-                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_INT8_FIELD, 2) => {
-                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
-                    value.vector = unpack_scaled_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1211,16 +1211,16 @@ impl ContextWire for ContextSummary {
                 (4, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (5, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
                 (CONTEXT_VECTOR_FIELD, 2) => {
-                    value.vector = unpack_f32_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_VECTOR_INT8_FIELD, 2) => {
-                    value.vector = unpack_i8_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (CONTEXT_EMBEDDING_MODEL_FIELD, 0) => {
                     value.embedding_model_hash = decode_varint(bytes, &mut cursor)?
                 }
                 (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
-                    value.vector = unpack_scaled_vector(&decode_bytes(bytes, &mut cursor)?)
+                    value.vector = unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?)
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -2273,12 +2273,24 @@ fn decode_fixed32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
     Some(u32::from_le_bytes(slice.try_into().ok()?))
 }
 
-fn decode_bytes(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
+/// The field's bytes, borrowed from the page rather than copied out of it.
+///
+/// A caller that reads the bytes and builds something else from them -- every `unpack_*` vector
+/// call -- has no use for an owned copy, and copying costs an allocation that is dropped at the end
+/// of the statement. Decoding is the larger half of a node fetch, and a fetch happens once per
+/// retrieval candidate, so a copy per vector field is a copy per candidate.
+fn decode_bytes_ref<'a>(bytes: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
     let len = usize::try_from(decode_varint(bytes, cursor)?).ok()?;
     let end = cursor.checked_add(len)?;
     let slice = bytes.get(*cursor..end)?;
     *cursor = end;
-    Some(slice.to_vec())
+    Some(slice)
+}
+
+/// The field's bytes, owned. For callers that keep them -- `decode_string` hands the Vec straight
+/// to `String::from_utf8`, which takes ownership, so that path is already a single allocation.
+fn decode_bytes(bytes: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
+    Some(decode_bytes_ref(bytes, cursor)?.to_vec())
 }
 
 fn decode_string(bytes: &[u8], cursor: &mut usize) -> Option<String> {

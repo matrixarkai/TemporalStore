@@ -81,37 +81,72 @@ const ADDRESS_HAS_ROUTING_BUCKET: u8 = 1 << 2;
 const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
 const ADDRESS_HAS_BAND_ID: u8 = 1 << 4;
 
-/// The address as it travels on the wire and on disk -- unchanged, field names, renames and
-/// aliases included.
+/// The address as it travels on the wire and on disk.
 ///
-/// `BlockAddress` converts through this both ways, which is what keeps the packing an in-memory
-/// concern rather than a format change: an index written before this loads, and one written after
-/// stays readable by anything expecting the old shape.
+/// `BlockAddress` converts through this both ways, which keeps the in-memory packing separate
+/// from the on-disk shape.
+///
+/// The names are SHORT. An address is written once per index item, and an index-log record was
+/// measured at 65.3% field names -- these were the largest remaining group of them, and
+/// `page_segment_id` alone cost more than the offset it labels. Every short name carries every
+/// spelling this field has ever had as an alias, so anything already written still loads:
+/// `page_slab_id` and its `page_segment_id` rename, `routing_bucket` and its `routing_slot`
+/// rename, `band_id` with its older `extent_id`/`zone_id`, and `sha256` with its `checksum`.
+///
+/// This does change the shape a NEW record is written in, so a binary older than this cannot
+/// read one -- the same trade the WAL and the index item made before it. Old to new is safe;
+/// new to old is not.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct BlockAddressWire {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "ps", alias = "page_segment_id", alias = "page_slab_id")]
     page_slab_id: u64,
+    #[serde(rename = "o", alias = "offset")]
     offset: u64,
+    #[serde(rename = "l", alias = "length")]
     length: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "pi",
+        alias = "page_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     page_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "oi",
+        alias = "object_id",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     object_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "routing_slot")]
+    #[serde(
+        rename = "rs",
+        alias = "routing_slot",
+        alias = "routing_bucket",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     routing_bucket: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "g",
+        alias = "generation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     generation: Option<u64>,
     #[serde(
-        default,
+        rename = "b",
+        alias = "band_id",
         alias = "extent_id",
         alias = "zone_id",
+        default,
         skip_serializing_if = "Option::is_none"
     )]
     band_id: Option<u64>,
     #[serde(
-        default,
+        rename = "h",
+        alias = "sha256",
         alias = "checksum",
+        default,
         skip_serializing_if = "Option::is_none",
         with = "hex_digest"
     )]
@@ -1671,6 +1706,71 @@ mod address_size_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_address_written_with_any_older_field_name_still_loads() {
+        // Every spelling this wire form has ever used, in one record: the original names, the
+        // `page_segment_id` / `routing_slot` renames, and the older `extent_id` / `zone_id` /
+        // `checksum` aliases. All of them must still land, or an index already on disk stops
+        // resolving and the blocks it points at become unreachable.
+        let legacy = serde_json::json!({
+            "page_segment_id": 3_u64,
+            "offset": 128_u64,
+            "length": 126_u64,
+            "page_id": 9_u64,
+            "object_id": 122110326161599232_u64,
+            "routing_slot": 545210715_u32,
+            "generation": 2_u64,
+            "zone_id": 4_u64,
+            "checksum": "c38c2bf3055c516a98ac5d97f30e7c364e827bc0a1b2c3d4e5f60718293a4b5c"
+        });
+        let address: BlockAddress = serde_json::from_value(legacy).expect("a legacy address loads");
+        assert_eq!(address.page_slab_id, 3);
+        assert_eq!(address.offset, 128);
+        assert_eq!(address.length, 126);
+        // Every other field the legacy record carried, under whichever name it used: this is the
+        // "all of them must still land" the comment above promises, and asserting one of them was
+        // never enough to keep that promise.
+        assert_eq!(address.page_id(), Some(9));
+        assert_eq!(address.object_id(), Some(122110326161599232));
+        assert_eq!(address.routing_bucket(), Some(545210715));
+        assert_eq!(address.generation(), Some(2));
+        assert_eq!(address.band_id(), Some(4), "`zone_id` is the older spelling of this one");
+        // And the digest is accepted and dropped rather than rejected: an index written before the
+        // address stopped carrying one still loads, which is the whole point of keeping the alias.
+        // The page envelope holds the digest that verifies the bytes.
+    }
+
+    #[test]
+    fn an_address_costs_far_less_than_its_field_names_used_to() {
+        // `page_segment_id` is fifteen characters spent to label an integer, written once per
+        // index item forever.
+        let address = BlockAddress::from_parts(
+            3,
+            128,
+            126,
+            Some(9),
+            Some(122110326161599232),
+            Some(545210715),
+            Some(2),
+            Some(4),
+        );
+        let encoded = serde_json::to_string(&address).unwrap();
+        // Not vacuous: the values must still be there before the size claim means anything.
+        assert!(encoded.contains("122110326161599232"));
+        assert!(encoded.contains("545210715"));
+        for gone in ["page_segment_id", "routing_slot", "object_id", "generation"] {
+            assert!(!encoded.contains(gone), "{gone} should not be written any more");
+        }
+        assert!(
+            encoded.len() < 90,
+            "expected a compact address, got {} bytes: {encoded}",
+            encoded.len()
+        );
+        // And it round-trips through its own new form.
+        let back: BlockAddress = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(back, address);
+    }
     use super::*;
 
     #[test]
