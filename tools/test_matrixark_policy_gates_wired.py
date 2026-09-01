@@ -38,6 +38,10 @@ GATES_MODULE = os.path.join(TOOLS, "matrixark_index_growth_bound.py")
 # reachable from production code.
 KNOWN_UNWIRED: Set[str] = {
     "dedupe_index_postings_enabled",
+    # Wired and working, but held back to its own change: honouring its default (OFF) stops
+    # segment rows for every deployment that has set no policy, and six existing tests depend on
+    # them. Retrieval still returns the answer without them, but that is a decision on its own.
+    "extract_segments_enabled",
     "embed_node_path_prefix_enabled",
     "generate_l1_summaries_enabled",
     "index_compact_on_summary_enabled",

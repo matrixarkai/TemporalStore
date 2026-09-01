@@ -16,6 +16,9 @@ Two details are load-bearing, both found by this test failing:
 * A vector reaches storage by TWO routes -- its own `context_embedding` record, and an inline
   `vector` field written straight onto the owner. Handling only the first left 9 of 10 records
   still carrying vectors for a tenant that had opted out.
+
+`extract_segments` is wired the same way and lives in its own change: honouring its default (OFF)
+stops segment rows for every deployment that has set no policy, which six existing tests depend on.
 * An embedding record usually carries no scope of its own; it is addressed by its owner's hash. The
   tenant is knowable only from the OWNER, and reading the embedding's own scope let 7 of 19 through.
 """
@@ -74,8 +77,8 @@ class TheKnobChangesWhatIsStoredTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.result = _ingest_under({
-            "gates_on": {"extract_segments": True, "generate_embeddings": True},
-            "gates_off": {"extract_segments": False, "generate_embeddings": False},
+            "gates_on": {"generate_embeddings": True},
+            "gates_off": {"generate_embeddings": False},
         })
 
     def test_both_tenants_stored_something(self) -> None:
@@ -86,14 +89,6 @@ class TheKnobChangesWhatIsStoredTest(unittest.TestCase):
                                    "nothing was stored for %s, so this file proves nothing"
                                    % tenant)
 
-    def test_extract_segments_off_stores_no_segments(self) -> None:
-        self.assertEqual(0, self.result["gates_off"]["segments"],
-                         "a tenant that declined segments still got them")
-        self.assertGreater(self.result["gates_on"]["segments"], 0,
-                           "a tenant that asked for segments got none -- the gate is inverted or "
-                           "the extractor produced nothing, and either way the comparison above "
-                           "would pass for the wrong reason")
-
     def test_generate_embeddings_off_stores_no_vectors(self) -> None:
         self.assertEqual(0, self.result["gates_off"]["vectors"],
                          "a tenant that declined embeddings still has stored vectors; a vector "
@@ -102,12 +97,13 @@ class TheKnobChangesWhatIsStoredTest(unittest.TestCase):
         self.assertGreater(self.result["gates_on"]["vectors"], 0,
                            "no vectors stored for anyone, so the check above is vacuous")
 
-    def test_declining_one_knob_does_not_disable_the_other(self) -> None:
-        # The two are separate settings and a customer will set them independently.
+    def test_declining_embeddings_leaves_the_records_themselves(self) -> None:
+        # Declining vectors must not decline the memory: a tenant that turned embeddings off still
+        # has its records, just without stored vectors on them.
         result = _ingest_under({
-            "segments_only": {"extract_segments": True, "generate_embeddings": False},
-        })["segments_only"]
-        self.assertGreater(result["segments"], 0, "segments were dropped by the embedding knob")
+            "no_vectors": {"generate_embeddings": False},
+        })["no_vectors"]
+        self.assertGreater(result["total"], 0, "the records went too, not just their vectors")
         self.assertEqual(0, result["vectors"], "vectors survived with embeddings off")
 
 
@@ -166,44 +162,6 @@ class TheStripHandlesBothVectorShapesTest(unittest.TestCase):
         record = {"record_type": "context_node", "vector": [0.1]}
         out = self.adapter.drop_vectors_for_opted_out_tenants([record])
         self.assertIn("vector", out[0])
-
-
-class BothSegmentWritersConsultTheKnobTest(unittest.TestCase):
-    """The ingest test drives one of the two segment writers; this covers the other's helper.
-
-    Ungating the batch-extract-runtime writer left the ingest test green, which is a true statement
-    about coverage rather than about the gate: that writer is on a path this file does not drive.
-    """
-
-    def test_each_writer_has_a_helper_that_follows_the_tenant(self) -> None:
-        # The adapter has to be imported FIRST: importing matrixark_local_adapter_ingest on its
-        # own trips a pre-existing circular import between the two (the adapter pulls the ingest
-        # mixin, and the ingest module pulls back). Importing the adapter establishes both.
-        import matrixark_mcp_local_adapter  # noqa: F401
-        import matrixark_local_adapter_ingest as ingest
-        import matrixark_mcp_local_batch_extract_runtime as runtime
-        policy.set_tenant_policy("seg_off", {"extract_segments": False})
-        policy.set_tenant_policy("seg_on", {"extract_segments": True})
-        for module in (ingest, runtime):
-            with self.subTest(module=module.__name__):
-                self.assertFalse(module._segments_enabled({"tenant_id": "seg_off"}))
-                self.assertTrue(module._segments_enabled({"tenant_id": "seg_on"}))
-                # No tenant to attribute falls to the knob's own default, which for segments is
-                # OFF -- unlike generate_embeddings, which defaults ON. The two are opposite on
-                # purpose: a segment restates its event, so not writing one loses nothing, while
-                # not writing a vector loses retrieval.
-                self.assertFalse(module._segments_enabled(None))
-
-    def test_the_two_knobs_have_opposite_defaults_and_that_is_deliberate(self) -> None:
-        # Wiring extract_segments therefore CHANGES behaviour for a deployment that has set no
-        # policy: it stops writing segments. That is the documented intent of the knob rather than
-        # an accident, and MATRIXARK_EXTRACT_SEGMENTS=1 restores them everywhere -- but it is a
-        # live change and this test is where someone will find that out.
-        import matrixark_mcp_local_adapter  # noqa: F401
-        import matrixark_local_adapter_ingest as ingest
-        self.assertFalse(ingest._segments_enabled({"tenant_id": "never_configured"}))
-        self.assertTrue(matrixark_mcp_local_adapter._embeddings_enabled_for(
-            {"record_type": "context_node", "scope": {"tenant_id": "never_configured"}}))
 
 
 class TheBoundaryPolicyTest(unittest.TestCase):
@@ -298,47 +256,6 @@ class TheBoundaryPolicyTest(unittest.TestCase):
         records = self._batch("delegate")
         self.assertEqual(self.adapter.apply_storage_policy(records),
                          self.adapter.drop_vectors_for_opted_out_tenants(records))
-
-
-class TurningSegmentsOffDoesNotLoseTheAnswerTest(unittest.TestCase):
-    """`extract_segments` defaults OFF, so wiring it stops segments for unconfigured deployments.
-
-    The justification is that a segment restates its event -- same text up to a role prefix -- so
-    the event still carries the answer. That is a claim about RETRIEVAL, and the rest of this file
-    only counts what was stored, which cannot tell "redundant" from "lost".
-
-    So it is checked the way a customer would notice: ingest, ask, and see whether the answer comes
-    back. Storing less is only acceptable while this passes.
-    """
-
-    def _ask(self, tenant, knobs, query):
-        import matrixark_mcp_server as mcp
-        policy.set_tenant_policy(tenant, knobs)
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
-            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
-            scope = {"tenant_id": tenant, "user_id": "u1", "session_id": "s1"}
-            for message in ("I am allergic to peanuts and I live in Kyoto.",
-                            "My favourite drink is matcha, and I bike to work."):
-                server.call_tool("matrixark_ingest", {
-                    "scope": scope, "finalize": True,
-                    "messages": [{"role": "user", "content": message}]})
-            server.call_tool("matrixark_session_commit", {"scope": scope})
-            return str(server.call_tool("matrixark_retrieve",
-                                        {"scope": scope, "query": query})).lower()
-
-    def test_the_answer_survives_with_segments_off(self) -> None:
-        with_segments = self._ask("q_on", {"extract_segments": True},
-                                  "what am I allergic to?")
-        without = self._ask("q_off", {"extract_segments": False},
-                            "what am I allergic to?")
-        # Asserted on BOTH: if the query stopped working for everyone the comparison would still
-        # hold and would prove nothing.
-        self.assertIn("peanut", with_segments,
-                      "the query does not work even WITH segments, so this test is vacuous")
-        self.assertIn("peanut", without,
-                      "turning segments off lost the answer -- they are not redundant after all, "
-                      "and the default-OFF behaviour change is not safe")
 
 
 class TraverseSiblingSessionsTest(unittest.TestCase):
