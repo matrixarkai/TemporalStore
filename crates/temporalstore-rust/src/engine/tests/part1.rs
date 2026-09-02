@@ -6757,3 +6757,88 @@ fn a_batch_embeddings_query_answers_for_every_node_asked() {
         large.len()
     );
 }
+
+/// What hash-table resizing costs, and what pre-sizing would save.
+///
+/// An 8-hour soak shows RSS growing as a STAIRCASE rather than a line: 1.378 kB/record of quiet
+/// growth plus four jumps that together are 21% of all growth. The jumps land at 0.916, 0.893,
+/// 0.881 and 0.876 of a power of two, converging on hashbrown's 7/8 load factor -- so they are
+/// table resizes, and the freed old table is not returned to the OS.
+///
+/// This measures the same thing locally and without the OS in the way: the same entries, built
+/// incrementally versus built into a pre-sized map.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_resizing_a_shard_map_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_resizing_a_shard_map_costs() {
+    use std::collections::HashMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet { key: "seed".into(), value: vec![b'v'; 512] },
+    });
+    assert!(response.status.ok, "seed write: {:?}", response.status);
+    let address = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().next().cloned().expect("a written page")
+    };
+
+    // Just past a 7/8 boundary, so the incremental build pays for a resize the pre-sized one skips.
+    const ENTRIES: usize = 300_000;
+
+    let build = |capacity: Option<usize>| -> (u64, u64) {
+        let probe = crate::alloc_probe::Probe::start();
+        let mut map: HashMap<String, crate::block_store::BlockAddress> = match capacity {
+            Some(n) => HashMap::with_capacity(n),
+            None => HashMap::new(),
+        };
+        for index in 0..ENTRIES {
+            map.insert(format!("resize-{index:08}"), address.clone());
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&map);
+        (counts.alloc_bytes.saturating_sub(counts.free_bytes), counts.alloc_bytes)
+    };
+
+    let (grown_live, grown_alloc) = build(None);
+    let (sized_live, sized_alloc) = build(Some(ENTRIES));
+
+    let per = |v: u64| v as f64 / ENTRIES as f64;
+    println!();
+    println!("  {ENTRIES} entries, identical keys and addresses");
+    println!("  build             live/entry   allocated/entry");
+    println!("  grown from empty  {:>8.0} B   {:>13.0} B", per(grown_live), per(grown_alloc));
+    println!("  pre-sized         {:>8.0} B   {:>13.0} B", per(sized_live), per(sized_alloc));
+    println!();
+    println!("  pre-sizing saves  {:>8.0} B/entry live   ({:+.1}%)",
+             per(grown_live) - per(sized_live),
+             100.0 * (per(grown_live) - per(sized_live)) / per(grown_live));
+    println!("  and avoids        {:>8.0} B/entry of allocation churn",
+             per(grown_alloc) - per(sized_alloc));
+    println!();
+    if per(grown_live) - per(sized_live) < 8.0 {
+        println!("  Live cost is the SAME either way: the old table is genuinely freed, so a resize");
+        println!("  leaves no permanent slack. The RSS jump the soak sees is therefore the ALLOCATOR");
+        println!("  holding freed memory rather than returning it, which is why it looks permanent");
+        println!("  from outside the process and is recoverable from inside it.");
+    } else {
+        println!("  The grown map carries permanent slack, so pre-sizing is a live-memory win.");
+    }
+    println!();
+    println!("  What pre-sizing does buy is the churn above, and the transient: during a resize");
+    println!("  BOTH tables exist at once, so the peak is higher than the plateau on either side.");
+    println!("  A node sized to its steady-state RSS can still die during a resize.");
+
+    assert!(grown_live > 0 && sized_live > 0, "measured nothing");
+}
