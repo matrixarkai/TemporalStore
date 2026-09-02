@@ -88,6 +88,7 @@ ts_profile_launch() {
   ts_profile_perf_flags
   ts_profile_dirs
 
+  export NO_COLOR="${NO_COLOR:-1}"
   echo "[deploy] profile=${TS_PROFILE_EXPECT} data=${TS_PROFILE_DATA} bin=${TS_PROFILE_BIN}"
   setsid nohup "$TS_PROFILE_BIN" >>"$TS_PROFILE_LOG" 2>&1 </dev/null &
   local pid=$!
@@ -103,8 +104,14 @@ ts_profile_launch() {
   [[ -n "$line" ]] || { echo "[deploy] node never announced a profile in ${TS_PROFILE_WAIT_S}s" >&2
                         tail -20 "$TS_PROFILE_LOG" >&2; exit 1; }
 
+  # The node styles its log with ANSI and quotes string-valued fields, so a
+  # literal "profile=" never matches. Strip the styling, then take the value
+  # with or without its quotes.
   local got
-  got="$(sed -n 's/.*profile=\([a-z-]*\).*/\1/p' <<<"$line")"
+  got="$(printf '%s' "$line" \
+         | sed 's/\x1b\[[0-9;]*m//g' \
+         | grep -o 'profile="\?[a-z-]*' | head -1 \
+         | sed 's/^profile="\?//')"
   if [[ "$got" != "$TS_PROFILE_EXPECT" ]]; then
     echo "[deploy] FAILED: asked for '${TS_PROFILE_EXPECT}', node resolved '${got}'" >&2
     echo "  $line" >&2
