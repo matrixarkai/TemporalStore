@@ -46,14 +46,22 @@ class TheValidatorRunsAndPassesTest(unittest.TestCase):
                          "engine dashboard conformance failed:\n%s\n%s"
                          % (proc.stderr[-2000:], proc.stdout[-2000:]))
 
-    def test_it_still_reports_the_known_gap_rather_than_hiding_it(self) -> None:
+    def test_nothing_is_excused(self) -> None:
+        """KNOWN_UNEMITTED is empty, and the report has nothing missing.
+
+        It briefly held one entry: the dashboard queried
+        `temporalstore_block_store_extent_bytes` while the engine emits `_band_bytes`. "Extent" had
+        been renamed to "band" and the dashboard was not updated, so that panel read empty on every
+        deployment. Renaming it in the dashboard closed the gap, which FAILED the test that pinned
+        the gap -- which is what that test was for. The list cannot quietly outlive the problem.
+        """
         import json
-        proc = _run()
-        report = json.loads(proc.stdout)
-        self.assertIn("storage_cache:rust:temporalstore_block_store_extent_bytes",
-                      report["missing"],
-                      "the known blank panel vanished from the report; if it was fixed, remove it "
-                      "from KNOWN_UNEMITTED so the list does not go stale")
+        import validate_grafana_metrics_conformance as validator
+        self.assertEqual(set(), set(validator.KNOWN_UNEMITTED),
+                         "something is being excused; if it is a real gap, say so in "
+                         "docs/ops/temporalstore-grafana-metrics-coverage.md as well")
+        report = json.loads(_run().stdout)
+        self.assertEqual([], report["missing"])
 
 
 class TheScanCoversWhatItClaimsTest(unittest.TestCase):

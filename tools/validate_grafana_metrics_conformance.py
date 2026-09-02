@@ -153,7 +153,7 @@ METRIC_FAMILIES = {
             "temporalstore_storage_slot_bytes",
             "temporalstore_cache_operations_total",
             "temporalstore_block_store_operations_total",
-            "temporalstore_block_store_extent_bytes",
+            "temporalstore_block_store_band_bytes",
         ],
         "alerts": [
             "TemporalStoreStorageCacheBlockers",
@@ -169,7 +169,7 @@ METRIC_FAMILIES = {
             "temporalstore_cache_operations_total",
             "temporalstore_cache_bytes",
             "temporalstore_block_store_operations_total",
-            "temporalstore_block_store_extent_bytes",
+            "temporalstore_block_store_band_bytes",
         ],
     },
     "data_node": {
@@ -285,11 +285,7 @@ def metric_names(text: str) -> set[str]:
 # deployment. Tracked here rather than left inside a mass failure, because a validator that always
 # fails is one nobody runs -- which is how this one came to be red and unnoticed in the first place.
 # Each entry is either a panel to remove or a metric to add; neither is a decision this script makes.
-KNOWN_UNEMITTED = {
-    # Its siblings (`temporalstore_block_store_operations_total`, the slot gauges) are emitted; this
-    # one never was. Documented in docs/ops/temporalstore-grafana-metrics-coverage.md.
-    "storage_cache:rust:temporalstore_block_store_extent_bytes",
-}
+KNOWN_UNEMITTED: set = set()
 
 
 def check_scan_extent() -> list:

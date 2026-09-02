@@ -77,9 +77,11 @@ that moves before read latency does, which makes it the useful early signal.
 **Alerts:** `TemporalStoreStorageCacheBlockers`, `TemporalStoreBlockStoreReadErrors`,
 `TemporalStoreCacheMissPressure`.
 
-**Known gap:** `temporalstore_block_store_extent_bytes` is queried by this family and emitted by no
-Rust source, so that panel is blank on every deployment. It is either a panel to remove or a metric
-to add; it is recorded here rather than left as a mystery on the dashboard.
+**A rename that left two panels blank:** the dashboard queried
+`temporalstore_block_store_extent_bytes` and `_extent_oldest_age_ms` while the engine emits
+`_band_bytes` and `_band_oldest_age_ms`. "Extent" became "band" and the dashboard was not updated,
+so both panels read empty on every deployment — which looks like a store with nothing in it. The
+dashboard now uses the current names.
 
 ## data_node
 
