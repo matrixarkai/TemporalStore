@@ -2983,16 +2983,47 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
     // restart clock here would let a key that was live at leader-time (and thus took the
     // "exists" branch of a logged conditional write) appear expired on recovery, silently
     // dropping a durably-committed write and diverging the recovered state from the leader.
+    // Nothing can have expired if nothing has an expiry. Checked before anything else because
+    // this runs on every command -- 51 call sites -- and the walk below used to build four owned
+    // keys, one of them with `format!`, purely to look them up and drop them again.
+    if shard.expires_at_ms.is_empty() {
+        return false;
+    }
+
     let now = resolve_now_ms();
     let mut removed = false;
-    for record_key in associated_record_keys(key) {
-        if shard
+
+    let expired = |shard: &ShardState, candidate: &str, now: u64| {
+        shard
             .expires_at_ms
-            .get(&record_key)
-            .map(|expires_at| *expires_at <= now)
-            .unwrap_or(false)
-        {
-            removed |= delete_record_exact(shard, &record_key);
+            .get(candidate)
+            .is_some_and(|expires_at| *expires_at <= now)
+    };
+
+    // The key as given. `BTreeMap<String, _>` looks up by `&str`, so this needs no owned copy.
+    if expired(shard, key, now) {
+        removed |= delete_record_exact(shard, key);
+    }
+
+    if key.starts_with("control_state:") {
+        return removed;
+    }
+
+    // The control-state families. Built into one buffer that is rewritten per family rather than
+    // a fresh `String` apiece.
+    let mut candidate = String::with_capacity("control_state:".len() + 4 + key.len());
+    for family in [
+        ControlStateFamily::Counter,
+        ControlStateFamily::Distinct,
+        ControlStateFamily::Selection,
+    ] {
+        candidate.clear();
+        candidate.push_str("control_state:");
+        candidate.push_str(control_state_family_name(family));
+        candidate.push(':');
+        candidate.push_str(key);
+        if expired(shard, &candidate, now) {
+            removed |= delete_record_exact(shard, &candidate);
         }
     }
     removed

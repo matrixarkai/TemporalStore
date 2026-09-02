@@ -4802,6 +4802,54 @@ fn the_page_index_dump_is_ordered_by_its_written_key() {
     assert_eq!(keys, sorted, "the dump must be ordered by written key");
 }
 
+/// A command does not allocate to discover that nothing has expired.
+///
+/// Lazy expiry runs on every command -- 51 call sites -- and used to build four owned keys per
+/// call to look them up in a map that, on a store with no TTLs, is empty. One of those keys came
+/// from `format!`. All four were dropped immediately after the lookup.
+///
+/// Counted as allocations rather than time because the allocation is the whole cost: the work
+/// this does on a store without expiries is a single `is_empty` check.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn a_command_does_not_allocate_to_check_expiry() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let reads = |n: usize| -> f64 {
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..n {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("absent{i:04}"),
+                },
+            });
+        }
+        probe.stop().allocs as f64 / n as f64
+    };
+
+    let per_read = reads(200);
+    println!("miss costs {per_read:.1} allocations");
+
+    // An upper bound passes most easily when nothing happened, so prove work was observed.
+    assert!(per_read > 1.0, "the probe must observe the reads: {per_read}");
+
+    // The expiry check accounted for five of these. The rest is the lookup itself, which this
+    // bound deliberately leaves room for -- it is here to catch the per-command allocation
+    // coming back, not to freeze the whole read path.
+    assert!(
+        per_read < 38.0,
+        "a read cost {per_read:.1} allocations; lazy expiry is allocating again"
+    );
+}
+
 /// The page index is keyed by a number in memory and by the old string on disk.
 ///
 /// This is what makes the numeric key an in-memory change rather than a format change. Asserted on
