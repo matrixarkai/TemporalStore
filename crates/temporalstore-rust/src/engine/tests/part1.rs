@@ -7400,3 +7400,98 @@ fn does_a_bounded_slot_range_make_writes_cheaper() {
 
     assert!(wide_ops > 0.0 && narrow_ops > 0.0, "measured nothing");
 }
+
+/// What each of the seven homes actually costs, by freeing them one at a time.
+///
+/// A record is kept in seven places (`where_a_record_is_kept_everywhere`) and the shard holds 963
+/// B/record in total (`what_dropping_the_shard_gives_back`), but a count says nothing about which
+/// home is expensive -- a structure holding one small entry per record and one holding a fat entry
+/// per record look identical when counted.
+///
+/// So free them one at a time and watch what the allocator takes back. Order matters and is fixed
+/// here: dropping a structure that owns its keys frees those keys, so whichever runs first is
+/// credited with them. That is called out per row rather than hidden.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_each_home_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_each_home_costs() {
+    const RECORDS: u64 = 60_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("home-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("loaded shard");
+
+    // Captures nothing, so it does not fight the closures below for the shard borrow.
+    let freed_by = |f: &mut dyn FnMut()| -> f64 {
+        let probe = crate::alloc_probe::Probe::start();
+        f();
+        let counts = probe.stop();
+        counts.free_bytes.saturating_sub(counts.alloc_bytes) as f64 / RECORDS as f64
+    };
+
+    // Least entangled first: these own nothing the others need.
+    let mut freed_rows: Vec<(&str, f64)> = Vec::new();
+    let per = freed_by(&mut || shard.bucket_recency.clear());
+    freed_rows.push(("bucket_recency", per));
+    let per = freed_by(&mut || shard.dirty_objects.clear());
+    freed_rows.push(("dirty_objects", per));
+    let per = freed_by(&mut || shard.bucket_index.object_page_lookup.clear());
+    freed_rows.push(("bucket_index.object_page_lookup", per));
+    let per = freed_by(&mut || {
+        for bucket in shard.bucket_index.bucket_map.values_mut() {
+            bucket.object_index.clear();
+        }
+    });
+    freed_rows.push(("bucket_map .object_index", per));
+    let per = freed_by(&mut || shard.bucket_index.bucket_map.clear());
+    freed_rows.push(("bucket_map (the rest)", per));
+    let per = freed_by(&mut || shard.strings.clear());
+    freed_rows.push(("strings", per));
+
+    println!();
+    println!("  {RECORDS} records, each home freed in turn");
+    println!("  home                              freed B/record");
+    let mut total = 0.0;
+    for (label, per) in &freed_rows {
+        total += per;
+        println!("  {label:34} {per:>10.0}");
+    }
+    println!("  ----------------------------------------------");
+    println!("  {:34} {total:>10.0}", "accounted for");
+    println!("  {:34} {:>10}", "the shard holds (measured separately)", 963);
+    println!();
+    println!("  Two things keep the rows below the total, and neither is an error:");
+    println!("   - `clear()` drops entries but KEEPS the table, by design, so a row is credited");
+    println!("     with its entries and not with its capacity. The shortfall above is mostly");
+    println!("     retained tables.");
+    println!("   - a row reading 0 can be correct rather than broken: a HashMap<u32, u64> has no");
+    println!("     per-entry heap at all, and ObjectIndex is inline while a slot holds one object.");
+    println!();
+    println!("  Order is fixed and matters: a structure that owns its keys frees them, so an");
+    println!("  earlier row is credited with anything a later row merely borrowed. The page index");
+    println!("  is not freed separately because it goes with the slot map it lives in -- which is");
+    println!("  why the slot map is the largest row and why bounding the slot range only recovers");
+    println!("  the per-slot part of it, not the per-object part.");
+
+    assert!(total > 0.0, "measured nothing");
+}
