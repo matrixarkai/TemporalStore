@@ -242,6 +242,24 @@ def float_arg(data: Json, field: str, default: float, *, minimum: float = 0.0, m
     return result
 
 
+def _tenant_profile_max_candidates(args: Json, fallback: int) -> int:
+    """This tenant's cross-session PROFILE candidate ceiling, or the build's default.
+
+    Reads the shared explicit-only resolver rather than `resolve()`: the knob registry's default is
+    2000 and the value in use here is 48, so resolving would multiply the budget forty-fold for
+    every deployment that never configured one.
+    """
+    try:
+        from matrixark_tenant_policy import explicit_int
+    except Exception:  # pragma: no cover - policy module absent
+        return fallback
+    try:
+        return explicit_int("cross_session_profile_max_candidates",
+                            (args or {}).get("scope"), fallback)
+    except Exception:  # pragma: no cover - a malformed policy must not break retrieval
+        return fallback
+
+
 def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str, session_scope: str, remote_budget_tokens: int, context_source_mode: str = "") -> Json:
     raw = args.get("cross_session", ranking.get("cross_session", {}))
     if isinstance(raw, bool):
@@ -365,7 +383,15 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens,
     )
     max_sessions_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_SESSIONS
-    max_candidates_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_CANDIDATES
+    # The last of the tenant knobs that resolved correctly and was read by nobody. It applies
+    # only to the PROFILE budget, which is what it is named for; the non-profile default is
+    # untouched. Explicit-only precedence, so a deployment that configured nothing does not move --
+    # the registry default for this knob is 2000 against the 48 used here.
+    max_candidates_default = (
+        _tenant_profile_max_candidates(args, DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES)
+        if profile_budget_query
+        else DEFAULT_CROSS_SESSION_MAX_CANDIDATES
+    )
     min_bridge_default = (
         DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS
         if profile_budget_query
