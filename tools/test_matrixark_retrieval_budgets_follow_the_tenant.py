@@ -150,5 +150,57 @@ class NonsenseFallsBackTest(unittest.TestCase):
                     os.environ.pop(env, None)
 
 
+class TheProfileCandidateCeilingFollowsTheTenantTest(unittest.TestCase):
+    """The fifth budget, and the last tenant knob that had no caller at all.
+
+    It could not be wired until there was one `build_cross_session_policy` to wire: the function
+    existed twice, bound by different callers, so gating one would have left the other untouched --
+    the guard-one-route-of-two mistake, which looks like it works.
+
+    Asserted through the policy the builder returns rather than through the helper, because the
+    helper returning the right number proves nothing about whether the builder consults it.
+    """
+
+    def _max_candidates(self, tenant, budget=8192):
+        import matrixark_mcp_core_scoring as scoring
+        args = {"scope": {"tenant_id": tenant},
+                "query": "what is my standing rule about deploys"}
+        policy_out = scoring.build_cross_session_policy(
+            args, {}, question_type="profile_memory", session_scope="prefer",
+            remote_budget_tokens=budget)
+        return policy_out.get("max_candidates")
+
+    def test_a_tenant_ceiling_is_applied(self) -> None:
+        _set_policy("profile_ceiling", {"cross_session_profile_max_candidates": 6})
+        self.assertEqual(6, self._max_candidates("profile_ceiling"))
+
+    def test_an_unconfigured_tenant_does_not_move(self) -> None:
+        # The registry default for this knob is 2000 and the value in use is 48. Wiring through
+        # resolve() would have multiplied it forty-fold for everyone who set nothing.
+        os.environ.pop("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", None)
+        self.assertEqual(48, self._max_candidates("profile_unconfigured"))
+
+    def test_an_explicit_env_var_applies_without_a_restart(self) -> None:
+        os.environ.pop("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", None)
+        self.assertEqual(48, self._max_candidates("profile_env"))
+        try:
+            os.environ["MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES"] = "11"
+            self.assertEqual(11, self._max_candidates("profile_env"))
+        finally:
+            os.environ.pop("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", None)
+        self.assertEqual(48, self._max_candidates("profile_env"))
+
+    def test_it_does_not_touch_the_non_profile_budget(self) -> None:
+        # The knob names the PROFILE ceiling. A non-profile query must keep its own default, or
+        # this would be a much larger change than the name promises.
+        import matrixark_mcp_core_scoring as scoring
+        _set_policy("profile_only", {"cross_session_profile_max_candidates": 6})
+        args = {"scope": {"tenant_id": "profile_only"}, "query": "what did we ship last week"}
+        out = scoring.build_cross_session_policy(
+            args, {}, question_type="latest", session_scope="prefer", remote_budget_tokens=8192)
+        self.assertNotEqual(6, out.get("max_candidates"),
+                            "the profile ceiling was applied to a non-profile query")
+
+
 if __name__ == "__main__":
     unittest.main()

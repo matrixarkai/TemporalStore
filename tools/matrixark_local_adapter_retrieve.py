@@ -282,31 +282,13 @@ def _tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
     than ignoring a bad setting.
     """
     try:
-        from matrixark_tenant_policy import KNOBS as _KNOBS, tenant_policy as _tenant_policy
+        from matrixark_tenant_policy import explicit_int
     except Exception:  # pragma: no cover - policy module absent
         return fallback
-
-    def _positive_int(value: Any) -> Optional[int]:
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed > 0 else None
-
     try:
-        override = _positive_int((_tenant_policy(scope) or {}).get(name))
-    except Exception:
-        override = None
-    if override is not None:
-        return override
-
-    knob = _KNOBS.get(name)
-    env_name = getattr(knob, "env", "") if knob is not None else ""
-    if env_name:
-        from_env = _positive_int(os.environ.get(env_name))
-        if from_env is not None:
-            return from_env
-    return fallback
+        return explicit_int(name, scope, fallback)
+    except Exception:  # pragma: no cover - a malformed policy must not break retrieval
+        return fallback
 
 
 class _LocalAdapterRetrieveMixin:

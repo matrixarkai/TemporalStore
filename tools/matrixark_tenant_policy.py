@@ -829,6 +829,45 @@ def tenant_scope_from_node_path(node_path: Any) -> Json:
     return {}
 
 
+def explicit_int(name: str, scope: Any, fallback: int) -> int:
+    """An explicitly-set integer for `scope`: a tenant override, else an env var, else `fallback`.
+
+    Deliberately NOT `resolve()`. That returns the knob registry's default when nobody has set
+    anything, and several registry defaults are far larger than the value the consuming code
+    actually uses -- `cross_session_profile_max_candidates` is 2000 here and 48 there. Wiring a
+    consumer to `resolve()` therefore looks like "the knob works now" and silently multiplies the
+    budget for every deployment that configured nothing.
+
+    Both explicit levels are read per call, so a change at either applies with no restart. With
+    nothing set the caller's own default is returned unchanged, so no deployment moves.
+
+    Anything unexpected -- no such knob, a non-numeric value, a nonsensical zero -- falls back to
+    the caller's default: a budget that resolved to nothing would return nothing at all, which is a
+    worse failure than ignoring a bad setting.
+    """
+    def _positive(value: Any):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    try:
+        override = _positive((tenant_policy(scope) or {}).get(name))
+    except Exception:  # pragma: no cover - a malformed policy must not break retrieval
+        override = None
+    if override is not None:
+        return override
+
+    knob = KNOBS.get(name)
+    env_name = getattr(knob, "env", "") if knob is not None else ""
+    if env_name:
+        from_env = _positive(os.environ.get(env_name))
+        if from_env is not None:
+            return from_env
+    return fallback
+
+
 def tenant_policy(scope: Any = None) -> Json:
     """The merged override set for `scope`'s tenant (file defaults < file tenant < store record)."""
     file_defaults, file_tenants = _load_file_policies()
