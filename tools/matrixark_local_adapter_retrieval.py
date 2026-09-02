@@ -64,16 +64,29 @@ def flag_enabled(name: str, default: str = "0") -> bool:
 # The one-box baseline. It turns on the scan projection AND dense-only scoring together, because
 # each is unsound alone: the projection removes the text the lexical term reads, and dropping the
 # lexical term is what makes removing it safe.
-ONEBOX_EMBEDDING_FIRST = flag_enabled("MATRIXARK_ONEBOX_EMBEDDING_FIRST")
+def onebox_embedding_first():
+    """Read at call time, never captured at import.
 
-RETRIEVAL_SCAN_PROJECTION = ONEBOX_EMBEDDING_FIRST or flag_enabled(
-    "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"
-)
+    A module-level constant freezes the flag at whichever moment the module first loaded. Under
+    the full suite that is decided by import order, so the same test passes alone and fails in
+    the suite; in a deployment it means the profile cannot be turned on without a restart.
+    """
+    return flag_enabled("MATRIXARK_ONEBOX_EMBEDDING_FIRST")
 
 
-def project_scan_record(record):
-    """Keep only what the scan reads. Returns the record unchanged when projection is off."""
-    if not RETRIEVAL_SCAN_PROJECTION:
+def retrieval_scan_projection():
+    """True when the scan should carry only the fields it reads -- see onebox_embedding_first."""
+    return onebox_embedding_first() or flag_enabled("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS")
+
+
+def project_scan_record(record, enabled=None):
+    """Keep only what the scan reads. Returns the record unchanged when projection is off.
+
+    ``enabled`` lets a caller resolve the flag once for a whole scan instead of once per record.
+    """
+    if enabled is None:
+        enabled = retrieval_scan_projection()
+    if not enabled:
         return record
     return {key: value for key, value in record.items() if key in RETRIEVAL_SCAN_FIELDS}
 
@@ -592,8 +605,10 @@ class _LocalAdapterRetrievalMixin:
                 dropped_scope += 1
                 continue
             filtered.append(record)
+        # Resolve the flag once for the whole scan rather than once per record.
+        _projecting = retrieval_scan_projection()
         result = {
-            "records": [project_scan_record(record) for record in filtered],
+            "records": [project_scan_record(record, _projecting) for record in filtered],
             "scan_stats": {
                 "backend": getattr(self, "_backend_label", lambda: "local")(),
                 "execution_mode": "adapter_prefilter_cached",

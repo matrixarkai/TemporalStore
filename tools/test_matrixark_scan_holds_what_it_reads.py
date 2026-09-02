@@ -48,19 +48,23 @@ def _record():
 
 @contextlib.contextmanager
 def _projection(enabled):
-    """Set the flag rather than reloading the module.
+    """Set the environment variable the module reads at call time.
 
     `matrixark_local_adapter_retrieval` and `matrixark_mcp_local_adapter` import each other, so a
     reload builds a second module object while the adapter keeps the first one's mixin. That is
     order-dependent, which makes these tests pass alone and fail in a suite, and can break
     unrelated tests that resolve the mixin later.
     """
-    previous = retrieval.RETRIEVAL_SCAN_PROJECTION
-    retrieval.RETRIEVAL_SCAN_PROJECTION = enabled
+    key = "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"
+    previous = os.environ.get(key)
+    os.environ[key] = "1" if enabled else "0"
     try:
         yield retrieval
     finally:
-        retrieval.RETRIEVAL_SCAN_PROJECTION = previous
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 class TheScanCanHoldOnlyWhatItReads(unittest.TestCase):

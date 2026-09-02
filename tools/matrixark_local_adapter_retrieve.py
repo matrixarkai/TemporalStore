@@ -1267,10 +1267,10 @@ class _LocalAdapterRetrieveMixin:
         # indistinguishable from no effect (hit@1 -0.011, 95% CI [-0.049, +0.027] over 269 queries)
         # at 21x the scoring cost. Weights still sum to 1.0 so scores stay comparable.
         try:  # package path
-            from tools.matrixark_local_adapter_retrieval import ONEBOX_EMBEDDING_FIRST
+            from tools.matrixark_local_adapter_retrieval import onebox_embedding_first
         except ImportError:  # top-level path (direct tools/ execution)
-            from matrixark_local_adapter_retrieval import ONEBOX_EMBEDDING_FIRST
-        _ONEBOX_DENSE_ONLY = ONEBOX_EMBEDDING_FIRST
+            from matrixark_local_adapter_retrieval import onebox_embedding_first
+        _ONEBOX_DENSE_ONLY = onebox_embedding_first()
         _DENSE_W = 1.00 if _ONEBOX_DENSE_ONLY else 0.72
         _SPARSE_W = 0.00 if _ONEBOX_DENSE_ONLY else 0.28
 
