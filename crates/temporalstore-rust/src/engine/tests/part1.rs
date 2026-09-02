@@ -4396,6 +4396,107 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// How much of a record's resident cost is the core index entry, and how much is its kind?
+///
+/// A context node keeps ~1.34 kB resident and none of it is the payload
+/// (`what_a_resident_record_is_made_of`) -- it is fixed index structure, which is the only thing
+/// left that could move a node's ~20M-record ceiling. This asks which structure: a plain string
+/// lands in the fewest maps a record can land in, so what a context node costs ABOVE it is what
+/// the context indexes add.
+///
+/// Both write the same number of records with a payload of the same size, so the difference is
+/// the indexing and not the data.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_records_kind_costs_resident -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_records_kind_costs_resident() {
+    const RECORDS: u64 = 30_000;
+    const PAYLOAD: usize = 1536;
+
+    let engine_for = || {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        (dir, engine)
+    };
+
+    // --- a plain string: the fewest maps a record can land in ---------------------------
+    let (_dir_a, engine_a) = engine_for();
+    let probe = crate::alloc_probe::Probe::start();
+    for index in 0..RECORDS {
+        let response = engine_a.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("kind-{index:08}"),
+                value: vec![b'v'; PAYLOAD],
+            },
+        });
+        assert!(response.status.ok, "string write {index}: {:?}", response.status);
+    }
+    let string_counts = probe.stop();
+    let string_live = string_counts.alloc_bytes.saturating_sub(string_counts.free_bytes);
+
+    // --- a context node: the same bytes, more indexes -----------------------------------
+    let (_dir_b, engine_b) = engine_for();
+    let vector: Vec<f32> = (0..PAYLOAD / 4).map(|i| (i as f32) * 0.001).collect();
+    let probe = crate::alloc_probe::Probe::start();
+    for index in 0..RECORDS {
+        let node = crate::types::ContextNode {
+            node_hash: 1_000_000 + index,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("kind-{index:08}"),
+            l0: String::new(),
+            status: 0,
+            last_event_time_ms: 1_780_000_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vector.clone(),
+            embedding_model_hash: 909,
+            embedding_updated_at_ms: 1_780_000_000_000,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        };
+        let response = engine_b.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: 7, node },
+        });
+        assert!(response.status.ok, "node write {index}: {:?}", response.status);
+    }
+    let node_counts = probe.stop();
+    let node_live = node_counts.alloc_bytes.saturating_sub(node_counts.free_bytes);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  record kind                 live/record   allocated/record   freed %");
+    println!("  string ({PAYLOAD} B value)      {:>8.0} B  {:>15.0} B  {:>6.1}%",
+             per(string_live), per(string_counts.alloc_bytes),
+             100.0 * string_counts.free_bytes as f64 / string_counts.alloc_bytes as f64);
+    println!("  context node ({PAYLOAD} B vec)  {:>8.0} B  {:>15.0} B  {:>6.1}%",
+             per(node_live), per(node_counts.alloc_bytes),
+             100.0 * node_counts.free_bytes as f64 / node_counts.alloc_bytes as f64);
+    println!();
+    let extra = per(node_live) - per(string_live);
+    println!("  a context node keeps {extra:+.0} bytes more than a string carrying the same bytes");
+    if extra > per(string_live) {
+        println!("  -- the context indexes cost MORE than the core entry, so they are where the");
+        println!("     ceiling is. Which of them is the next thing to split out.");
+    } else {
+        println!("  -- the core index entry dominates, so every record kind pays about the same");
+        println!("     and the ceiling is not specific to context nodes.");
+    }
+
+    assert!(string_live > 0 && node_live > 0, "measured nothing");
+}
+
 /// What the 1.3 kB a record keeps resident is actually made of.
 ///
 /// A node keeps 1.302 kB of live memory per record and RSS grows 1.586 kB
