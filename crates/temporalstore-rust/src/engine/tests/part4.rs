@@ -5543,6 +5543,93 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert_eq!(serde_json::to_string(&one).expect("serializes"), "[4]");
 }
 
+/// Writing a message does not cost the length of its node's history.
+///
+/// The per-write index sync files every page its object has. Each upsert drops the entry's
+/// existing refs before inserting, so filing a list leaves only its last element -- the rest are
+/// removed again on the way past. A node holding 850 events therefore re-filed 850 pages to add
+/// its 851st, and filling a node cost the square of its length: 2,072 allocations per message at
+/// 50 events, 23,822 at 800.
+///
+/// Bounded on the absolute cost at 800 rather than on a ratio, because a ratio would still pass
+/// comfortably -- this is not flat yet. What remains is in the WAL append, measured at 8,700 of
+/// the 8,800 allocations a write costs there and untouched by this.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn writing_a_message_does_not_cost_its_nodes_history() {
+    // A message as a caller would write one: some text, and an embedding.
+    let dims = 384usize;
+    let write = |engine: &TemporalEngine, i: usize, with_vector: bool| {
+        let vector: Vec<f32> = if with_vector {
+            (0..dims).map(|d| (d as f32) * 0.001 + i as f32).collect()
+        } else {
+            Vec::new()
+        };
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: 1,
+                node_hash: 42,
+                first_write_only: false,
+                cold_storage: false,
+                event: ContextEvent {
+                    event_id_hash: 1_000 + i as u64,
+                    event_time_ms: 1_700_000_000_000 + i as u64,
+                    ingestion_time_ms: 1_700_000_000_000,
+                    kind: 1,
+                    event_type: 2,
+                    actor_hash: 7,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.5,
+                    text: format!(
+                        "message {i}: the quick brown fox jumps over the lazy dog, twice over"
+                    ),
+                    source_ref: format!("src/{i}"),
+                    related_node_hashes: vec![42],
+                    compact_attrs: Vec::new(),
+                    vector,
+                },
+            },
+        });
+    };
+
+    let cost_at = |resident: usize| -> f64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            32 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..resident {
+            write(&engine, i, true);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in resident..resident + 50 {
+            write(&engine, i, true);
+        }
+        probe.stop().allocs as f64 / 50.0
+    };
+
+    let narrow = cost_at(50);
+    let wide = cost_at(800);
+    println!("message write: {narrow:.0} allocations at 50 events, {wide:.0} at 800");
+
+    // A bound passes most easily when nothing was measured.
+    assert!(narrow > 1.0, "the probe must observe the writes: {narrow}");
+
+    // Was 23,822 when the sync filed every page of the series.
+    assert!(
+        wide < 12_000.0,
+        "a message cost {wide:.0} allocations on a node holding 800 events; the index sync is \
+         filing the whole series again"
+    );
+}
+
+
 /// What a key costs the index in live heap.
 ///
 /// Measured as allocated-minus-freed rather than as a struct size, because the cost this bounds
