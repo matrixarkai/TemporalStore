@@ -1572,16 +1572,26 @@ impl ProxyService {
         scope: &context::ProxyContextScope,
         is_write: bool,
     ) -> Result<ProxyInflightGuard<'_>, (u16, Vec<u8>)> {
-        let options = self.options();
-        let rejection = proxy_account_rejection(&options, &scope.account_id)
-            .map(|status| (status, ProxyRejectionKind::Account))
-            .or_else(|| {
-                proxy_serving_rejection(&options, is_write)
-                    .map(|status| (status, ProxyRejectionKind::Policy))
-            })
-            .or_else(|| {
-                proxy_drop_rejection(&options, &context_drop_key(scope))
-                    .map(|status| (status, ProxyRejectionKind::Policy))
+        // One snapshot for the whole decision, as on the command path: `options()` is a lock
+        // read and an Arc clone, and this used to take it here and again in `context_shard_id`
+        // and `context_http_options` for a single request.
+        let (rejection, max_inflight_requests, max_inflight_write_requests) =
+            self.with_options(|options| {
+                let rejection = proxy_account_rejection(options, &scope.account_id)
+                    .map(|status| (status, ProxyRejectionKind::Account))
+                    .or_else(|| {
+                        proxy_serving_rejection(options, is_write)
+                            .map(|status| (status, ProxyRejectionKind::Policy))
+                    })
+                    .or_else(|| {
+                        proxy_drop_rejection(options, &context_drop_key(scope))
+                            .map(|status| (status, ProxyRejectionKind::Policy))
+                    });
+                (
+                    rejection,
+                    options.max_inflight_requests,
+                    options.max_inflight_write_requests,
+                )
             });
         if let Some((status, kind)) = rejection {
             return Err(self.context_rejection_response(status, kind));
@@ -1590,8 +1600,8 @@ impl ProxyService {
             .inflight
             .try_acquire(
                 is_write,
-                options.max_inflight_requests,
-                options.max_inflight_write_requests,
+                max_inflight_requests,
+                max_inflight_write_requests,
             )
             .map_err(|rejection| {
                 self.context_rejection_response(rejection.status(), ProxyRejectionKind::Inflight)
@@ -1740,7 +1750,7 @@ impl ProxyService {
     /// if the metaserver cannot be reached). That is the old behaviour, so a proxy that cannot
     /// ask degrades to what it did before rather than to nothing.
     pub(super) fn effective_context_shard_count(&self) -> u64 {
-        let configured = self.options().context_shard_count;
+        let configured = self.with_options(|options| options.context_shard_count);
         if configured != 0 {
             return configured;
         }
@@ -3205,6 +3215,50 @@ mod tests {
         }
     }
 
+    /// The context admission path under concurrency.
+    ///
+    /// `admit_context` makes the same four decisions as `admit` and is reached by every
+    /// `/context/*` request. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_context_admission() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let proxy = std::sync::Arc::clone(&proxy);
+            let gate = std::sync::Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                let scope = context_scope("acct", "tenant");
+                gate.wait();
+                for _ in 0..per_thread {
+                    let admitted = proxy.admit_context(&scope, true);
+                    std::hint::black_box(&admitted);
+                }
+            }));
+        }
+        gate.wait();
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread panicked");
+        }
+        let elapsed = start.elapsed();
+        let ops = (threads * per_thread) as u128;
+        println!(
+            "BENCH context_admission threads={threads} ops={ops} ns_per_op={}",
+            elapsed.as_nanos() / ops
+        );
+    }
+
     /// Per-request bookkeeping under CONCURRENCY, measured per function.
     ///
     /// Single-threaded this work is ~110ns against a request whose real cost is a network
@@ -4192,6 +4246,42 @@ mod tests {
         );
         assert_eq!(code, 403);
         assert_eq!(proxy.policy_report().account_rejections, 2);
+    }
+
+    #[test]
+    fn a_config_push_reaches_a_context_path_that_already_served() {
+        // `admit_context` reads the options through the per-thread snapshot, which is only
+        // refreshed when the config version moves. A thread that has already admitted a context
+        // request holds a snapshot; if the push does not reach it, an operator disables writes,
+        // the config report agrees, and this path keeps accepting them.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let scope = context_scope("acct", "t");
+
+        assert!(
+            proxy.admit_context(&scope, true).is_ok(),
+            "a serving proxy admits a context write"
+        );
+
+        // Same thread, so the snapshot taken above is the one in hand.
+        let mut pushed = (*proxy.options()).clone();
+        pushed.serving_mode = ProxyServingMode::WriteDisabled;
+        let report = proxy.update_options_report(pushed);
+        assert!(report.applied, "the push must be applied: {report:?}");
+
+        let refused = proxy.admit_context(&scope, true);
+        assert!(
+            refused.is_err(),
+            "a context write must be refused after writes are disabled -- admitting here means              the push did not reach the snapshot this thread already held"
+        );
+
+        // And back, so this cannot pass by the snapshot being stuck on the refusing value.
+        let mut restored = (*proxy.options()).clone();
+        restored.serving_mode = ProxyServingMode::Serving;
+        assert!(proxy.update_options_report(restored).applied);
+        assert!(
+            proxy.admit_context(&scope, true).is_ok(),
+            "restoring the mode must reach this path too"
+        );
     }
 
     #[test]
