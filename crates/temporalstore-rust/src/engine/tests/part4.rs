@@ -5324,6 +5324,155 @@ fn does_writing_scale_with_the_store() {
     );
 }
 
+/// What a key costs the index in live heap.
+///
+/// Measured as allocated-minus-freed rather than as a struct size, because the cost this bounds
+/// was never in the struct: a bucket held its single page in a `BTreeMap`, whose node is sized
+/// for eleven entries and cost 1,496 live bytes to carry 120 bytes of page. Holding one page
+/// inline took a key from 2,336 live bytes to 1,085.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_a_key_costs_the_index_in_live_heap() {
+    let cost_at = |keys: usize| -> f64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("k{i:07}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let counts = probe.stop();
+        (counts.alloc_bytes as i64 - counts.free_bytes as i64) as f64 / keys as f64
+    };
+
+    let per_key = cost_at(2000);
+    println!("live heap: {per_key:.0} bytes per key");
+
+    // A bound passes most easily when nothing was measured.
+    assert!(per_key > 100.0, "the probe must observe the writes: {per_key}");
+
+    assert!(
+        per_key < 1500.0,
+        "a key costs {per_key:.0} live bytes; a bucket is holding a node for a single page again"
+    );
+}
+
+/// A bucket holding one page holds it inline, and goes back to inline when it can.
+///
+/// Keys route one to a bucket, so most buckets hold a single page. A `BTreeMap` holding one entry
+/// costs 1,496 live bytes to carry a 120-byte page, because its node is sized for eleven -- which
+/// made the containers about 70% of the index's live heap.
+///
+/// The demotion matters as much as the promotion: a bucket that briefly held two pages would
+/// otherwise keep its node for the rest of its life, which is exactly the cost being avoided and
+/// would not show up as a failure anywhere else.
+#[test]
+fn a_bucket_holding_one_page_holds_no_node() {
+    use crate::engine::state::PageIndexMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // One page under an object: inline.
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "solo".to_string(),
+            value: vec![b'v'; 32],
+        },
+    });
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|bucket| bucket.page_index.len() == 1)
+            .expect("the write must produce a bucket holding one page");
+        assert!(
+            matches!(bucket.page_index, PageIndexMap::One(..)),
+            "a bucket holding one page must hold it inline"
+        );
+    }
+
+    // Several components of one object: a map, which is what a map is for.
+    for field in ["a", "b", "c"] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "wide".to_string(),
+                field: field.to_string(),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|bucket| bucket.page_index.len() > 1)
+            .expect("three fields must share a bucket");
+        assert!(
+            matches!(bucket.page_index, PageIndexMap::Many(_)),
+            "several pages belong in a map"
+        );
+    }
+
+    // Down to one again: back to inline, not a map with one entry left in it.
+    for field in ["a", "b"] {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashDelete {
+                key: "wide".to_string(),
+                field: field.to_string(),
+            },
+        });
+    }
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|bucket| {
+                bucket
+                    .page_index
+                    .values()
+                    .any(|page| &*page.object_key == "wide")
+            })
+            .expect("the remaining field must still be filed");
+        assert_eq!(bucket.page_index.len(), 1, "two of three fields were removed");
+        assert!(
+            matches!(bucket.page_index, PageIndexMap::One(..)),
+            "a map that drops back to one page must give up its node"
+        );
+    }
+}
+
+
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
