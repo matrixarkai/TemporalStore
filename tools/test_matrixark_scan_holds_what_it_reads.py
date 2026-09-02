@@ -55,30 +55,39 @@ def _projection(enabled):
     order-dependent, which makes these tests pass alone and fail in a suite, and can break
     unrelated tests that resolve the mixin later.
     """
-    key = "MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"
-    previous = os.environ.get(key)
-    os.environ[key] = "1" if enabled else "0"
+    # The one-box profile is on by default and implies this projection, so turning the projection
+    # off means turning that off too -- otherwise `_projection(False)` silently yields it still on.
+    keys = ("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", "MATRIXARK_ONEBOX_EMBEDDING_FIRST")
+    previous = {key: os.environ.get(key) for key in keys}
+    for key in keys:
+        os.environ[key] = "1" if enabled else "0"
     try:
         yield retrieval
     finally:
-        if previous is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = previous
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 class TheScanCanHoldOnlyWhatItReads(unittest.TestCase):
-    def test_it_is_off_by_default(self):
-        """Enabling it changes what downstream scoring can see, so it is opt-in.
+    def test_it_is_opt_in_even_with_the_profile_on(self):
+        """The profile is the default, and it does NOT turn this on.
 
-        The default is checked through the env parsing rather than by reading the live module
-        attribute, which an earlier test in the same process may have set -- and rather than by
-        setting it to False first, which would only assert what the test just did.
+        Checked through the accessors with both variables unset, which is what a deployment that
+        sets nothing actually gets. The two were coupled until the profile became the default and
+        the coupling turned this on for everyone -- it drops fields the answer prints, so ten
+        codex-pipeline tests failed. Narrowing the row depends on dense-only scoring; dense-only
+        scoring does not depend on narrowing the row.
         """
         os.environ.pop("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS", None)
         os.environ.pop("MATRIXARK_ONEBOX_EMBEDDING_FIRST", None)
-        self.assertFalse(retrieval.flag_enabled("MATRIXARK_RETRIEVAL_PROJECT_SCAN_FIELDS"))
-        self.assertFalse(retrieval.flag_enabled("MATRIXARK_ONEBOX_EMBEDDING_FIRST"))
+        self.assertTrue(retrieval.onebox_embedding_first(), "the profile is the default")
+        self.assertFalse(retrieval.retrieval_scan_projection(),
+                         "the projection must be asked for explicitly")
+
+    def test_turned_off_a_record_passes_through_untouched(self):
         with _projection(False) as mod:
             record = _record()
             self.assertEqual(record, mod.project_scan_record(record),
@@ -88,9 +97,12 @@ class TheScanCanHoldOnlyWhatItReads(unittest.TestCase):
         with _projection(True) as reloaded:
             _ignored = None
             projected = reloaded.project_scan_record(_record())
-            for absent in ("text", "heading", "source_locator"):
+            for absent in ("storage_record_kind", "storage_part"):
                 self.assertNotIn(absent, projected,
-                                 "%s is only needed to RETURN a hit" % absent)
+                                 "%s is neither scored nor printed" % absent)
+            for printed in ("text", "heading", "source_locator"):
+                self.assertIn(printed, projected,
+                              "%s is printed by the answer, which is built from this row" % printed)
 
     def test_enabled_it_keeps_everything_the_scan_reads(self):
         """The probe's field list, asserted rather than trusted."""
