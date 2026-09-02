@@ -180,3 +180,101 @@ groups:
         annotations:
           summary: MatrixArk backend errors are increasing
           description: "MatrixArk backend {{ $labels.backend }} has increasing command errors. Inspect conformance gateway logs and backend parity reports."
+  - name: temporalstore-cluster-control-plane
+    rules:
+      - alert: TemporalStoreLocationSafeMode
+        expr: temporalstore_meta_location_safe_mode == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: TemporalStore location held in safe mode
+          description: "Location {{ $labels.location }} (tier {{ $labels.tier }}) is in safe mode, so the control plane will not act on it: no conviction, no re-placement. Inspect damage severity and abnormal resources for that location before clearing it."
+
+      - alert: TemporalStoreMetadataChangeMuted
+        expr: temporalstore_meta_change_muted == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore metadata change is muted
+          description: "Metadata change is muted, so topology edits are not flowing. Servers will keep serving the topology they last applied; check temporalstore_meta_server_applied_topology against temporalstore_meta_topology_version to see how far behind they are."
+
+      - alert: TemporalStoreClusterDamageCritical
+        expr: temporalstore_meta_damage_severity >= 2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: TemporalStore reports critical damage for a location
+          description: "Location {{ $labels.location }} (tier {{ $labels.tier }}) reports damage severity {{ $value }}; the metric declares 2 as critical. Check abnormal resources and shard divergence for that location."
+
+      - alert: TemporalStoreClusterDamageWarning
+        expr: temporalstore_meta_damage_severity == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore reports degraded damage severity for a location
+          description: "Location {{ $labels.location }} (tier {{ $labels.tier }}) has been at damage severity 1 -- the declared warning level -- for fifteen minutes. It is normal transiently and a problem when it persists."
+
+      - alert: TemporalStorePlacementShort
+        expr: temporalstore_meta_placement_short > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore cannot place every shard replica
+          description: "{{ $value }} shards could not be filled by the last topology answer, so they are serving with fewer replicas than their table asks for. Check server inventory and resource state before this becomes a durability problem."
+
+      - alert: TemporalStoreRetentionBlocked
+        expr: temporalstore_meta_retention_blocked > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore retention cannot forget dropped servers
+          description: "{{ $value }} dropped servers cannot be forgotten because they still own a shard, so retention will not advance. Long-lived here means reclaim is stuck behind an unmoved shard, not that a purge is in flight."
+
+      - alert: TemporalStoreAbnormalResources
+        expr: temporalstore_meta_abnormal_resources > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore has resources that are not serving
+          description: "{{ $value }} resources in location {{ $labels.location }} (tier {{ $labels.tier }}) are not serving. Cross-check conviction counters: a resource can be abnormal without having been convicted yet."
+
+      - alert: TemporalStoreTopologyLag
+        expr: (max(temporalstore_meta_topology_version) - min(temporalstore_meta_server_applied_topology)) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore servers are behind the current topology
+          description: "The slowest server is {{ $value }} topology versions behind the metaserver, so it is routing from a stale view of the cluster. The engine documents this exact comparison on temporalstore_meta_server_applied_topology. Check the rejected and timed_out labels on that metric."
+
+      - alert: TemporalStoreConvictionsRising
+        expr: increase(temporalstore_meta_convicted_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore failure detector is convicting resources
+          description: "{{ $value }} resources were frozen by the failure detector in the last fifteen minutes (tier {{ $labels.tier }}). Compare with temporalstore_meta_conviction_held_total: convictions held by a guard indicate the detector wanted to act and was stopped."
+
+      - alert: TemporalStoreShardDivergence
+        expr: temporalstore_meta_shard_divergence > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore shards are routed to a server not serving them
+          description: "Divergence state {{ $labels.state }} has been non-zero for ten minutes. Reads for those shards reach a server that does not hold them."
+
+      - alert: TemporalStoreMutationApplyFailures
+        expr: increase(temporalstore_meta_mutation_apply_failed_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore control-plane mutations are not applying
+          description: "{{ $value }} recorded mutations would not apply in the last fifteen minutes. The control plane believes it made a change that did not take effect."
