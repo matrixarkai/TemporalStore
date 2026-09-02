@@ -3616,11 +3616,18 @@ pub enum RaftError {
     ApplySnapshotFence(String),
     #[error("raft log entry too large: bytes={bytes}, limit={limit}")]
     LogEntryTooLarge { bytes: u64, limit: u64 },
-    #[error("raft append pipeline backpressure for node {node_id}: inflight_entries={inflight_entries}, inflight_bytes={inflight_bytes}, entry_limit={entry_limit}, byte_limit={byte_limit}")]
+    #[error("raft append pipeline backpressure for node {node_id}: entry_bytes={entry_bytes} does not fit in what is left of byte_limit={byte_limit} (inflight_entries={inflight_entries}, inflight_bytes={inflight_bytes}, entry_limit={entry_limit})")]
     AppendBackpressure {
         node_id: RaftNodeId,
+        /// What the pipeline is actually holding. These are the peer's live window, not the
+        /// entry that was refused -- reporting the entry's size as `inflight_bytes` said the
+        /// window held bytes it did not, and the refusal reads as an accounting bug that is
+        /// not there.
         inflight_entries: u64,
         inflight_bytes: u64,
+        /// The single entry that did not fit in what remained. This is the number that
+        /// explains the refusal, and it has nowhere else to be reported.
+        entry_bytes: u64,
         entry_limit: u64,
         byte_limit: u64,
     },
