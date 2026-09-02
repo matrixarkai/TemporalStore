@@ -8,7 +8,7 @@ groups:
           severity: warning
         annotations:
           summary: TemporalStore production readiness gate is blocked
-          description: "The readiness gate reports {{ $value }} for production readiness. Check temporalstore_production_readiness_blockers by area and follow docs/ops/temporalstore-fault-runbook.md."
+          description: "A capability area is not compiled in or not configured. This gate reads build and configuration state only -- it does not observe runtime health, so it firing is a deployment/build problem, and it staying at 1 is NOT evidence that the cluster is serving. Check temporalstore_production_readiness_blockers by area and follow docs/ops/temporalstore-fault-runbook.md."
 
       - alert: TemporalStoreProductionReadinessBlockersHigh
         expr: temporalstore_production_readiness_blockers > 0
@@ -17,7 +17,7 @@ groups:
           severity: warning
         annotations:
           summary: TemporalStore has production readiness blockers
-          description: "{{ $value }} production readiness blockers remain. Inspect per-area temporalstore_production_readiness_blockers labels."
+          description: "{{ $value }} build/configuration readiness blockers remain. Inspect per-area temporalstore_production_readiness_blockers labels. These are capability areas absent from the build or unconfigured, not runtime faults."
 
   - name: temporalstore-raft-faults
     rules:

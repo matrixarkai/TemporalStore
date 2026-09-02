@@ -211,7 +211,7 @@ impl ProxyService {
 
         let readiness = crate::production_readiness_report();
         out.push_str(
-            "# HELP temporalstore_production_readiness_ready Production readiness gate state.\n",
+            "# HELP temporalstore_production_readiness_ready Build and configuration readiness: 1 when every capability area is compiled in and configured. Does NOT observe runtime health -- it reports the same value for a healthy cluster and for one with every node down.\n",
         );
         out.push_str("# TYPE temporalstore_production_readiness_ready gauge\n");
         push_proxy_metric(

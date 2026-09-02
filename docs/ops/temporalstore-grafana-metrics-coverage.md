@@ -193,3 +193,24 @@ spec whose entire purpose is tying a panel to an emission.
 The scale-harness readiness check carried the same names and additionally verified them against a
 document path that no longer exists, so that check returned false unconditionally. Its lists and
 its path are corrected here.
+
+
+## What the production readiness gate does and does not mean
+
+`temporalstore_production_readiness_ready` is the dashboard's headline stat and carries two alerts.
+It is computed from **build and configuration state only**.
+
+Measured over the readiness surface: 25 functions and 1,922 lines reached from
+`production_readiness_report()`, with **zero runtime reads** -- no atomics, no filesystem, no
+clock, no network. The single environment input is raft security configuration. Nine of the
+sub-reports are built from constants; 146 hardcoded `true` values sit among them.
+
+That is a legitimate thing to compute -- it answers "was this binary built and configured with
+every capability area present". It is not a health signal, and its name, its dashboard position and
+its alert wording all read as one. **A green gate is not evidence the cluster is serving.** It
+reports the same value for a healthy cluster and for one with every node down.
+
+The panel title, the metric's HELP text and both alert descriptions now say so.
+`test_matrixark_readiness_gate_is_build_state.py` pins it: if a runtime read is ever added to that
+surface, the test fails and asks for the wording to be revisited, so the description cannot quietly
+become wrong in the other direction.
