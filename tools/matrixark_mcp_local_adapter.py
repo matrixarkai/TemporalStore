@@ -4064,6 +4064,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # dirty_hash -> the newest summary-dirty or refresh-audit row, so the outstanding set
         # can be answered without reading everything. None until first use.
         self._summary_dirty_index: dict[Any, Json] | None = None
+        # model_ref -> {node_hash}, so 'is this node already embedded' does not read the
+        # store. None until first use; see _existing_node_embedding_refs.
+        self._node_embedding_refs_index: dict[str, set[int]] | None = None
         # The keys the compacted cache already holds, kept current so a write can tell whether
         # it supersedes anything without scanning. None means unknown -- rebuilt on the next
         # compaction.
@@ -4473,6 +4476,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
             self._summary_dirty_index = None
+            self._node_embedding_refs_index = None
             self._read_cache_size = -1
             self._read_cache_mtime_ns = -1
             self._read_cache_source = "empty"
@@ -4700,6 +4704,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4733,14 +4738,23 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 if self._summary_dirty_index is not None:
                     for record in records:
                         self._note_summary_dirty_row(self._summary_dirty_index, record)
+                if self._node_embedding_refs_index is not None:
+                    for record in records:
+                        self._note_node_embedding_ref(self._node_embedding_refs_index, record)
                 durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
-                if self._read_cache_records is not None:
-                    # The snapshot is served to a cold reader without re-compacting, so it has to
-                    # be compact when written.
-                    self._compact_read_cache_if_dirty_locked()
+                if self._read_cache_records is not None and not self._read_cache_dirty:
+                    # A cold reader is served the snapshot without re-compacting, so only a
+                    # COMPACT cache may be copied into it.
+                    #
+                    # Compacting here to make that true undid the deferral: the copy is taken on
+                    # every append, so every append compacted after all. It was 322 compactions
+                    # over 40 attachments, 112,965 records visited, 28% of the time an ingest
+                    # took. A write already declines to rewrite the base and lets the next read
+                    # refresh the snapshot; declining to extend it while the cache is dirty is
+                    # the same trade, and the read that compacts will refresh it.
                     durable_epoch = self._read_cache_compaction_epoch
                     durable_records = list(self._read_cache_records)
             else:
@@ -4748,6 +4762,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -5521,6 +5536,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -5576,6 +5592,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
                 self._read_cache_source = "durable"
@@ -5610,6 +5627,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
             self._summary_dirty_index = None
+            self._node_embedding_refs_index = None
             self._read_cache_size = size
             self._read_cache_mtime_ns = mtime_ns
             self._read_cache_source = "jsonl"
