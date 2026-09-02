@@ -2971,6 +2971,73 @@ mod tests {
     }
 
     #[test]
+    fn an_equal_summary_copy_costs_one_vector_on_the_wire_and_two_in_memory() {
+        // The wire side is covered next door: an equal copy is written as a single varint marker
+        // rather than a second vector. This is the other half, and it is a different claim -- the
+        // marker is resolved on DECODE by cloning, so a node that cost one vector to store costs
+        // two to hold.
+        //
+        // The comparison is saving-against-cost, not wire-against-resident: an encoded record also
+        // carries ids and timestamps, which dominate at small widths and would make a
+        // wire-vs-resident assertion pass or fail for reasons that have nothing to do with
+        // vectors. What is comparable is the number of BYTES THE MARKER SAVES on the wire against
+        // the bytes the clone adds in memory.
+        for width in [4usize, 384, 1024] {
+            let shared: Vec<f32> = (0..width).map(|index| (index % 8) as f32 / 8.0).collect();
+            let same = ContextNode {
+                vector: shared.clone(),
+                summary_vector: shared.clone(),
+                ..node_with_summary_copy()
+            };
+            let mut differs = same.clone();
+            differs.summary_vector[0] += 0.5;
+
+            let same_len = same.encode_context_proto_value().len();
+            let differs_len = differs.encode_context_proto_value().len();
+            let wire_saving = differs_len - same_len;
+
+            let decoded = ContextNode::decode_context_proto_value(&same.encode_context_proto_value())
+                .expect("a node this test just encoded must decode");
+
+            assert_eq!(
+                decoded.vector, decoded.summary_vector,
+                "width {width}: the marker must reproduce the node's own vector"
+            );
+            assert_eq!(
+                decoded.vector, shared,
+                "width {width}: the decoded vector must be the one that was written"
+            );
+
+            let one_vector = width * std::mem::size_of::<f32>();
+            let resident = (decoded.vector.capacity() + decoded.summary_vector.capacity())
+                * std::mem::size_of::<f32>();
+
+            // If these ever share one allocation, this fails -- and that is the good outcome.
+            // Delete the assertion and record the new resident cost in the commit.
+            assert!(
+                decoded.vector.as_ptr() != decoded.summary_vector.as_ptr(),
+                "width {width}: the decoded vectors now SHARE an allocation. That is the \
+                 improvement this test exists to make visible -- remove this assertion."
+            );
+            assert!(
+                resident >= 2 * one_vector,
+                "width {width}: expected two vectors resident ({} bytes), held {resident}",
+                2 * one_vector
+            );
+            assert!(
+                wire_saving > 0,
+                "width {width}: the marker saved no wire bytes, so the encode-side optimisation \
+                 this test is the counterpart to has regressed"
+            );
+
+            eprintln!(
+                "[summary-copy] width {width}: marker saves {wire_saving} B on the wire, \
+                 clone costs {one_vector} B resident (resident total {resident} B)"
+            );
+        }
+    }
+
+    #[test]
     fn a_summary_copy_equal_to_the_node_vector_is_not_stored_twice() {
         // What the current ingest produces: it embeds ONE text and hands the result to both the
         // node and its L1 summary, so the copy is byte-equal to the node's own vector. Writing
