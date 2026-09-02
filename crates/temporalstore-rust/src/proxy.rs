@@ -1214,11 +1214,12 @@ impl ProxyService {
         namespace: String,
         table_name: String,
     ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
-        let client = self.client();
-        client
-            .cached_table(namespace.clone(), table_name.clone())
-            .map(Ok)
-            .unwrap_or_else(|| client.open_table_from_meta(namespace, table_name))
+        self.with_client(|client| {
+            client
+                .cached_table(namespace.clone(), table_name.clone())
+                .map(Ok)
+                .unwrap_or_else(|| client.open_table_from_meta(namespace, table_name))
+        })
     }
 
     pub fn update_options(&self, options: ProxyOptions) {
@@ -1348,6 +1349,40 @@ impl ProxyService {
                 Err(response.status)
             }
         })
+    }
+
+    /// Run `f` against the running client without cloning the handle.
+    ///
+    /// `client()` is a lock read and an Arc clone, and the clone lands on a refcount every thread
+    /// shares. The client is replaced in exactly one place -- `update_options_report`, which also
+    /// moves `options_version` -- so the same version that gates the options snapshot gates this
+    /// one. Keyed by instance too, for the reason given on `with_options`.
+    fn with_client<R>(&self, f: impl FnOnce(&TemporalStoreClient) -> R) -> R {
+        use std::sync::atomic::Ordering;
+        thread_local! {
+            static SNAPSHOT: std::cell::RefCell<Option<(u64, u64, TemporalStoreClient)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let instance = self.inner.instance_id;
+        let version = self.inner.options_version.load(Ordering::Acquire);
+        SNAPSHOT.with(|cell| {
+            let Ok(mut slot) = cell.try_borrow_mut() else {
+                let client = self.client();
+                return f(&client);
+            };
+            if !matches!(&*slot, Some((id, seen, _)) if *id == instance && *seen == version) {
+                let fresh = self.client();
+                *slot = Some((instance, version, fresh));
+            }
+            let (_, _, client) = slot.as_ref().expect("just filled");
+            f(client)
+        })
+    }
+
+    /// What the per-thread client snapshot currently holds, for tests.
+    #[cfg(test)]
+    fn snapshot_meta_addr(&self) -> Option<String> {
+        self.with_client(|client| client.client_options().meta_addr.clone())
     }
 
     fn client(&self) -> TemporalStoreClient {
@@ -4268,6 +4303,31 @@ mod tests {
         );
         assert_eq!(code, 403);
         assert_eq!(proxy.policy_report().account_rejections, 2);
+    }
+
+    #[test]
+    fn a_config_push_replaces_the_client_a_thread_already_holds() {
+        // `table_for_request` reads the client through a per-thread snapshot. A config push
+        // builds a NEW client -- new meta address, new namespace, new timeouts -- so a thread
+        // still holding the old one would keep talking to whatever the proxy was pointed at
+        // before the push.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let before = proxy.snapshot_meta_addr();
+        assert_eq!(
+            before.as_deref(),
+            Some("127.0.0.1:1"),
+            "the snapshot starts on the configured address"
+        );
+
+        let mut pushed = (*proxy.options()).clone();
+        pushed.meta_addr = "127.0.0.1:2".to_string();
+        assert!(proxy.update_options_report(pushed).applied);
+
+        assert_eq!(
+            proxy.snapshot_meta_addr().as_deref(),
+            Some("127.0.0.1:2"),
+            "the push must replace the client this thread already held -- the old address here              means requests keep going to the proxy's previous metaserver"
+        );
     }
 
     #[test]
