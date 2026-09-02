@@ -116,15 +116,21 @@ LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_
 LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
     1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "2000"))
 )
-# A floor between durable read-cache writes. The append-only fast path keeps the usual cost
-# proportional to what was appended, but when it cannot apply -- no epoch, a competing
-# adapter, or a compaction since the last write -- the fallback rewrites the WHOLE record
-# set as JSON, and with no floor that happened on every append.
+# No floor by default. One was added because the fallback rewrote the WHOLE record set as JSON
+# whenever the append-only path could not apply, which was almost every append -- so a delay
+# between writes was the only thing keeping it bounded.
 #
-# Measured: test_intern_record_metadata's codec round-trip does not finish in 45s at 0, and
-# passes with a 250ms floor. The cache is validated by signature on read, so a slightly
-# staler file costs nothing but a rebuild.
-LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "250")))
+# A write no longer takes that fallback at all: it continues the tail or leaves the snapshot alone.
+# Measured over 40 ingests, with the writes interleaved to cancel machine drift:
+#
+#   no structural fix, no floor      ingest 2.714 s   time inside the writer 5.869 s
+#   no structural fix, 250 ms floor  ingest ~2.0 s    time inside the writer ~2.9 s
+#   this, no floor                   ingest 0.768 s   time inside the writer 0.146 s
+#
+# So the delay is no longer buying anything, and it cost correctness: four tests assert that a
+# snapshot is refreshed promptly enough for a restart to use it, and a floor makes that false for
+# a quarter of a second. They pass again at 0.
+LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "0")))
 
 
 def _snapshot_prefix_fingerprint(record: "Json") -> str:
@@ -4211,6 +4217,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         *,
         force: bool = False,
         epoch: int | None = None,
+        tail_only: bool = False,
     ) -> None:
         """Persist the read snapshot.
 
@@ -4297,6 +4304,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             except (OSError, TypeError, ValueError):
                 pass   # fall through to a full rewrite, which also clears the partial tail
 
+        if tail_only:
+            # The caller is a write. A full rewrite here is O(corpus) per append; leave the snapshot
+            # as it stands and let the next read refresh it.
+            return
         tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         payload = {
             "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
@@ -4526,7 +4537,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     compact_and_apply_tombstones(list(self._read_cache_records)),
                 )
         if durable_records is not None:
-            self._write_durable_read_cache(durable_records, signature, epoch=durable_epoch)
+            # Only continue the tail here; never rewrite the whole base from a write.
+            #
+            # Ingest does not just append: compaction rewrites earlier records, so the list is
+            # usually not an extension of what is persisted and the tail cannot apply. Measured over
+            # 40 ingests, 173 snapshot writes, 146 of them full rewrites of the entire record set,
+            # which came to two thirds of the time an ingest took.
+            #
+            # The snapshot is derived state -- _load_durable_read_cache checks it against the log's
+            # signature and returns None on any mismatch, and the caller re-derives. Skipping a
+            # rewrite here costs a slower cold start until the next read, and the read path installs
+            # the records and writes the snapshot anyway.
+            self._write_durable_read_cache(
+                durable_records, signature, epoch=durable_epoch, tail_only=True)
         if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
