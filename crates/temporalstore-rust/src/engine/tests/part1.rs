@@ -4396,6 +4396,113 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// Of the RSS a node holds per record, how much is LIVE and how much is the allocator's?
+///
+/// A soak measured a marginal 1.561 kB of RSS per record, linear, which puts a 32 GB node out of
+/// memory near 20M records. That figure only bounds capacity if it is real data. Process RSS
+/// conflates three things -- memory allocated and still held, memory freed but retained by the
+/// allocator, and memory that never came from the heap -- and a proxy measurement in this project
+/// once found 71% of RSS was retention rather than live data.
+///
+/// The counting allocator knows the difference: allocated bytes minus freed bytes is what the
+/// process is actually still holding. Comparing that against RSS says whether the capacity limit
+/// is the data or the allocator, and those have completely different fixes.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib how_much_of_rss_per_record_is_live -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn how_much_of_rss_per_record_is_live() {
+    fn rss_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.trim().split_whitespace().next()?.parse().ok())
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    const RECORDS: u64 = 60_000;
+    let vector: Vec<f32> = (0..384).map(|i| (i as f32) * 0.001).collect();
+
+    let rss_before = rss_kb();
+    let probe = crate::alloc_probe::Probe::start();
+    for index in 0..RECORDS {
+        let node = crate::types::ContextNode {
+            node_hash: 1_000_000 + index,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/live-{index}"),
+            l0: format!("memory {index}: the user prefers aisle seats"),
+            status: 0,
+            last_event_time_ms: 1_780_000_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vector.clone(),
+            embedding_model_hash: 909,
+            embedding_updated_at_ms: 1_780_000_000_000,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: 7,
+                node,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let counts = probe.stop();
+    let rss_after = rss_kb();
+
+    let live_bytes = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+    let rss_bytes = (rss_after.saturating_sub(rss_before)) * 1024;
+    let per = |v: u64| v as f64 / RECORDS as f64;
+
+    println!();
+    println!("  over {RECORDS} records:");
+    println!("    allocated        {:>12} bytes   ({:.3} kB/record)",
+             counts.alloc_bytes, per(counts.alloc_bytes) / 1024.0);
+    println!("    freed            {:>12} bytes", counts.free_bytes);
+    println!("    STILL LIVE       {:>12} bytes   ({:.3} kB/record)",
+             live_bytes, per(live_bytes) / 1024.0);
+    println!("    RSS grew by      {:>12} bytes   ({:.3} kB/record)",
+             rss_bytes, per(rss_bytes) / 1024.0);
+    println!();
+    if rss_bytes > 0 {
+        let retained = rss_bytes.saturating_sub(live_bytes);
+        println!("    live is {:.0}% of the RSS growth; the other {:.0}% ({:.3} kB/record) is",
+                 100.0 * live_bytes as f64 / rss_bytes as f64,
+                 100.0 * retained as f64 / rss_bytes as f64,
+                 per(retained) / 1024.0);
+        println!("    memory the allocator kept rather than data the node holds.");
+        println!();
+        if retained > live_bytes {
+            println!("    RETENTION DOMINATES: the capacity limit is the allocator, and an arena or a");
+            println!("    periodic trim would move it further than shrinking any structure would.");
+        } else {
+            println!("    LIVE DATA DOMINATES: the per-record structures are the capacity limit, so");
+            println!("    the only thing that moves it is holding less per record.");
+        }
+    }
+
+    assert!(counts.alloc_bytes > 0, "measured nothing");
+}
+
 /// Is a put expensive because it STORES, or because it EVICTS?
 ///
 /// Storing a 1 KB page measured 51 allocations and 43.6 KB
