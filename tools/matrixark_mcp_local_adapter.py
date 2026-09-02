@@ -4726,14 +4726,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         any(k is not None and k in value_keys for k in new_value)
                         or any(k is not None and k in state_keys for k in new_state)
                     )
-                    if appends_only:
-                        value_keys.update(k for k in new_value if k is not None)
-                        state_keys.update(k for k in new_state if k is not None)
+                    # Extend either way. The sets exist only to answer 'could this batch
+                    # supersede something', and a SUPERSET answers that safely: it can say yes
+                    # when the answer is no, which costs a compaction that was not needed, but
+                    # it can never say no when the answer is yes. Discarding them on a
+                    # colliding batch meant rebuilding from the whole cache on the next one --
+                    # 3.7 million key computations over 250 attachments, 36% of the time.
+                    value_keys.update(k for k in new_value if k is not None)
+                    state_keys.update(k for k in new_state if k is not None)
                 self._read_cache_records.extend(records)
                 if not appends_only:
                     self._read_cache_dirty = True
-                    self._read_cache_value_keys = None
-                    self._read_cache_state_keys = None
                 self._note_embedding_owners(records)
                 if self._summary_dirty_index is not None:
                     for record in records:
