@@ -666,6 +666,16 @@ impl TemporalEngine {
         if block_in_wal::enabled() {
             block_in_wal::begin_write();
         }
+        // What the touched keys held before this command, so the capture below can be
+        // skipped when nothing was removed. Sizes only -- no allocation.
+        let membership_before: Vec<(String, usize)> = command_object_keys(&command)
+            .into_iter()
+            .map(|key| {
+                let size = key_membership_size(shard, &key);
+                (key, size)
+            })
+            .collect();
+
         let outcome = execute_on_shard(
             &self.cache,
             &self.page_store,
@@ -1006,7 +1016,26 @@ impl TemporalEngine {
                         false,
                     ),
                 };
-                let key_states = capture_key_states(shard, &delta_command_keys);
+                // Capture the authoritative membership only when this write could have
+                // removed some.
+                //
+                // The capture exists so a reload after WAL replay does not resurrect an entry
+                // the write evicted or tombstoned -- reconstruction from physical pages would
+                // otherwise find it again. A write that only ADDED leaves nothing to resurrect:
+                // replay rebuilds the same membership from the same pages.
+                //
+                // It is not free. Capturing serializes every entry the per-key maps hold for the
+                // key, so appending to a node that held 850 events serialized all 850 -- 8,647 of
+                // the 8,838 allocations a message write cost, and the reason filling a node cost
+                // the square of its length.
+                let membership_shrank = membership_before.iter().any(|(key, before)| {
+                    key_membership_size(shard, key) < *before
+                });
+                let key_states = if membership_shrank {
+                    capture_key_states(shard, &delta_command_keys)
+                } else {
+                    Vec::new()
+                };
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
                 // default, on the single-node path too: the record is still written (so the
@@ -2221,6 +2250,25 @@ fn collect_command_index_items(
 /// fields were 308 bytes of a 656-byte index-log record.
 ///
 /// Opaque JSON so the index-log layer stays decoupled from the concrete `ShardState` field types.
+/// How many entries the per-key maps hold for `key`, added up.
+///
+/// Counting, not capturing: thirteen `len()` calls and no allocation, against serializing every
+/// entry those maps hold for the key. Used to decide whether the capture below is needed at all.
+fn key_membership_size(shard: &ShardState, key: &str) -> usize {
+    shard.features.get(key).map_or(0, |v| v.len())
+        + usize::from(shard.expires_at_ms.contains_key(key))
+        + shard.control_state_changes.get(key).map_or(0, |v| v.len())
+        + usize::from(shard.control_state_selection.contains_key(key))
+        + shard.context_nodes.get(key).map_or(0, |_| 1)
+        + shard.context_events.get(key).map_or(0, |v| v.len())
+        + shard.context_indexes.get(key).map_or(0, |v| v.len())
+        + shard.context_audits.get(key).map_or(0, |v| v.len())
+        + shard.context_children.get(key).map_or(0, |v| v.len())
+        + shard.context_summaries.get(key).map_or(0, |v| v.len())
+        + shard.context_compressions.get(key).map_or(0, |v| v.len())
+        + shard.context_entities.get(key).map_or(0, |v| v.len())
+}
+
 fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
     keys.iter()
         .map(|key| {
