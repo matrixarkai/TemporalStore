@@ -3467,7 +3467,17 @@ def _latest_value_record_key_by_type(record: Json) -> tuple[Any, ...] | None:
     if record_type == "skill_registry_update":
         return (record_type, record.get("skill_hash"))
     if record_type == "resource_import_task":
-        return (record_type, record.get("resource_import_task_hash"))
+        # Every writer of this row writes `task_hash`; nothing writes
+        # `resource_import_task_hash`, which is what this asked for. So the key was
+        # (record_type, None) for every one of them, and compaction skips a key with an empty
+        # part -- these rows were never superseded and accumulated three per attachment. The old
+        # name is still accepted, for a log that somehow carries it.
+        return (
+            record_type,
+            record.get("task_hash")
+            if record.get("task_hash") is not None
+            else record.get("resource_import_task_hash"),
+        )
     return None
 
 
