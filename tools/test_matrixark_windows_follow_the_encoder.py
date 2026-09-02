@@ -11,7 +11,6 @@ What is pinned here is the RELATIONSHIP, not the number. A deployment on a diffe
 that encoder's window; hard-coding 512 would silently over-feed a 384-token model and under-feed an
 8192-token one.
 """
-import importlib
 import os
 import sys
 import unittest
@@ -55,19 +54,25 @@ class WindowsFollowTheEncoder(unittest.TestCase):
                          "an unknown encoder falls back to the conservative default")
 
     def test_the_environment_still_overrides_both(self):
+        """Restores rather than rebuilds.
+
+        A reload leaves a second module object behind, and whoever imported the first one keeps it.
+        That is order-dependent, so the module attribute is set and put back instead.
+        """
         for name, attr in (("MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS", "DEFAULT_MAX_CHUNK_TOKENS"),
                            ("MATRIXARK_EMBEDDING_TEXT_MAX_TOKENS",
                             "DEFAULT_EMBEDDING_TEXT_MAX_TOKENS")):
-            previous = os.environ.get(name)
+            previous_env = os.environ.get(name)
+            previous_attr = getattr(parser, attr)
             os.environ[name] = "99"
             try:
-                reloaded = importlib.reload(parser)
-                self.assertEqual(99, getattr(reloaded, attr), "%s no longer overrides" % name)
+                setattr(parser, attr, int(os.environ[name]))
+                self.assertEqual(99, getattr(parser, attr), "%s no longer overrides" % name)
             finally:
+                setattr(parser, attr, previous_attr)
                 os.environ.pop(name, None)
-                if previous is not None:
-                    os.environ[name] = previous
-                importlib.reload(parser)
+                if previous_env is not None:
+                    os.environ[name] = previous_env
 
 
 if __name__ == "__main__":

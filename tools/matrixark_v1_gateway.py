@@ -42,6 +42,7 @@ import time
 from collections.abc import Mapping
 from typing import Any, Awaitable, Callable, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
+from collections.abc import Mapping
 
 try:
     from tools.matrixark_asgi import make_asgi_app, _api_key
