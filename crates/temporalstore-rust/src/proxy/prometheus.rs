@@ -57,6 +57,7 @@ impl ProxyService {
             // This is the count of round-trips kept off the request path, so it belongs
             // where the rest of the route-cache maintenance is reported.
             ("topology_check_skipped", stats.topology_checks_skipped),
+            ("topology_check_failed", stats.topology_check_failures),
         ] {
             push_proxy_metric(
                 &mut out,

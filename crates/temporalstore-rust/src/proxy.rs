@@ -316,6 +316,15 @@ pub struct ProxyStats {
     /// Topology checks not made because one was made within `topology_check_interval_ms`.
     /// This is the count of metaserver round-trips kept off the request path.
     pub topology_checks_skipped: u64,
+    /// Topology checks that were made and did not answer.
+    ///
+    /// The check claims its slot before asking the metaserver, so a failure costs a whole
+    /// `topology_check_interval_ms` during which routes are not re-examined -- the proxy goes on
+    /// serving what it has. `preflight_report` probes the metaserver live and says
+    /// `topology_check_failed` when that probe fails, which is a different question: it answers
+    /// for the moment it is scraped, so an intermittent metaserver can fail every check on the
+    /// request path and still be reported healthy. This counts what actually happened there.
+    pub topology_check_failures: u64,
     /// Registration attempts not made because one was made within
     /// `auto_register_min_interval_ms`.
     pub auto_register_throttled: u64,
@@ -979,6 +988,7 @@ struct ProxyInner {
     /// the single place the running options are replaced.
     topology_check_interval_ms: std::sync::atomic::AtomicU64,
     topology_checks_skipped: std::sync::atomic::AtomicU64,
+    topology_check_failures: std::sync::atomic::AtomicU64,
     bad_requests: std::sync::atomic::AtomicU64,
     /// Distinguishes one context ingest from another within the same millisecond.
     ///
@@ -1033,6 +1043,7 @@ impl ProxyService {
                     topology_check_interval_ms,
                 ),
                 topology_checks_skipped: std::sync::atomic::AtomicU64::new(0),
+                topology_check_failures: std::sync::atomic::AtomicU64::new(0),
                 bad_requests: std::sync::atomic::AtomicU64::new(0),
                 context_ingest_sequence: std::sync::atomic::AtomicU64::new(0),
                 context_ingest_requests: std::sync::atomic::AtomicU64::new(0),
@@ -1392,6 +1403,10 @@ impl ProxyService {
             .inner
             .topology_checks_skipped
             .load(std::sync::atomic::Ordering::Relaxed);
+        stats.topology_check_failures = self
+            .inner
+            .topology_check_failures
+            .load(std::sync::atomic::Ordering::Relaxed);
         stats.bad_requests = self
             .inner
             .bad_requests
@@ -1705,7 +1720,14 @@ impl ProxyService {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let _ = client.invalidate_routes_from_meta_topology();
+        // The slot is already claimed, so a failure here is not retried until the interval is
+        // up. Nothing said so: the error was discarded, and the only other signal is a live
+        // probe in `preflight_report` that can succeed while every check on this path fails.
+        if client.invalidate_routes_from_meta_topology().is_err() {
+            self.inner
+                .topology_check_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     /// How many shards the context routes actually spread tenants over.
@@ -3057,6 +3079,59 @@ mod tests {
         );
     }
 
+    /// Reads the counter the way a scrape does -- through `ProxyStats` -- so this also covers
+    /// the plumbing between the atomic and what is published.
+    fn proxy_stat_failures(proxy: &ProxyService) -> u64 {
+        proxy.sync_client_stats();
+        proxy
+            .inner
+            .stats
+            .read()
+            .expect("proxy stats lock poisoned")
+            .topology_check_failures
+    }
+
+    /// A topology check that was made and did not answer is counted.
+    ///
+    /// The slot is claimed before the metaserver is asked, so a failed check costs a whole
+    /// interval of not re-examining routes. That was silent: the error was discarded. The only
+    /// other signal is `preflight_report`, which probes live and so answers for the moment it is
+    /// scraped -- an intermittent metaserver can fail every check here and still be scraped
+    /// healthy.
+    #[test]
+    fn a_topology_check_that_did_not_answer_is_counted() {
+        // Interval 0 makes every check due; `scoped_proxy` points meta_addr at a closed port.
+        let proxy = scoped_proxy(ProxyOptions {
+            topology_check_interval_ms: 0,
+            ..ProxyOptions::default()
+        });
+
+        // With no routes cached there is nothing to re-examine, so no check is made and nothing
+        // is counted. This half is what keeps the counter meaning "a check failed" rather than
+        // "a request arrived".
+        proxy.invalidate_cached_routes_if_meta_changed();
+        assert_eq!(
+            proxy_stat_failures(&proxy),
+            0,
+            "no routes cached means no check was made, so nothing can have failed"
+        );
+
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+        assert!(
+            proxy.client().route_cache_size() > 0,
+            "the check only runs against a warm cache"
+        );
+
+        proxy.invalidate_cached_routes_if_meta_changed();
+        assert_eq!(
+            proxy_stat_failures(&proxy),
+            1,
+            "the metaserver is a closed port, so this check cannot have answered -- a zero here              means the failure went back to being discarded"
+        );
+    }
+
     /// Per-request bookkeeping under CONCURRENCY, measured per function.
     ///
     /// Single-threaded this work is ~110ns against a request whose real cost is a network
@@ -4271,6 +4346,7 @@ mod tests {
             route_cache_misses,
             route_refreshes,
             topology_checks_skipped,
+            topology_check_failures,
             backend_errors,
             continuous_backend_failures,
             metaserver_errors,
@@ -4278,7 +4354,7 @@ mod tests {
 
         // Field -> the label it is published under. Values are only here so the destructured
         // bindings are used; what is asserted is that each label reaches the endpoint.
-        let published: [(&str, u64); 21] = [
+        let published: [(&str, u64); 22] = [
             ("kind=\"execute\"", execute_requests),
             ("kind=\"batch_execute\"", batch_execute_requests),
             ("kind=\"bad_request\"", bad_requests),
@@ -4297,6 +4373,7 @@ mod tests {
             ("kind=\"miss\"", route_cache_misses),
             ("kind=\"refresh\"", route_refreshes),
             ("kind=\"topology_check_skipped\"", topology_checks_skipped),
+            ("kind=\"topology_check_failed\"", topology_check_failures),
             ("kind=\"backend_error\"", backend_errors),
             ("kind=\"continuous_backend_failure\"", continuous_backend_failures),
             ("kind=\"metaserver_error\"", metaserver_errors),
