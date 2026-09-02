@@ -32,21 +32,31 @@ import matrixark_tenant_policy as policy  # noqa: E402
 
 
 def _counts(adapter, tenant):
+    """Count DISTINCT records, not log entries.
+
+    `read_all()` returns an append log, so one segment can appear more than once when its owner is
+    re-appended -- a supersede, not a new segment. Counting raw entries made this test report a
+    segment written after the knob was turned off, roughly one run in four. The record was the same
+    `segment_hash` both times; nothing new had been written and no knob had failed.
+    """
     identities = {tenant, policy.tenant_hash_of(tenant)}
-    out = {"segments": 0, "vectors": 0, "summary_text": 0, "total": 0}
+    segments, events_with_summary, vectored = set(), set(), set()
+    total = 0
     for record in adapter.read_all():
         scope = (record.get("scope") or record.get("access_scope") or record.get("scope_key"))
         if policy.tenant_of(scope) not in identities:
             continue
-        out["total"] += 1
+        total += 1
         kind = str(record.get("record_type"))
         if kind == "context_segment":
-            out["segments"] += 1
+            segments.add(record.get("segment_hash"))
         if record.get("vector"):
-            out["vectors"] += 1
+            vectored.add((kind, record.get("segment_hash") or record.get("event_id_hash")
+                          or record.get("entity_hash") or record.get("node_hash") or id(record)))
         if kind == "context_event" and "summary_text" in record:
-            out["summary_text"] += 1
-    return out
+            events_with_summary.add(record.get("event_id_hash") or id(record))
+    return {"segments": len(segments), "vectors": len(vectored),
+            "summary_text": len(events_with_summary), "total": total}
 
 
 def _change_mid_flight(knob, first, second, tenant):
@@ -56,21 +66,35 @@ def _change_mid_flight(knob, first, second, tenant):
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         adapter = mcp.MatrixArkLocalAdapter(Path(tmp) / "memory.jsonl")
         server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
-        scope = {"tenant_id": tenant, "user_id": "u1", "session_id": "s1"}
 
-        def ingest(text):
+        # Each phase gets its OWN session. Ingest buffers and session_commit flushes, so work
+        # extracted while the knob was ON can land after it is turned off -- that is deferred work
+        # completing under the setting in force when it was buffered, not the knob failing to
+        # apply. Sharing one session made this test fail roughly one run in five with
+        # "segments still rose (1 -> 2)", which reads as a stuck knob and is not one.
+        def ingest(text, session):
+            scope = {"tenant_id": tenant, "user_id": "u1", "session_id": session}
             server.call_tool("matrixark_ingest", {
                 "scope": scope, "finalize": True,
                 "messages": [{"role": "user", "content": text}]})
             server.call_tool("matrixark_session_commit", {"scope": scope})
 
+        # The two phases ingest STRUCTURALLY IDENTICAL text, differing only by a trailing marker
+        # so the second is not deduplicated against the first. An earlier version used two
+        # different sentences, which made the ON direction depend on the extractor happening to
+        # segment that particular sentence -- the test passed almost always and failed
+        # occasionally, which is worse than not having it.
+        base = ("I am allergic to peanuts and I live in Kyoto. "
+                "My favourite drink is matcha and I bike to work. "
+                "I work on the storage team and my manager is Dana.")
+
         policy.set_tenant_policy(tenant, {knob: first})
-        ingest("I am allergic to peanuts and I live in Kyoto.")
+        ingest(base + " (first)", "phase-one")
         before = _counts(adapter, tenant)
 
         # The change under test. Nothing is restarted, re-imported, or rebuilt.
         policy.set_tenant_policy(tenant, {knob: second})
-        ingest("My favourite drink is matcha and I bike to work.")
+        ingest(base + " (second)", "phase-two")
         after = _counts(adapter, tenant)
     return before, after
 
@@ -86,10 +110,14 @@ class KnobsApplyWithoutARestartTest(unittest.TestCase):
                            % knob)
         moved = after[field] - before[field]
         if second:
+            # Both phases ingest the same structure, so the first phase having produced some of
+            # this record kind proves the extractor CAN produce it -- which separates "the knob
+            # did not apply" from "there was nothing to write either way".
             self.assertGreater(
                 moved, 0,
-                "%s was turned ON mid-flight and %s did not rise (%d -> %d): the change needs a "
-                "restart, so the portal must not report it as live"
+                "%s was turned ON mid-flight and %s did not rise (%d -> %d). Both phases ingest "
+                "the same text, so the extractor is not the variable here: the change needs a "
+                "restart, and the portal must not report it as live"
                 % (knob, field, before[field], after[field]))
         else:
             self.assertLessEqual(

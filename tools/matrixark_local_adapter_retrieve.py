@@ -265,6 +265,50 @@ def _sibling_sessions_enabled(scope) -> bool:
     return bool(traverse_sibling_sessions_enabled(scope))
 
 
+def _tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
+    """A retrieval budget: an explicit tenant override, else an explicit env var, else this build.
+
+    Deliberately NOT `resolve()`. That returns the knob registry's default when nobody has set
+    anything, and for these five budgets the registry disagrees with what retrieval actually uses
+    by 10x to 156x -- `max_selected_refs` is 10000 there and 64 here. Wiring to it would read as
+    "the knob works now" while silently multiplying the budget for every deployment that never
+    configured one.
+
+    Both explicit levels are read per call, so a change at either applies with no restart. With
+    nothing set the build default is used exactly as before, so no existing deployment moves.
+
+    Anything unexpected -- no policy module, a non-numeric value, a nonsensical zero -- falls back
+    to the build default: a budget that came out empty would return nothing at all, which is worse
+    than ignoring a bad setting.
+    """
+    try:
+        from matrixark_tenant_policy import KNOBS as _KNOBS, tenant_policy as _tenant_policy
+    except Exception:  # pragma: no cover - policy module absent
+        return fallback
+
+    def _positive_int(value: Any) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    try:
+        override = _positive_int((_tenant_policy(scope) or {}).get(name))
+    except Exception:
+        override = None
+    if override is not None:
+        return override
+
+    knob = _KNOBS.get(name)
+    env_name = getattr(knob, "env", "") if knob is not None else ""
+    if env_name:
+        from_env = _positive_int(os.environ.get(env_name))
+        if from_env is not None:
+            return from_env
+    return fallback
+
+
 class _LocalAdapterRetrieveMixin:
     def retrieve(self, args: Json) -> Json:
         started_perf = time.perf_counter()
@@ -1456,7 +1500,10 @@ class _LocalAdapterRetrieveMixin:
                 extraction_phase_budget_mode=extraction_phase_budget_mode,
             )
 
-        top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
+        top_k_per_layer = integer_arg(
+            ranking, "top_k_per_layer",
+            _tenant_retrieval_limit("top_k_per_layer", scope, DEFAULT_TOP_K_PER_LAYER),
+            minimum=1)
         max_children_scored_per_parent = bounded_max_children_scored_per_parent(
             integer_arg(
                 ranking,
@@ -1466,9 +1513,20 @@ class _LocalAdapterRetrieveMixin:
             )
         )
         hard_max_children_scored_per_parent = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
-        max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", DEFAULT_MAX_CANDIDATES_PER_NODE, minimum=1)
-        max_selected_refs = integer_arg(ranking, "max_selected_refs", DEFAULT_MAX_SELECTED_REFS, minimum=1)
-        max_global_candidates = integer_arg(ranking, "max_global_candidates", DEFAULT_MAX_GLOBAL_CANDIDATES, minimum=1)
+        max_candidates_per_node = integer_arg(
+            ranking, "max_candidates_per_node",
+            _tenant_retrieval_limit("max_candidates_per_node", scope,
+                                    DEFAULT_MAX_CANDIDATES_PER_NODE),
+            minimum=1)
+        max_selected_refs = integer_arg(
+            ranking, "max_selected_refs",
+            _tenant_retrieval_limit("max_selected_refs", scope, DEFAULT_MAX_SELECTED_REFS),
+            minimum=1)
+        max_global_candidates = integer_arg(
+            ranking, "max_global_candidates",
+            _tenant_retrieval_limit("max_global_candidates", scope,
+                                    DEFAULT_MAX_GLOBAL_CANDIDATES),
+            minimum=1)
         min_similarity_score = float_arg(ranking, "min_similarity_score", DEFAULT_RETRIEVAL_MIN_SCORE, minimum=0.0, maximum=1.0)
         budget_fill_policy = str(ranking.get("budget_fill_policy", DEFAULT_BUDGET_FILL_POLICY) or DEFAULT_BUDGET_FILL_POLICY).strip().lower()
         if budget_fill_policy not in {"quality_first", "force_fill"}:

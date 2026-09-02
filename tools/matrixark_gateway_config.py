@@ -414,11 +414,18 @@ def _knob_settings() -> List[Setting]:
         default = ("1" if default else "0") if isinstance(default, bool) else str(default)
         derived.append(Setting(
             "behaviour." + name, "behaviour", env, _humanize(name), kind, default,
-            # tenant_policy.resolve() reads os.environ per call, so most of these are live. Five
-            # are not: matrixark_mcp_core and matrixark_mcp_runtime_config capture their env
+            # tenant_policy.resolve() reads os.environ per call, so most of these are live.
+            # Five are not: matrixark_mcp_core and matrixark_mcp_runtime_config capture their env
             # DEFAULT into a module constant at import, so a deployment-wide change waits for a
-            # restart even though a per-tenant policy record still applies immediately. The audit
-            # test (test_matrixark_gateway_config_audit) is what keeps this list honest.
+            # restart. The audit test (test_matrixark_gateway_config_audit) keeps this list honest.
+            #
+            # This used to add "even though a per-tenant policy record still applies immediately".
+            # That was false: retrieval read none of these knobs at all, so a tenant setting one
+            # got nothing. Four are now wired
+            # (test_matrixark_retrieval_budgets_follow_the_tenant); the fifth,
+            # cross_session_profile_max_candidates, is still unread in
+            # matrixark_mcp_budget_policies. A comment asserting a broken thing works is what
+            # stops anyone checking, so it is worth more care than the code it sits beside.
             "restart" if env in _KNOB_ENV_FROZEN_AT_IMPORT else "live",
             knob.description, choices))
     return derived

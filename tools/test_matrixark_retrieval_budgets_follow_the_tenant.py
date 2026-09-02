@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""Four retrieval budgets now read their tenant knob. They previously read nothing.
+
+`top_k_per_layer`, `max_candidates_per_node`, `max_selected_refs` and `max_global_candidates` each
+have a tenant knob in the registry, the portal offers all four, and retrieval consulted none of
+them: it took a per-request `ranking` argument and fell back to a module constant captured from the
+environment at import. A tenant setting any of these got exactly nothing.
+
+`matrixark_gateway_config` asserted the opposite in a comment -- that a deployment-wide change waits
+for a restart "even though a per-tenant policy record still applies immediately". The second half
+was false, which is why the comment is corrected in the same change: a wrong comment about a broken
+thing is what stops anyone looking.
+
+**The trap this file exists to hold shut.** The obvious wiring is `resolve()`, and it is wrong.
+`resolve()` returns the knob registry's default when nobody has set anything, and for these four the
+registry disagrees with what retrieval actually uses by 10x to 156x:
+
+    top_k_per_layer          registry 240    retrieval 8
+    max_candidates_per_node  registry 10240  retrieval 1024
+    max_global_candidates    registry 20480  retrieval 512
+    max_selected_refs        registry 10000  retrieval 64
+
+So wiring to `resolve()` reads as "the knob works now" and is really a silent multiplication of
+every unconfigured deployment's budget. The precedence is therefore explicit-only, and
+`test_an_unconfigured_deployment_does_not_move` is the assertion that keeps it that way.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import matrixark_mcp_local_adapter  # noqa: E402,F401  (establishes the package first)
+import matrixark_tenant_policy as policy  # noqa: E402
+import matrixark_local_adapter_retrieve as retrieve  # noqa: E402
+
+BUDGETS = (
+    ("top_k_per_layer", "MATRIXARK_TOP_K_PER_LAYER", 8),
+    ("max_candidates_per_node", "MATRIXARK_MAX_CANDIDATES_PER_NODE", 1024),
+    ("max_selected_refs", "MATRIXARK_MAX_SELECTED_REFS", 64),
+    ("max_global_candidates", "MATRIXARK_MAX_GLOBAL_CANDIDATES", 512),
+)
+
+
+def _limit(name, tenant, build_default):
+    return retrieve._tenant_retrieval_limit(name, {"tenant_id": tenant}, build_default)
+
+
+class TheTenantSettingIsReadTest(unittest.TestCase):
+
+    def test_an_explicit_tenant_value_is_used(self) -> None:
+        for name, _env, build_default in BUDGETS:
+            with self.subTest(knob=name):
+                tenant = "explicit_%s" % name
+                policy.set_tenant_policy(tenant, {name: 5})
+                self.assertEqual(5, _limit(name, tenant, build_default),
+                                 "%s ignored an explicit tenant setting" % name)
+
+    def test_an_unconfigured_deployment_does_not_move(self) -> None:
+        # The assertion that keeps the registry's much larger defaults out of the retrieval path.
+        for name, env, build_default in BUDGETS:
+            with self.subTest(knob=name):
+                os.environ.pop(env, None)
+                self.assertEqual(
+                    build_default, _limit(name, "never_configured_%s" % name, build_default),
+                    "%s changed for a deployment that configured nothing; wiring to resolve() "
+                    "would do exactly this, because the registry default is far larger" % name)
+
+    def test_the_registry_default_is_not_what_retrieval_uses(self) -> None:
+        # Pins the disagreement itself. If someone reconciles the two numbers this test fails and
+        # they can delete it deliberately -- rather than the reconciliation silently changing
+        # retrieval through the back door.
+        for name, _env, build_default in BUDGETS:
+            with self.subTest(knob=name):
+                knob = policy.KNOBS.get(name)
+                self.assertIsNotNone(knob, "%s is not in the registry" % name)
+                self.assertNotEqual(
+                    knob.default, build_default,
+                    "%s: registry and retrieval now agree (%s). Good -- but this test documented "
+                    "the gap, so remove it on purpose rather than leaving it passing by accident."
+                    % (name, build_default))
+
+
+class BothExplicitLevelsApplyWithoutARestartTest(unittest.TestCase):
+
+    def test_an_explicit_env_var_applies_mid_process(self) -> None:
+        name, env, build_default = BUDGETS[2]  # max_selected_refs
+        tenant = "env_live_case"
+        os.environ.pop(env, None)
+        self.assertEqual(build_default, _limit(name, tenant, build_default))
+        try:
+            os.environ[env] = "21"
+            self.assertEqual(21, _limit(name, tenant, build_default),
+                             "an env change needed a restart to take effect")
+        finally:
+            os.environ.pop(env, None)
+        self.assertEqual(build_default, _limit(name, tenant, build_default),
+                         "removing the env var did not take effect either")
+
+    def test_a_tenant_override_beats_the_environment(self) -> None:
+        name, env, build_default = BUDGETS[2]
+        policy.set_tenant_policy("beats_env", {name: 7})
+        try:
+            os.environ[env] = "21"
+            self.assertEqual(7, _limit(name, "beats_env", build_default),
+                             "the deployment-wide value overrode a tenant's own setting")
+        finally:
+            os.environ.pop(env, None)
+
+
+class NonsenseFallsBackTest(unittest.TestCase):
+    """A budget that resolves to nothing returns nothing at all, which is worse than a bad setting."""
+
+    def test_zero_and_junk_fall_back_to_the_build_default(self) -> None:
+        name, env, build_default = BUDGETS[2]
+        for bad in (0, -3, "abc", None, ""):
+            with self.subTest(value=bad):
+                tenant = "junk_%s" % str(bad)
+                policy.set_tenant_policy(tenant, {name: bad})
+                self.assertEqual(build_default, _limit(name, tenant, build_default),
+                                 "a %r budget was accepted" % bad)
+        for bad in ("0", "-1", "not-a-number"):
+            with self.subTest(env_value=bad):
+                os.environ[env] = bad
+                try:
+                    self.assertEqual(build_default,
+                                     _limit(name, "junk_env", build_default))
+                finally:
+                    os.environ.pop(env, None)
+
+
+if __name__ == "__main__":
+    unittest.main()
