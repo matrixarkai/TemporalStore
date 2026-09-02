@@ -1627,19 +1627,29 @@ impl ProxyService {
     /// is no `Command` here, so the drop percentage -- which keys on a command's routing key --
     /// does not apply; a dropped tenant is still refused when it tries to execute.
     fn admit_open_table(&self, namespace: &str) -> Result<ProxyInflightGuard<'_>, Status> {
-        let options = self.options();
-        if let Some(status) = proxy_account_rejection(&options, namespace) {
-            return Err(self.reject(status, ProxyRejectionKind::Account));
-        }
-        if let Some(status) = proxy_serving_rejection(&options, false) {
-            return Err(self.reject(status, ProxyRejectionKind::Policy));
+        let (rejection, max_inflight_requests, max_inflight_write_requests) =
+            self.with_options(|options| {
+                let rejection = proxy_account_rejection(options, namespace)
+                    .map(|status| (status, ProxyRejectionKind::Account))
+                    .or_else(|| {
+                        proxy_serving_rejection(options, false)
+                            .map(|status| (status, ProxyRejectionKind::Policy))
+                    });
+                (
+                    rejection,
+                    options.max_inflight_requests,
+                    options.max_inflight_write_requests,
+                )
+            });
+        if let Some((status, kind)) = rejection {
+            return Err(self.reject(status, kind));
         }
         self.inner
             .inflight
             .try_acquire(
                 false,
-                options.max_inflight_requests,
-                options.max_inflight_write_requests,
+                max_inflight_requests,
+                max_inflight_write_requests,
             )
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
@@ -1656,16 +1666,23 @@ impl ProxyService {
     /// Admitted as a read. There is no namespace on the wire for this route, so account
     /// scope cannot be checked here -- the shard id alone carries no tenant.
     fn admit_shard_lookup(&self) -> Result<ProxyInflightGuard<'_>, Status> {
-        let options = self.options();
-        if let Some(status) = proxy_serving_rejection(&options, false) {
+        let (rejection, max_inflight_requests, max_inflight_write_requests) =
+            self.with_options(|options| {
+                (
+                    proxy_serving_rejection(options, false),
+                    options.max_inflight_requests,
+                    options.max_inflight_write_requests,
+                )
+            });
+        if let Some(status) = rejection {
             return Err(self.reject(status, ProxyRejectionKind::Policy));
         }
         self.inner
             .inflight
             .try_acquire(
                 false,
-                options.max_inflight_requests,
-                options.max_inflight_write_requests,
+                max_inflight_requests,
+                max_inflight_write_requests,
             )
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
@@ -1678,13 +1695,18 @@ impl ProxyService {
     /// moment it is wanted. What it does need is a ceiling: each call is a metaserver
     /// round-trip, and nothing stopped a script from issuing them without limit.
     fn admit_topology_refresh(&self) -> Result<ProxyInflightGuard<'_>, Status> {
-        let options = self.options();
+        let (max_inflight_requests, max_inflight_write_requests) = self.with_options(|options| {
+            (
+                options.max_inflight_requests,
+                options.max_inflight_write_requests,
+            )
+        });
         self.inner
             .inflight
             .try_acquire(
                 false,
-                options.max_inflight_requests,
-                options.max_inflight_write_requests,
+                max_inflight_requests,
+                max_inflight_write_requests,
             )
             .map_err(|rejection| self.reject(rejection.status(), ProxyRejectionKind::Inflight))
     }
