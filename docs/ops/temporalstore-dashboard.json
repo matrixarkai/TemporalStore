@@ -125,10 +125,10 @@
           "expr": "sum by (kind) (temporalstore_block_store_operations_total)"
         },
         {
-          "expr": "temporalstore_block_store_extent_bytes"
+          "expr": "temporalstore_block_store_band_bytes"
         },
         {
-          "expr": "temporalstore_block_store_extent_oldest_age_ms"
+          "expr": "temporalstore_block_store_band_oldest_age_ms"
         }
       ]
     },
