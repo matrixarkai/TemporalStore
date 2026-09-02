@@ -246,13 +246,23 @@ fn control_api_reads_and_scans_index_log_stream() {
         size: 8192,
     });
     assert!(stream.status.ok);
-    let text = String::from_utf8(stream.data).unwrap();
-    // The index-log advances one record per write in both the whole-index and the delta
-    // formats; assert the per-write sequence rather than a format-specific record shape.
-    // The sequence field is written short (`q`), with `sequence` still accepted on read; assert
-    // the per-write advance without pinning either spelling, which is what this test is about.
-    assert!(text.contains("\"q\":1") || text.contains("\"sequence\":1"));
-    assert!(text.contains("\"q\":2") || text.contains("\"sequence\":2"));
+    // The index-log advances one record per write. Reading the stream as TEXT and matching a
+    // field's spelling was an assumption about the encoding, not about the advance this test
+    // is for -- and a record's payload need not be text at all. Walk it the way a reader does
+    // and assert over the sequences themselves.
+    let mut sequences = Vec::new();
+    let mut at = 0usize;
+    while at < stream.data.len() {
+        let Some((consumed, payload)) = crate::log_framing::next_frame(&stream.data[at..]).unwrap()
+        else {
+            break;
+        };
+        let record: crate::index_log::IndexDeltaRecord =
+            crate::index_log::decode_index_payload(payload).unwrap();
+        sequences.push(record.sequence);
+        at += consumed;
+    }
+    assert_eq!(sequences, vec![1, 2], "one record per write, in order");
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
