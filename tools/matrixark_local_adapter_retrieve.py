@@ -265,6 +265,23 @@ def _sibling_sessions_enabled(scope) -> bool:
     return bool(traverse_sibling_sessions_enabled(scope))
 
 
+def _tenant_allows_recall_reinforcement(scope: Any) -> bool:
+    """Whether this tenant permits retrieval to write recall-protection markers (default ON).
+
+    Fails OPEN: a deployment without the policy module keeps writing them, which is today's
+    behaviour. Silently dropping the markers would let recalled memory be pruned, which is a
+    data-shaped failure rather than a cost one.
+    """
+    try:
+        from matrixark_tenant_policy import explicit_bool
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    try:
+        return explicit_bool("recall_reinforcement", scope, True)
+    except Exception:  # pragma: no cover - a malformed policy must not break retrieval
+        return True
+
+
 def _tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
     """A retrieval budget: an explicit tenant override, else an explicit env var, else this build.
 
@@ -3412,7 +3429,18 @@ class _LocalAdapterRetrieveMixin:
             quality_warnings.append(f"session_identity_fallback:{session_id_source}")
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
-        recall_reinforcement_enabled = bool(ranking.get("recall_reinforcement", True))
+        # A CEILING, not a default. This knob decides whether RETRIEVAL WRITES -- a protection
+        # marker per selected ref -- so a tenant that declined it must not have it switched back on
+        # by a per-request argument. Both have to allow it; with neither set both are True and this
+        # is exactly today's behaviour.
+        #
+        # The local name below is deliberate and was previously the whole story: reading
+        # `ranking` and never the tenant knob is what made a name-matching census report this gate
+        # as wired when nothing consulted it.
+        recall_reinforcement_enabled = (
+            bool(ranking.get("recall_reinforcement", True))
+            and _tenant_allows_recall_reinforcement(scope)
+        )
         if recall_reinforcement_enabled:
             reinforcement = self.append_recall_reinforcement_markers(
                 context_pack_id=context_pack_id_text,

@@ -41,7 +41,6 @@ KNOWN_UNWIRED: Set[str] = {
     "embed_node_path_prefix_enabled",
     "generate_l1_summaries_enabled",
     "index_compact_on_summary_enabled",
-    "recall_reinforcement_enabled",
     # `return_all_candidates` is NOT a wiring job, and calling it one would mislead whoever picks
     # it up. It means "return every candidate, no prefilter and no scoring", and no such bypass
     # exists in `retrieve()` -- nor does anything read its companion knob
@@ -96,13 +95,28 @@ def _callers() -> Dict[str, List[str]]:
             if stripped.startswith(("import ", "from ", "#")):
                 continue
             for gate in gates:
-                if gate not in line or stripped.startswith("def %s(" % gate):
+                knob_name = gate[: -len("_enabled")]
+                # The cheap pre-filter has to admit BOTH spellings. A knob wired through the
+                # shared explicit-only resolver names the KNOB, not the gate, so filtering on the
+                # gate name alone skipped the line before the real check below ever saw it -- and
+                # reported a wired knob as unwired.
+                if (gate not in line and knob_name not in line) or                         stripped.startswith("def %s(" % gate):
                     continue
                 # A CALL, not a mention. Matching the bare name counted
                 #     recall_reinforcement_enabled = bool(ranking.get(...))
                 # -- a local variable sharing the name and reading a different source entirely --
                 # as wiring, and reported 8 of 14 gates wired when the real number was 2.
-                if not re.search(r"(?<![\w.])%s\s*\(" % re.escape(gate), line):
+                knob = gate[: -len("_enabled")]
+                # Two ways a knob is genuinely read: calling its accessor, or naming it to the
+                # shared explicit-only resolvers. The second is how the knobs whose consumers must
+                # NOT adopt the registry default are wired -- several registry defaults are far
+                # larger than the value in use, so resolving would change behaviour rather than
+                # honour a setting. Counting only the accessor would report those as unwired.
+                reads_knob = (
+                    re.search(r"(?<![\w.])%s\s*\(" % re.escape(gate), line)
+                    or re.search(r"explicit_(?:bool|int)\(\s*[\"']%s[\"']" % re.escape(knob), line)
+                )
+                if not reads_knob:
                     continue
                 # ...and not the assignment form, which contains a call on its right-hand side but
                 # is defining a look-alike rather than consulting the gate.
