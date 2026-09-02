@@ -1825,7 +1825,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .bucket_map
             .values_mut()
             .flat_map(|bucket| bucket.page_index.values_mut())
-            .find(|page| page.object_key == "owned")
+            .find(|page| page.object_key == Arc::from("owned"))
             .expect("owned slot page");
         page.address.set_object_id(Some(page.object_id.wrapping_add(1)));
     }
@@ -1879,7 +1879,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_map
             .values()
             .flat_map(|bucket| bucket.page_index.values())
-            .find(|page| page.object_key == "first")
+            .find(|page| page.object_key == Arc::from("first"))
             .map(|page| page.object_id)
             .expect("first object id");
         let second = shard
@@ -1887,7 +1887,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_map
             .values_mut()
             .flat_map(|bucket| bucket.page_index.values_mut())
-            .find(|page| page.object_key == "second")
+            .find(|page| page.object_key == Arc::from("second"))
             .expect("second slot page");
         second.address.set_object_id(Some(first_object_id));
         first_object_id

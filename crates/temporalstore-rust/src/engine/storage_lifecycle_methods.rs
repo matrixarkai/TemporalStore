@@ -1295,7 +1295,7 @@ impl TemporalEngine {
                     // engine's own tombstone discipline.)
                     if !replaying_wal() {
                         for key in &deleted_keys {
-                            let command = Command::CommonDelete { key: key.clone() };
+                            let command = Command::CommonDelete { key: key.clone().to_string() };
                             let appended =
                                 self.wal_store
                                     .append_with_sync(shard_id, command.clone(), false);

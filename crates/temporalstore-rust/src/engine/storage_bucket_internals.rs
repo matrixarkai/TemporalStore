@@ -199,7 +199,7 @@ impl StorageManagerPhaseExecutor {
 
 #[derive(Debug, Clone)]
 pub(super) struct LivePageEntry {
-    pub(super) object_key: String,
+    pub(super) object_key: Arc<str>,
     pub(super) kind: Arc<str>,
     pub(super) component: Option<Arc<str>>,
     pub(super) address: BlockAddress,
@@ -221,7 +221,7 @@ pub(super) fn live_page_entry(
     address: BlockAddress,
 ) -> LivePageEntry {
     LivePageEntry {
-        object_key: object_key.into(),
+        object_key: Arc::from(object_key.into()),
         kind: Arc::from(kind.into()),
         component: component.map(Arc::from),
         // A page materialized in the block store carries a real page_id; a page
@@ -273,14 +273,14 @@ pub(super) fn storage_index_snapshot_with_samples(
     entries.sort_by(|left, right| {
         (
             left.kind.as_ref(),
-            left.object_key.as_str(),
+            left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
             left.address.page_slab_id,
             left.address.offset,
         )
             .cmp(&(
                 right.kind.as_ref(),
-                right.object_key.as_str(),
+                right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
                 right.address.page_slab_id,
                 right.address.offset,
@@ -294,7 +294,7 @@ pub(super) fn storage_index_snapshot_with_samples(
         .map(|entry| {
             let page_address = storage_page_address_sample(shard_id, &entry.address);
             StoragePageIndexEntrySample {
-                logical_key: entry.object_key.clone(),
+                logical_key: entry.object_key.clone().to_string(),
                 timestamp_range: None,
                 page_addresses: vec![page_address],
                 append_watermark: entry.address.offset,
@@ -330,14 +330,14 @@ pub(super) fn storage_index_snapshot_with_samples(
         let key = (
             entry.kind.to_string(),
             entry.kind.to_string(),
-            entry.object_key.clone(),
+            entry.object_key.to_string(),
         );
         let sample = object_entries
             .entry(key)
             .or_insert_with(|| StorageObjectIndexEntrySample {
                 model: entry.kind.to_string(),
                 table: entry.kind.to_string(),
-                object_key: entry.object_key.clone(),
+                object_key: entry.object_key.to_string(),
                 page_chain: Vec::new(),
                 tombstone: entry.deleted,
                 generation: entry.address.object_id().unwrap_or(0),
@@ -431,7 +431,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
         (
             left.deleted,
             left.kind.as_ref(),
-            left.object_key.as_str(),
+            left.object_key.as_ref(),
             left.component.as_deref().unwrap_or(""),
             left.address.page_slab_id,
             left.address.offset,
@@ -439,7 +439,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
             .cmp(&(
                 right.deleted,
                 right.kind.as_ref(),
-                right.object_key.as_str(),
+                right.object_key.as_ref(),
                 right.component.as_deref().unwrap_or(""),
                 right.address.page_slab_id,
                 right.address.offset,
@@ -466,7 +466,7 @@ pub(super) fn storage_gc_snapshot_with_samples(
         .filter_map(|entry| {
             let eligible_after_ms = shard
                 .expires_at_ms
-                .get(&entry.object_key)
+                .get(entry.object_key.as_ref())
                 .copied()
                 .unwrap_or(0);
             let has_tombstone = entry.deleted;
@@ -530,7 +530,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
             left.address.page_slab_id,
             left.address.offset,
             left.kind.as_ref(),
-            left.object_key.as_str(),
+            left.object_key.as_ref(),
         )
             .cmp(&(
                 right
@@ -540,7 +540,7 @@ pub(super) fn storage_topology_snapshot_with_samples(
                 right.address.page_slab_id,
                 right.address.offset,
                 right.kind.as_ref(),
-                right.object_key.as_str(),
+                right.object_key.as_ref(),
             ))
     });
 
@@ -977,7 +977,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
             continue;
         }
         hashes
-            .entry(entry.object_key)
+            .entry(entry.object_key.to_string())
             .or_default()
             .insert(entry.component.unwrap_or_default().to_string(), entry.address);
     }
@@ -1370,7 +1370,8 @@ pub(super) fn upsert_bucket_index_page_with(
         });
     }
     let entry = LivePageEntry {
-        object_key: object_key.to_string(),
+        // One allocation of this object's identity, shared by the page entry and the lookup.
+        object_key: Arc::from(object_key),
         kind: crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, kind),
         component: component
             .map(|name| crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, &name)),
@@ -1524,7 +1525,7 @@ pub(super) fn sync_bucket_index_object_pages(
         };
         let before = bucket.page_index.len();
         bucket.page_index.retain(|_, page| {
-            let matches_object = &*page.model_id == kind && page.object_key == object_key;
+            let matches_object = &*page.model_id == kind && page.object_key == Arc::from(object_key);
             if matches_object {
                 removed_components.insert(page.component.clone());
             }
@@ -1578,7 +1579,7 @@ pub(super) fn sync_bucket_index_object_pages(
             .object_id()
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
         let entry = LivePageEntry {
-            object_key: object_key.to_string(),
+            object_key: Arc::from(object_key.to_string()),
             kind: Arc::from(kind.to_string()),
             component: None,
             log_backed: address.page_id().is_none(),
@@ -1783,7 +1784,7 @@ fn refresh_one_bucket_runtime_flags(
     bucket.dirty |= bucket
         .page_index
         .values()
-        .any(|page| page.dirty || dirty_objects.contains(&page.object_key));
+        .any(|page| page.dirty || dirty_objects.contains(page.object_key.as_ref()));
     // The TTL is the one guaranteed full pass: a minimum has to look at every page, and each
     // look is a map lookup keyed by the page's object key. When nothing in the shard has an
     // expiry that whole pass is dead work -- the minimum over an empty selection is None, which
@@ -1796,7 +1797,7 @@ fn refresh_one_bucket_runtime_flags(
         bucket.ttl_ms = bucket
             .page_index
             .values()
-            .filter_map(|page| expires_at_ms.get(&page.object_key).copied())
+            .filter_map(|page| expires_at_ms.get(page.object_key.as_ref()).copied())
             .map(|expires_at| expires_at.saturating_sub(now))
             .min();
     }
@@ -1925,7 +1926,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
         note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
         let mut touched = false;
         for page in bucket.page_index.values_mut() {
-            if page.object_key == object_key {
+            if page.object_key == Arc::from(object_key) {
                 page.dirty = false;
                 touched = true;
             }
@@ -1935,7 +1936,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             bucket.dirty = bucket
                 .page_index
                 .values()
-                .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+                .any(|page| page.dirty || shard.dirty_objects.contains(page.object_key.as_ref()));
             update_bucket_layout(bucket);
         }
     }
@@ -1982,7 +1983,7 @@ pub(super) fn rebuild_bucket_first_index(
                 in_memory: true,
                 ..BucketNode::default()
             });
-        let page_dirty = shard.dirty_objects.contains(&entry.object_key) || entry.dirty;
+        let page_dirty = shard.dirty_objects.contains(entry.object_key.as_ref()) || entry.dirty;
         bucket.dirty |= page_dirty;
         if page_dirty {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
@@ -2129,12 +2130,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         match entry.kind.as_ref() {
             "string" => {
                 saw_strings = true;
-                strings.insert(entry.object_key, entry.address);
+                strings.insert(entry.object_key.to_string(), entry.address);
             }
             "hash" => {
                 saw_hashes = true;
                 hashes
-                    .entry(entry.object_key)
+                    .entry(entry.object_key.to_string())
                     .or_default()
                     .insert(entry.component.unwrap_or_default().to_string(), entry.address);
             }
@@ -2145,7 +2146,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     .as_deref()
                     .and_then(|component| hex::decode(component).ok())
                     .unwrap_or_default();
-                sets.entry(entry.object_key)
+                sets.entry(entry.object_key.to_string())
                     .or_default()
                     .insert(member, entry.address);
             }
@@ -2158,7 +2159,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                             hex::decode(&component[16..]),
                         ) {
                             zsets
-                                .entry(entry.object_key)
+                                .entry(entry.object_key.to_string())
                                 .or_default()
                                 .insert(member, (biased, entry.address));
                         }
@@ -2174,7 +2175,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
                     .unwrap_or_default();
                 lists
-                    .entry(entry.object_key)
+                    .entry(entry.object_key.to_string())
                     .or_default()
                     .insert(seq, entry.address);
             }
@@ -2185,7 +2186,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut features,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2196,7 +2197,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut features,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2214,10 +2215,10 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                         warm_batch.push((key, bytes.clone()));
                     }
                     if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
-                        control_state.insert(entry.object_key.clone(), series);
+                        control_state.insert(entry.object_key.clone().to_string(), series);
                     }
                 }
-                control_state_pages.insert(entry.object_key, entry.address);
+                control_state_pages.insert(entry.object_key.to_string(), entry.address);
             }
             "context_event" => {
                 saw_context_events = true;
@@ -2227,7 +2228,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     &mut warm_batch,
                     &mut context_events,
                     &mut context_event_timeline,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2238,7 +2239,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut context_indexes,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2249,7 +2250,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut context_audits,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2271,7 +2272,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut context_children,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2284,7 +2285,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut context_summaries,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2295,7 +2296,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                     warm_shard,
                     &mut warm_batch,
                     &mut context_compressions,
-                    entry.object_key,
+                    entry.object_key.to_string(),
                     entry.address,
                 );
             }
@@ -2568,7 +2569,7 @@ pub(super) fn validate_bucket_ownership_index(
             validation
                 .mismatches
                 .push(StorageRecoveryPageOwnerMismatch {
-                    object_key: entry.object_key,
+                    object_key: entry.object_key.to_string(),
                     page_slab_id: entry.address.page_slab_id,
                     offset: entry.address.offset,
                     expected_object_id,
