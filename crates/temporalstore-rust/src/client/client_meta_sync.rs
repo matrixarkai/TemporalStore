@@ -567,7 +567,14 @@ impl TemporalStoreClient {
     }
 
     pub fn stats(&self) -> ClientStats {
-        *self.inner.stats.lock().expect("client stats lock poisoned")
+        let mut stats = *self.inner.stats.lock().expect("client stats lock poisoned");
+        // Counted without the lock on the request path; folded in here so callers -- including the
+        // proxy, which takes a delta against the previous read -- see one monotonic number.
+        stats.route_cache_hits += self
+            .inner
+            .route_cache_hits
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats
     }
 
     pub fn preflight_report(&self) -> ClientPreflightReport {
