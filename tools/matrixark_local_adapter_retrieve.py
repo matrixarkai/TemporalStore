@@ -1262,6 +1262,18 @@ class _LocalAdapterRetrieveMixin:
                     summary_text = str(record.get("summary_text", ""))
                     if len(summary_text) > len(existing):
                         node_summary_text_by_hash[node_hash_for_summary] = summary_text
+        # One-box baseline: embeddings decide the ranking. The 0.28 lexical term reads each
+        # candidate's text, which the scan projection no longer holds, and it measured
+        # indistinguishable from no effect (hit@1 -0.011, 95% CI [-0.049, +0.027] over 269 queries)
+        # at 21x the scoring cost. Weights still sum to 1.0 so scores stay comparable.
+        try:  # package path
+            from tools.matrixark_local_adapter_retrieval import onebox_embedding_first
+        except ImportError:  # top-level path (direct tools/ execution)
+            from matrixark_local_adapter_retrieval import onebox_embedding_first
+        _ONEBOX_DENSE_ONLY = onebox_embedding_first()
+        _DENSE_W = 1.00 if _ONEBOX_DENSE_ONLY else 0.72
+        _SPARSE_W = 0.00 if _ONEBOX_DENSE_ONLY else 0.28
+
         secondary_index_prefilter_node_hashes = {
             node_hash
             for node_hash, terms in index_terms_by_node_for_prefilter.items()
@@ -1350,7 +1362,7 @@ class _LocalAdapterRetrieveMixin:
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
                 index_hint_boost = 0.08 if node_hash in secondary_index_prefilter_node_hashes else 0.0
-                score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score + index_hint_boost), 6)
+                score = round(clamp01(_DENSE_W * normalized_dense_score(dense_score) + _SPARSE_W * sparse_score + index_hint_boost), 6)
                 current = node_scores.get(node_hash)
                 if current is None or score > current["score"]:
                     node_scores[node_hash] = {
@@ -1389,7 +1401,7 @@ class _LocalAdapterRetrieveMixin:
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
                 index_hint_boost = 0.08 if node_hash in secondary_index_prefilter_node_hashes else 0.0
-                score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score + index_hint_boost), 6)
+                score = round(clamp01(_DENSE_W * normalized_dense_score(dense_score) + _SPARSE_W * sparse_score + index_hint_boost), 6)
                 current = node_scores.get(node_hash)
                 if current is None or score > current["score"]:
                     node_scores[node_hash] = {
