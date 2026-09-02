@@ -16,6 +16,7 @@ try:
     from tools.matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
     from tools.matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from tools.matrixark_mcp_serving_records import (
+        latest_context_state_key,
         compact_latest_context_state_records,
         context_debug_records_enabled,
         materialize_serving_record_batch,
@@ -25,6 +26,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
     from matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from matrixark_mcp_serving_records import (
+        latest_context_state_key,
         compact_latest_context_state_records,
         context_debug_records_enabled,
         materialize_serving_record_batch,
@@ -3382,7 +3384,58 @@ def compression_context_index_records(record: Json) -> list[Json]:
     ]
 
 
+# One field name for the identity of a WAL row, on every row.
+#
+# The same concept -- what makes this row supersede an earlier one -- was spelled nine ways
+# across twelve record types: node_hash, child_ref_hash, event_id_hash, summary_hash,
+# ref_hash, entity_hash, dirty_hash, skill_hash, resource_hash, resource_import_task_hash,
+# node_id. Every reader that wanted a row identity had to know all twelve, and a new type
+# meant editing each of them.
+#
+# A row now carries its identity under ROW_KEY_FIELD. The per-type knowledge stays in one
+# function, is applied once at write, and readers use the field.
+ROW_KEY_FIELD = "row_key"
+
+
+def canonical_row_key(record: Json) -> str | None:
+    """The identity of a WAL row as one string, or None when the row has no usable identity.
+
+    A row whose key has an empty part is NOT compacted -- compact_latest_value_records leaves
+    it alone rather than letting an absent hash collide with another absent one. Collapsing the
+    key to a single string would hide that from the guard, so the same test is applied here and
+    such a row simply gets no key.
+    """
+    key = _latest_value_record_key_by_type(record)
+    if key is None:
+        return None
+    if any(part in (None, "") for part in key[1:]):
+        return None
+    try:
+        return json.dumps(list(key), separators=(",", ":"), default=str, sort_keys=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def stamp_row_keys(records: list[Json]) -> list[Json]:
+    """Give every row its identity under the shared field name, once, at write time."""
+    for record in records or ():
+        if not isinstance(record, dict) or ROW_KEY_FIELD in record:
+            continue
+        key = canonical_row_key(record)
+        if key is not None:
+            record[ROW_KEY_FIELD] = key
+    return records
+
+
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
+    """Prefer the row's own key. Rows written before it existed are keyed by type."""
+    stamped = record.get(ROW_KEY_FIELD)
+    if isinstance(stamped, str) and stamped:
+        return (stamped,)
+    return _latest_value_record_key_by_type(record)
+
+
+def _latest_value_record_key_by_type(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_node":
         return (record_type, record.get("node_hash"))
@@ -4005,6 +4058,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # Set when records were appended to the cache without compacting it -- see
         # _compact_read_cache_if_dirty_locked.
         self._read_cache_dirty = False
+        # (record_type, field) -> {value: record}, kept current as records are appended so an
+        # embedding can find its owner without reading the whole set. None until first use.
+        self._embedding_owner_index: dict[tuple[str, str], dict[Any, Json]] | None = None
+        # The keys the compacted cache already holds, kept current so a write can tell whether
+        # it supersedes anything without scanning. None means unknown -- rebuilt on the next
+        # compaction.
+        self._read_cache_value_keys: set[Any] | None = None
+        self._read_cache_state_keys: set[Any] | None = None
         self._read_cache_size = -1
         self._read_cache_mtime_ns = -1
         self._read_cache_source = "empty"
@@ -4406,6 +4467,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         cache_key = str(self.event_log.resolve())
         with self._read_cache_lock:
             self._read_cache_records = None
+            self._read_cache_value_keys = None
+            self._read_cache_state_keys = None
             self._read_cache_size = -1
             self._read_cache_mtime_ns = -1
             self._read_cache_source = "empty"
@@ -4524,6 +4587,59 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             except Exception:
                 pass
 
+    #: A batch carrying one of these cannot be applied by appending: a tombstone or cutoff
+    #: removes records that came BEFORE it, a context_index posting is rebuilt and coalesced
+    #: across the whole set, and a pipeline-task or audit row is footprint-bounded across it.
+    _COMPACTION_IS_NOT_LOCAL = frozenset({
+        "context_index",
+        "matrixark_async_pipeline_task",
+        "context_extraction_audit",
+    })
+
+    @staticmethod
+    def _batch_is_local(records: list[Json]) -> bool:
+        """True when nothing in the batch can affect a record already in the cache."""
+        for record in records:
+            if not isinstance(record, dict):
+                return False
+            record_type = str(record.get("record_type") or "")
+            if record_type in MatrixArkLocalAdapter._COMPACTION_IS_NOT_LOCAL:
+                return False
+            if "tombstone" in record_type or "retention_cutoff" in record_type:
+                return False
+        return True
+
+    def _cache_keys_locked(self):
+        """The keys the compacted cache holds, built once and then kept current."""
+        if self._read_cache_value_keys is None or self._read_cache_state_keys is None:
+            records = self._read_cache_records or []
+            self._read_cache_value_keys = {latest_value_record_key(r) for r in records}
+            self._read_cache_state_keys = {latest_context_state_key(r) for r in records}
+            self._read_cache_value_keys.discard(None)
+            self._read_cache_state_keys.discard(None)
+        return self._read_cache_value_keys, self._read_cache_state_keys
+
+    def _note_embedding_owners(self, records: list[Json]) -> None:
+        """Fold newly appended records into whichever owner buckets have been built.
+
+        Only existing buckets are updated: a (type, field) nobody has asked about is built
+        from a read when first needed, and includes these records by then. Later records
+        overwrite earlier ones, which is the newest-wins answer the backwards scan gave.
+        """
+        index = self._embedding_owner_index
+        if not index:
+            return
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            record_type = record.get("record_type")
+            for (indexed_type, field), bucket in index.items():
+                if indexed_type != record_type:
+                    continue
+                value = record.get(field)
+                if value is not None:
+                    bucket[value] = record
+
     def _compact_read_cache_if_dirty_locked(self) -> None:
         """Compact the cache if records were appended since the last compaction.
 
@@ -4577,6 +4693,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # stamp the current signature onto a list missing their records, and a cold
                 # reader would silently lose them. Drop it; the next read re-derives from disk.
                 self._read_cache_records = None
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4584,8 +4702,29 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # Extend now, compact when something reads. Compacting here walked the whole cache
                 # on every append, which is what made ingest quadratic in the corpus: 27 records
                 # land per attachment, so 50 attachments took 105 s against 12 s for 20.
+                # A batch that supersedes nothing needs no compaction at all: every stage of
+                # the pipeline leaves the existing records exactly as they were, so the cache
+                # is still compact after appending. Measured over an attachment ingest, half
+                # of all cache updates are of that shape. The keys are kept current, so
+                # deciding costs the size of the BATCH, not of the cache.
+                appends_only = False
+                if self._batch_is_local(records):
+                    value_keys, state_keys = self._cache_keys_locked()
+                    new_value = [latest_value_record_key(r) for r in records]
+                    new_state = [latest_context_state_key(r) for r in records]
+                    appends_only = not (
+                        any(k is not None and k in value_keys for k in new_value)
+                        or any(k is not None and k in state_keys for k in new_state)
+                    )
+                    if appends_only:
+                        value_keys.update(k for k in new_value if k is not None)
+                        state_keys.update(k for k in new_state if k is not None)
                 self._read_cache_records.extend(records)
-                self._read_cache_dirty = True
+                if not appends_only:
+                    self._read_cache_dirty = True
+                    self._read_cache_value_keys = None
+                    self._read_cache_state_keys = None
+                self._note_embedding_owners(records)
                 durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
@@ -4598,6 +4737,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     durable_records = list(self._read_cache_records)
             else:
                 self._read_cache_records = None
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4849,10 +4990,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
-        records = drop_owner_derivable_postings(
-            records, resolve_owner=self._embedding_owner_resolver()
-        )
+        # One resolver for both, so the record set is read once per write rather than once per
+        # fold. Each resolver reads on first use and indexes; two of them read twice.
+        # Every row leaves here carrying its identity under the one shared name.
+        stamp_row_keys(records)
+        resolve_owner = self._embedding_owner_resolver()
+        records = fold_embedding_records(records, resolve_owner=resolve_owner)
+        records = drop_owner_derivable_postings(records, resolve_owner=resolve_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4888,10 +5032,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
-        records = drop_owner_derivable_postings(
-            records, resolve_owner=self._embedding_owner_resolver()
-        )
+        # One resolver for both, so the record set is read once per write rather than once per
+        # fold. Each resolver reads on first use and indexes; two of them read twice.
+        # Every row leaves here carrying its identity under the one shared name.
+        stamp_row_keys(records)
+        resolve_owner = self._embedding_owner_resolver()
+        records = fold_embedding_records(records, resolve_owner=resolve_owner)
+        records = drop_owner_derivable_postings(records, resolve_owner=resolve_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4931,28 +5078,30 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         The index is built per (record_type, field) on first use, and later records overwrite
         earlier ones, which is the same newest-wins answer the backwards scan gave.
         """
-        records: list[Json] | None = None
-        indexes: dict[tuple[str, str], dict[Any, Json]] = {}
-
         def resolve(record_type: str, field: str, ref_hash: Any) -> Json | None:
-            nonlocal records
-            if records is None:
-                try:
-                    records = self.read_all()
-                except Exception:
-                    records = []
-            key = (record_type, field)
-            index = indexes.get(key)
+            index = self._embedding_owner_index
             if index is None:
                 index = {}
-                for record in records:
+                self._embedding_owner_index = index
+            key = (record_type, field)
+            bucket = index.get(key)
+            if bucket is None:
+                # First question about this (type, field): build it from one read, then keep
+                # it current on every append. Rebuilding per write meant 765 resolvers and
+                # 400 full reads over twenty attachments.
+                bucket = {}
+                try:
+                    known = self.read_all()
+                except Exception:
+                    known = []
+                for record in known:
                     if record.get("record_type") != record_type:
                         continue
                     value = record.get(field)
                     if value is not None:
-                        index[value] = record
-                indexes[key] = index
-            return index.get(ref_hash)
+                        bucket[value] = record
+                index[key] = bucket
+            return bucket.get(ref_hash)
 
         return resolve
 
@@ -5332,6 +5481,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if not paths:
             with self._read_cache_lock:
                 self._read_cache_records = []
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -5371,6 +5522,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     records = list(cached_records)
                     with self._read_cache_lock:
                         self._read_cache_records = records
+                        self._read_cache_value_keys = None
+                        self._read_cache_state_keys = None
                         self._read_cache_size = size
                         self._read_cache_mtime_ns = mtime_ns
                         self._read_cache_source = "process"
@@ -5382,6 +5535,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             records = list(durable_records)
             with self._read_cache_lock:
                 self._read_cache_records = list(records)
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
                 self._read_cache_source = "durable"
@@ -5413,6 +5568,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 or self._read_cache_mtime_ns != mtime_ns
             )
             self._read_cache_records = list(records)
+            self._read_cache_value_keys = None
+            self._read_cache_state_keys = None
             self._read_cache_size = size
             self._read_cache_mtime_ns = mtime_ns
             self._read_cache_source = "jsonl"
