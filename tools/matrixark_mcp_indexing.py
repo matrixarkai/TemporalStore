@@ -354,8 +354,104 @@ def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
     return [refs[index:index + cap] for index in range(0, len(refs), cap)] or [[]]
 
 
+#: The value compact_context_index_postings stamps on a row it has folded. A row carrying it has
+#: already been through the whole grouping pass.
+POSTING_POLICY_BUCKETED = "bucketed_by_scope_capability_index_time"
+
+
+def is_fold_output(record: Json, policy: str, stamped: tuple) -> bool:
+    """True when this row is one the fold itself produced, not merely one that looks like it.
+
+    The policy marker alone is not enough. The fold also stamps fields (``index_hash``, and in the
+    indexing copy ``storage_record_kind`` / ``storage_part``) and DROPS ``node_hashes`` /
+    ``batch_id_hashes`` when they are empty, so a row carrying the policy string but missing those
+    is not its output and passing it through would skip work that changes it. An equivalence check
+    against the full pass caught exactly that.
+    """
+    if str(record.get("posting_policy") or "") != policy:
+        return False
+    for field in stamped:
+        if not record.get(field):
+            return False
+    for field in ("node_hashes", "batch_id_hashes"):
+        if field in record and not record.get(field):
+            return False                    # the fold would have removed it
+    for field in ("ref_hash", "chunk_hash"):
+        if field in record:
+            return False                    # the fold would have popped it
+    refs = record.get("ref_hashes")
+    if not isinstance(refs, list) or len(refs) > MAX_SECONDARY_INDEX_REFS_PER_POSTING:
+        return False                        # would be re-chunked into several parts
+    if len(refs) != len({str(ref) for ref in refs}):
+        return False                        # the fold would dedupe these
+    return True
+
+
+def already_folded_postings(records: list[Json], policy: str, key_of, stamped: tuple):
+    """Return the fold's own answer without doing the fold, when it provably cannot change anything.
+
+    Compaction re-folds the read cache on every read, and the cache holds the fold's OWN output --
+    so the pass re-groups rows that are already grouped and rebuilds them byte for byte. Measured
+    on a skill corpus the fold coalesces NOTHING at any size (63->63, 113->113, 213->213, 413->413
+    rows) while costing about 57 microseconds per posting in grouping plus 9 in identity hashing.
+
+    The fold is idempotent -- fold(fold(x)) == fold(x) row for row -- so when every posting is
+    already folded and no two share a bucket, each group has one member that is already its own
+    output and the answer is the input. Anything else (a fresh row, two rows in one bucket, a
+    posting at the ref limit that would be re-chunked) returns None and the full pass runs.
+
+    ``key_of`` returns the bucket key, or None for a row the fold passes through. It is taken as an
+    argument because there are two copies of this fold and they group by different things -- one by
+    data_model, one by capability -- so one shared helper is parameterised rather than copied a
+    third time.
+    """
+    passthrough: list[Json] = []
+    postings: list[Json] = []
+    seen_keys = set()
+    for record in records:
+        if str(record.get("record_type") or "") != "context_index":
+            passthrough.append(record)
+            continue
+        key = key_of(record)
+        if key is None:
+            passthrough.append(record)      # the full pass treats these the same way
+            continue
+        if not is_fold_output(record, policy, stamped):
+            return None                     # not the fold's own output: the real pass has work
+        if key in seen_keys:
+            return None                     # two rows in one bucket: they must be merged
+        seen_keys.add(key)
+        postings.append(record)
+    return passthrough + postings
+
+
+def _indexing_bucket_key(record: Json):
+    index_name = str(record.get("index_name") or "")
+    capability = context_index_capability(record)
+    if not index_name or not capability:
+        return None
+    return (
+        str(record.get("scope_key") or ""),
+        capability,
+        str(record.get("data_model") or ""),
+        index_name,
+        str(record.get("ref_type") or ""),
+        context_index_time_bucket(record.get("timestamp_key_ms") or record.get("updated_at_ms")),
+    )
+
+
+def _already_folded_postings(records: list[Json]) -> list[Json] | None:
+    return already_folded_postings(
+        records, POSTING_POLICY_BUCKETED, _indexing_bucket_key,
+        ("index_hash", "storage_record_kind", "storage_part"),
+    )
+
+
 def compact_context_index_postings(records: list[Json]) -> list[Json]:
     """Group ContextIndex writes into Feature-style timestamped posting rows."""
+    unchanged = _already_folded_postings(records)
+    if unchanged is not None:
+        return unchanged
     scalar_lineage_fields = [
         "memory_scope",
         "session_continuity",
