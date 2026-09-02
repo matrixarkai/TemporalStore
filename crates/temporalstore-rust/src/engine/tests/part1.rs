@@ -5338,3 +5338,394 @@ fn does_a_cached_node_carry_its_vector_twice() {
         );
     }
 }
+
+
+/// Which piece of the write machinery holds the unaccounted allocations?
+///
+/// A node write is 155 allocations, 144 of them machinery rather than the record. Encoding is 9,
+/// the value append 8, post-write maintenance 27, the key-state capture 4 -- 48 accounted. The
+/// remaining hundred has been called "the WAL and the log" and never counted.
+///
+/// It matters beyond its own number: an add is ~1,342 allocations and roughly eight writes, so
+/// per-write machinery carries about 8x leverage on the largest api there is.
+///
+/// Switching a piece off and re-measuring attributes it without instrumenting internals. A flag
+/// that changes nothing eliminates its piece; one that moves the count names it.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_piece_of_the_write_machinery_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn which_piece_of_the_write_machinery_costs() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 7919;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    // One write, measured on a store grown by real ingests, with whatever flags are set when it
+    // runs. Each arm builds its own store so a flag cannot be observed through state another arm
+    // left behind.
+    fn one_write_costs(tag: u64) -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..40_usize {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: TENANT,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("MACH-{tag}-{index:06}"),
+                        title: format!("mach {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        }
+
+        let node = |hash: u64| crate::types::ContextNode {
+            node_hash: hash,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/mach-{hash}"),
+            l0: "the text an extract produces".to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: (0..384).map(|i| i as f32 / 1024.0).collect(),
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: (0..384).map(|i| i as f32 / 512.0).collect(),
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        };
+        // Warm on one key, measure another.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: TENANT, node: node(9_000_000 + tag) },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: node(9_500_000 + tag),
+            },
+        });
+        let allocs = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+        allocs
+    }
+
+    let baseline = one_write_costs(1);
+    println!(
+        "
+  one node write, everything at its default: {baseline} allocations
+
+  piece switched off                   allocs   difference
+"
+    );
+
+    for (label, flag, value) in [
+        ("TS_WAL_PREALLOCATE=0        ", "TS_WAL_PREALLOCATE", "0"),
+        ("TS_ENGINE_CONCURRENT_COMMIT=0", "TS_ENGINE_CONCURRENT_COMMIT", "0"),
+        ("TS_INDEX_BINARY=0           ", "TS_INDEX_BINARY", "0"),
+    ] {
+        std::env::set_var(flag, value);
+        let with_flag = one_write_costs(2);
+        std::env::remove_var(flag);
+        let delta = with_flag as i64 - baseline as i64;
+        println!("  {label}    {with_flag:>7}   {delta:>+10}");
+    }
+
+    println!(
+        "
+  a flag that changes nothing eliminates its piece. one that moves the count names it, and the
+  sign says which way: negative means the default is paying for something.
+"
+    );
+}
+
+
+/// Does reading a node's history scale with how much history it has?
+///
+/// `history` measures 16 allocations and flat -- but flat against the CORPUS, which is the wrong
+/// axis. Growing the store adds nodes; it does not add summaries to any one node. A history read
+/// walks one node's summaries, so the axis that matters is how many that node has, and nothing has
+/// varied it.
+///
+/// That is the shape that hid the ingest quadratic: flat in the thing being varied, proportional to
+/// the thing that is not.
+///
+/// Flat per summary is the right answer -- a read returning more must do more. Superlinear is not,
+/// and neither is a bounded `limit` still paying for everything behind it.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_reading_a_history_scale_with_the_history -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_reading_a_history_scale_with_the_history() {
+    const TENANT: u64 = 8221;
+    const NODE: u64 = 4_242_424;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  summaries   no limit   per returned   read limit 8   bytes
+"
+    );
+
+    let mut previous_all: Option<u64> = None;
+    for count in [1_usize, 8, 64, 256] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        // One node's history, written as the ingest writes it: a summary per turn, each with its
+        // own valid_from so they are distinct points in time rather than one row overwritten.
+        for turn in 0..count {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertSummary {
+                    tenant_hash: TENANT,
+                    summary: crate::types::ContextSummary {
+                        node_hash: NODE,
+                        level: 2,
+                        text: format!("summary of turn {turn}, of ordinary length for one turn"),
+                        valid_from_ms: 1_781_700_000_000 + turn as u64,
+                        vector: (0..384).map(|i| (i + turn) as f32 / 1024.0).collect(),
+                        embedding_model_hash: 7,
+                    },
+                },
+            });
+            assert!(out.status.ok, "write {turn}: {:?}", out.status);
+        }
+
+        let read = |limit: Option<usize>| {
+            let request = || ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQuerySummaries {
+                    tenant_hash: TENANT,
+                    node_hash: NODE,
+                    level: 2,
+                    as_of_ms: 4_000_000_000_000,
+                    limit,
+                },
+            };
+            // Warm: the first read of a shape touches one-off structures.
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            let returned = match out.response {
+                CommandResponse::ContextSummaries { summaries, .. } => summaries.len(),
+                other => panic!("expected summaries, got {other:?}"),
+            };
+            (counts.allocs, counts.alloc_bytes, returned)
+        };
+
+        let (all, all_bytes, returned_all) = read(None);
+        let (limited, _, returned_limited) = read(Some(8));
+        // `None` is not "unlimited": `context_limit` resolves it to the default cap, so a node with
+        // a long history cannot make one read expensive. That bound is the property worth holding.
+        let default_cap = 100;
+        assert_eq!(
+            returned_all,
+            count.min(default_cap),
+            "a read with no limit must return up to the default cap, and no more"
+        );
+        assert_eq!(
+            returned_limited,
+            count.min(8),
+            "a limited read must return the limit, not everything"
+        );
+
+        println!(
+            "  {count:>9}   {all:>8}   {:>11.2}   {limited:>12}   {all_bytes:>11}",
+            all as f64 / count.min(100) as f64,
+        );
+        if let Some(previous) = previous_all {
+            assert!(
+                all >= previous,
+                "reading more history cost less, which means this is not measuring the read"
+            );
+        }
+        previous_all = Some(all);
+    }
+
+    println!(
+        "
+  per returned flat   => the read costs what it returns, which is the right shape.
+  per returned rising => it does work proportional to the history beyond returning it.
+  limit 8 flat as the history grows => a bounded read does NOT pay for the whole history.
+  no-limit column flattening at the cap => a bare None is the default cap, not the whole history.
+"
+    );
+}
+
+
+/// Do the batch reads scale with the batch, or with something behind it?
+///
+/// `get_all` and `query embeddings` were measured against CORPUS size and looked fine. They take a
+/// batch of node hashes, and that is a different axis: a per-item cost constant in the corpus can
+/// still be superlinear in the batch. `history` just showed that measuring the wrong axis proves
+/// nothing -- it read "flat" against one that could not have shown a problem.
+///
+/// Store fixed, batch varied. Per item flat is right. Per item rising means the read does work
+/// quadratic in its own batch, which is what to find before a caller asks for a thousand.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib do_the_batch_reads_scale_with_the_batch -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn do_the_batch_reads_scale_with_the_batch() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 8419;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let mut hashes = Vec::new();
+    for index in 0..320_usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("BATCH-{index:06}"),
+                    title: format!("batch {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        hashes.extend(report.node_hashes.iter().copied());
+    }
+    assert!(hashes.len() >= 256, "need at least 256 real nodes, got {}", hashes.len());
+
+    let measure = |command: Command| {
+        let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+        let warm = engine.execute(request());
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(request());
+        let counts = probe.stop();
+        assert!(out.status.ok, "{:?}", out.status);
+        counts.allocs
+    };
+
+    println!(
+        "
+  batch   get_all   per node   embeddings   per node   get_all (absent ids)
+"
+    );
+
+    for size in [1_usize, 8, 64, 256] {
+        let present: Vec<u64> = hashes.iter().copied().take(size).collect();
+        // Ids that were never written: same shape of request, nothing to find.
+        let absent: Vec<u64> = (0..size).map(|index| 77_000_000 + index as u64).collect();
+
+        let nodes = measure(Command::ContextGetNodes {
+            tenant_hash: TENANT,
+            node_hashes: present.clone(),
+        });
+        let embeddings = measure(Command::ContextQueryNodeEmbeddings {
+            tenant_hash: TENANT,
+            node_hashes: present.clone(),
+        });
+        let missing = measure(Command::ContextGetNodes {
+            tenant_hash: TENANT,
+            node_hashes: absent,
+        });
+
+        println!(
+            "  {size:>5}   {nodes:>7}   {:>8.2}   {embeddings:>10}   {:>8.2}   {missing:>20}",
+            nodes as f64 / size as f64,
+            embeddings as f64 / size as f64,
+        );
+    }
+
+    println!(
+        "
+  per node flat   => the batch costs what it returns.
+  per node rising => the read does work quadratic in its own batch size.
+  absent column tracking the present one => a stale id costs as much as a real one.
+"
+    );
+}
