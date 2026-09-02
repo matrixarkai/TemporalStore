@@ -1597,6 +1597,11 @@ pub(super) fn sync_bucket_index_object_pages(
         unique_addresses.insert(page_physical_identity_key(&address), address);
     }
 
+    // Hoisted: neither changes across iterations, and each cost a String plus an Arc that copies
+    // it -- four allocations per address published, for two values. Cloning an Arc is a refcount
+    // bump.
+    let object_key_arc: Arc<str> = Arc::from(object_key);
+    let kind_arc: Arc<str> = Arc::from(kind);
     for address in unique_addresses.into_values() {
         let routing_bucket = address
             .routing_bucket()
@@ -1605,8 +1610,8 @@ pub(super) fn sync_bucket_index_object_pages(
             .object_id()
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
         let entry = LiveBlockEntry {
-            object_key: Arc::from(object_key.to_string()),
-            kind: Arc::from(kind.to_string()),
+            object_key: Arc::clone(&object_key_arc),
+            kind: Arc::clone(&kind_arc),
             component: None,
             log_backed: address.page_id().is_none(),
             address,
@@ -1649,7 +1654,11 @@ pub(super) fn sync_bucket_index_object_pages(
         };
         // The map assigns the handle; the lookup records the same one.
         let page_ref_key = bucket.page_index.insert(page.clone());
-        update_bucket_layout(bucket);
+        // `object_index` was just given this object id above, so the set is already correct and only
+        // the label needs re-deriving. `update_bucket_layout` would rebuild the set by walking every
+        // page in the bucket -- once per address published, which is what made a write cost the
+        // whole object rather than the part of it being written.
+        classify_bucket_layout_in_place(bucket);
         // The bucket borrow has to end before the lookup, which borrows the index itself.
         if !lookup_needs_establishing {
             shard
