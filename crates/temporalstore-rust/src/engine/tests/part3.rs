@@ -2361,7 +2361,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             page_index: [(
                 "string:k::1:0".to_string(),
                 PageIndex {
-                    object_key: "k".to_string(),
+                    object_key: Arc::from("k".to_string()),
                     model_id: Arc::from("string".to_string()),
                     component: None,
                     object_id: 30,
@@ -2390,7 +2390,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "feature:k::2:0".to_string(),
                     PageIndex {
-                        object_key: "feature-key".to_string(),
+                        object_key: Arc::from("feature-key".to_string()),
                         model_id: Arc::from("feature".to_string()),
                         component: None,
                         object_id: 40,
@@ -2403,7 +2403,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "feature:k::2:4".to_string(),
                     PageIndex {
-                        object_key: "feature-key".to_string(),
+                        object_key: Arc::from("feature-key".to_string()),
                         model_id: Arc::from("feature".to_string()),
                         component: None,
                         object_id: 40,
@@ -2432,7 +2432,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "hash:k:a:3:0".to_string(),
                     PageIndex {
-                        object_key: "hash-key".to_string(),
+                        object_key: Arc::from("hash-key".to_string()),
                         model_id: Arc::from("hash".to_string()),
                         component: Some(Arc::from("a".to_string())),
                         object_id: 50,
@@ -2445,7 +2445,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 (
                     "hash:k:b:3:1".to_string(),
                     PageIndex {
-                        object_key: "hash-key".to_string(),
+                        object_key: Arc::from("hash-key".to_string()),
                         model_id: Arc::from("hash".to_string()),
                         component: Some(Arc::from("b".to_string())),
                         object_id: 51,

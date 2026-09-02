@@ -3844,14 +3844,14 @@ fn dirty_objects_versus_the_pages_own_dirty_flags() {
         .values()
         .flat_map(|bucket| bucket.page_index.values())
         .filter(|page| page.dirty)
-        .map(|page| page.object_key.clone())
+        .map(|page| page.object_key.to_string())
         .collect();
     let any_page_at_all: std::collections::BTreeSet<String> = shard
         .bucket_index
         .bucket_map
         .values()
         .flat_map(|bucket| bucket.page_index.values())
-        .map(|page| page.object_key.clone())
+        .map(|page| page.object_key.to_string())
         .collect();
 
     let in_set_not_flagged: Vec<&String> = shard
@@ -4244,6 +4244,219 @@ fn what_each_address_field_actually_ranges_over() {
     );
 }
 
+/// How many separate allocations one object's key text occupies across the whole shard.
+///
+/// The per-structure censuses each answer a smaller question than this one. Sharing is worth doing
+/// where the same bytes are held many times, and that only shows up when the structures are
+/// counted together.
+#[test]
+fn how_many_times_one_object_key_is_stored() {
+    use std::collections::HashSet;
+
+    const OBJECTS: usize = 800;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..OBJECTS {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("crossref-object-{index:08}"),
+                value: vec![b'v'; 64],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    // Pick one object and find every place its text is stored, by pointer.
+    let sample = shard
+        .strings
+        .keys()
+        .next()
+        .expect("the workload must produce at least one string object")
+        .clone();
+
+    let mut allocations: HashSet<*const u8> = HashSet::new();
+    let mut holders = 0usize;
+
+    for key in shard.strings.keys() {
+        if *key == sample {
+            allocations.insert(key.as_ptr());
+            holders += 1;
+        }
+    }
+    for key in shard.expires_at_ms.keys() {
+        if *key == sample {
+            allocations.insert(key.as_ptr());
+            holders += 1;
+        }
+    }
+    for (_model, object, _refs) in shard.bucket_index.object_page_lookup.iter() {
+        if object.as_ref() == sample.as_str() {
+            allocations.insert(object.as_ptr());
+            holders += 1;
+        }
+    }
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_ref_key, page) in bucket.page_index.iter() {
+            if page.object_key.as_ref() == sample.as_str() {
+                allocations.insert(page.object_key.as_ptr());
+                holders += 1;
+            }
+        }
+    }
+
+    assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
+
+    let key_bytes: usize = shard.strings.keys().map(String::len).sum();
+    let page_key_bytes: usize = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .flat_map(|bucket| bucket.page_index.values())
+        .map(|page| page.object_key.len())
+        .sum();
+    // No concatenation any more: what the lookup holds per object is the object key itself.
+    let lookup_key_bytes: usize = shard
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(_model, object, _refs)| object.len())
+        .sum();
+    let expiry_key_bytes: usize = shard.expires_at_ms.keys().map(String::len).sum();
+    let total = key_bytes + page_key_bytes + lookup_key_bytes + expiry_key_bytes;
+
+    println!(
+        "
+  one object key ({} B of text), across the shard:
+    structures holding it        {holders}
+    distinct allocations         {}   <- what sharing would collapse to 1
+
+  and in total over {OBJECTS} objects:
+    strings keys              {key_bytes:>8} B
+    page_index object_key     {page_key_bytes:>8} B
+    object_page_lookup keys   {lookup_key_bytes:>8} B   (its own allocation of the key)
+    expires_at_ms keys        {expiry_key_bytes:>8} B
+    TOTAL                     {total:>8} B  = {:.1} B per object
+",
+        sample.len(),
+        allocations.len(),
+        total as f64 / OBJECTS as f64,
+    );
+}
+
+/// The lookup is nested in memory and flat on disk.
+///
+/// This is the property the change rests on: an index written before the nesting has to load, and
+/// one written now has to stay readable by anything expecting the old shape. Both directions are
+/// checked, and the composite is compared literally rather than by round-tripping alone -- a
+/// round-trip through a consistently wrong format would pass.
+#[test]
+fn the_nested_lookup_still_serializes_as_the_flat_composite() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "nested-key".to_string(),
+            value: vec![b'v'; 32],
+        },
+    });
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let lookup = &shard.bucket_index.object_page_lookup;
+    assert!(!lookup.is_empty(), "the write must produce a lookup entry");
+
+    let json = serde_json::to_value(lookup).unwrap();
+    let object = json.as_object().expect("the wire form is a flat map");
+
+    // Length-prefixed parts: model, then object key.
+    let expected = format!("{}:{}|{}:{}|", "string".len(), "string", "nested-key".len(), "nested-key");
+    assert!(
+        object.contains_key(&expected),
+        "the serialized key must be the flat composite {expected:?}, got {:?}",
+        object.keys().collect::<Vec<_>>()
+    );
+
+    // And a document in that shape loads back into the nested form.
+    let restored: crate::engine::state::ObjectPageLookup =
+        serde_json::from_value(json).unwrap();
+    assert!(
+        restored.get("string", "nested-key").is_some(),
+        "a flat document must load into the nested map"
+    );
+    assert_eq!(restored.len(), lookup.len());
+}
+
+/// The page entry and the lookup hold the SAME allocation of an object's key.
+///
+/// Compared by pointer, not by contents. Changing the field's type shares nothing on its own --
+/// the lookup previously called `Arc::from` and built a second allocation of text the page already
+/// owned, which is byte-for-byte identical from the outside and costs exactly as much as before.
+/// Only pointer identity can tell those apart.
+#[test]
+fn the_page_and_the_lookup_point_at_one_object_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("shared-object-{index:04}"),
+                value: vec![b'v'; 48],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+
+    let mut checked = 0usize;
+    let mut shared = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_ref_key, page) in bucket.page_index.iter() {
+            let Some(refs) = shard
+                .bucket_index
+                .object_page_lookup
+                .key_ptr(&page.model_id, page.object_key.as_ref())
+            else {
+                continue;
+            };
+            checked += 1;
+            if std::ptr::eq(refs, page.object_key.as_ptr()) {
+                shared += 1;
+            }
+        }
+    }
+
+    // Anti-vacuity: with nothing checked, "all shared" is true for free.
+    assert!(checked > 0, "no page was matched to a lookup entry; nothing was measured");
+    assert_eq!(
+        shared, checked,
+        "{shared} of {checked} pages share their key with the lookup; the rest hold a second copy"
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
@@ -4312,7 +4525,7 @@ fn page_index_identity_string_cardinality() {
             pages += 1;
             distinct_models.insert(page.model_id.as_ref());
             model_allocations.insert(std::sync::Arc::as_ptr(&page.model_id).cast::<u8>());
-            distinct_keys.insert(page.object_key.as_str());
+            distinct_keys.insert(page.object_key.as_ref());
             model_bytes += page.model_id.len();
             key_bytes += page.object_key.len();
             if let Some(component) = page.component.as_deref() {
@@ -4587,8 +4800,10 @@ fn per_record_structure_census() {
         .bucket_index
         .object_page_lookup
         .iter()
-        .map(|(key, entry)| {
-            key.len()
+        .map(|(_model, object, entry)| {
+            // The model is stored once for all its objects now, so only the object key is a
+            // per-object cost here.
+            object.len()
                 + entry
                     .all_refs()
                     .map(|page_ref| page_ref.page_ref_key.len())
@@ -9554,7 +9769,7 @@ fn nesting_the_page_lookups_saved_what_it_measured() {
     // longer key is "1|" plus a length-prefixed component, or "0|" when there is none.
     let mut flat_keys = 0usize;
     let mut flat_map_entries = 0usize;
-    for (object_key, entry) in lookup.iter() {
+    for (_model, object_key, entry) in lookup.iter() {
         nested_keys += object_key.len();
         nested_map_entries += 1;
         nested_vec_elements += entry.by_component.len();
@@ -10622,7 +10837,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (*bucket, ref_key.to_string()),
                         (
                             page.model_id.to_string(),
-                            page.object_key.clone(),
+                            page.object_key.to_string(),
                             page.component.as_ref().map(|name| name.to_string()),
                         ),
                     )
@@ -10656,7 +10871,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                         (*bucket, ref_key.to_string()),
                         (
                             page.model_id.to_string(),
-                            page.object_key.clone(),
+                            page.object_key.to_string(),
                             page.component.as_ref().map(|name| name.to_string()),
                         ),
                     )

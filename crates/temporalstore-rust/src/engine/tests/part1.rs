@@ -1825,7 +1825,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .bucket_map
             .values_mut()
             .flat_map(|bucket| bucket.page_index.values_mut())
-            .find(|page| page.object_key == "owned")
+            .find(|page| page.object_key == Arc::from("owned"))
             .expect("owned slot page");
         page.address.set_object_id(Some(page.object_id.wrapping_add(1)));
     }
@@ -1879,7 +1879,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_map
             .values()
             .flat_map(|bucket| bucket.page_index.values())
-            .find(|page| page.object_key == "first")
+            .find(|page| page.object_key == Arc::from("first"))
             .map(|page| page.object_id)
             .expect("first object id");
         let second = shard
@@ -1887,7 +1887,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .bucket_map
             .values_mut()
             .flat_map(|bucket| bucket.page_index.values_mut())
-            .find(|page| page.object_key == "second")
+            .find(|page| page.object_key == Arc::from("second"))
             .expect("second slot page");
         second.address.set_object_id(Some(first_object_id));
         first_object_id
@@ -4358,12 +4358,27 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     shard.bucket_index.rebuild_object_page_lookup();
     let rebuilt = &shard.bucket_index.object_page_lookup;
 
-    let missing: Vec<&String> = rebuilt.keys().filter(|key| !maintained.contains_key(*key)).collect();
-    let extra: Vec<&String> = maintained.keys().filter(|key| !rebuilt.contains_key(*key)).collect();
-    let differing: Vec<&String> = rebuilt
+    // Identity is (model, object) now rather than one concatenated key, so the comparison
+    // names both halves instead of a composite.
+    let missing: Vec<String> = rebuilt
         .iter()
-        .filter(|(key, refs)| maintained.get(*key).map(|held| held != *refs).unwrap_or(false))
-        .map(|(key, _)| key)
+        .filter(|(model, object, _)| maintained.get(model, object).is_none())
+        .map(|(model, object, _)| format!("{model}/{object}"))
+        .collect();
+    let extra: Vec<String> = maintained
+        .iter()
+        .filter(|(model, object, _)| rebuilt.get(model, object).is_none())
+        .map(|(model, object, _)| format!("{model}/{object}"))
+        .collect();
+    let differing: Vec<String> = rebuilt
+        .iter()
+        .filter(|(model, object, refs)| {
+            maintained
+                .get(model, object)
+                .map(|held| held != *refs)
+                .unwrap_or(false)
+        })
+        .map(|(model, object, _)| format!("{model}/{object}"))
         .collect();
     assert!(
         missing.is_empty() && extra.is_empty() && differing.is_empty(),
