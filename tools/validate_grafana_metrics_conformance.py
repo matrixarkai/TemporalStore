@@ -13,6 +13,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "docs" / "ops" / "temporalstore-dashboard.json"
+# Every dashboard whose panels query engine families. The validator read only the first one
+# for as long as it existed, so a panel added to any other file was checked by nothing.
+DASHBOARDS = (
+    ROOT / "docs" / "ops" / "temporalstore-dashboard.json",
+    ROOT / "docs" / "ops" / "temporalstore-cluster-dashboard.json",
+)
 ALERTS = ROOT / "docs" / "ops" / "temporalstore-alerts.yml"
 # The coverage doc this is checked against. The previous path named a file that has never
 # existed, and `DOC.exists()` turned that into ten separate "family is undocumented" failures
@@ -359,6 +365,33 @@ def check_families_state_their_emission(families: dict) -> list:
             if not requirements.get("rust")]
 
 
+def dashboard_metric_names() -> set:
+    """Every engine family named by a panel expression, across all dashboards."""
+    used = set()
+    for path in DASHBOARDS:
+        if path.exists():
+            used |= metric_names(read(path))
+    return used
+
+
+def check_dashboard_metrics_are_emitted(declared: set) -> list:
+    """Panel expressions naming a family nothing declares.
+
+    The alert side of this was added first and found two rules that could never fire. The dashboard
+    side was still using the loose test -- name appears somewhere in the Rust source -- and it hid a
+    quieter version of the same defect: `temporalstore_block_store_band_oldest_age_ms`, one target
+    among five on a panel that therefore rendered with four series and no sign the fifth was
+    impossible. A blank panel is at least visible. A missing series is not.
+    """
+    return ["dashboard_metric_undeclared:%s" % name
+            for name in sorted(dashboard_metric_names() - declared)]
+
+
+def check_dashboard_extent() -> list:
+    """Every dashboard listed must exist, or its panels stop being checked silently."""
+    return ["dashboard_missing:%s" % path.name for path in DASHBOARDS if not path.exists()]
+
+
 def check_scan_extent() -> list:
     """Names from the floor that discovery no longer returns.
 
@@ -421,6 +454,8 @@ def main() -> int:
               "KNOWN_UNEMITTED." % ", ".join(fixed_but_listed), file=sys.stderr)
     declared = declared_metric_names(rust)
     alert_failures = (check_declaration_extent(declared)
+                      + check_dashboard_extent()
+                      + check_dashboard_metrics_are_emitted(declared)
                       + check_families_state_their_emission(METRIC_FAMILIES)
                       + check_alert_expressions_are_emitted(alerts, declared)
                       + check_alert_metric_names(alerts, declared))
