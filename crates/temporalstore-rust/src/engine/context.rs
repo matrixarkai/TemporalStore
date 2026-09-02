@@ -810,6 +810,29 @@ pub(super) fn load_context_children(
         .unwrap_or_default()
 }
 
+/// The same lookup as `load_context_node`, decoding only the vector.
+///
+/// Used where a candidate is scored and discarded, which is most of them.
+pub(super) fn load_context_node_vector(
+    cache: &MultiLayerCache,
+    page_store: &LocalBlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    node_hash: u64,
+) -> Option<Vec<f32>> {
+    let object_key = context_node_key(tenant_hash, node_hash);
+    shard
+        .hashes
+        .get(&object_key)
+        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+        .or_else(|| shard.context_nodes.get(&object_key))
+        .and_then(|address| {
+            super::read_page_shared(cache, page_store, shard_id, address)
+                .and_then(|bytes| crate::types::decode_context_node_vector(&bytes))
+        })
+}
+
 pub(super) fn load_context_node(
     cache: &MultiLayerCache,
     page_store: &LocalBlockStore,
@@ -1033,7 +1056,7 @@ pub(super) fn traverse_context_tree(
                 // the child hash already in hand; the retired separate records were not -- they
                 // were keyed by a one-way hash of (tenant, owner, level) that no reader could
                 // reconstruct without already holding the owner.
-                let vector = load_context_node(
+                let vector = load_context_node_vector(
                     cache,
                     page_store,
                     shard_id,
@@ -1041,8 +1064,7 @@ pub(super) fn traverse_context_tree(
                     tenant_hash,
                     child.child_hash,
                 )
-                .filter(|node| !node.vector.is_empty())
-                .map(|node| node.vector);
+                .filter(|vector| !vector.is_empty());
                 let Some(vector) = vector else {
                     continue;
                 };

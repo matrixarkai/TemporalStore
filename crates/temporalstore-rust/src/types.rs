@@ -1970,6 +1970,35 @@ pub enum Command {
 /// them and is silently dropped on persist -- the struct is populated in memory and the value
 /// is gone by the time it reaches a page, with no error anywhere. 20 is clear of every field
 /// number the three messages already use.
+/// A node's vector, without decoding the node.
+///
+/// The traversal scores candidates on this one field. Decoding the whole record to read it
+/// allocates every string and the summary vector as well, for a candidate that usually loses.
+///
+/// Scanning continues past a match on purpose: the full decoder assigns to `vector` on each
+/// vector field it meets, so the last encoding present is the one that wins. Stopping at the
+/// first would disagree with it on any record carrying more than one.
+pub(crate) fn decode_context_node_vector(bytes: &[u8]) -> Option<Vec<f32>> {
+    let mut cursor = 0;
+    let mut found: Option<Vec<f32>> = None;
+    while cursor < bytes.len() {
+        let tag = decode_varint(bytes, &mut cursor)?;
+        match (tag >> 3, tag & 0x7) {
+            (CONTEXT_VECTOR_FIELD, 2) => {
+                found = Some(unpack_f32_vector(decode_bytes_ref(bytes, &mut cursor)?));
+            }
+            (CONTEXT_VECTOR_INT8_FIELD, 2) => {
+                found = Some(unpack_i8_vector(decode_bytes_ref(bytes, &mut cursor)?));
+            }
+            (CONTEXT_VECTOR_SCALED_FIELD, 2) => {
+                found = Some(unpack_scaled_vector(decode_bytes_ref(bytes, &mut cursor)?));
+            }
+            (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+        }
+    }
+    found
+}
+
 const CONTEXT_VECTOR_FIELD: u64 = 20;
 // Which model produced the inline vector, and when. Both travelled with the separate
 // embedding record; an owner carrying a vector without them cannot say whether the vector
@@ -2650,6 +2679,54 @@ mod tests {
                 None => std::env::remove_var("TS_VECTOR_INT8"),
             }
         }
+    }
+
+    /// Reading only the vector must give what reading everything gives.
+    ///
+    /// Checked across the encodings a record can actually carry, because the partial decoder
+    /// skips fields by wire type and a mistake there returns a plausible-looking vector rather
+    /// than an error. Compared against the full decoder on the same bytes -- the thing it is
+    /// standing in for -- rather than against the input vector, which would not catch a decoder
+    /// that agreed with itself.
+    #[test]
+    fn vector_only_decode_agrees_with_the_full_decode() {
+        let vector: Vec<f32> = (0..48).map(|i| (i as f32 / 48.0) - 0.5).collect();
+
+        for (label, var, value) in [
+            ("f32", "TS_VECTOR_SCALED", "0"),
+            ("scaled", "TS_VECTOR_SCALED", "1"),
+            ("int8", "TS_VECTOR_INT8", "1"),
+        ] {
+            // SAFETY: single-threaded test process.
+            unsafe { std::env::set_var(var, value) };
+            let node = int8_node(7, vector.clone());
+            let bytes = node.encode_context_proto_value();
+            unsafe { std::env::remove_var(var) };
+
+            let full = ContextNode::decode_context_proto_value(&bytes)
+                .unwrap_or_else(|| panic!("{label}: the full decode must succeed"));
+            let partial = decode_context_node_vector(&bytes)
+                .unwrap_or_else(|| panic!("{label}: the vector-only decode must find a vector"));
+
+            assert!(!full.vector.is_empty(), "{label}: the record must carry a vector");
+            assert_eq!(
+                partial, full.vector,
+                "{label}: reading only the vector disagreed with reading everything"
+            );
+        }
+    }
+
+    /// A record with no vector reports none, rather than an empty one that scores as a match.
+    #[test]
+    fn vector_only_decode_reports_absence() {
+        let node = int8_node(9, Vec::new());
+        let bytes = node.encode_context_proto_value();
+        let full = ContextNode::decode_context_proto_value(&bytes).expect("decodes");
+        assert!(full.vector.is_empty(), "the record carries no vector");
+        assert!(
+            decode_context_node_vector(&bytes).map_or(true, |v| v.is_empty()),
+            "a record with no vector must not yield one"
+        );
     }
 
     fn int8_node(node_hash: u64, vector: Vec<f32>) -> ContextNode {
