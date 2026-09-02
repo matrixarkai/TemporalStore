@@ -167,22 +167,21 @@ impl ProxyService {
     /// `/execute` (`shard_id_for_key`). The tenant hash string is the routing
     /// key so every request for a tenant lands on one shard.
     pub(super) fn context_shard_id(&self, tenant_hash: u64) -> ShardId {
-        let options = self.options();
+        let first = self.with_options(|options| options.context_first_shard_id);
         shard_id_for_key(
             &tenant_hash.to_string(),
-            options.context_first_shard_id,
+            first,
             self.effective_context_shard_count(),
-            options.context_first_shard_id,
+            first,
         )
     }
 
     fn context_http_options(&self) -> HttpRequestOptions {
-        let options = self.options();
-        HttpRequestOptions {
+        self.with_options(|options| HttpRequestOptions {
             connect_timeout_ms: options.connect_timeout_ms.max(1_000),
             io_timeout_ms: options.context_io_timeout_ms,
             max_retries: options.max_retries,
-        }
+        })
     }
 
     /// Resolve the datanode that owns `shard_id` through the client's route cache, or
