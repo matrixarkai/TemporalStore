@@ -30,7 +30,7 @@ bash integrations/install-matrixark-plugins.sh --agent both --matrixark-home "$(
 ### Claude Code
 
 ```
-/plugin marketplace add bjmeetsfo/TemporalStore
+/plugin marketplace add matrixarkai/TemporalStore
 /plugin install matrixark-memory@temporalstore
 ```
 Set `matrixark_home` to your checkout path when enabling (or `export MATRIXARK_HOME=...`).

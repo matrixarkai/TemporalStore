@@ -26,7 +26,7 @@ git clone https://github.com/matrixarkai/TemporalStore
 ## Install (marketplace)
 
 ```
-/plugin marketplace add bjmeetsfo/TemporalStore
+/plugin marketplace add matrixarkai/TemporalStore
 /plugin install matrixark-memory@temporalstore
 ```
 

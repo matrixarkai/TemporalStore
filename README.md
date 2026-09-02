@@ -92,7 +92,7 @@ turn, plus recall/remember tools.
 ### Claude Code (marketplace plugin)
 
 ```text
-/plugin marketplace add bjmeetsfo/TemporalStore
+/plugin marketplace add matrixarkai/TemporalStore
 /plugin install matrixark-memory@temporalstore
 ```
 
