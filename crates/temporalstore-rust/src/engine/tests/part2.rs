@@ -4660,3 +4660,124 @@ fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
     assert_eq!(after, vec![30, 40, 50]);
 }
 
+
+
+/// What does the default control-state write cost as the counter grows?
+///
+/// `persist_control_state_page` serialises the WHOLE counter series to JSON and appends it as a
+/// page, once per increment -- so a counter holding n points re-writes all n on the n+1th. The
+/// function already carries the escape (`async_storage && control_coalesce_persist`), but `flag()`
+/// resolves an absent flag to false, so the whole-series rewrite is the default.
+///
+/// The coalesced mode's crash-safety is settled by
+/// `control_state_coalesced_write_survives_restart_via_wal_replay`. This measures the price of the
+/// default instead. Both arms run in the same test against separate engines: comparing arms across
+/// runs on a shared box compares load as much as code.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_control_state_increment_costs_as_the_counter_grows -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_one_control_state_increment_costs_as_the_counter_grows() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    // One arm: build a counter of `points`, then measure ONE more increment onto it.
+    let arm = |points: usize, coalesce: bool| -> (u64, u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let mut config = Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        };
+        if coalesce {
+            config
+                .extend_config
+                .insert("control_coalesce_persist".to_string(), "on".to_string());
+        }
+        assert!(engine.set_config(SetConfigRequest { shard_id: 1, config }).ok);
+
+        for index in 0..points {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateIncrement {
+                    key: "hits".to_string(),
+                    timestamp_ms: 1_000 + index as u64,
+                    amount: 1,
+                },
+            });
+            assert!(out.status.ok, "build {index}: {:?}", out.status);
+        }
+
+        let writes_before = engine.block_store().stats().writes;
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateIncrement {
+                key: "hits".to_string(),
+                timestamp_ms: 500_000 + points as u64,
+                amount: 1,
+            },
+        });
+        let counts = probe.stop();
+        assert!(out.status.ok, "{:?}", out.status);
+        let pages = engine.block_store().stats().writes - writes_before;
+
+        // The counter must actually hold what was put in it, or the cost above is the cost of
+        // doing nothing. Every increment was 1, and there are points + 1 of them.
+        let total = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateQuery {
+                    key: "hits".to_string(),
+                    start_ms: 0,
+                    end_ms: u64::MAX,
+                    aggregator: "sum".to_string(),
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected Integer, got {other:?}"),
+        };
+        assert_eq!(
+            total,
+            points as i64 + 1,
+            "the counter must hold every increment, or this measures the cost of doing nothing"
+        );
+
+        (counts.allocs as u64, counts.alloc_bytes as u64, pages as u64)
+    };
+
+    println!(
+        "
+  counter   DEFAULT allocs   bytes   pages     COALESCED allocs   bytes   pages
+"
+    );
+
+    for points in [64_usize, 256, 1024] {
+        let (d_allocs, d_bytes, d_pages) = arm(points, false);
+        let (c_allocs, c_bytes, c_pages) = arm(points, true);
+        println!(
+            "  {points:>7}   {d_allocs:>14}   {d_bytes:>5}   {d_pages:>5}     {c_allocs:>16}   {c_bytes:>5}   {c_pages:>5}"
+        );
+    }
+
+    println!(
+        "
+  DEFAULT rising with the counter => every increment re-writes the whole series.
+  COALESCED flat                  => the escape works, and the WAL carries durability.
+"
+    );
+}
