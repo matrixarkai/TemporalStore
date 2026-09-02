@@ -4907,6 +4907,190 @@ fn the_page_index_still_writes_string_keys() {
     );
 }
 
+/// After deletes, the lookup matches the one a full rebuild produces.
+///
+/// The delete path used to call `rebuild_object_page_lookup`, so it was correct by construction
+/// and O(shard). It now removes the deleted object's own entries instead, which is only correct
+/// if the result is identical -- and a lookup that quietly disagrees with the page index does not
+/// fail loudly, it makes reads miss. So this compares against the rebuild rather than against a
+/// hand-written expectation.
+#[test]
+fn deleting_leaves_the_lookup_a_rebuild_would_have_built() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A mix of kinds and components, so the object's refs are not all in one shape.
+    for i in 0..40 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: format!("s{i:03}"), value: vec![b'v'; 48] },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("h{i:03}"),
+                field: format!("f{i}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+    // Delete some of each, including one that never existed.
+    for i in (0..40).step_by(3) {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete { key: format!("s{i:03}") },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete { key: format!("h{i:03}") },
+        });
+    }
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonDelete { key: "never-existed".to_string() },
+    });
+
+    let mut shards = engine.shards.write().expect("shards lock poisoned");
+    let shard = shards.get_mut(&1).expect("shard 1 loaded");
+
+    let incremental: Vec<(String, String, Vec<(u32, u64)>)> = shard
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(model, object, refs)| {
+            let mut flat: Vec<(u32, u64)> = refs
+                .by_component
+                .iter()
+                .flat_map(|component| component.refs.as_slice())
+                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .collect();
+            flat.sort();
+            (model.to_string(), object.to_string(), flat)
+        })
+        .collect();
+    let counter_before = shard.bucket_index.object_component_page_refs;
+
+    shard.bucket_index.rebuild_object_page_lookup();
+
+    let rebuilt: Vec<(String, String, Vec<(u32, u64)>)> = shard
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(model, object, refs)| {
+            let mut flat: Vec<(u32, u64)> = refs
+                .by_component
+                .iter()
+                .flat_map(|component| component.refs.as_slice())
+                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .collect();
+            flat.sort();
+            (model.to_string(), object.to_string(), flat)
+        })
+        .collect();
+
+    assert!(
+        !rebuilt.is_empty(),
+        "the surviving objects must still be in the lookup, or nothing was compared"
+    );
+    assert_eq!(
+        incremental, rebuilt,
+        "removing the deleted object must leave what a rebuild builds"
+    );
+    // The total is a cache: `None` means "not established", which is a legal state the rebuild
+    // resolves. What must never happen is an established total that disagrees with the refs it
+    // counts, so that -- not equality with a freshly rebuilt one -- is what is asserted.
+    if let Some(total) = counter_before {
+        let actual: usize = rebuilt
+            .iter()
+            .map(|(_model, _object, refs)| refs.len())
+            .sum();
+        assert_eq!(
+            total, actual,
+            "the maintained ref total must match the refs actually held"
+        );
+    }
+}
+
+/// One delete costs the same whether the store holds 200 keys or 3,200.
+///
+/// It did not. Deleting an object rebuilt the object-to-page lookup for the entire shard, which
+/// clears it, clones every page in every bucket into a vector and re-inserts them -- so a delete
+/// allocated in proportion to the whole store, and deleting a store cost the square of its size.
+/// Measured over 400 deletes: 610 allocations each at 200 resident keys and 4,053 at 3,200.
+///
+/// Counted rather than timed because the count is the cost, and compared as a ratio across store
+/// sizes rather than against a fixed number, since what matters is that it stopped scaling.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn does_delete_scale_with_the_store() {
+    let cost_at = |resident: usize| -> (f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..resident {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("resident{i:06}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        // Keys to delete, beyond the resident set.
+        for i in 0..400 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("victim{i:04}"),
+                    value: vec![b'v'; 64],
+                },
+            });
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..400 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::CommonDelete {
+                    key: format!("victim{i:04}"),
+                },
+            });
+        }
+        let c = probe.stop();
+        (c.allocs as f64 / 400.0, c.alloc_bytes as f64 / 400.0)
+    };
+
+    let (small, small_bytes) = cost_at(200);
+    let (large, large_bytes) = cost_at(3200);
+    println!("delete at 200: {small:.1} allocs / {small_bytes:.0} B, at 3200: {large:.1} / {large_bytes:.0} B");
+
+    // A ratio test passes trivially if neither side did anything.
+    assert!(small > 1.0, "the probe must observe deletes: {small}");
+
+    // Sixteen times the store. Rebuilding put this at 6.6x; the establishing rebuild that still
+    // happens once per shard leaves a little slope, which 400 deletes amortise to nearly nothing.
+    let growth = large / small;
+    assert!(
+        growth < 1.5,
+        "a delete cost {small:.1} allocations at 200 resident keys and {large:.1} at 3,200          ({growth:.1}x) -- it is scaling with the store again"
+    );
+    let byte_growth = large_bytes / small_bytes;
+    assert!(
+        byte_growth < 1.6,
+        "a delete allocated {small_bytes:.0} bytes at 200 keys and {large_bytes:.0} at 3,200          ({byte_growth:.1}x)"
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
