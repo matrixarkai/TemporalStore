@@ -26,6 +26,84 @@ pub enum IndexLogError {
     /// would otherwise be lost, resurrecting the removed point or dangling its page ref).
     #[error("index-log record integrity error: {0}")]
     Corruption(String),
+    /// A binary-container record could not be decoded: an unknown codec id (written by a
+    /// newer binary) or a malformed payload. Distinct from `Corruption` because the framing
+    /// envelope already passed -- the bytes arrived intact and this build cannot read them.
+    #[error("index-log record encoding error: {0}")]
+    Encoding(String),
+}
+
+/// Marks an index-log payload as a binary container rather than JSON.
+///
+/// A reader never has to be told which it is holding: a JSON record starts with `{`, a
+/// container with this magic. That is the same discriminator the served-index container
+/// uses, and it is what lets one log file hold both shapes while a deployment rolls.
+pub(crate) const INDEX_LOG_CONTAINER_MAGIC: &[u8] = b"TSILOG\x01";
+
+/// Payload codec: msgpack, struct-as-map.
+pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
+
+/// `TS_INDEX_LOG_BINARY`: write records as a binary container instead of JSON.
+///
+/// Default **off**, and deliberately so. Reading both shapes is unconditional -- every build
+/// carrying this code accepts a container -- but writing one produces records an EARLIER
+/// binary cannot read, so a rollback would meet durable records it has no decoder for. The
+/// decoder therefore ships first and the writer is flipped on afterwards, once no binary in
+/// the fleet predates it. Turning this on before that holds is the same mistake as enabling
+/// a frame format whose prerequisite had not landed.
+fn index_log_binary_enabled() -> bool {
+    std::env::var("TS_INDEX_LOG_BINARY")
+        .ok()
+        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES" | "on"))
+        .unwrap_or(false)
+}
+
+/// The single place an index-log record becomes payload bytes.
+///
+/// Both append paths go through here so the whole-index record and the delta record cannot
+/// drift into different shapes -- the reader tells them apart by their fields, which only
+/// works while both are encoded the same way.
+fn encode_index_payload<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, IndexLogError> {
+    if index_log_binary_enabled() {
+        // struct-as-MAP, not struct-as-array. The array form is positional, which mis-reads a
+        // struct that skipped an absent optional -- and GC's anchor probe pulls two fields out
+        // of an arbitrary record BY NAME, which positional makes impossible.
+        let mut packed = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        if serde::Serialize::serialize(record, &mut serializer).is_ok() {
+            let mut out =
+                Vec::with_capacity(packed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1);
+            out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
+            out.push(INDEX_LOG_CODEC_MSGPACK);
+            out.extend_from_slice(&packed);
+            return Ok(out);
+        }
+        // An encode failure must not cost the record: fall through to the bytes that always work.
+    }
+    Ok(serde_json::to_vec(record)?)
+}
+
+/// The single place index-log payload bytes become a record, whatever wrote them.
+///
+/// Every decode site goes through here. The previous attempt at a binary served index failed
+/// because its decoders were scattered and could not move together; this file has four decode
+/// sites and they move as one.
+fn decode_index_payload<T: serde::de::DeserializeOwned>(payload: &[u8]) -> Result<T, IndexLogError> {
+    let Some(rest) = payload.strip_prefix(INDEX_LOG_CONTAINER_MAGIC) else {
+        return Ok(serde_json::from_slice(payload)?);
+    };
+    let Some((codec, body)) = rest.split_first() else {
+        return Err(IndexLogError::Encoding(
+            "binary index-log record has no codec byte".to_string(),
+        ));
+    };
+    match *codec {
+        INDEX_LOG_CODEC_MSGPACK => rmp_serde::from_slice(body)
+            .map_err(|error| IndexLogError::Encoding(error.to_string())),
+        other => Err(IndexLogError::Encoding(format!(
+            "unknown index-log payload codec {other}"
+        ))),
+    }
 }
 
 impl From<crate::log_framing::FramingError> for IndexLogError {
@@ -485,7 +563,7 @@ impl LocalIndexLogStore {
         };
         // Frame the record with a length + SHA-256 digest (crate::log_framing) so a later
         // value-preserving bit-flip in this committed line is detected on read.
-        let bytes = crate::log_framing::encode_line(&serde_json::to_vec(&record)?);
+        let bytes = crate::log_framing::encode_line(&encode_index_payload(&record)?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -632,7 +710,7 @@ impl LocalIndexLogStore {
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
         // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
         // committed line is detected on read rather than replayed as truth on recovery.
-        let bytes = crate::log_framing::encode_line(&serde_json::to_vec(&record)?);
+        let bytes = crate::log_framing::encode_line(&encode_index_payload(&record)?);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -680,11 +758,18 @@ impl LocalIndexLogStore {
         let reader = BufReader::new(file);
         let mut records = Vec::new();
         let mut last_sequence = 0_u64;
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        // Read by FRAME, not by line. A record's payload may be binary, and a binary payload
+        // may contain 0x0A -- a reader splitting on newlines would cut such a record in half
+        // and, being `lines()`, would also demand it be valid UTF-8. `read_frame` takes the
+        // length the frame declares instead, and reads text-framed and legacy unframed
+        // records unchanged, so one loop reads every shape the log has ever held. Streaming
+        // rather than reading the file whole keeps memory bounded by the largest record.
+        let mut reader = reader;
+        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+            if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
+            let payload = payload.as_slice();
             // PROPAGATE decode/parse failures instead of silently skipping the line. Silently
             // dropping an unparseable interior delta record and continuing the fold advances
             // the reconstructed anchor past it, so an eviction/removal recorded ONLY in that
@@ -692,8 +777,7 @@ impl LocalIndexLogStore {
             // ref. `decode_line` also verifies the per-record integrity envelope, so a
             // value-preserving bit-flip surfaces here as `Corruption`. Consistent with the
             // scan / last_sequence_at path, which already treats interior corruption as fatal.
-            let payload = crate::log_framing::decode_line(line.as_bytes())?;
-            let record: IndexDeltaRecord = serde_json::from_slice(payload)?;
+            let record: IndexDeltaRecord = decode_index_payload(payload)?;
             // Enforce delta sequence-continuity: sequences are assigned strictly monotonically
             // across ALL appended records (whole-index and delta share one counter), and GC
             // only truncates a leading prefix, so in file order each record's sequence must be
@@ -781,24 +865,27 @@ impl LocalIndexLogStore {
         let mut total = 0;
         let mut truncated = false;
         let mut records = Vec::new();
-        loop {
-            let mut line = Vec::new();
-            let read = reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                break;
-            }
-            let next_offset = offset.saturating_add(read as u64);
+
+        // Walk by RECORD, not by newline. What this returns is each record's raw framed
+        // bytes -- the caller ships them onward untouched -- so the walk has to agree with
+        // the writer about where a record ends. A newline scan decides that from a delimiter
+        // a binary payload may itself contain, and would hand the caller half a record that
+        // still looks like a whole one. The write-ahead log walks its own records with this
+        // same reader, for this same reason.
+        while let Some(raw) = crate::log_framing::read_raw_record(&mut reader)? {
+            let read = raw.len() as u64;
+            let next_offset = offset.saturating_add(read);
             if next_offset > end_offset {
                 break;
             }
-            if total + read as u64 > max_bytes {
+            if total + read > max_bytes {
                 // Out of budget with the window not yet walked: there is more to read.
                 truncated = true;
                 break;
             }
-            records.push((offset, line));
+            records.push((offset, raw));
             offset = next_offset;
-            total += read as u64;
+            total += read;
         }
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
@@ -844,9 +931,10 @@ impl LocalIndexLogStore {
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
         let mut retained = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        // By frame, not by line: see the fold path above.
+        let mut reader = reader;
+        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+            if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
             records_before += 1;
@@ -854,8 +942,7 @@ impl LocalIndexLogStore {
             // silently re-encoded as a whole-index record (which would drop its items/meta).
             // Decode verifies the integrity envelope; the retained raw payload is re-framed on
             // write-out below.
-            let payload = crate::log_framing::decode_line(line.as_bytes())?;
-            let record: IndexLogRecord = serde_json::from_slice(payload)?;
+            let record: IndexLogRecord = decode_index_payload(&payload)?;
             if record.sequence < retain_from_sequence {
                 removable_records_before_budget = removable_records_before_budget.saturating_add(1);
             }
@@ -866,7 +953,7 @@ impl LocalIndexLogStore {
                 // record also parses as IndexLogRecord (its delta fields are dropped), so
                 // re-encoding the parsed struct would silently destroy retained delta items on
                 // a GC round. Re-frame the untouched payload on write-out below.
-                retained.push(payload.to_vec());
+                retained.push(payload);
             } else {
                 removed_this_round = removed_this_round.saturating_add(1);
             }
@@ -953,19 +1040,19 @@ impl LocalIndexLogStore {
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
         let mut retained = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
+        // By frame, not by line: see the fold path above.
+        let mut reader = reader;
+        while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader)? {
+            if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
                 continue;
             }
             records_before += 1;
             // Decode verifies the integrity envelope; the retained raw payload is re-framed on
             // write-out below, so a retained delta record keeps its exact on-disk bytes.
-            let payload = crate::log_framing::decode_line(line.as_bytes())?;
-            let probe: AnchorProbe = serde_json::from_slice(payload)?;
+            let probe: AnchorProbe = decode_index_payload(&payload)?;
             let reflected = probe.applied_wal_sequence.unwrap_or(0) <= wal_anchor;
             if probe.sequence >= meta_sequence || !reflected {
-                retained.push(payload.to_vec());
+                retained.push(payload);
             }
         }
 
@@ -1030,37 +1117,40 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError
     let file = OpenOptions::new().read(true).write(true).open(&path)?;
     let mut reader = BufReader::new(file.try_clone()?);
     let mut last = 0;
-    let mut offset = 0_u64;
     let mut good_offset = 0_u64;
     loop {
-        let mut line = Vec::new();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
+        // By FRAME, not by newline. This function truncates: it trims the file back to the
+        // last whole record. A newline scan decides where records end by looking for a
+        // delimiter, which a binary payload may legitimately contain -- so it would find an
+        // end that is not one, call the remainder torn, and set_len durable records away.
+        // `read_frame` takes the length the record declares, and still reads text-framed and
+        // legacy unframed records, so what counts as "whole" no longer depends on the payload
+        // encoding. Mirrors wal.rs::last_wal_sequence_at.
+        match crate::log_framing::read_frame(&mut reader) {
+            // A complete record. Whitespace-only filler advances the good offset without
+            // being parsed, exactly as the newline scan did.
+            Ok(Some((consumed, payload))) => {
+                good_offset = good_offset.saturating_add(consumed as u64);
+                if payload.iter().all(|byte| byte.is_ascii_whitespace()) {
+                    continue;
+                }
+                // A COMPLETE record that fails to parse is committed corruption, not a torn
+                // tail. Treating it as end-of-log would set_len the file down to the last
+                // parseable record -- silently dropping durable index-log records after the
+                // corrupt one AND rewinding the sequence counter (the next append reuses a
+                // sequence that durable dump manifests already cite). Surface it as an error;
+                // index-log replay returns DataLoss on a hole or digest mismatch, never trims.
+                let record = decode_index_payload::<IndexLogRecord>(&payload)?;
+                last = last.max(record.sequence);
+            }
+            // Nothing further, or fewer bytes than the record declares: a crash mid-append.
+            // That tail is what `good_offset` trims below.
+            Ok(None) => break,
+            // A whole record whose digest does not match its payload: committed damage.
+            Err(err) => return Err(IndexLogError::Corruption(err.0)),
         }
-        offset = offset.saturating_add(read as u64);
-        if !line.ends_with(b"\n") {
-            break;
-        }
-        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
-            good_offset = offset;
-            continue;
-        }
-        // A fully newline-terminated line that fails to parse is COMMITTED corruption, not a
-        // torn tail (index-log records are single-line JSON with no embedded newline). Treating
-        // it as end-of-log would set_len the file down to the last parseable record -- silently
-        // dropping durable index-log records after the corrupt one AND rewinding the sequence
-        // counter (the next append reuses a sequence that dump manifests already reference).
-        // Surface it as an error (index-log replay returns DataLoss on a hole / digest
-        // mismatch, never trims). A genuine torn tail lacks the trailing '\n' (break above).
-        // `decode_line` verifies the per-record length + SHA-256 envelope (crate::log_framing)
-        // and accepts legacy unframed records unchanged. Mirrors wal.rs::last_wal_sequence_at.
-        let payload = crate::log_framing::decode_line(&line)?;
-        let record = serde_json::from_slice::<IndexLogRecord>(payload)?;
-        last = last.max(record.sequence);
-        good_offset = offset;
     }
-    if good_offset < offset || good_offset < file.metadata()?.len() {
+    if good_offset < file.metadata()?.len() {
         file.set_len(good_offset)?;
         crate::durability_metrics::record_barrier("engine_index_log_seq_probe");
         file.sync_all()?;
@@ -1848,4 +1938,403 @@ mod tests {
         let records = store.read_delta_records(4, 0).unwrap();
         assert_eq!(records.len() as u64, appends, "every append must survive");
     }
+
+    /// What a binary index-log record would actually save, measured on the record the log
+    /// really writes rather than a hand-made one.
+    ///
+    /// The line below is copied verbatim from a 100k-record ingest, so the shape, the string
+    /// lengths and the integer magnitudes are the ones that occur -- parsing it here also
+    /// keeps the current code honest about loading what it wrote. Name shortening has already
+    /// taken this record from 962.8 to 365.5 bytes across four rounds and is asymptotic: what
+    /// is left is the JSON itself -- quotes, braces, commas, and integers spelled in decimal.
+    #[test]
+    fn what_is_left_to_gain_from_a_binary_index_record() {
+        // One page item plus a key-state blob: the common delta the ingest path appends.
+        let line = r#"{"s":1,"q":1,"items":[{"k":"page","rb":545210715,
+            "pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string",
+            "oi":122110326161599232,"pi":0,
+            "a":{"ps":0,"o":0,"l":126,"pi":0,"oi":122110326161599232,
+                 "rs":545210715,"g":0,"b":0},
+            "sz":126,"il":false,"d":false}],
+            "aw":1,"u":true,
+            "ks":[{"key":"string:m:0","kind":"string","pages":[0],"version":1}]}"#;
+        let record: IndexDeltaRecord =
+            serde_json::from_str(line).expect("the record the log writes must still load");
+
+        let json = serde_json::to_vec(&record).unwrap();
+        let today = crate::log_framing::encode_line(&json);
+
+        // struct-as-MAP, matching the served-index container: the array form is positional,
+        // and positional mis-reads a struct that skipped an absent optional -- and the GC's
+        // anchor probe deserializes two fields by NAME out of an arbitrary record, which a
+        // positional encoding makes impossible.
+        let mut packed = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(&record, &mut serializer).unwrap();
+        let framed_packed = crate::log_framing::encode_line(&packed);
+
+        let zstd_json = zstd::stream::encode_all(json.as_slice(), 3).unwrap();
+        let zstd_packed = zstd::stream::encode_all(packed.as_slice(), 3).unwrap();
+
+        println!("  framing            {:>5} B", today.len() - json.len());
+        println!("  json (today)       {:>5} B framed {:>5} B", json.len(), today.len());
+        println!(
+            "  msgpack named      {:>5} B framed {:>5} B  ({:.2}x)",
+            packed.len(),
+            framed_packed.len(),
+            today.len() as f64 / framed_packed.len() as f64
+        );
+        println!("  zstd(json)         {:>5} B", zstd_json.len());
+        println!("  zstd(msgpack)      {:>5} B", zstd_packed.len());
+
+        // The round trip has to be exact, or the saving is not a saving.
+        let back: IndexDeltaRecord = rmp_serde::from_slice(&packed).unwrap();
+        assert_eq!(back, record, "msgpack must round-trip the record exactly");
+
+        // And the GC's probe must still find its two fields by name in the binary form,
+        // because GC retains raw payloads and never re-encodes them.
+        #[derive(serde::Deserialize)]
+        struct AnchorProbe {
+            #[serde(rename = "q", alias = "sequence")]
+            sequence: u64,
+            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            applied_wal_sequence: Option<u64>,
+        }
+        let probe: AnchorProbe = rmp_serde::from_slice(&packed).unwrap();
+        assert_eq!(probe.sequence, record.sequence);
+        assert_eq!(probe.applied_wal_sequence, record.applied_wal_sequence);
+
+        // Pin the direction, not a brittle exact size: binary must actually be smaller, and
+        // the assertion is paired with a nonzero check so it cannot pass by measuring nothing.
+        assert!(packed.len() > 0, "measured nothing");
+        assert!(
+            packed.len() < json.len(),
+            "binary {} B is not smaller than json {} B",
+            packed.len(),
+            json.len()
+        );
+    }
+
+
+    /// A record written either way must come back identical. This is the whole contract: the
+    /// container changes the bytes on disk and nothing else.
+    #[test]
+    fn a_binary_record_and_a_json_record_decode_to_the_same_thing() {
+        let record = IndexDeltaRecord {
+            shard_id: 7,
+            sequence: 42,
+            items: vec![page_item(3, "k", false)],
+            meta: None,
+            applied_wal_sequence: Some(9),
+            upsert: true,
+            key_states: vec![serde_json::json!({"key": "k", "pages": [1, 2]})],
+        };
+
+        let as_json = serde_json::to_vec(&record).unwrap();
+        let mut packed = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(&record, &mut ser).unwrap();
+        let mut as_binary = INDEX_LOG_CONTAINER_MAGIC.to_vec();
+        as_binary.push(INDEX_LOG_CODEC_MSGPACK);
+        as_binary.extend_from_slice(&packed);
+
+        let from_json: IndexDeltaRecord = decode_index_payload(&as_json).unwrap();
+        let from_binary: IndexDeltaRecord = decode_index_payload(&as_binary).unwrap();
+        assert_eq!(from_json, record);
+        assert_eq!(from_binary, record, "the binary form must round-trip exactly");
+        assert_eq!(from_binary, from_json);
+    }
+
+    /// The decoder sniffs, so one file may hold both shapes -- which is exactly what a log
+    /// written across a rollout looks like. Nothing records which shape a line is; if the
+    /// sniff were wrong this is where it would show.
+    #[test]
+    fn one_log_file_can_hold_both_shapes() {
+        let json_record = IndexDeltaRecord {
+            shard_id: 1,
+            sequence: 1,
+            items: vec![page_item(1, "a", false)],
+            meta: None,
+            applied_wal_sequence: Some(1),
+            upsert: false,
+            key_states: Vec::new(),
+        };
+        let binary_record = IndexDeltaRecord {
+            sequence: 2,
+            items: vec![page_item(2, "b", false)],
+            ..json_record.clone()
+        };
+
+        let json_payload = serde_json::to_vec(&json_record).unwrap();
+        let mut packed = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(&binary_record, &mut ser).unwrap();
+        let mut binary_payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
+        binary_payload.push(INDEX_LOG_CODEC_MSGPACK);
+        binary_payload.extend_from_slice(&packed);
+
+        // Framing is independent of the payload shape, so both frame and verify the same way.
+        for payload in [&json_payload, &binary_payload] {
+            let framed = crate::log_framing::encode_line(payload);
+            let back = crate::log_framing::decode_line(&framed[..framed.len() - 1]).unwrap();
+            assert_eq!(back, payload.as_slice(), "framing must not care about the shape");
+        }
+
+        let a: IndexDeltaRecord = decode_index_payload(&json_payload).unwrap();
+        let b: IndexDeltaRecord = decode_index_payload(&binary_payload).unwrap();
+        assert_eq!(a.sequence, 1);
+        assert_eq!(b.sequence, 2);
+        assert_eq!(b.items[0].page_ref_key, "b");
+    }
+
+    /// GC retains the raw payload of a record it keeps, never re-encoding it -- a delta record
+    /// also parses as an IndexLogRecord, so re-serializing would drop its items. A binary
+    /// payload has to survive that path byte-for-byte too.
+    #[test]
+    fn the_anchor_probe_reads_a_binary_record_without_decoding_the_rest() {
+        #[derive(serde::Deserialize)]
+        struct AnchorProbe {
+            #[serde(rename = "q", alias = "sequence")]
+            sequence: u64,
+            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
+            applied_wal_sequence: Option<u64>,
+        }
+
+        let record = IndexDeltaRecord {
+            shard_id: 4,
+            sequence: 77,
+            items: vec![page_item(5, "c", false)],
+            meta: None,
+            applied_wal_sequence: Some(31),
+            upsert: true,
+            key_states: Vec::new(),
+        };
+        let mut packed = Vec::new();
+        let mut ser = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(&record, &mut ser).unwrap();
+        let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
+        payload.push(INDEX_LOG_CODEC_MSGPACK);
+        payload.extend_from_slice(&packed);
+
+        let probe: AnchorProbe = decode_index_payload(&payload).unwrap();
+        assert_eq!(probe.sequence, 77);
+        assert_eq!(probe.applied_wal_sequence, Some(31));
+
+        // And the bytes GC would retain are the bytes it was given.
+        let retained = payload.clone();
+        let again: AnchorProbe = decode_index_payload(&retained).unwrap();
+        assert_eq!(again.sequence, 77);
+        assert_eq!(retained, payload, "GC must retain the payload untouched");
+    }
+
+    /// A container written by a newer binary is refused with a clear error rather than
+    /// mis-parsed. Silently mis-reading a durable record is the failure worth preventing.
+    #[test]
+    fn an_unknown_payload_codec_is_refused_not_guessed_at() {
+        let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
+        payload.push(99);
+        payload.extend_from_slice(b"whatever a later format puts here");
+        let result: Result<IndexDeltaRecord, _> = decode_index_payload(&payload);
+        match result {
+            Err(IndexLogError::Encoding(message)) => {
+                assert!(message.contains("99"), "the error should name the codec: {message}")
+            }
+            other => panic!("an unknown codec must be refused, got {other:?}"),
+        }
+
+        // A truncated container (magic, no codec byte) is refused the same way.
+        let result: Result<IndexDeltaRecord, _> = decode_index_payload(INDEX_LOG_CONTAINER_MAGIC);
+        assert!(matches!(result, Err(IndexLogError::Encoding(_))));
+    }
+
+    /// The writer is off by default, and that is the point: reading both shapes ships first so
+    /// no binary meets a record it cannot decode. If this flips to on, the rollback story has
+    /// to have been settled first.
+    #[test]
+    fn the_binary_writer_is_off_until_every_reader_can_decode_it() {
+        assert!(
+            !index_log_binary_enabled(),
+            "TS_INDEX_LOG_BINARY must default off while a rollback could meet a container"
+        );
+        let record = IndexDeltaRecord {
+            shard_id: 1,
+            sequence: 1,
+            items: Vec::new(),
+            meta: None,
+            applied_wal_sequence: None,
+            upsert: false,
+            key_states: Vec::new(),
+        };
+        let encoded = encode_index_payload(&record).unwrap();
+        assert_eq!(encoded.first(), Some(&b'{'), "the default write is still JSON");
+        assert!(!encoded.starts_with(INDEX_LOG_CONTAINER_MAGIC));
+    }
+
+
+    /// Append a binary-framed record carrying a msgpack payload, after whatever is already in
+    /// the log. Returns the path so a test can measure the file.
+    #[cfg(test)]
+    fn append_binary_framed(dir: &std::path::Path, record: &IndexDeltaRecord) -> PathBuf {
+        let mut packed = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        serde::Serialize::serialize(record, &mut serializer).unwrap();
+        let mut payload = INDEX_LOG_CONTAINER_MAGIC.to_vec();
+        payload.push(INDEX_LOG_CODEC_MSGPACK);
+        payload.extend_from_slice(&packed);
+
+        let path = index_log_path(dir, record.shard_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        file.write_all(&crate::log_framing::encode_frame(&payload)).unwrap();
+        file.sync_all().unwrap();
+        path
+    }
+
+    /// A record carrying a raw newline inside its payload must still be read whole.
+    ///
+    /// Sequence 10 encodes as the single byte 0x0A -- a literal newline sitting in the middle
+    /// of a record. A reader that finds record boundaries by scanning for '\n' cuts this
+    /// record in half; one that takes the length the frame declares does not. This is the
+    /// whole reason every read path had to stop splitting on newlines BEFORE a binary payload
+    /// could ever be written: with the old reader this record is unreadable, and the sequence
+    /// tail scan would have trimmed it off the end of the file as a torn append.
+    #[test]
+    fn a_record_whose_payload_holds_a_newline_byte_is_read_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(3, vec![page_item(1, "first", false)], Vec::new(), Some(1), None, true, true)
+            .unwrap();
+        drop(store);
+
+        let record = IndexDeltaRecord {
+            shard_id: 3,
+            sequence: 10,
+            items: vec![page_item(2, "second", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: Vec::new(),
+        };
+        let path = append_binary_framed(dir.path(), &record);
+        let on_disk = std::fs::read(&path).unwrap();
+        assert!(
+            on_disk.windows(1).any(|b| b == b"\n"),
+            "the log must contain a newline byte for this test to mean anything"
+        );
+
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let records = reopened.read_delta_records(3, 0).unwrap();
+        assert_eq!(records.len(), 2, "both records must survive: {records:?}");
+        assert_eq!(records[1].sequence, 10);
+        assert_eq!(records[1].items[0].page_ref_key, "second");
+        assert_eq!(records[1].applied_wal_sequence, Some(2));
+    }
+
+    /// The tail scan trims the file back to its last whole record. Given a record it cannot
+    /// find the end of, it would trim a durable record away -- so this pins that it does not.
+    #[test]
+    fn the_tail_scan_does_not_trim_a_whole_binary_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(4, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .unwrap();
+        drop(store);
+
+        let record = IndexDeltaRecord {
+            shard_id: 4,
+            sequence: 10,
+            items: vec![page_item(2, "b", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: Vec::new(),
+        };
+        let path = append_binary_framed(dir.path(), &record);
+        let before = std::fs::metadata(&path).unwrap().len();
+
+        // `scan` drives last_sequence_at, which is the path that truncates.
+        let reopened = LocalIndexLogStore::new(dir.path());
+        reopened.scan(4, 0, u64::MAX, u64::MAX).unwrap();
+
+        let after = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(after, before, "the tail scan trimmed a whole record");
+        assert_eq!(reopened.read_delta_records(4, 0).unwrap().len(), 2);
+    }
+
+    /// `scan_bounded` hands the caller each record's raw framed bytes to ship onward, so its
+    /// idea of where a record ends has to be the writer's. A newline slice would hand on half
+    /// a record, and the half would still look like a plausible one.
+    #[test]
+    fn scan_bounded_hands_back_whole_records_not_newline_slices() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(6, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .unwrap();
+        drop(store);
+
+        let record = IndexDeltaRecord {
+            shard_id: 6,
+            sequence: 10,
+            items: vec![page_item(2, "b", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: Vec::new(),
+        };
+        append_binary_framed(dir.path(), &record);
+
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let (rows, truncated) = reopened.scan_bounded(6, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated, "the whole log fits in the budget");
+        assert_eq!(rows.len(), 2, "one row per record");
+
+        // The binary row must be a complete frame on its own, and decode to what was written.
+        let (consumed, payload) = crate::log_framing::next_frame(&rows[1].1)
+            .unwrap()
+            .expect("the row must be a whole frame");
+        assert_eq!(consumed, rows[1].1.len(), "the row is exactly one record");
+        let back: IndexDeltaRecord = decode_index_payload(payload).unwrap();
+        assert_eq!(back, record);
+    }
+
+    /// A torn binary tail -- a crash partway through an append -- is trimmed, not reported as
+    /// corruption. The distinction matters: trimming committed damage loses durable records,
+    /// and erroring on a torn tail wedges a node that merely crashed at the wrong moment.
+    #[test]
+    fn a_torn_binary_tail_is_trimmed_rather_than_called_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(8, vec![page_item(1, "a", false)], Vec::new(), Some(1), None, true, true)
+            .unwrap();
+        drop(store);
+
+        let record = IndexDeltaRecord {
+            shard_id: 8,
+            sequence: 10,
+            items: vec![page_item(2, "b", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: Vec::new(),
+        };
+        let path = append_binary_framed(dir.path(), &record);
+        let whole = std::fs::metadata(&path).unwrap().len();
+
+        // Chop the last few bytes: the frame now declares more than the file holds.
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(whole - 3).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let records = reopened
+            .read_delta_records(8, 0)
+            .expect("a torn tail is not corruption");
+        assert_eq!(records.len(), 1, "the torn record is dropped, the whole one kept");
+        assert_eq!(records[0].items[0].page_ref_key, "a");
+    }
+
 }

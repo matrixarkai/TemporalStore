@@ -849,3 +849,81 @@ mod tests {
         );
     }
 }
+
+/// Read one record's bytes AS FRAMED, or `None` at the end of the records.
+///
+/// The readers below all used `read_until(b'\n')`, which is only correct while every record is
+/// newline-terminated -- and that requirement is the reason binary payloads have to be
+/// byte-stuffed before they are written. This reads a binary frame by the length it declares
+/// and a text record up to its newline, so one loop walks a file holding both.
+///
+/// Returns the bytes exactly as they sit on disk, because callers hand them to
+/// `decode_wal_line`, and the byte count is what `scan` turns into a record's log id.
+pub(crate) fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+    let first = {
+        let buffered = reader.fill_buf()?;
+        buffered.first().copied()
+    };
+    let Some(first) = first else {
+        return Ok(None);
+    };
+    // A zero where a record should start is preallocated room, never a record: reservations are
+    // written as zeros and always trail the records. No frame can begin with one -- the text
+    // frames begin with `#`, a legacy record with `{`, a binary frame with its marker.
+    if first == 0 {
+        return Ok(None);
+    }
+    if first != FRAME_MAGIC_V3 {
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok(None);
+        }
+        // A delimited record that never reached its delimiter was an interrupted append.
+        // Returning it as a record hands the caller a fragment, which fails to decode and gets
+        // reported as corruption -- refusing a load that should simply cut the fragment away.
+        // `next_frame` applies exactly this rule to exactly these bytes; this agrees with it.
+        if !line.ends_with(b"\n") {
+            return Ok(None);
+        }
+        return Ok(Some(line));
+    }
+    // Binary: marker, varint length, four checksum bytes, then exactly that many payload bytes.
+    let mut raw = Vec::with_capacity(64);
+    let mut marker = [0u8; 1];
+    if reader.read_exact(&mut marker).is_err() {
+        return Ok(None);
+    }
+    raw.push(marker[0]);
+    let mut declared: u64 = 0;
+    let mut shift = 0u32;
+    loop {
+        let mut byte = [0u8; 1];
+        if reader.read_exact(&mut byte).is_err() {
+            return Ok(None); // torn mid-varint
+        }
+        raw.push(byte[0]);
+        declared |= u64::from(byte[0] & 0x7f) << shift;
+        if byte[0] & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift > 63 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "record length is not a varint",
+            ));
+        }
+    }
+    let mut digest = [0u8; 4];
+    if reader.read_exact(&mut digest).is_err() {
+        return Ok(None);
+    }
+    raw.extend_from_slice(&digest);
+    let mut payload = vec![0u8; declared as usize];
+    if reader.read_exact(&mut payload).is_err() {
+        return Ok(None); // fewer bytes than declared: a torn tail
+    }
+    raw.extend_from_slice(&payload);
+    Ok(Some(raw))
+}
