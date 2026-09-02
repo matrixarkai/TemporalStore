@@ -247,8 +247,9 @@ impl RaftCluster {
                 inner.persist_configured_wal()?;
                 return Err(RaftError::AppendBackpressure {
                     node_id: target_id,
-                    inflight_entries: 0,
-                    inflight_bytes: entry_bytes,
+                    inflight_entries: current_inflight_entries,
+                    inflight_bytes: current_inflight_bytes,
+                    entry_bytes,
                     entry_limit,
                     byte_limit,
                 });
