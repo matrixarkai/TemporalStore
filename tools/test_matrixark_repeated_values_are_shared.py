@@ -120,12 +120,36 @@ class RepeatedValuesAreShared(unittest.TestCase):
         self.assertEqual("hot", out[0]["storage_route"]["tier"],
                          "the cache copy followed the caller's mutation")
 
-    def test_a_value_holding_a_container_is_left_alone(self):
-        """It cannot be keyed by its contents cheaply, so it keeps its own object."""
-        nested = {"record_type": "context_event", "envelope": {"tags": ["a"], "tier": "hot"}}
+    def test_a_container_inside_a_value_is_reached(self):
+        """Sharing descends: the repetitive containers sit one level down, not at the top.
+
+        `embedding_meta.node_path` was 100 rows holding ONE value and `envelope.storage_route`
+        20 rows holding one, so stopping at the top of a record left 5.8% of the cache behind.
+        """
         table = {}
-        out = adapter_module.share_repeated_values([nested], table)
-        self.assertIs(out[0], nested, "a record with nothing shareable should pass straight through")
+        first = {"record_type": "context_event", "envelope": {"tags": ["a"], "tier": "hot"}}
+        second = {"record_type": "context_event", "envelope": {"tags": ["a"], "tier": "warm"}}
+        out = adapter_module.share_repeated_values([first, second], table)
+        self.assertIs(out[0]["envelope"]["tags"], out[1]["envelope"]["tags"],
+                      "the same nested list in two records is two objects")
+        self.assertEqual(["a"], list(out[0]["envelope"]["tags"]))
+
+    def test_reaching_inside_does_not_write_to_the_callers_record(self):
+        """Only the path down to a replacement is rebuilt; the caller keeps its own objects."""
+        mine = {"record_type": "context_event", "envelope": {"tags": ["a"], "tier": "hot"}}
+        out = adapter_module.share_repeated_values([mine], {})
+        self.assertIsNot(out[0]["envelope"], mine["envelope"],
+                         "the caller's nested dict was rebuilt in place")
+        mine["envelope"]["tags"].append("b")      # must not raise
+        self.assertEqual(["a"], list(out[0]["envelope"]["tags"]),
+                         "the caller's change reached the shared copy")
+
+    def test_nothing_shareable_means_no_copy(self):
+        """A record with no container at all is passed straight through."""
+        table = {}
+        plain = {"record_type": "context_event", "node_hash": 7, "state": "done"}
+        out = adapter_module.share_repeated_values([plain], table)
+        self.assertIs(out[0], plain)
         self.assertEqual({}, table)
 
     def test_the_table_stops_growing(self):
@@ -181,13 +205,25 @@ class RepeatedListsAreShared(unittest.TestCase):
         mine.append("b")
         self.assertEqual(["a"], list(shared), "the copy reached the shared list")
 
-    def test_a_list_holding_a_container_is_left_alone(self):
+    def test_a_container_inside_a_list_is_reached(self):
+        """A list of dicts is rebuilt around whatever inside it is worth sharing."""
         table = {}
-        record = {"record_type": "context_node", "tags": [{"k": "v"}]}
-        out = adapter_module.share_repeated_values([record], table)
-        self.assertIs(out[0], record)
-        self.assertEqual({}, table)
+        first = {"record_type": "context_node", "tags": [{"k": "v"}]}
+        second = {"record_type": "context_node", "tags": [{"k": "v"}]}
+        out = adapter_module.share_repeated_values([first, second], table)
+        self.assertIs(out[0]["tags"][0], out[1]["tags"][0],
+                      "the same dict inside two lists is two objects")
+        self.assertEqual([{"k": "v"}], [dict(d) for d in out[0]["tags"]])
 
+    def test_nesting_deeper_than_the_cap_is_left_alone(self):
+        """A record that nests deeply must not cost a walk of its whole shape on every append."""
+        deep = {"k": ["leaf"]}
+        for _ in range(adapter_module._SHARE_MAX_DEPTH + 2):
+            deep = {"down": deep}
+        table = {}
+        adapter_module.share_repeated_values([{"record_type": "x", "top": deep}], table)
+        self.assertEqual([], [k for k in table if k[0] == "k"],
+                         "the walk went past the depth cap")
     def test_a_shared_list_survives_json_and_copying(self):
         """It is serialised on the way out and deep-copied by callers that need their own."""
         import copy as copy_module

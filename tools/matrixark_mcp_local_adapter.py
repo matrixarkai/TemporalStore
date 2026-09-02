@@ -760,6 +760,79 @@ _SHAREABLE_SCALARS = frozenset({str, int, float, bool, type(None)})
 _SHARED_VALUE_TABLE: dict = {}
 
 
+#: How far to look inside a record for a container worth sharing. The repetitive ones sit one
+#: level down -- `embedding_meta.node_path` was 100 rows holding ONE value, `envelope.storage_route`
+#: 20 rows holding one -- and nothing useful was found below three. A cap keeps a record that nests
+#: deeply from costing a walk proportional to its whole shape on every append.
+_SHARE_MAX_DEPTH = 3
+
+
+def _lookup_shared(field, key, value, table, shared_type):
+    """Return the one object held for this value, creating it if the table has room."""
+    entry = table.get(key)
+    if entry is not None:
+        return entry
+    if len(table) >= _SHARED_VALUE_TABLE_LIMIT:
+        return value
+    entry = table[key] = shared_type(value)
+    return entry
+
+
+def _shared_container(field, value, table, depth):
+    """Share ``value`` if it is a flat container, else rebuild it around whatever inside it is.
+
+    Returns the SAME object when nothing changed, which is what lets a caller skip the copy: a
+    record whose values are all unshareable is passed through untouched rather than duplicated.
+
+    A container is only rebuilt on the path down to a replacement, so the caller's own nested
+    dicts are never written to -- the copy stops as soon as there is nothing below worth sharing.
+    """
+    kind = type(value)          # exact type: an already-shared value is a subclass and is skipped
+    if kind is dict:
+        if not value:
+            return value
+        if all(type(v) in _SHAREABLE_SCALARS for v in value.values()):
+            try:
+                return _lookup_shared(field, (field, tuple(sorted(value.items()))), value,
+                                      table, _SharedInternedValue)
+            except TypeError:
+                return value    # keys of mixed type do not sort
+        if depth >= _SHARE_MAX_DEPTH:
+            return value
+        replacements = None
+        for sub_field, sub_value in value.items():
+            if type(sub_value) not in (dict, list):
+                continue
+            shared = _shared_container(str(sub_field), sub_value, table, depth + 1)
+            if shared is not sub_value:
+                if replacements is None:
+                    replacements = {}
+                replacements[sub_field] = shared
+        if replacements is None:
+            return value
+        rebuilt = dict(value)
+        rebuilt.update(replacements)
+        return rebuilt
+    if kind is list:
+        if not value:
+            return value
+        if all(type(v) in _SHAREABLE_SCALARS for v in value):
+            return _lookup_shared(field, (field, tuple(value)), value, table, _SharedInternedList)
+        if depth >= _SHARE_MAX_DEPTH:
+            return value
+        rebuilt = None
+        for index, item in enumerate(value):
+            if type(item) not in (dict, list):
+                continue
+            shared = _shared_container(field, item, table, depth + 1)
+            if shared is not item:
+                if rebuilt is None:
+                    rebuilt = list(value)
+                rebuilt[index] = shared
+        return value if rebuilt is None else rebuilt
+    return value
+
+
 def share_repeated_values(records: list[Json], table: dict) -> list[Json]:
     """Give every record that carries the same flat dict value the SAME object.
 
@@ -792,30 +865,13 @@ def share_repeated_values(records: list[Json], table: dict) -> list[Json]:
             continue
         replacements = None
         for field, value in record.items():
-            kind = type(value)
-            if kind is dict:
-                if not value or not all(type(v) in _SHAREABLE_SCALARS for v in value.values()):
-                    continue      # empty, or holds a container -- cannot be keyed cheaply
-                try:
-                    key = (field, tuple(sorted(value.items())))
-                except TypeError:
-                    continue      # keys of mixed type do not sort
-            elif kind is list:
-                if not value or not all(type(v) in _SHAREABLE_SCALARS for v in value):
-                    continue
-                key = (field, tuple(value))
-            else:
+            if type(value) not in (dict, list):
                 continue
-            shared = table.get(key)
-            if shared is None:
-                if len(table) >= _SHARED_VALUE_TABLE_LIMIT:
-                    continue
-                shared = (_SharedInternedValue(value) if kind is dict
-                          else _SharedInternedList(value))
-                table[key] = shared
-            if replacements is None:
-                replacements = {}
-            replacements[field] = shared
+            shared = _shared_container(field, value, table, 0)
+            if shared is not value:
+                if replacements is None:
+                    replacements = {}
+                replacements[field] = shared
         if replacements is None:
             shared_out.append(record)
         else:
