@@ -187,13 +187,29 @@ def _profile_provenance_overflow(previous_profile, *, refs_all, events_all):
 class _LocalAdapterIngestMixin:
     _MEMORY_UPSERT_ARG_KEYS = ("expires_at", "ttl_seconds", "retention_cutoff_ts", "identity_key", "truth_class")
 
+    def _coalesced_ingest_impl(self, args: Json, *, hook: Json | None = None) -> Json:
+        """Run the ingest, then write the appends it buffered as one batch.
+
+        The flush lives here rather than at the end of ``_ingest_impl`` because that returns from
+        many places; this catches every one. A failed ingest ABORTS instead of flushing, so a
+        half-written record set never reaches the log and a pooled thread cannot inherit an active
+        buffer.
+        """
+        try:
+            result = self._ingest_impl(args, hook=hook)
+        except BaseException:
+            self._abort_append_coalescing()
+            raise
+        self._flush_append_coalescing()
+        return result
+
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         """Public ingest entry. Fast-path is byte-identical to the core ingest; when any
         PurchaseMemory field (expires_at / ttl_seconds / retention_cutoff_ts / identity_key /
         truth_class) is present it layers per-record TTL stamping, a keyed-upsert truth-rank guard,
         and a scope-level retention-cutoff marker on top of the unchanged core ingest."""
         if not any(key in args for key in self._MEMORY_UPSERT_ARG_KEYS):
-            return self._ingest_impl(args, hook=hook)
+            return self._coalesced_ingest_impl(args, hook=hook)
         envelope = normalize_envelope(args, default_kind="message")
         # Pin ingestion_time_ms so the core re-normalization inside _ingest_impl is deterministic
         # (event_id_hash derives from it); the caller's other fields already round-trip through args.
@@ -201,7 +217,7 @@ class _LocalAdapterIngestMixin:
         identity_key = str(envelope.get("identity_key") or "")
         self._push_ingest_stamp(envelope)
         try:
-            result = self._ingest_impl(args, hook=hook)
+            result = self._coalesced_ingest_impl(args, hook=hook)
         finally:
             self._pop_ingest_stamp()
         if isinstance(result, dict):
@@ -543,6 +559,12 @@ class _LocalAdapterIngestMixin:
             prior_context=prior_context,
         )
         self._observe_model_latency("extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
+        # Every remaining write in this ingest is one append of one record -- 45 of them for a
+        # skill, each opening the log and running the whole batch pipeline for a single row, which
+        # measured 53% of ingest wall. They are one consecutive run with no read after this point,
+        # which is exactly the condition _begin_append_coalescing documents, so the run becomes one
+        # append_many. ingest() owns the flush and the abort.
+        self._begin_append_coalescing()
         text = text_from_messages(envelope["messages"])
         # A resource/skill document already lives in its chunk records and behind its raw URI, so
         # carrying it a THIRD time as event text is pure duplication -- measured at 1.05x source
