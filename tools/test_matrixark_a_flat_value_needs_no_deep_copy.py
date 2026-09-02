@@ -25,8 +25,14 @@ import matrixark_mcp_local_adapter as adapter_module
 
 
 class AFlatValueNeedsNoDeepCopy(unittest.TestCase):
-    def test_records_sharing_a_bundle_do_not_share_an_object(self):
-        """The reason the copy exists. Downstream mutates these in place."""
+    def test_one_record_cannot_change_another_records_value(self):
+        """The guarantee this file was written for, now kept a different way.
+
+        It used to be kept by copying: every record got its own object, so a mutation could only
+        reach one. Records now share one object per interned value -- 22% less real memory -- and
+        the same guarantee is kept by refusing the mutation instead. Either way, what must remain
+        true is that touching one record's routing cannot change another's.
+        """
         bundle = {"storage_route": {"tier": "hot", "replicas": 3}}
         token = "tok"
         records = [
@@ -38,15 +44,17 @@ class AFlatValueNeedsNoDeepCopy(unittest.TestCase):
              adapter_module.INTERN_BUNDLE_TOKEN_KEY: token},
         ]
         first, second = adapter_module.expand_interned_records(records)
-        self.assertIsNot(first["storage_route"], second["storage_route"],
-                         "two records share one object; a mutation in either would reach both")
-        self.assertIsNot(first["storage_route"], bundle["storage_route"],
-                         "a record aliases the sidecar bundle itself")
-        first["storage_route"]["tier"] = "cold"
+        with self.assertRaises(TypeError):
+            first["storage_route"]["tier"] = "cold"
         self.assertEqual("hot", second["storage_route"]["tier"],
-                         "mutating one record's routing changed another record's")
+                         "another record's routing changed")
         self.assertEqual("hot", bundle["storage_route"]["tier"],
-                         "mutating a record changed the shared bundle")
+                         "the shared bundle changed")
+
+        # and the way a caller is told to do it does not reach anyone else
+        mine = dict(first["storage_route"])
+        mine["tier"] = "cold"
+        self.assertEqual("hot", second["storage_route"]["tier"])
 
     def test_a_nested_value_is_still_copied_all_the_way_down(self):
         """The cheaper copy must not reach a value it cannot safely handle."""
