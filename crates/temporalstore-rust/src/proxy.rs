@@ -2865,6 +2865,26 @@ mod tests {
         );
     }
 
+    /// Measured on the public tree, best of three per point, 16 cores:
+    ///
+    ///     threads   ns/op (aggregate)   throughput vs one thread   of linear
+    ///     1              163                   1.00x                 100%
+    ///     2              164                   0.99x                  50%
+    ///     4              130                   1.25x                  31%
+    ///     8              107                   1.52x                  19%
+    ///     16             112                   1.46x                   9%
+    ///
+    /// Two threads move no more traffic than one, which is the shape a shared exclusive
+    /// operation makes -- not a shared read. `table_for_request` takes the client (an RwLock read
+    /// and an Arc clone), clones the namespace and table name, builds a `{namespace}/{table}` key
+    /// with `format!`, takes the table-cache read lock, clones the options, and clones the client
+    /// Arc a second time into the returned table. Two clone/drop pairs land on the same refcount,
+    /// so every thread writes the same cache line on every request.
+    ///
+    /// Left as it is: making this scale means not materialising a `TemporalStoreTable` per
+    /// request, which is a change to what the client hands out rather than a local fix. The
+    /// numbers are here so the shape is known before someone tries a smaller one -- the
+    /// allocations are the visible cost and are not the reason it stops scaling.
     /// What looking up an already-cached table costs, per request, under contention.
     ///
     /// The proxy resolves a table on every table-scoped request. On the cache-HIT path --
