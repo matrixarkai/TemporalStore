@@ -4952,3 +4952,389 @@ fn what_encoding_a_record_costs() {
         encoded.len(),
     );
 }
+
+
+/// Where do a node write's 188 allocations go?
+///
+/// `update` is the largest per-call cost of any api and it is flat in the corpus, so the cost is the
+/// call, not the store. Encoding is 9 of it, the value append 8, the post-write maintenance 27 --
+/// about a quarter. "The write path" is not an answer for the rest.
+///
+/// The read path is the precedent: a decode was assumed to cost its fields and turned out to be
+/// sixteen eighteenths two vectors grown from empty.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_node_write_spends_its_allocations_on -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_a_node_write_spends_its_allocations_on() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 7411;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..40_usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("WRITE-{index:06}"),
+                    title: format!("write {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "grow {index}: {:?}", report.status);
+    }
+
+    let node = |hash: u64, vector_width: usize, text: &str| crate::types::ContextNode {
+        node_hash: hash,
+        parent_hash: 0,
+        kind: 1,
+        canonical_name: format!("session/write-{hash}"),
+        l0: text.to_string(),
+        status: 0,
+        last_event_time_ms: 1_781_700_000_000,
+        l1_ref: String::new(),
+        raw_metadata_ref: String::new(),
+        vector: (0..vector_width).map(|index| index as f32 / 1024.0).collect(),
+        embedding_model_hash: 7,
+        embedding_updated_at_ms: 1,
+        summary_vector: (0..vector_width).map(|index| index as f32 / 512.0).collect(),
+        summary_vector_valid_from_ms: 1_781_700_000_000,
+        summary_vector_model_hash: 7,
+    };
+
+    let long_text = "the text an extract produces, long enough that its length is not noise";
+    let mut tag = 9_000_000_u64;
+    let mut measure = |width: usize, text: &str| {
+        tag += 2;
+        // Warm on one key, measure another: the first write of a shape touches one-off structures.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: TENANT, node: node(tag, width, text) },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: TENANT,
+                node: node(tag + 1, width, text),
+            },
+        });
+        let counts = probe.stop();
+        assert!(out.status.ok, "{:?}", out.status);
+        (counts.allocs, counts.alloc_bytes)
+    };
+
+    let (full, full_bytes) = measure(384, long_text);
+    let (no_vectors, _) = measure(0, long_text);
+    let (no_text, _) = measure(384, "");
+    let (neither, _) = measure(0, "");
+
+    println!(
+        "
+  a whole node write: {full} allocations, {full_bytes} bytes
+
+  written without            allocs   saved
+    both vectors            {no_vectors:>8}   {:>5}
+    the text                {no_text:>8}   {:>5}
+    both                    {neither:>8}   {:>5}
+
+  what stays with everything stripped is the write path itself: the append, the staging, the
+  index maintenance and the log record. That floor is the thing worth attacking, and it is
+  {neither} of {full}.
+",
+        full.saturating_sub(no_vectors),
+        full.saturating_sub(no_text),
+        full.saturating_sub(neither),
+    );
+
+    // A second write of the SAME record: the change-detecting paths should short-circuit, so what
+    // remains is what a write costs even when it changes nothing.
+    let repeat = node(tag + 1, 384, long_text);
+    let warm = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode { tenant_hash: TENANT, node: repeat.clone() },
+    });
+    assert!(warm.status.ok, "{:?}", warm.status);
+    let probe = crate::alloc_probe::Probe::start();
+    let out = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertNode { tenant_hash: TENANT, node: repeat },
+    });
+    let unchanged = probe.stop().allocs;
+    assert!(out.status.ok, "{:?}", out.status);
+    println!(
+        "  rewriting a record byte-for-byte identical: {unchanged} allocations
+  -- if that is close to {full}, the write does the same work whether or not anything changed.
+"
+    );
+}
+
+
+/// What does capturing a write's key states cost?
+///
+/// A node write is 155 allocations and 144 of them are machinery: stripping both vectors and the
+/// text saves 11. `capture_key_states` runs on every write and builds a `serde_json::json!` object
+/// per touched key -- fourteen field lookups, each with a string key and a serialised value.
+///
+/// JSON on a write path is worth a number rather than a suspicion.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_capturing_a_writes_key_states_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_capturing_a_writes_key_states_costs() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 7717;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let mut node_hash = 0_u64;
+    for index in 0..40_usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("KS-{index:06}"),
+                    title: format!("ks {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "grow {index}: {:?}", report.status);
+        if let Some(first) = report.node_hashes.first() {
+            node_hash = *first;
+        }
+    }
+    assert!(node_hash != 0, "the ingest reported no node, so there is no real key to capture");
+
+    let key = super::context::context_node_key(TENANT, node_hash);
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    let keys = vec![key.clone()];
+    // Warm: the first call of a shape touches one-off structures.
+    let warm = super::capture_key_states(shard, &keys);
+    assert_eq!(warm.len(), 1, "one key in, one blob out");
+    assert!(
+        warm[0].get("context_nodes").is_some() || warm[0].get("key").is_some(),
+        "the blob must actually describe the key, or this measures an empty object"
+    );
+
+    let probe = crate::alloc_probe::Probe::start();
+    let states = super::capture_key_states(shard, &keys);
+    let counts = probe.stop();
+    assert_eq!(states.len(), 1);
+
+    // What it costs to then serialise that blob, which is what the delta record does with it.
+    let probe = crate::alloc_probe::Probe::start();
+    let encoded = serde_json::to_vec(&states).expect("the blob serialises");
+    let encode_counts = probe.stop();
+
+    println!(
+        "
+  capturing one key's state: {} allocations, {} bytes
+  serialising it:            {} allocations, {} bytes produced
+
+  a whole node write is 155 allocations, of which 144 are machinery rather than the record.
+  this piece is {} of that machinery, and it runs once per touched key on every write.
+",
+        counts.allocs,
+        counts.alloc_bytes,
+        encode_counts.allocs,
+        encoded.len(),
+        counts.allocs,
+    );
+}
+
+
+/// Does a cached node carry its own vector twice?
+///
+/// A decoded node at 384 dimensions is 3,264 bytes and 3,072 of those are its two vectors. The wire
+/// already knows the two are often identical -- the writer marks it instead of encoding the vector
+/// twice -- and the decoder resolves the marker with a clone.
+///
+/// A clone is cheap to make and expensive to keep: these records live in the shard's maps for as
+/// long as they are cached. If the two are equal in practice, every cached node holds 1.5 KB of
+/// duplicate at 384 dimensions for nothing.
+///
+///   cargo test -p temporalstore-rust --lib does_a_cached_node_carry_its_vector_twice -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_a_cached_node_carry_its_vector_twice() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 8123;
+    const CORPUS: usize = 60;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let mut hashes = Vec::new();
+    for index in 0..CORPUS {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("DUP-{index:06}"),
+                    title: format!("dup {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(40)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "ingest {index}: {:?}", report.status);
+        hashes.extend(report.node_hashes.iter().copied());
+    }
+    assert!(!hashes.is_empty(), "the ingest reported no nodes, so there is nothing to inspect");
+
+    let mut both_present = 0_usize;
+    let mut identical = 0_usize;
+    let mut summary_empty = 0_usize;
+    let mut vector_bytes = 0_usize;
+    let mut duplicate_bytes = 0_usize;
+    let mut width = 0_usize;
+
+    for hash in &hashes {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNode { tenant_hash: TENANT, node_hash: *hash },
+        });
+        let CommandResponse::ContextNode { node: Some(node), .. } = out.response else {
+            continue;
+        };
+        width = width.max(node.vector.len());
+        vector_bytes += node.vector.len() * 4 + node.summary_vector.len() * 4;
+        if node.summary_vector.is_empty() {
+            summary_empty += 1;
+        } else {
+            both_present += 1;
+            if node.summary_vector == node.vector {
+                identical += 1;
+                duplicate_bytes += node.summary_vector.len() * 4;
+            }
+        }
+    }
+
+    let inspected = hashes.len();
+    println!(
+        "
+  nodes inspected                     {inspected}
+  vector width                        {width}
+  carrying both vectors               {both_present}
+    of which byte-identical           {identical}
+  carrying no summary vector          {summary_empty}
+
+  vector bytes held across the corpus {vector_bytes}
+  of which duplicate                  {duplicate_bytes}
+"
+    );
+    if identical > 0 {
+        println!(
+            "  {identical} of {both_present} nodes hold the same vector twice: {} bytes each, {duplicate_bytes} across
+  this corpus. These records live in the shard's maps while cached, so that is resident memory
+  spent on a copy the wire deliberately did not make.
+",
+            duplicate_bytes / identical.max(1),
+        );
+    } else {
+        println!(
+            "  no node holds a duplicate: the two vectors differ wherever both are present, so the
+  clone the decoder makes is carrying a distinct value and there is nothing to reclaim here.
+"
+        );
+    }
+}
