@@ -531,6 +531,14 @@ def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
         materialized.extend(materialize_serving_records(record))
     return compact_context_index_postings(materialized)
 
+#: Resolved once. The import used to run on EVERY call, and compaction calls this for every
+#: record it holds -- 285,928 times over 200 skill ingests. Resolving it per call made the
+#: delegating wrapper 3.3x the cost of the function it delegates to, which was 18% of the
+#: dominant compaction stage. Which of the two module paths wins is unchanged; it is just
+#: decided once instead of a quarter of a million times.
+_SERVING_LATEST_CONTEXT_STATE_KEY = None
+
+
 def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
     """Return the logical latest-state key for versionless context records.
 
@@ -541,15 +549,19 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
     their append-log rows and every status transition accumulated, which is the cost that
     identity exists to remove.
     """
-    try:
-        from tools.matrixark_mcp_serving_records import (
-            latest_context_state_key as _serving_latest_context_state_key,
-        )
-    except ImportError:  # Direct script execution from tools/.
-        from matrixark_mcp_serving_records import (
-            latest_context_state_key as _serving_latest_context_state_key,
-        )
-    return _serving_latest_context_state_key(record)
+    global _SERVING_LATEST_CONTEXT_STATE_KEY
+    delegate = _SERVING_LATEST_CONTEXT_STATE_KEY
+    if delegate is None:
+        try:
+            from tools.matrixark_mcp_serving_records import (
+                latest_context_state_key as delegate,
+            )
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_mcp_serving_records import (
+                latest_context_state_key as delegate,
+            )
+        _SERVING_LATEST_CONTEXT_STATE_KEY = delegate
+    return delegate(record)
 
 
 def compact_latest_context_state_records(records: list[Json]) -> list[Json]:

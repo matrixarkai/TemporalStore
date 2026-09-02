@@ -16,6 +16,7 @@ try:
     from tools.matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
     from tools.matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from tools.matrixark_mcp_serving_records import (
+        latest_context_state_key,
         compact_latest_context_state_records,
         context_debug_records_enabled,
         materialize_serving_record_batch,
@@ -25,6 +26,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import _mcp_debug_log  # import * skips underscore names
     from matrixark_mcp_core import compact_context_pack_for_serving_flat as compact_context_pack_for_serving
     from matrixark_mcp_serving_records import (
+        latest_context_state_key,
         compact_latest_context_state_records,
         context_debug_records_enabled,
         materialize_serving_record_batch,
@@ -641,6 +643,51 @@ def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, 
     return dict_records + encoded_records
 
 
+class _SharedInternedList(list):
+    """The list counterpart of :class:`_SharedInternedValue`.
+
+    Sharing a list was left out when values were first shared, on the grounds that making it safe
+    meant turning it into a tuple, which changes the type a caller sees and breaks anything doing
+    ``.append``. A list subclass keeps the type -- ``isinstance``, indexing, iteration and JSON
+    encoding all behave -- and refuses the mutation instead, so a path that does append fails
+    where it happens rather than silently rewriting records it never looked at.
+
+    Worth 11.8% of a cold read, of which `node_path` alone is 3.6%: 147 objects for THREE distinct
+    values.
+    """
+
+    __slots__ = ()
+
+    def _refuse(self, *_args, **_kwargs):
+        raise TypeError(
+            "this list is shared by every record carrying it, so changing it here would change "
+            "them all -- copy it first: list(record['node_path'])")
+
+    __setitem__ = _refuse
+    __delitem__ = _refuse
+    append = _refuse
+    extend = _refuse
+    insert = _refuse
+    pop = _refuse
+    remove = _refuse
+    clear = _refuse
+    sort = _refuse
+    reverse = _refuse
+    __iadd__ = _refuse
+    __imul__ = _refuse
+
+    def __copy__(self):
+        return list(self)
+
+    def __deepcopy__(self, memo):
+        copied = [_copy.deepcopy(v, memo) for v in self]
+        memo[id(self)] = copied
+        return copied
+
+    def __reduce__(self):
+        return (list, (list(self),))
+
+
 class _SharedInternedValue(dict):
     """One object, shared by every record that carries this interned value.
 
@@ -699,6 +746,201 @@ def _shared_interned_value(value: Any) -> Any:
     if type(value) is dict:
         return _SharedInternedValue(value)
     return _copy_interned_value(value)
+
+
+#: Beyond this many distinct values a field is not repetitive enough to be worth a table entry,
+#: and the table itself would start to cost more than it saves. Measured on an attachment corpus
+#: the busiest field held 11 distinct values, so this is a runaway guard, not a working limit.
+SHARE_REPEATED_VALUES = bool_env("MATRIXARK_SHARE_REPEATED_VALUES", True)
+_SHARED_VALUE_TABLE_LIMIT = 4096
+#: Only a value whose every entry is one of these can be keyed by its contents.
+_SHAREABLE_SCALARS = frozenset({str, int, float, bool, type(None)})
+#: flat value -> the one object every record carrying it holds. Process-wide, so two adapters
+#: over the same store share as well.
+_SHARED_VALUE_TABLE: dict = {}
+
+
+#: How far to look inside a record for a container worth sharing. The repetitive ones sit one
+#: level down -- `embedding_meta.node_path` was 100 rows holding ONE value, `envelope.storage_route`
+#: 20 rows holding one -- and nothing useful was found below three. A cap keeps a record that nests
+#: deeply from costing a walk proportional to its whole shape on every append.
+_SHARE_MAX_DEPTH = 3
+
+
+def _lookup_shared(field, key, value, table, shared_type):
+    """Return the one object held for this value, creating it if the table has room."""
+    entry = table.get(key)
+    if entry is not None:
+        return entry
+    if len(table) >= _SHARED_VALUE_TABLE_LIMIT:
+        return value
+    entry = table[key] = shared_type(value)
+    return entry
+
+
+def _shared_container(field, value, table, depth):
+    """Share ``value`` if it is a flat container, else rebuild it around whatever inside it is.
+
+    Returns the SAME object when nothing changed, which is what lets a caller skip the copy: a
+    record whose values are all unshareable is passed through untouched rather than duplicated.
+
+    A container is only rebuilt on the path down to a replacement, so the caller's own nested
+    dicts are never written to -- the copy stops as soon as there is nothing below worth sharing.
+    """
+    kind = type(value)          # exact type: an already-shared value is a subclass and is skipped
+    if kind is dict:
+        if not value:
+            return value
+        if all(type(v) in _SHAREABLE_SCALARS for v in value.values()):
+            try:
+                return _lookup_shared(field, (field, tuple(sorted(value.items()))), value,
+                                      table, _SharedInternedValue)
+            except TypeError:
+                return value    # keys of mixed type do not sort
+        if depth >= _SHARE_MAX_DEPTH:
+            return value
+        replacements = None
+        for sub_field, sub_value in value.items():
+            if type(sub_value) not in (dict, list):
+                continue
+            shared = _shared_container(str(sub_field), sub_value, table, depth + 1)
+            if shared is not sub_value:
+                if replacements is None:
+                    replacements = {}
+                replacements[sub_field] = shared
+        if replacements is None:
+            return value
+        rebuilt = dict(value)
+        rebuilt.update(replacements)
+        return rebuilt
+    if kind is list:
+        if not value:
+            return value
+        if all(type(v) in _SHAREABLE_SCALARS for v in value):
+            return _lookup_shared(field, (field, tuple(value)), value, table, _SharedInternedList)
+        if depth >= _SHARE_MAX_DEPTH:
+            return value
+        rebuilt = None
+        for index, item in enumerate(value):
+            if type(item) not in (dict, list):
+                continue
+            shared = _shared_container(field, item, table, depth + 1)
+            if shared is not item:
+                if rebuilt is None:
+                    rebuilt = list(value)
+                rebuilt[index] = shared
+        return value if rebuilt is None else rebuilt
+    return value
+
+
+def share_repeated_values(records: list[Json], table: dict) -> list[Json]:
+    """Give every record that carries the same flat dict value the SAME object.
+
+    ``expand_interned_records`` already does this, but only for records it decodes off disk. A
+    record that reaches the cache from the append path was built field by field in memory and
+    never passed through it, so it holds a private dict for a value the corpus repeats endlessly.
+    Measured over 914 cached records from 60 attachments: ``storage_options`` was held as 673
+    separate objects for **11 distinct values** and ``storage_route`` as 793 objects for **2**.
+    Sharing one object per distinct value reclaims **49.9% of the cache** -- 3,877 B/record down
+    to 1,944 B/record.
+
+    Each record is shallow-copied first, so the shared value is only ever reachable through the
+    cache. The record the caller passed in keeps its own private dicts and stays writable; only
+    the copy the cache holds points at a value that refuses mutation.
+
+    Only flat dicts qualify: a value containing a container cannot be keyed cheaply, and a list
+    would have to change type to be safe to share (see :func:`_shared_interned_value`).
+
+    ``vector`` looks like the next candidate -- 363 objects for 145 values, 8.5% of the cache --
+    but that is an artefact of a corpus built from repeated text. Real ingest embeds distinct
+    documents, so almost every vector is unique: sharing them would hash every vector on the
+    append path and collapse nothing. It is left out deliberately, not overlooked.
+    """
+    if not SHARE_REPEATED_VALUES:
+        return records
+    shared_out: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict):
+            shared_out.append(record)
+            continue
+        replacements = None
+        for field, value in record.items():
+            if type(value) not in (dict, list):
+                continue
+            shared = _shared_container(field, value, table, 0)
+            if shared is not value:
+                if replacements is None:
+                    replacements = {}
+                replacements[field] = shared
+        if replacements is None:
+            shared_out.append(record)
+        else:
+            copied = dict(record)
+            copied.update(replacements)
+            shared_out.append(copied)
+    return shared_out
+
+
+import json as _json
+import sys as _sys
+
+
+#: A field whose values keep turning out to be distinct is not worth a table: at scale the
+#: hashes and row names would flood it and crowd out the fields that DO repeat. Each field gets
+#: its own table and is abandoned once it exceeds this many distinct values. Measured on an
+#: attachment corpus the repetitive fields hold 1 to 21 distinct values, and the distinct ones
+#: (row_key, context_event_key) are unique per row, so the two separate cleanly.
+_STRING_FIELD_CARDINALITY_LIMIT = 512
+#: Longer than this and hashing the value to look it up costs more than the copy saves.
+_SHARED_STRING_MAX_LEN = 256
+_SHARED_STRINGS: dict = {}
+_SHARED_STRINGS_ABANDONED: set = set()
+
+
+def _shared_string(field, value):
+    """Return the one copy of ``value`` held for ``field``, or ``value`` if it is not worth it."""
+    if len(value) > _SHARED_STRING_MAX_LEN or field in _SHARED_STRINGS_ABANDONED:
+        return value
+    table = _SHARED_STRINGS.get(field)
+    if table is None:
+        table = _SHARED_STRINGS[field] = {}
+    shared = table.get(value)
+    if shared is not None:
+        return shared
+    if len(table) >= _STRING_FIELD_CARDINALITY_LIMIT:
+        # This field's values are distinct, not repeated. Stop paying to find that out.
+        _SHARED_STRINGS_ABANDONED.add(field)
+        _SHARED_STRINGS.pop(field, None)
+        return value
+    table[value] = value
+    return value
+
+
+def _interned_pairs(pairs):
+    """Build a decoded object with its keys interned.
+
+    The JSON decoder memoises key strings within ONE call, but the log is read a line at a time,
+    so every record gets its own copy of every key it carries. Measured over a cold read of 914
+    records: **148 distinct key names, backed by 16,743 separate string objects** holding 1,009.7
+    KB -- 1,000.3 KB of which is one name repeated. That is close to half the cold cache, spent on
+    148 short strings.
+
+    Interning is free of meaning: the strings compare equal either way, so nothing above this can
+    tell the difference.
+    """
+    out = {}
+    for key, value in pairs:
+        if type(key) is str:
+            key = _sys.intern(key)
+            if type(value) is str and value:
+                value = _shared_string(key, value)
+        out[key] = value
+    return out
+
+
+def loads_with_interned_keys(line: str):
+    """``json.loads`` for one log line, sharing key strings with every other line."""
+    return _json.loads(line, object_pairs_hook=_interned_pairs)
 
 
 def _copy_interned_value(value: Any) -> Any:
@@ -3382,7 +3624,58 @@ def compression_context_index_records(record: Json) -> list[Json]:
     ]
 
 
+# One field name for the identity of a WAL row, on every row.
+#
+# The same concept -- what makes this row supersede an earlier one -- was spelled nine ways
+# across twelve record types: node_hash, child_ref_hash, event_id_hash, summary_hash,
+# ref_hash, entity_hash, dirty_hash, skill_hash, resource_hash, resource_import_task_hash,
+# node_id. Every reader that wanted a row identity had to know all twelve, and a new type
+# meant editing each of them.
+#
+# A row now carries its identity under ROW_KEY_FIELD. The per-type knowledge stays in one
+# function, is applied once at write, and readers use the field.
+ROW_KEY_FIELD = "row_key"
+
+
+def canonical_row_key(record: Json) -> str | None:
+    """The identity of a WAL row as one string, or None when the row has no usable identity.
+
+    A row whose key has an empty part is NOT compacted -- compact_latest_value_records leaves
+    it alone rather than letting an absent hash collide with another absent one. Collapsing the
+    key to a single string would hide that from the guard, so the same test is applied here and
+    such a row simply gets no key.
+    """
+    key = _latest_value_record_key_by_type(record)
+    if key is None:
+        return None
+    if any(part in (None, "") for part in key[1:]):
+        return None
+    try:
+        return json.dumps(list(key), separators=(",", ":"), default=str, sort_keys=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def stamp_row_keys(records: list[Json]) -> list[Json]:
+    """Give every row its identity under the shared field name, once, at write time."""
+    for record in records or ():
+        if not isinstance(record, dict) or ROW_KEY_FIELD in record:
+            continue
+        key = canonical_row_key(record)
+        if key is not None:
+            record[ROW_KEY_FIELD] = key
+    return records
+
+
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
+    """Prefer the row's own key. Rows written before it existed are keyed by type."""
+    stamped = record.get(ROW_KEY_FIELD)
+    if isinstance(stamped, str) and stamped:
+        return (stamped,)
+    return _latest_value_record_key_by_type(record)
+
+
+def _latest_value_record_key_by_type(record: Json) -> tuple[Any, ...] | None:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_node":
         return (record_type, record.get("node_hash"))
@@ -3414,7 +3707,17 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     if record_type == "skill_registry_update":
         return (record_type, record.get("skill_hash"))
     if record_type == "resource_import_task":
-        return (record_type, record.get("resource_import_task_hash"))
+        # Every writer of this row writes `task_hash`; nothing writes
+        # `resource_import_task_hash`, which is what this asked for. So the key was
+        # (record_type, None) for every one of them, and compaction skips a key with an empty
+        # part -- these rows were never superseded and accumulated three per attachment. The old
+        # name is still accepted, for a log that somehow carries it.
+        return (
+            record_type,
+            record.get("task_hash")
+            if record.get("task_hash") is not None
+            else record.get("resource_import_task_hash"),
+        )
     return None
 
 
@@ -4005,6 +4308,24 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # Set when records were appended to the cache without compacting it -- see
         # _compact_read_cache_if_dirty_locked.
         self._read_cache_dirty = False
+        # (record_type, field) -> {value: record}, kept current as records are appended so an
+        # embedding can find its owner without reading the whole set. None until first use.
+        self._embedding_owner_index: dict[tuple[str, str], dict[Any, Json]] | None = None
+        # dirty_hash -> the newest summary-dirty or refresh-audit row, so the outstanding set
+        # can be answered without reading everything. None until first use.
+        self._summary_dirty_index: dict[Any, Json] | None = None
+        # model_ref -> {node_hash}, so 'is this node already embedded' does not read the
+        # store. None until first use; see _existing_node_embedding_refs.
+        self._node_embedding_refs_index: dict[str, set[int]] | None = None
+        # The resolved event-log path, which never changes. Path.resolve walks the path and
+        # stats each component, and this was recomputed at a dozen sites on every append.
+        self._resolved_cache_key: str | None = None
+        self._resolved_paths: dict[Path, str] = {}
+        # The keys the compacted cache already holds, kept current so a write can tell whether
+        # it supersedes anything without scanning. None means unknown -- rebuilt on the next
+        # compaction.
+        self._read_cache_value_keys: set[Any] | None = None
+        self._read_cache_state_keys: set[Any] | None = None
         self._read_cache_size = -1
         self._read_cache_mtime_ns = -1
         self._read_cache_source = "empty"
@@ -4197,7 +4518,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             mtime_ns = int(stat.st_mtime_ns)
             total_size += size
             max_mtime_ns = max(max_mtime_ns, mtime_ns)
-            entries.append({"path": str(path.resolve()), "size": size, "mtime_ns": mtime_ns})
+            # Resolving is a walk over every component; the retained paths do not move, so the
+            # resolved form is remembered per path rather than recomputed on each signature.
+            resolved = self._resolved_paths.get(path)
+            if resolved is None:
+                resolved = str(path.resolve())
+                self._resolved_paths[path] = resolved
+            entries.append({"path": resolved, "size": size, "mtime_ns": mtime_ns})
         if total_size <= 0 and max_mtime_ns < 0:
             return {"total_size": -1, "max_mtime_ns": -1, "paths": []}
         return {"total_size": total_size, "max_mtime_ns": max_mtime_ns, "paths": entries}
@@ -4220,7 +4547,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return None
         if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
             return None
-        if head.get("cache_key") != str(self.event_log.resolve()):
+        if head.get("cache_key") != self._cache_key_str():
             return None
         if head.get("signature") != signature:
             return None
@@ -4234,7 +4561,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if delta_count:
             try:
                 with self._durable_read_cache_delta_path().open("r", encoding="utf-8") as handle:
-                    tail = [json.loads(line) for line in handle if line.strip()]
+                    tail = [loads_with_interned_keys(line) for line in handle if line.strip()]
             except (FileNotFoundError, json.JSONDecodeError, OSError):
                 return None
             if len(tail) != delta_count:
@@ -4253,7 +4580,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
                 head = json.load(handle)
-            if head.get("cache_key") != str(self.event_log.resolve()):
+            if head.get("cache_key") != self._cache_key_str():
                 return ""
             if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
                 return ""
@@ -4267,7 +4594,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
                 head = json.load(handle)
-            if head.get("cache_key") != str(self.event_log.resolve()):
+            if head.get("cache_key") != self._cache_key_str():
                 return (0, 0)
             if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
                 return (0, 0)
@@ -4313,7 +4640,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             epoch is not None
             and appended > 0
             and self._durable_read_cache_state
-            == (str(self.event_log.resolve()), base_count, delta_count, epoch)
+            == (self._cache_key_str(), base_count, delta_count, epoch)
         )
         if not contiguous and appended > 0 and base_count > 0:
             # The list handed over is often the process-wide one, shared by every adapter over this
@@ -4334,7 +4661,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             with tmp.open("w", encoding="utf-8") as handle:
                 json.dump({
                     "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
-                    "cache_key": str(self.event_log.resolve()),
+                    "cache_key": self._cache_key_str(),
                     "signature": signature,
                     "record_count": record_count,
                     "delta_count": deltas,
@@ -4362,7 +4689,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
                 write_head(base_count, delta_count + appended)
                 self._durable_read_cache_state = (
-                    str(self.event_log.resolve()), base_count, delta_count + appended, epoch
+                    self._cache_key_str(), base_count, delta_count + appended, epoch
                 )
                 self._durable_read_cache_last_write_ms = now
                 return
@@ -4376,7 +4703,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         payload = {
             "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
-            "cache_key": str(self.event_log.resolve()),
+            "cache_key": self._cache_key_str(),
             "signature": signature,
             "record_count": len(records),
             "records": records,
@@ -4393,7 +4720,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 pass
             write_head(len(records), 0)
             self._durable_read_cache_state = (
-                str(self.event_log.resolve()), len(records), 0, epoch
+                self._cache_key_str(), len(records), 0, epoch
             )
             self._durable_read_cache_last_write_ms = now
         except OSError:
@@ -4403,9 +4730,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 pass
 
     def _clear_jsonl_read_caches(self) -> None:
-        cache_key = str(self.event_log.resolve())
+        cache_key = self._cache_key_str()
         with self._read_cache_lock:
             self._read_cache_records = None
+            self._read_cache_value_keys = None
+            self._read_cache_state_keys = None
+            self._summary_dirty_index = None
+            self._node_embedding_refs_index = None
             self._read_cache_size = -1
             self._read_cache_mtime_ns = -1
             self._read_cache_source = "empty"
@@ -4524,6 +4855,71 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             except Exception:
                 pass
 
+    #: A batch carrying one of these cannot be applied by appending: a tombstone or cutoff
+    #: removes records that came BEFORE it, a context_index posting is rebuilt and coalesced
+    #: across the whole set, and a pipeline-task or audit row is footprint-bounded across it.
+    _COMPACTION_IS_NOT_LOCAL = frozenset({
+        "context_index",
+        "matrixark_async_pipeline_task",
+        "context_extraction_audit",
+    })
+
+    @staticmethod
+    def _batch_is_local(records: list[Json]) -> bool:
+        """True when nothing in the batch can affect a record already in the cache."""
+        for record in records:
+            if not isinstance(record, dict):
+                return False
+            record_type = str(record.get("record_type") or "")
+            if record_type in MatrixArkLocalAdapter._COMPACTION_IS_NOT_LOCAL:
+                return False
+            if "tombstone" in record_type or "retention_cutoff" in record_type:
+                return False
+        return True
+
+    def _cache_keys_locked(self):
+        """The keys the compacted cache holds, built once and then kept current."""
+        if self._read_cache_value_keys is None or self._read_cache_state_keys is None:
+            records = self._read_cache_records or []
+            self._read_cache_value_keys = {latest_value_record_key(r) for r in records}
+            self._read_cache_state_keys = {latest_context_state_key(r) for r in records}
+            self._read_cache_value_keys.discard(None)
+            self._read_cache_state_keys.discard(None)
+        return self._read_cache_value_keys, self._read_cache_state_keys
+
+    def _note_embedding_owners(self, records: list[Json]) -> None:
+        """Fold newly appended records into whichever owner buckets have been built.
+
+        Only existing buckets are updated: a (type, field) nobody has asked about is built
+        from a read when first needed, and includes these records by then. Later records
+        overwrite earlier ones, which is the newest-wins answer the backwards scan gave.
+        """
+        index = self._embedding_owner_index
+        if not index:
+            return
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            record_type = record.get("record_type")
+            for (indexed_type, field), bucket in index.items():
+                if indexed_type != record_type:
+                    continue
+                value = record.get(field)
+                if value is not None:
+                    bucket[value] = record
+
+    def _cache_key_str(self) -> str:
+        """The resolved event-log path, computed once.
+
+        Path.resolve() walks every component and stats it. This value is the same for the life
+        of the adapter, and it was being recomputed at each of a dozen call sites on every
+        append -- 428 filesystem stats per attachment came through here and the retained-path
+        scan beside it.
+        """
+        if self._resolved_cache_key is None:
+            self._resolved_cache_key = str(self.event_log.resolve())
+        return self._resolved_cache_key
+
     def _compact_read_cache_if_dirty_locked(self) -> None:
         """Compact the cache if records were appended since the last compaction.
 
@@ -4538,7 +4934,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_dirty = False
             return
         before = len(self._read_cache_records)
-        self._read_cache_records = compact_and_apply_tombstones(self._read_cache_records)
+        self._read_cache_records = share_repeated_values(
+            compact_and_apply_tombstones(self._read_cache_records), _SHARED_VALUE_TABLE
+        )
         self._read_cache_dirty = False
         if len(self._read_cache_records) != before:
             self._read_cache_compaction_epoch += 1
@@ -4558,7 +4956,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         """
         if not records:
             return
-        cache_key = str(self.event_log.resolve())
+        cache_key = self._cache_key_str()
         signature = self._jsonl_cache_signature_detail()
         size = int(signature.get("total_size", -1))
         mtime_ns = int(signature.get("max_mtime_ns", -1))
@@ -4577,6 +4975,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # stamp the current signature onto a list missing their records, and a cold
                 # reader would silently lose them. Drop it; the next read re-derives from disk.
                 self._read_cache_records = None
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
+                self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4584,20 +4986,62 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # Extend now, compact when something reads. Compacting here walked the whole cache
                 # on every append, which is what made ingest quadratic in the corpus: 27 records
                 # land per attachment, so 50 attachments took 105 s against 12 s for 20.
-                self._read_cache_records.extend(records)
-                self._read_cache_dirty = True
+                # A batch that supersedes nothing needs no compaction at all: every stage of
+                # the pipeline leaves the existing records exactly as they were, so the cache
+                # is still compact after appending. Measured over an attachment ingest, half
+                # of all cache updates are of that shape. The keys are kept current, so
+                # deciding costs the size of the BATCH, not of the cache.
+                appends_only = False
+                if self._batch_is_local(records):
+                    value_keys, state_keys = self._cache_keys_locked()
+                    new_value = [latest_value_record_key(r) for r in records]
+                    new_state = [latest_context_state_key(r) for r in records]
+                    appends_only = not (
+                        any(k is not None and k in value_keys for k in new_value)
+                        or any(k is not None and k in state_keys for k in new_state)
+                    )
+                    # Extend either way. The sets exist only to answer 'could this batch
+                    # supersede something', and a SUPERSET answers that safely: it can say yes
+                    # when the answer is no, which costs a compaction that was not needed, but
+                    # it can never say no when the answer is yes. Discarding them on a
+                    # colliding batch meant rebuilding from the whole cache on the next one --
+                    # 3.7 million key computations over 250 attachments, 36% of the time.
+                    value_keys.update(k for k in new_value if k is not None)
+                    state_keys.update(k for k in new_state if k is not None)
+                self._read_cache_records.extend(
+                    share_repeated_values(records, _SHARED_VALUE_TABLE)
+                )
+                if not appends_only:
+                    self._read_cache_dirty = True
+                self._note_embedding_owners(records)
+                if self._summary_dirty_index is not None:
+                    for record in records:
+                        self._note_summary_dirty_row(self._summary_dirty_index, record)
+                if self._node_embedding_refs_index is not None:
+                    for record in records:
+                        self._note_node_embedding_ref(self._node_embedding_refs_index, record)
                 durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
-                if self._read_cache_records is not None:
-                    # The snapshot is served to a cold reader without re-compacting, so it has to
-                    # be compact when written.
-                    self._compact_read_cache_if_dirty_locked()
+                if self._read_cache_records is not None and not self._read_cache_dirty:
+                    # A cold reader is served the snapshot without re-compacting, so only a
+                    # COMPACT cache may be copied into it.
+                    #
+                    # Compacting here to make that true undid the deferral: the copy is taken on
+                    # every append, so every append compacted after all. It was 322 compactions
+                    # over 40 attachments, 112,965 records visited, 28% of the time an ingest
+                    # took. A write already declines to rewrite the base and lets the next read
+                    # refresh the snapshot; declining to extend it while the cache is dirty is
+                    # the same trade, and the read that compacts will refresh it.
                     durable_epoch = self._read_cache_compaction_epoch
                     durable_records = list(self._read_cache_records)
             else:
                 self._read_cache_records = None
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
+                self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4667,7 +5111,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         if not line or INTERN_DICT_RECORD_TYPE not in line:
                             continue
                         try:
-                            record = json.loads(line)
+                            record = loads_with_interned_keys(line)
                         except json.JSONDecodeError:
                             continue
                         if isinstance(record, dict) and str(record.get("record_type") or "") == INTERN_DICT_RECORD_TYPE:
@@ -4710,7 +5154,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         if not line or "context_model_registry" not in line:
                             continue
                         try:
-                            record = json.loads(line)
+                            record = loads_with_interned_keys(line)
                         except json.JSONDecodeError:
                             continue
                         if isinstance(record, dict) and str(record.get("record_type") or "") == "context_model_registry":
@@ -4737,29 +5181,56 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             kept.append(record)
         return kept
 
+    #: The only two row types the outstanding-dirty answer depends on.
+    _SUMMARY_DIRTY_TYPES = ("context_summary_dirty", "context_summary_refresh_audit")
+
+    def _summary_dirty_rows(self) -> list[Json]:
+        """The newest summary-dirty and refresh-audit row per dirty_hash.
+
+        This was answered by scanning the whole live view twice, once per append -- 40 of the 85
+        full reads a twenty-attachment ingest performs. Those two types are a small fraction of the
+        store, so the adapter keeps just them, built from one read the first time and folded
+        forward on every append. Newest wins per dirty_hash, which is what compaction does with
+        these rows.
+        """
+        index = self._summary_dirty_index
+        if index is None:
+            index = {}
+            try:
+                live = self.read_all()
+            except (OSError, ValueError):
+                live = []
+            for record in live:
+                self._note_summary_dirty_row(index, record)
+            self._summary_dirty_index = index
+        return list(index.values())
+
+    @staticmethod
+    def _note_summary_dirty_row(index: dict[Any, Json], record: Json) -> None:
+        if not isinstance(record, dict):
+            return
+        if str(record.get("record_type") or "") not in MatrixArkLocalAdapter._SUMMARY_DIRTY_TYPES:
+            return
+        dirty_hash = record.get("dirty_hash")
+        if dirty_hash is None:
+            return
+        index[dirty_hash] = record
+
     def _outstanding_dirty_nodes(self) -> set[tuple[str, Any]]:
-        """(scope_key, node_hash) pairs with an uncompleted pending context_summary_dirty marker in the
-        current live view. Computed from read_all() so it always reflects durable+own state -- a node is
-        reported outstanding only if a pending marker is really present, so coalescing can never drop
-        the last marker for a node that still needs regeneration."""
+        """(scope_key, node_hash) pairs with an uncompleted pending context_summary_dirty marker.
+
+        A node is reported outstanding only if a pending marker is really present, so coalescing can
+        never drop the last marker for a node that still needs regeneration.
+        """
+        rows = self._summary_dirty_rows()
         completed: set[Any] = set()
-        pending: dict[tuple[str, Any], Any] = {}
-        try:
-            live = self.read_all()
-        except (OSError, ValueError):
-            return set()
-        for record in live:
-            if not isinstance(record, dict):
-                continue
-            rt = str(record.get("record_type") or "")
-            if rt not in ("context_summary_dirty", "context_summary_refresh_audit"):
-                continue
+        for record in rows:
             dirty_hash = record.get("dirty_hash")
-            status = record.get("status")
-            if dirty_hash is not None and status in ("completed", "refreshed"):
+            if dirty_hash is not None and record.get("status") in ("completed", "refreshed"):
                 completed.add(dirty_hash)
-        for record in live:
-            if not isinstance(record, dict) or str(record.get("record_type") or "") != "context_summary_dirty":
+        pending: set[tuple[str, Any]] = set()
+        for record in rows:
+            if str(record.get("record_type") or "") != "context_summary_dirty":
                 continue
             if record.get("status") != "pending":
                 continue
@@ -4767,9 +5238,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             node_hash = record.get("node_hash")
             if node_hash is None or dirty_hash in completed:
                 continue
-            key = (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
-            pending[key] = record
-        return set(pending.keys())
+            pending.add(
+                (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
+            )
+        return pending
 
     def _coalesce_summary_dirty(self, records: list[Json]) -> list[Json]:
         """Drop redundant pending summary-dirty markers for a (scope, node) that already has an
@@ -4849,10 +5321,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
-        records = drop_owner_derivable_postings(
-            records, resolve_owner=self._embedding_owner_resolver()
-        )
+        # One resolver for both, so the record set is read once per write rather than once per
+        # fold. Each resolver reads on first use and indexes; two of them read twice.
+        # Every row leaves here carrying its identity under the one shared name.
+        stamp_row_keys(records)
+        resolve_owner = self._embedding_owner_resolver()
+        records = fold_embedding_records(records, resolve_owner=resolve_owner)
+        records = drop_owner_derivable_postings(records, resolve_owner=resolve_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4888,10 +5363,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
-        records = drop_owner_derivable_postings(
-            records, resolve_owner=self._embedding_owner_resolver()
-        )
+        # One resolver for both, so the record set is read once per write rather than once per
+        # fold. Each resolver reads on first use and indexes; two of them read twice.
+        # Every row leaves here carrying its identity under the one shared name.
+        stamp_row_keys(records)
+        resolve_owner = self._embedding_owner_resolver()
+        records = fold_embedding_records(records, resolve_owner=resolve_owner)
+        records = drop_owner_derivable_postings(records, resolve_owner=resolve_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4931,28 +5409,30 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         The index is built per (record_type, field) on first use, and later records overwrite
         earlier ones, which is the same newest-wins answer the backwards scan gave.
         """
-        records: list[Json] | None = None
-        indexes: dict[tuple[str, str], dict[Any, Json]] = {}
-
         def resolve(record_type: str, field: str, ref_hash: Any) -> Json | None:
-            nonlocal records
-            if records is None:
-                try:
-                    records = self.read_all()
-                except Exception:
-                    records = []
-            key = (record_type, field)
-            index = indexes.get(key)
+            index = self._embedding_owner_index
             if index is None:
                 index = {}
-                for record in records:
+                self._embedding_owner_index = index
+            key = (record_type, field)
+            bucket = index.get(key)
+            if bucket is None:
+                # First question about this (type, field): build it from one read, then keep
+                # it current on every append. Rebuilding per write meant 765 resolvers and
+                # 400 full reads over twenty attachments.
+                bucket = {}
+                try:
+                    known = self.read_all()
+                except Exception:
+                    known = []
+                for record in known:
                     if record.get("record_type") != record_type:
                         continue
                     value = record.get(field)
                     if value is not None:
-                        index[value] = record
-                indexes[key] = index
-            return index.get(ref_hash)
+                        bucket[value] = record
+                index[key] = bucket
+            return bucket.get(ref_hash)
 
         return resolve
 
@@ -5327,11 +5807,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return filter_live_memory_records(self._read_all_compacted())
 
     def _read_all_compacted(self) -> list[Json]:
-        cache_key = str(self.event_log.resolve())
+        cache_key = self._cache_key_str()
         paths = self._retained_jsonl_paths()
         if not paths:
             with self._read_cache_lock:
                 self._read_cache_records = []
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
+                self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -5368,9 +5852,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             if cached is not None:
                 cached_size, cached_mtime_ns, cached_records = cached
                 if cached_size == size and cached_mtime_ns == mtime_ns:
-                    records = list(cached_records)
+                    # Share ONCE, then hand the same list to every holder. Sharing only
+                    # into the adapter's cache left the process cache, the durable snapshot and
+                    # the returned list holding the unshared originals, so both were alive at
+                    # once and a cold read kept 120 copies of a value with ONE distinct value.
+                    records = share_repeated_values(
+                        list(cached_records), _SHARED_VALUE_TABLE
+                    )
                     with self._read_cache_lock:
-                        self._read_cache_records = records
+                        self._read_cache_records = list(records)
+                        self._read_cache_value_keys = None
+                        self._read_cache_state_keys = None
                         self._read_cache_size = size
                         self._read_cache_mtime_ns = mtime_ns
                         self._read_cache_source = "process"
@@ -5379,9 +5871,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         durable_records = self._load_durable_read_cache(signature)
         if durable_records is not None:
-            records = list(durable_records)
+            records = share_repeated_values(list(durable_records), _SHARED_VALUE_TABLE)
             with self._read_cache_lock:
                 self._read_cache_records = list(records)
+                self._read_cache_value_keys = None
+                self._read_cache_state_keys = None
+                self._summary_dirty_index = None
+                self._node_embedding_refs_index = None
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
                 self._read_cache_source = "durable"
@@ -5401,7 +5897,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     for line in handle:
                         line = line.strip()
                         if line:
-                            records.append(json.loads(line))
+                            records.append(loads_with_interned_keys(line))
         # Expand interned metadata BEFORE compaction/caching so the read cache, durable cache, and
         # every downstream consumer see fully-expanded, token-free records.
         records = expand_interned_records(records)
@@ -5412,7 +5908,12 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 or self._read_cache_size != size
                 or self._read_cache_mtime_ns != mtime_ns
             )
+            records = share_repeated_values(list(records), _SHARED_VALUE_TABLE)
             self._read_cache_records = list(records)
+            self._read_cache_value_keys = None
+            self._read_cache_state_keys = None
+            self._summary_dirty_index = None
+            self._node_embedding_refs_index = None
             self._read_cache_size = size
             self._read_cache_mtime_ns = mtime_ns
             self._read_cache_source = "jsonl"
@@ -6486,7 +6987,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     for line in handle:
                         line = line.strip()
                         if line:
-                            raw.append(json.loads(line))
+                            raw.append(loads_with_interned_keys(line))
         return expand_interned_records(raw)
 
     def _count_raw_tombstones(self) -> int:
@@ -6524,7 +7025,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     for line in handle:
                         line = line.strip()
                         if line:
-                            raw.append(json.loads(line))
+                            raw.append(loads_with_interned_keys(line))
             tombstone_count = sum(
                 1 for record in raw
                 if str(record.get("record_type") or "") == MEMORY_TOMBSTONE_RECORD_TYPE

@@ -27,6 +27,24 @@ def _segments_enabled(scope) -> bool:
     return bool(extract_segments_enabled(scope))
 
 
+def _context_debug_records_enabled() -> bool:
+    """Gate: write context_debug_record rows at all.
+
+    MATRIXARK_CONTEXT_DEBUG_RECORDS defaults OFF and the compact writer already honours it, but
+    the two writers in this module did not, so the rows were written whatever the knob said. The
+    pack strips ``metadata_debug`` from every served item (DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS),
+    so they were carried in memory and never served: 12.1% of the read cache.
+
+    Imported lazily and defaulting to OFF when the module is absent, matching the other gates
+    here: a missing policy module must not start writing rows nobody asked for.
+    """
+    try:
+        from matrixark_mcp_serving_records import context_debug_records_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return False
+    return bool(context_debug_records_enabled())
+
+
 def _segment_access_scope_enabled() -> bool:
     """Gate: write context_segment records WITH a tenant/user/session access_scope so a
     scored segment passes access_scope_matches_before_scoring instead of being dropped
@@ -187,13 +205,29 @@ def _profile_provenance_overflow(previous_profile, *, refs_all, events_all):
 class _LocalAdapterIngestMixin:
     _MEMORY_UPSERT_ARG_KEYS = ("expires_at", "ttl_seconds", "retention_cutoff_ts", "identity_key", "truth_class")
 
+    def _coalesced_ingest_impl(self, args: Json, *, hook: Json | None = None) -> Json:
+        """Run the ingest, then write the appends it buffered as one batch.
+
+        The flush lives here rather than at the end of ``_ingest_impl`` because that returns from
+        many places; this catches every one. A failed ingest ABORTS instead of flushing, so a
+        half-written record set never reaches the log and a pooled thread cannot inherit an active
+        buffer.
+        """
+        try:
+            result = self._ingest_impl(args, hook=hook)
+        except BaseException:
+            self._abort_append_coalescing()
+            raise
+        self._flush_append_coalescing()
+        return result
+
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         """Public ingest entry. Fast-path is byte-identical to the core ingest; when any
         PurchaseMemory field (expires_at / ttl_seconds / retention_cutoff_ts / identity_key /
         truth_class) is present it layers per-record TTL stamping, a keyed-upsert truth-rank guard,
         and a scope-level retention-cutoff marker on top of the unchanged core ingest."""
         if not any(key in args for key in self._MEMORY_UPSERT_ARG_KEYS):
-            return self._ingest_impl(args, hook=hook)
+            return self._coalesced_ingest_impl(args, hook=hook)
         envelope = normalize_envelope(args, default_kind="message")
         # Pin ingestion_time_ms so the core re-normalization inside _ingest_impl is deterministic
         # (event_id_hash derives from it); the caller's other fields already round-trip through args.
@@ -201,7 +235,7 @@ class _LocalAdapterIngestMixin:
         identity_key = str(envelope.get("identity_key") or "")
         self._push_ingest_stamp(envelope)
         try:
-            result = self._ingest_impl(args, hook=hook)
+            result = self._coalesced_ingest_impl(args, hook=hook)
         finally:
             self._pop_ingest_stamp()
         if isinstance(result, dict):
@@ -543,6 +577,12 @@ class _LocalAdapterIngestMixin:
             prior_context=prior_context,
         )
         self._observe_model_latency("extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
+        # Every remaining write in this ingest is one append of one record -- 45 of them for a
+        # skill, each opening the log and running the whole batch pipeline for a single row, which
+        # measured 53% of ingest wall. They are one consecutive run with no read after this point,
+        # which is exactly the condition _begin_append_coalescing documents, so the run becomes one
+        # append_many. ingest() owns the flush and the abort.
+        self._begin_append_coalescing()
         text = text_from_messages(envelope["messages"])
         # A resource/skill document already lives in its chunk records and behind its raw URI, so
         # carrying it a THIRD time as event text is pure duplication -- measured at 1.05x source
@@ -808,7 +848,11 @@ class _LocalAdapterIngestMixin:
                         }
                     )
                     skill_debug_metadata = debug_resource_metadata(parsed_skill.metadata)
-                    if skill_debug_metadata or parsed_skill.text:
+                    # MATRIXARK_CONTEXT_DEBUG_RECORDS gates these and defaults OFF, but only the
+                    # compact writer asked. These two wrote regardless, and the pack strips
+                    # metadata_debug from every served item, so the rows were carried and never
+                    # read: 12.1% of the cache.
+                    if _context_debug_records_enabled() and (skill_debug_metadata or parsed_skill.text):
                         self.append(
                             {
                                 "record_type": "context_debug_record",
@@ -1150,7 +1194,7 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-                if chunk_debug_metadata:
+                if chunk_debug_metadata and _context_debug_records_enabled():
                     self.append(
                         {
                             "record_type": "context_debug_record",

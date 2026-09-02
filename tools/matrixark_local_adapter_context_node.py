@@ -55,34 +55,73 @@ class _LocalAdapterContextNodeMixin:
         return self.default_session_node_path(envelope.get("scope", {}))
 
     def _existing_node_embedding_refs(self, current_model_ref: str) -> set[int]:
-        """Node hashes that already have a usable `context_node` embedding for this model.
+        """Node hashes that already have a usable embedding for this model.
 
-        Walking the whole log is fine on the JSONL backend, where `read_all()` is an in-memory
-        list. It is NOT fine on a native backend, where `read_all()` is a full record-log read
-        shipped over the proxy and re-run through the serving pipeline -- and
-        `ensure_context_node_path` runs three times per ingest. The native adapter overrides this
-        with a keyed lookup; see `MatrixArkTemporalStoreDirectAdapter._existing_node_embedding_refs`.
+        Answered from an index the adapter keeps, not by walking the store. This runs on every
+        ingest -- `ensure_context_node_path` is called several times per one -- and was one of the
+        remaining reads of the whole record set per write.
+
+        The index is built from one read the first time it is asked, folded forward on every
+        append, and dropped whenever the read cache is, so it cannot outlive the view it came from.
         """
-        refs: set[int] = set()
-        for record in self.read_all():
-            if (
-                record.get("record_type") != "context_embedding"
-                or record.get("ref_type") != "node"
-                or record.get("ref_hash") is None
-            ):
-                continue
-            if (
-                record.get("embedding_type") != "context_node"
-                or str(record.get("model_ref") or "") != current_model_ref
-                or not record_vector(record)
-                or not record.get("vector")
-            ):
-                continue
+        index = getattr(self, "_node_embedding_refs_index", None)
+        if index is None:
+            index = {}
+            for record in self.read_all():
+                self._note_node_embedding_ref(index, record)
+            self._node_embedding_refs_index = index
+        return set(index.get(current_model_ref, ()))
+
+    @staticmethod
+    def _node_embedding_ref_of(record):
+        """(model_ref, node_hash) for a row that carries a node embedding, else None.
+
+        A node embedding now lives ON the node: fold_embedding_records moves the vector onto the
+        owner and drops the separate context_embedding row, which is where every vector in a new
+        log is. Looking only for that row found nothing in any log written since, so every node was
+        reported un-embedded and re-embedded on every ingest -- 60 embeddings for 3 distinct nodes
+        over 20 ingests. Logs written before the fold still carry the separate row.
+        """
+        if not isinstance(record, dict):
+            return None
+        record_type = str(record.get("record_type") or "")
+        if record_type == "context_node":
+            meta = record.get("embedding_meta")
+            if not isinstance(meta, dict):
+                return None
+            model_ref = str(meta.get("model_ref") or "")
+            if not model_ref:
+                return None
+            if not record.get("vector") and not record_vector(record):
+                return None
             try:
-                refs.add(int(record.get("ref_hash")))
+                return (model_ref, int(record.get("node_hash")))
             except (TypeError, ValueError):
-                continue
-        return refs
+                return None
+        if (
+            record_type != "context_embedding"
+            or record.get("ref_type") != "node"
+            or record.get("ref_hash") is None
+            or record.get("embedding_type") != "context_node"
+            or not record_vector(record)
+            or not record.get("vector")
+        ):
+            return None
+        model_ref = str(record.get("model_ref") or "")
+        if not model_ref:
+            return None
+        try:
+            return (model_ref, int(record.get("ref_hash")))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _note_node_embedding_ref(cls, index, record) -> None:
+        pair = cls._node_embedding_ref_of(record)
+        if pair is None:
+            return
+        model_ref, node_hash = pair
+        index.setdefault(model_ref, set()).add(node_hash)
 
     def _record_node_embedding_ref(self, node_hash: int, current_model_ref: str) -> None:
         """Note that a node embedding now exists. No-op here; the log IS the record.
