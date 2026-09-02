@@ -3316,6 +3316,59 @@ mod tests {
         );
     }
 
+    /// What routing one keyed command costs, under concurrency.
+    ///
+    /// `shard_id_for_key` reads the table's options so a table re-synced after a split routes on
+    /// its new shard count. That read is per COMMAND, not per request -- a batch pays it once per
+    /// command in the batch. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_shard_id_for_key() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        let table = std::sync::Arc::new(proxy.client().open_table(
+            "ns",
+            "tbl",
+            crate::client::TableOptions {
+                shard_count: 16,
+                ..crate::client::TableOptions::default()
+            },
+        ));
+
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let mut handles = Vec::new();
+        for t in 0..threads {
+            let table = std::sync::Arc::clone(&table);
+            let gate = std::sync::Arc::clone(&gate);
+            handles.push(std::thread::spawn(move || {
+                let key = format!("tenant:{t}:key");
+                gate.wait();
+                for _ in 0..per_thread {
+                    std::hint::black_box(table.shard_id_for_key(&key));
+                }
+            }));
+        }
+        gate.wait();
+        let start = std::time::Instant::now();
+        for handle in handles {
+            handle.join().expect("bench thread panicked");
+        }
+        let elapsed = start.elapsed();
+        let ops = (threads * per_thread) as u128;
+        println!(
+            "BENCH shard_id_for_key threads={threads} ops={ops} ns_per_op={}",
+            elapsed.as_nanos() / ops
+        );
+    }
+
     /// Per-request bookkeeping under CONCURRENCY, measured per function.
     ///
     /// Single-threaded this work is ~110ns against a request whose real cost is a network

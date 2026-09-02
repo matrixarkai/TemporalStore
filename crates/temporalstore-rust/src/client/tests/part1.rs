@@ -702,6 +702,56 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
 }
 
 #[test]
+fn a_split_table_routes_keys_over_its_new_shard_count() {
+    // `shard_id_for_key` reads the table's options through the per-thread snapshot. A table that
+    // is re-synced after a split has more shards, and a handle taken before that must pick the
+    // change up: routing over the old count sends keys to a shard that no longer owns them, and
+    // nothing fails while it happens.
+    let client = TemporalStoreClient::new("127.0.0.1:1");
+    let table = client.open_table(
+        "ns",
+        "tbl",
+        TableOptions {
+            shard_count: 4,
+            first_shard_id: 100,
+            ..TableOptions::default()
+        },
+    );
+
+    // Spread keys over the four shards and remember where they landed.
+    let before: Vec<_> = (0..32)
+        .map(|i| table.shard_id_for_key(&format!("k{i}")))
+        .collect();
+    assert!(
+        before.iter().any(|shard| *shard >= 100 && *shard < 104),
+        "keys must land inside the four shards the table was opened with"
+    );
+    assert!(
+        before.iter().all(|shard| *shard < 104),
+        "no key may land outside them: {before:?}"
+    );
+
+    // The split: same table, eight shards. Same thread, so the snapshot taken above is in hand.
+    let _resynced = client.open_table(
+        "ns",
+        "tbl",
+        TableOptions {
+            shard_count: 8,
+            first_shard_id: 100,
+            ..TableOptions::default()
+        },
+    );
+
+    let after: Vec<_> = (0..32)
+        .map(|i| table.shard_id_for_key(&format!("k{i}")))
+        .collect();
+    assert!(
+        after.iter().any(|shard| *shard >= 104),
+        "after the split some key must route into the new shards -- none here means this handle          is still hashing over the four it was opened with: {after:?}"
+    );
+}
+
+#[test]
 fn a_table_opened_after_a_lookup_is_still_found() {
     // Table lookups read a per-thread snapshot of the open-table map, refreshed only when the
     // version moves. A thread that has already looked one up holds a snapshot; if opening a table

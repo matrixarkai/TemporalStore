@@ -1122,14 +1122,15 @@ impl TemporalStoreTable {
         self.table_options()
     }
 
+    /// The table's options as they stand now, not as they stood when the table was taken.
+    ///
+    /// Read live on purpose: a table re-synced after a split changes its shard count, and a
+    /// handle taken before that must not keep hashing keys over the old one. `shard_id_for_key`
+    /// calls this, so it runs for every keyed command -- through the snapshot rather than the
+    /// map's lock, which every such command was otherwise taking.
     fn table_options(&self) -> TableOptions {
         self.client
-            .inner
-            .tables
-            .read()
-            .expect("client table cache lock poisoned")
-            .get(&self.combined_name)
-            .cloned()
+            .with_tables(|tables| tables.get(&self.combined_name).cloned())
             .unwrap_or_else(|| self.options.clone())
     }
 
