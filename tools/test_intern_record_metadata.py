@@ -115,16 +115,32 @@ class InterningCase(_FlagGuard):
         C.PRUNE_INTERNAL_INDEX_DIMENSIONS = False  # isolate lever 1 on the full metadata-heavy corpus
         A.INTERN_RECORD_METADATA = True
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            adapter, server = self._server(tmp)
+            path = Path(tmp) / "events.jsonl"
+            adapter = mcp.MatrixArkLocalAdapter(path)
+            server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 50)
+            # Snapshot a FROZEN log, as the reload tests already do. Reading while the background
+            # extraction workers are still appending measured a different corpus every run -- 762,
+            # 687 and 681 records across three runs of the same 50 fixed turns -- and the ratio
+            # moves with it, so a threshold a point or two above the line flips on corpus size
+            # rather than on anything about interning. This test failed in 4 of 8 CI runs.
+            server.close(timeout_s=10.0)
+            self._wait_log_frozen(path)
             records = adapter._read_raw_records()  # expanded, token-free logical history
         off_bytes = _serialized_bytes(records)
         on_bytes = _serialized_bytes(A.encode_interned_records(records, set()))
         reduction = 100.0 * (off_bytes - on_bytes) / off_bytes
         print(f"\n[lever1] on-disk OFF={off_bytes/1024:.1f}KB ON={on_bytes/1024:.1f}KB "
               f"reduction={reduction:.1f}% over {len(records)} records")
+        # The ratio depends on how much repeated metadata the corpus actually contains, so assert
+        # the corpus before asserting the ratio -- otherwise a short corpus reports itself as a
+        # regression in interning, which is what a 50% threshold with ~1 point of headroom does.
+        self.assertGreater(len(records), 600,
+                           f"only {len(records)} records: too small to measure interning against, "
+                           f"so the ratio below would be reporting corpus size")
         self.assertGreaterEqual(reduction, 50.0,
-                                f"interning reclaimed only {reduction:.1f}% (< 50%)")
+                                f"interning reclaimed only {reduction:.1f}% (< 50%) "
+                                f"over {len(records)} records")
 
     def test_codec_roundtrip_is_byte_identical(self):
         """encode -> expand returns the EXACT original records (no token ever escapes)."""
