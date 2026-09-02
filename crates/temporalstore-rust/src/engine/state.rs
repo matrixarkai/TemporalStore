@@ -830,7 +830,7 @@ impl CoreIndex {
                     .map(|page| {
                         !page.deleted
                             && &*page.model_id == model_id
-                            && page.object_key == Arc::from(object_key)
+                            && &*page.object_key == object_key
                             && page.component.as_deref() == component
                             && same_page_address(&page.address, address)
                     })
@@ -846,7 +846,7 @@ impl CoreIndex {
             bucket.page_index.values().any(|page| {
                 !page.deleted
                     && &*page.model_id == model_id
-                    && page.object_key == Arc::from(object_key)
+                    && &*page.object_key == object_key
                     && page.component.as_deref() == component
                     && same_page_address(&page.address, address)
             })
