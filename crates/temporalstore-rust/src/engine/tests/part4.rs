@@ -4690,6 +4690,118 @@ fn installing_the_same_page_twice_replaces_it() {
     assert_eq!(map.len(), 2);
 }
 
+/// Writing the page index does not build a second copy of it first.
+///
+/// `#[serde(into = "...")]` is defined as `T::from(self.clone()).serialize(..)`, so it duplicates
+/// the whole map -- once for the clone, once for the converted map -- before a byte is written.
+/// The `Arc`s inside are refcount bumps rather than allocations, so what this actually counts is
+/// the duplicated map structure, which is why it is measured rather than asserted.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn dumping_the_page_index_does_not_copy_it_first() {
+    let dump_a_shard_of = |pages: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for field in 0..pages {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "dumped".to_string(),
+                    field: format!("f{field}"),
+                    value: vec![b'v'; 16],
+                },
+            });
+        }
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|b| !b.page_index.is_empty())
+            .expect("the writes must produce pages");
+
+        let probe = crate::alloc_probe::Probe::start();
+        let json = serde_json::to_string(&bucket.page_index).expect("the index serializes");
+        let counts = probe.stop();
+        assert!(!json.is_empty());
+        counts.allocs
+    };
+
+    let small = dump_a_shard_of(20);
+    let large = dump_a_shard_of(200);
+    println!("dump allocations: {small} at 20 pages, {large} at 200 pages");
+
+    // An upper bound passes most easily when nothing was measured, so prove the probe saw work.
+    assert!(small > 0, "the probe must observe the dump: {small}");
+
+    // Writing a page costs its key and little else. Copying the index first, or building that key
+    // with `format!` (which allocates its own buffer and then allocates again to return it), put
+    // this near four.
+    let per_page = (large.saturating_sub(small)) as f64 / 180.0;
+    assert!(
+        per_page < 2.0,
+        "dumping cost {per_page:.2} allocations per page ({small} at 20, {large} at 200)"
+    );
+}
+
+/// The dump lists pages in written-key order.
+///
+/// Worth pinning because the in-memory key stopped being the written one. The index used to be
+/// serialized by converting it into a map keyed by the rendered string, which emitted entries in
+/// string order for free. This map is keyed by a handle and iterates in hash order, so anything
+/// writing it has to restore that order deliberately -- otherwise the bytes on disk change even
+/// though every entry is still present and correct.
+#[test]
+fn the_page_index_dump_is_ordered_by_its_written_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for field in 0..24 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "ordered".to_string(),
+                field: format!("f{field:02}"),
+                value: vec![b'v'; 16],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let bucket = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .find(|b| b.page_index.len() > 4)
+        .expect("the writes must produce several pages in one bucket");
+
+    let json = serde_json::to_string(&bucket.page_index).expect("the index serializes");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let keys: Vec<&String> = value
+        .as_object()
+        .expect("a map of rendered keys")
+        .keys()
+        .collect();
+
+    assert!(keys.len() > 4, "need several keys to see an order: {keys:?}");
+    let mut sorted = keys.clone();
+    sorted.sort();
+    assert_eq!(keys, sorted, "the dump must be ordered by written key");
+}
+
 /// The page index is keyed by a number in memory and by the old string on disk.
 ///
 /// This is what makes the numeric key an in-memory change rather than a format change. Asserted on

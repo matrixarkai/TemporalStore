@@ -302,17 +302,24 @@ pub fn page_ref_key_from_parts(
     page_id: u64,
     generation: u64,
 ) -> String {
-    format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}",
-        kind,
-        object_key,
-        component.unwrap_or(""),
-        page_slab_id,
-        offset,
-        length,
-        page_id,
-        generation
-    )
+    // Built into one buffer rather than with `format!`, which allocates its own and then
+    // allocates again to hand back a String. This runs once per page on every dump of the index,
+    // where it was the largest single source of allocations.
+    use std::fmt::Write as _;
+    let component = component.unwrap_or("");
+    // Five u64 at their widest, plus the seven separators.
+    let mut key = String::with_capacity(kind.len() + object_key.len() + component.len() + 7 + 100);
+    key.push_str(kind);
+    key.push(':');
+    key.push_str(object_key);
+    key.push(':');
+    key.push_str(component);
+    // `write!` into a String appends in place; it does not allocate.
+    let _ = write!(
+        key,
+        ":{page_slab_id}:{offset}:{length}:{page_id}:{generation}"
+    );
+    key
 }
 
 /// Fold an ordered stream of delta items onto a base map keyed by `(routing_bucket,

@@ -333,8 +333,8 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 /// The handle is NOT free to choose: the lookup's refs hold handles and the lookup is written to
 /// disk, so a handle has to mean the same page in every process that reads the file. Assigning
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(from = "BTreeMap<String, PageIndex>", into = "BTreeMap<String, PageIndex>")]
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(from = "BTreeMap<String, PageIndex>")]
 pub(super) struct PageIndexMap {
     by_key: BTreeMap<u64, PageIndex>,
 }
@@ -420,12 +420,34 @@ impl From<BTreeMap<String, PageIndex>> for PageIndexMap {
     }
 }
 
-impl From<PageIndexMap> for BTreeMap<String, PageIndex> {
-    fn from(map: PageIndexMap) -> Self {
-        map.by_key
-            .into_values()
-            .map(|page| (page_index_written_key(&page), page))
-            .collect()
+impl Serialize for PageIndexMap {
+    /// Writes the same map of rendered keys, in the same order, without copying the index first.
+    ///
+    /// Hand-written rather than `#[serde(into = ...)]`, which is defined as
+    /// `T::from(self.clone()).serialize(..)`: that duplicates the whole index twice over -- once
+    /// cloning it, once building the converted map -- before a byte is written.
+    ///
+    /// The sort is not incidental. The map this used to convert into was keyed by the rendered
+    /// string, so it emitted entries in string order; this map is keyed by a handle and iterates
+    /// in hash order. Writing them as they come would reorder every dump, which is a change to
+    /// the bytes on disk rather than to how they are produced.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let mut entries: Vec<(String, &PageIndex)> = self
+            .by_key
+            .values()
+            .map(|page| (page_index_written_key(page), page))
+            .collect();
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut map = serializer.serialize_map(Some(entries.len()))?;
+        for (key, page) in &entries {
+            map.serialize_entry(key, page)?;
+        }
+        map.end()
     }
 }
 
