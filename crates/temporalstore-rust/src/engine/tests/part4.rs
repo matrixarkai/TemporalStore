@@ -3519,21 +3519,29 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
         .join("indexlogs")
         .join("shard-1.indexlog.jsonl");
     let contents = std::fs::read(&index_log_path).unwrap();
-    let mut lines: Vec<Vec<u8>> = contents
-        .split(|&byte| byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| line.to_vec())
-        .collect();
+    // Walk frames, not newlines: a record's payload may hold a 0x0A, so splitting on one
+    // yields fragments rather than records and the corruption below would land nowhere.
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut at = 0usize;
+    while at < contents.len() {
+        match crate::log_framing::next_frame(&contents[at..]) {
+            Ok(Some((consumed, _))) => {
+                lines.push(contents[at..at + consumed].to_vec());
+                at += consumed;
+            }
+            _ => break,
+        }
+    }
     assert!(
         lines.len() >= 2,
         "the write path must have appended index-log delta records"
     );
     // Corrupt an interior record (not the tail) so it is committed corruption, not a torn tail.
-    lines[0] = b"corrupt-not-a-record".to_vec();
+    // Framed the way the writer frames, so what fails is the decode rather than the envelope.
+    lines[0] = crate::log_framing::encode_record(b"corrupt-not-a-record");
     let mut rebuilt = Vec::new();
     for line in &lines {
         rebuilt.extend_from_slice(line);
-        rebuilt.push(b'\n');
     }
     std::fs::write(&index_log_path, &rebuilt).unwrap();
 

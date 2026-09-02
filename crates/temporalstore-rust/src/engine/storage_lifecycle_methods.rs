@@ -901,7 +901,13 @@ impl TemporalEngine {
                 // reading the sequence; a corrupt line is simply not counted here (this is a
                 // GC-pressure metric, not the recovery path).
                 let payload = crate::log_framing::decode_line(bytes).ok()?;
-                serde_json::from_slice::<crate::index_log::IndexLogRecord>(payload).ok()
+                // Through the index log's own decoder, not serde_json directly. A record's
+                // payload is not necessarily JSON, and reading it as though it were fails
+                // quietly here -- `.ok()` drops it, the record is not counted, and GC reports
+                // "no reclaimable index-log entries" while the log grows. A second decoder is
+                // exactly what the served index's first attempt at a binary format died of.
+                crate::index_log::decode_index_payload::<crate::index_log::IndexLogRecord>(payload)
+                    .ok()
             })
             .filter(|record| record.sequence < wal_plan.retain_from_index_log_sequence)
             .count();
