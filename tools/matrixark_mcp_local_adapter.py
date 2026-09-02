@@ -434,6 +434,67 @@ INTERN_METADATA_FIELDS = (
     # survive a purge. Interning it transparently would require expanding at every raw rewrite path;
     # not worth the ~4% for the correctness risk. The routing/placement fields above are never
     # tombstone-matched, so interning them (incl. via the bundle format) is safe.
+    #
+    # Everything below repeats a value the record's own type already implies. A census of the log
+    # found 30.4% of its bytes in fields holding one value across every record of their type, on a
+    # corpus deliberately varied across 4 tenants, 7 users and 11 sessions so uniformity could not
+    # manufacture the result. Interning was already ON and not reaching them: it reads this list,
+    # and this list held five routing fields.
+    #
+    # Measured over this repo's own markdown, with read-back asserted identical each time:
+    #   uniform corpus              231.3 KB -> 173.2 KB   -25.1%   5 -> 8 sidecars
+    #   varied roles and tenants    263.9 KB -> 206.1 KB   -21.9%   5 -> 14 sidecars
+    #
+    # The sidecar count is the thing to watch rather than the byte count: fields go into ONE shared
+    # bundle, so a field that varies makes every record's token vary and multiplies the sidecars
+    # instead of removing bytes. It degrades rather than breaks -- 14 sidecars against 208 records
+    # -- but a field known to vary per record does not belong here.
+    #
+    # Excluded, beyond scope_key: record_type (every raw filter matches it), the model registry's
+    # identity fields (model_kind, model_ref, model_name, model_hash, provider, execution_mode --
+    # _seed_model_registry_seen_locked reads them off the unexpanded log), and the bundle's own
+    # token key, which cannot be part of what it names.
+    "storage_record_kind",
+    "storage_part",
+    "dirty_reason",
+    "source_ref_type",
+    "ref_type",
+    "entity_type",
+    "event_type",
+    "context_event_parent_type",
+    "summary_type",
+    "summary_identity",
+    "status",
+    "source_kind",
+    "agent_hook",
+    "extraction_phase",
+    "memory_scope",
+    "session_continuity",
+    "profile_memory_class",
+    "profile_memory_kind",
+    # roll-ups a batch writes onto every record it produced
+    "source_codex_event_counts",
+    "source_codex_events",
+    "source_extraction_phases",
+    "source_final_session_boundary_count",
+    "source_hook_type_counts",
+    "source_hook_types",
+    "source_memory_layer_counts",
+    "source_memory_layers",
+    "source_memory_scopes",
+    "source_memory_selection_complete_count",
+    "source_memory_selection_dropped_line_count",
+    "source_memory_selection_dropped_text_chars",
+    "source_memory_selection_lossy_count",
+    "source_memory_selection_retained_line_ratio_avg",
+    "source_memory_selection_retained_text_ratio_avg",
+    "source_profile_memory_classes",
+    "source_profile_memory_kinds",
+    "source_profile_promotion_blockers",
+    "source_profile_promotion_policies",
+    "source_role_counts",
+    "source_roles",
+    "source_session_continuities",
 )
 INTERN_DICT_RECORD_TYPE = "matrixark_intern_dict"
 INTERN_TOKEN_KEY = "_im"  # legacy per-record map {field_name: token} (Phase-1 format)
