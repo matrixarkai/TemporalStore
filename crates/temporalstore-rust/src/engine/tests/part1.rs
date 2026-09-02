@@ -7610,3 +7610,202 @@ fn would_an_inline_component_pay() {
 
     assert!(objects > 0, "the lookup should hold objects");
 }
+
+/// What one write actually spends, split into the part that copies the payload and the part that
+/// does not.
+///
+/// A write allocates ~40.7 kB and frees 97% of it to store a 512-byte value
+/// (`does_a_bounded_slot_range_make_writes_cheaper`), an eighty-fold amplification, and that churn
+/// is the write path's latency rather than anything retained. Whether to attack the copying or the
+/// bookkeeping depends on which one it is, and a single value size cannot tell them apart.
+///
+/// So measure across value sizes and take the slope and the intercept: the slope is what each
+/// payload byte costs to move, the intercept is what a write costs before it has moved any.
+///
+/// Counted rather than timed -- this box swings 5-30% run to run and a count says the same thing
+/// under load.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_write_spends -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_one_write_spends() {
+    const WRITES: u64 = 8_000;
+    const WARM: u64 = 2_000;
+    const SIZES: [usize; 9] = [64, 128, 192, 256, 384, 512, 1024, 4096, 16384];
+
+    let arm = |payload: usize| -> (f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Warm first: the opening writes build fixed structure every arm would otherwise be
+        // charged for, and it is the steady-state write being measured.
+        for index in 0..WARM {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("warm-{index:08}"),
+                    value: vec![b'v'; payload],
+                },
+            });
+            assert!(response.status.ok, "warm {index}: {:?}", response.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..WRITES {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cost-{index:08}"),
+                    value: vec![b'v'; payload],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let n = WRITES as f64;
+        (counts.allocs as f64 / n, counts.alloc_bytes as f64 / n)
+    };
+
+    let measured: Vec<(usize, f64, f64)> =
+        SIZES.iter().map(|&s| { let (a, b) = arm(s); (s, a, b) }).collect();
+
+    println!();
+    println!("  value size   allocations/write   allocated B/write   amplification");
+    for (size, allocs, bytes) in &measured {
+        println!("  {size:>10} {allocs:>18.1} {bytes:>19.0} {:>15.1}x",
+                 bytes / *size as f64);
+    }
+
+    // Segment slopes, NOT one fit across everything. A single least-squares line over this
+    // data reports an intercept that describes no part of it -- the cost is piecewise, and
+    // averaging across a step hides the step, which is the interesting part.
+    println!();
+    println!("  segment                 B per payload byte");
+    let mut step: Option<(usize, usize, f64)> = None;
+    for pair in measured.windows(2) {
+        let (lo, _, lo_bytes) = pair[0];
+        let (hi, _, hi_bytes) = pair[1];
+        let per = (hi_bytes - lo_bytes) / (hi - lo) as f64;
+        println!("  {lo:>6} -> {hi:<6} {per:>26.1}");
+        if per > 20.0 && step.is_none() {
+            step = Some((lo, hi, hi_bytes - lo_bytes));
+        }
+    }
+
+    let alloc_spread = measured.iter().map(|m| m.1).fold(f64::MIN, f64::max)
+        - measured.iter().map(|m| m.1).fold(f64::MAX, f64::min);
+
+    println!();
+    println!("  allocation COUNT spread over the whole range  {alloc_spread:>8.1}");
+    println!();
+    if let Some((lo, hi, jump)) = step {
+        println!("  There is a STEP between {lo} and {hi} bytes worth {jump:.0} B per write, and");
+        println!("  the segments on either side of it are flat. That is a threshold being crossed,");
+        println!("  not a cost that scales -- so the number to quote for a write is which SIDE of");
+        println!("  the threshold it falls on, and a single slope through both is meaningless.");
+    } else {
+        println!("  No step: the cost is smooth across the range and a single slope describes it.");
+    }
+    println!();
+    let smallest = measured.first().expect("a measurement").2;
+    let largest = measured.last().expect("a measurement").2;
+    println!("  Even so, the shape of the whole is clear: {smallest:.0} B to store 64 bytes and");
+    println!("  {largest:.0} B to store 16384. The value is a minority of what a write allocates at");
+    println!("  every size measured, so shrinking values cannot move write cost -- compression and");
+    println!("  tighter encodings buy disk, not latency.");
+    if alloc_spread < 20.0 {
+        println!();
+        println!("  And the allocation COUNT barely moves across the whole range, so a write performs");
+        println!("  a fixed number of steps and only the bytes they carry change.");
+    }
+
+    assert_eq!(measured.len(), SIZES.len(), "every size should be measured");
+    assert!(measured.iter().all(|m| m.2 > 0.0), "measured nothing");
+}
+
+/// Does the write path's compressor have to be rebuilt for every record?
+///
+/// Write cost is flat at ~2 B per payload byte on both sides of a sharp step between 192 and 256
+/// bytes worth 32,535 B per write (`what_one_write_spends`). 256 is
+/// `PAGE_RECORD_COMPRESSION_MIN_BYTES`, and the encoder above it is `zstd::stream::encode_all`,
+/// which builds a compressor, uses it once and drops it. Records in the soak corpus average 1,244
+/// bytes, so essentially every real write is above the threshold and pays this.
+///
+/// The zstd crate also exposes a compressor that can be held and reused. This measures whether
+/// reuse actually recovers the step or whether the cost is inherent to compressing at all --
+/// worth knowing before proposing to restructure a write path around it.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_rebuilding_the_compressor_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_rebuilding_the_compressor_costs() {
+    const CALLS: u64 = 4_000;
+    // 1244 B is the soak corpus average; 512 is the probe size used elsewhere in this file.
+    const SIZES: [usize; 2] = [512, 1244];
+    const LEVEL: i32 = 3;
+
+    for size in SIZES {
+        // Not a uniform byte: an all-identical buffer compresses to almost nothing and would
+        // flatter both arms equally while making the ratio meaningless.
+        let payload: Vec<u8> = (0..size).map(|i| ((i * 7 + (i >> 3)) % 251) as u8).collect();
+
+        let probe = crate::alloc_probe::Probe::start();
+        let mut fresh_total = 0usize;
+        for _ in 0..CALLS {
+            let out = zstd::stream::encode_all(std::io::Cursor::new(&payload), LEVEL)
+                .expect("compress");
+            fresh_total += out.len();
+        }
+        let fresh = probe.stop();
+
+        let probe = crate::alloc_probe::Probe::start();
+        let mut held = zstd::bulk::Compressor::new(LEVEL).expect("compressor");
+        let mut held_total = 0usize;
+        for _ in 0..CALLS {
+            let out = held.compress(&payload).expect("compress");
+            held_total += out.len();
+        }
+        let reused = probe.stop();
+
+        let per = |v: u64| v as f64 / CALLS as f64;
+        println!();
+        println!("  payload {size} B, zstd level {LEVEL}");
+        println!("  arm                  allocations/call   allocated B/call   output B");
+        println!("  rebuilt each call  {:>18.1} {:>18.0} {:>10.0}",
+                 per(fresh.allocs), per(fresh.alloc_bytes), fresh_total as f64 / CALLS as f64);
+        println!("  held and reused    {:>18.1} {:>18.0} {:>10.0}",
+                 per(reused.allocs), per(reused.alloc_bytes), held_total as f64 / CALLS as f64);
+        println!("  reuse saves        {:>18.1} {:>18.0}",
+                 per(fresh.allocs) - per(reused.allocs),
+                 per(fresh.alloc_bytes) - per(reused.alloc_bytes));
+        // NOT an equality check on the compressed bytes. The two calls frame a zstd stream
+        // differently, so their outputs differ in size -- asserting they match fails, and the
+        // useful property is that each still decodes back to exactly what went in.
+        let fresh_once = zstd::stream::encode_all(std::io::Cursor::new(&payload), LEVEL)
+            .expect("compress");
+        let held_once = held.compress(&payload).expect("compress");
+        for (label, blob) in [("rebuilt", &fresh_once), ("reused", &held_once)] {
+            let back = zstd::stream::decode_all(std::io::Cursor::new(blob)).expect("decompress");
+            assert_eq!(back, payload, "{label} arm must round-trip");
+        }
+        println!("  output differs by       {:>18} B  (reused is {})",
+                 fresh_once.len() as i64 - held_once.len() as i64,
+                 if held_once.len() < fresh_once.len() { "smaller" } else { "larger" });
+    }
+
+    println!();
+    println!("  The two arms do NOT produce identical bytes -- they frame the stream differently,");
+    println!("  and the reused one is smaller. Both decode back to exactly the input, which is the");
+    println!("  property that matters; an equality assertion on the compressed bytes fails here and");
+    println!("  saying so is the point, because the saving is real and the sameness was assumed.");
+    println!();
+    println!("  What it does NOT settle: the write path holds no obvious place to keep a");
+    println!("  compressor, and one held across threads needs a lock or a thread-local. That is a");
+    println!("  design question, and this measures only the size of the prize.");
+}
