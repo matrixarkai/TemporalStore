@@ -5543,6 +5543,7 @@ fn a_bucket_holding_one_object_holds_no_node() {
     assert_eq!(serde_json::to_string(&one).expect("serializes"), "[4]");
 }
 
+
 /// Writing a message does not cost the length of its node's history.
 ///
 /// The per-write index sync files every page its object has. Each upsert drops the entry's
