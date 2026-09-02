@@ -2434,6 +2434,36 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         except Exception:  # noqa: BLE001 - a scan failure must not stop the drain.
             return super()._idle_commit_candidate_records(scope)
 
+    def read_all(self) -> list[Json]:
+        """Read through the native record log, not MatrixArkLocalAdapter's JSONL log.
+
+        `MatrixArkLocalAdapter` precedes the direct mixins in this class's MRO and also
+        defines `read_all`, so its JSONL implementation won here -- and on a native backend
+        there is no JSONL log, so it returned ZERO records. Every reader built on read_all
+        (get / get_all / update / history / keyed recall) therefore read empty while the
+        records sat durably in the record log; the same inherited method is correct on the
+        JSONL backend, which is why only the native backends looked broken.
+
+        Only `read_all` collided: `read_all_without_disk_fallback_recovery` is defined solely
+        on `_TemporalDirectReadMixin` and already resolved correctly, so delegating to it
+        reproduces the direct read exactly without reordering bases (which would silently
+        move every other method both classes define).
+
+        The live-view post-processing MUST be kept: `MatrixArkLocalAdapter.read_all` does not
+        just read, it replays persisted tenant policies and then filters the log down to live
+        records. Delegating to the raw direct read alone silently drops both -- forget/delete
+        tombstones stop being honoured (the subject's records stay visible after a forget) and
+        a TTL record never expires, because expiry is enforced on read and is never cached.
+        """
+        try:
+            from tools.matrixark_mcp_local_adapter import filter_live_memory_records
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            from matrixark_mcp_local_adapter import filter_live_memory_records
+        self._recover_serving_from_disk_fallback_if_needed(reason="read_all")
+        records = self.read_all_without_disk_fallback_recovery()
+        self._register_persisted_tenant_policies(records)
+        return filter_live_memory_records(records)
+
     def append(self, record: Json) -> None:
         self.append_many([record])
 

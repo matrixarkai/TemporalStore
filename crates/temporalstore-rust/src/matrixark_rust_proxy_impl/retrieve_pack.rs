@@ -5,7 +5,7 @@
 // shares parent use-imports + flat scope; no use-statements or mod wrapper).
 
 fn retrieve_context_pack_native(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     command: &RecordLogRequest,
 ) -> Result<Value, String> {
     let started = Instant::now();
