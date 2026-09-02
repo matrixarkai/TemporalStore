@@ -2210,28 +2210,43 @@ fn collect_command_index_items(
 ///  - non-page maps that ride only on the serialized index (TTL expiry, control-state
 ///    change/sketch/selection, context nodes/entities/embeddings), which no page entry
 ///    encodes.
-/// Each blob is `{"key": ..., "<map>": <value-or-null>}`; a null marks the key absent from
-/// that map (a tombstone). Opaque JSON so the index-log layer stays decoupled from the
-/// concrete `ShardState` field types.
+/// Each blob is `{"key": ..., "<map>": <value>}`, carrying ONLY the maps the key is actually
+/// in. A field left out means the same thing an explicit null used to: the key is absent from
+/// that map, a tombstone. `apply_key_state_field` cannot tell the two apart -- `None` and
+/// `Some(null)` take the same `remove_entry` arm -- so the null was never read, and it cost its
+/// own field name on every record for the life of the log.
+///
+/// That was most of the record. A write touching one ordinary key is in none of these thirteen
+/// maps, so every one was written as a null: measured on a 100,000-record store, the always-null
+/// fields were 308 bytes of a 656-byte index-log record.
+///
+/// Opaque JSON so the index-log layer stays decoupled from the concrete `ShardState` field types.
 fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
     keys.iter()
         .map(|key| {
-            serde_json::json!({
-                "key": key,
-                "features": shard.features.get(key),
-                "expires_at_ms": shard.expires_at_ms.get(key),
-                "control_state_changes": shard.control_state_changes.get(key),
-                "control_state_change_sketch": shard.control_state_change_sketch.get(key),
-                "control_state_selection": shard.control_state_selection.get(key),
-                "context_nodes": shard.context_nodes.get(key),
-                "context_events": shard.context_events.get(key),
-                "context_indexes": shard.context_indexes.get(key),
-                "context_audits": shard.context_audits.get(key),
-                "context_children": shard.context_children.get(key),
-                "context_summaries": shard.context_summaries.get(key),
-                "context_compressions": shard.context_compressions.get(key),
-                "context_entities": shard.context_entities.get(key),
-            })
+            let mut blob = serde_json::Map::new();
+            blob.insert("key".to_string(), serde_json::Value::String(key.clone()));
+            let mut put = |name: &str, value: Option<serde_json::Value>| {
+                if let Some(value) = value {
+                    if !value.is_null() {
+                        blob.insert(name.to_string(), value);
+                    }
+                }
+            };
+            put("features", shard.features.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("expires_at_ms", shard.expires_at_ms.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("control_state_changes", shard.control_state_changes.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("control_state_change_sketch", shard.control_state_change_sketch.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("control_state_selection", shard.control_state_selection.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_nodes", shard.context_nodes.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_events", shard.context_events.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_indexes", shard.context_indexes.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_audits", shard.context_audits.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_children", shard.context_children.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_summaries", shard.context_summaries.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_compressions", shard.context_compressions.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_entities", shard.context_entities.get(key).and_then(|v| serde_json::to_value(v).ok()));
+            serde_json::Value::Object(blob)
         })
         .collect()
 }
@@ -3884,5 +3899,51 @@ mod flag_default_doc_tests {
                 out.push(path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod key_state_shape_tests {
+    use super::*;
+
+    /// The property the capture side now relies on: a field LEFT OUT and a field written as
+    /// an explicit null mean the same thing to the apply side. If that ever stops being true,
+    /// omitting the nulls silently stops tombstoning keys on reload, and evicted membership
+    /// comes back from the pages.
+    #[test]
+    fn an_omitted_key_state_field_tombstones_exactly_like_an_explicit_null() {
+        let mut with_null: HashMap<String, u64> = HashMap::new();
+        with_null.insert("k".to_string(), 7);
+        apply_key_state_field(&mut with_null, "k", Some(&serde_json::Value::Null));
+
+        let mut omitted: HashMap<String, u64> = HashMap::new();
+        omitted.insert("k".to_string(), 7);
+        apply_key_state_field(&mut omitted, "k", None);
+
+        assert_eq!(with_null.get("k"), None, "an explicit null must remove the entry");
+        assert_eq!(omitted.get("k"), None, "an omitted field must remove it too");
+        assert_eq!(with_null, omitted);
+
+        // Not vacuous: a PRESENT value must still be inserted, so this cannot pass on an
+        // apply that removes everything.
+        let mut present: HashMap<String, u64> = HashMap::new();
+        apply_key_state_field(&mut present, "k", Some(&serde_json::json!(9)));
+        assert_eq!(present.get("k"), Some(&9));
+    }
+
+    #[test]
+    fn a_key_in_no_map_captures_only_its_key() {
+        // The common case: an ordinary write touches a key that is in none of the thirteen
+        // maps. Previously that produced thirteen nulls; now it produces nothing but the key.
+        let shard = ShardState::default();
+        let blobs = capture_key_states(&shard, &["m:0".to_string()]);
+        assert_eq!(blobs.len(), 1);
+        let object = blobs[0].as_object().expect("a blob is an object");
+        assert_eq!(object.get("key").and_then(|v| v.as_str()), Some("m:0"));
+        assert_eq!(
+            object.len(),
+            1,
+            "a key in no map should carry only its own name, got {object:?}"
+        );
     }
 }
