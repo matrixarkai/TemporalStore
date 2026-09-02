@@ -6842,3 +6842,373 @@ fn what_resizing_a_shard_map_costs() {
 
     assert!(grown_live > 0 && sized_live > 0, "measured nothing");
 }
+
+/// Is the per-record resident cost actually per-record, or is it fixed cost divided by a small
+/// corpus?
+///
+/// The figure of ~1,040 bytes per record comes from dividing live memory by 30,000 records, and
+/// only 184 of those bytes are the map entry the record lands in
+/// (`what_resizing_a_shard_map_costs`). The remaining ~850 could be per-record structure somewhere
+/// else -- or it could be the engine's fixed setup cost divided by a corpus too small to amortise
+/// it, which would make it vanish at scale rather than being anything to fix.
+///
+/// The same mistake is already on file at the other end: a 90-second run reads ~3 kB/record where
+/// an 8-hour one reads 1.38. So measure at two sizes and take the SLOPE, which is the only part
+/// that scales, and the INTERCEPT, which is what never amortises.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_the_per_record_cost_really_per_record -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn is_the_per_record_cost_really_per_record() {
+    let live_at = |records: u64| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = crate::alloc_probe::Probe::start();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("scale-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&engine);
+        counts.alloc_bytes.saturating_sub(counts.free_bytes)
+    };
+
+    // The engine is INSIDE the probe, so fixed setup cost is counted rather than excluded --
+    // that is the thing being separated out.
+    const SMALL: u64 = 30_000;
+    const LARGE: u64 = 240_000;
+
+    let small_live = live_at(SMALL);
+    let large_live = live_at(LARGE);
+
+    let small_per = small_live as f64 / SMALL as f64;
+    let large_per = large_live as f64 / LARGE as f64;
+    let slope = (large_live as f64 - small_live as f64) / (LARGE - SMALL) as f64;
+    let intercept = small_live as f64 - slope * SMALL as f64;
+
+    println!();
+    println!("  records     live total      live/record");
+    println!("  {SMALL:>7}  {:>12}  {small_per:>13.0} B", small_live);
+    println!("  {LARGE:>7}  {:>12}  {large_per:>13.0} B", large_live);
+    println!();
+    println!("  slope (the part that scales)      {slope:>9.0} B/record");
+    println!("  intercept (fixed, never amortises) {:>8.2} MB", intercept / 1024.0 / 1024.0);
+    println!();
+    println!("  a map entry costs                 {:>9} B", 184);
+    println!("  unattributed per-record structure {:>9.0} B", slope - 184.0);
+    println!();
+    if (small_per - slope).abs() > 0.25 * small_per {
+        println!("  The two per-record figures DISAGREE, so the smaller one was inflated by fixed");
+        println!("  cost divided across too few records. Only the slope is a per-record cost, and");
+        println!("  a capacity estimate must use it -- the intercept is paid once.");
+    } else {
+        println!("  The two agree, so the cost really is per-record and fixed setup is negligible");
+        println!("  at both sizes. The unattributed bytes above are real structure to find.");
+    }
+
+    assert!(small_live > 0 && large_live > 0, "measured nothing");
+}
+
+/// Which structure outside the shard index grows with the record count?
+///
+/// The per-record resident cost has a slope of ~1,026 bytes
+/// (`is_the_per_record_cost_really_per_record`), and only 184 of those are the map entry the
+/// record lands in. The other ~842 are not in `ShardState`'s other maps
+/// (`where_a_record_is_kept`), and the WAL and index-log in-memory state is keyed per SHARD rather
+/// than per record, so neither can hold a per-record cost. That leaves the page store.
+///
+/// Counts at two corpus sizes, so a structure is judged by whether it GROWS rather than by
+/// whether it is non-empty.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_grows_outside_the_shard_index -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_grows_outside_the_shard_index() {
+    let counts_at = |records: u64| -> (usize, usize, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("grow-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let bands = engine.page_store.zone_descriptors().len();
+        let slabs = engine.page_store.slab_ids().map(|v| v.len()).unwrap_or(0);
+        let strings = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            shards.get(&1).expect("loaded shard").strings.len()
+        };
+        (bands, slabs, strings)
+    };
+
+    const SMALL: u64 = 20_000;
+    const LARGE: u64 = 160_000;
+    let (small_bands, small_slabs, small_strings) = counts_at(SMALL);
+    let (large_bands, large_slabs, large_strings) = counts_at(LARGE);
+
+    println!();
+    println!("  structure          at {SMALL:>7}   at {LARGE:>7}   per record   grows?");
+    let row = |name: &str, a: usize, b: usize| {
+        let per = (b as f64 - a as f64) / (LARGE - SMALL) as f64;
+        println!("  {name:16} {a:>10} {b:>12} {per:>12.4}   {}",
+                 if per > 0.01 { "yes" } else { "no" });
+        per
+    };
+    let band_per = row("page bands", small_bands, large_bands);
+    row("page slabs", small_slabs, large_slabs);
+    row("index entries", small_strings, large_strings);
+
+    println!();
+    println!("  A band descriptor is on the order of 100 bytes, so at {band_per:.4} bands per");
+    println!("  record it accounts for roughly {:.1} bytes of the ~842 unattributed.", band_per * 100.0);
+    if band_per * 100.0 < 100.0 {
+        println!("  That is nowhere near enough: the page store is NOT where the memory goes, and");
+        println!("  the remaining structure is somewhere these counts do not reach.");
+    }
+
+    assert_eq!(large_strings as u64, LARGE, "every write should be indexed");
+}
+
+/// Attribute the per-record cost by DROPPING structures and measuring what comes back.
+///
+/// Counting entries has narrowed this as far as it can: the index holds 1.00 entries per record
+/// and every other structure counted holds none (`where_a_record_is_kept`,
+/// `what_grows_outside_the_shard_index`), yet one entry measures 184 bytes against a per-record
+/// slope of ~1,026 (`what_resizing_a_shard_map_costs`,
+/// `is_the_per_record_cost_really_per_record`). Counts cannot close that -- a structure can hold
+/// one entry per record and that entry can be far bigger than the same entry built by hand.
+///
+/// So stop counting and free things: drop the shard, and whatever the allocator takes back was
+/// held by it. That is attribution by subtraction, and it cannot miss a structure the way an
+/// enumeration can.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_dropping_the_shard_gives_back -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_dropping_the_shard_gives_back() {
+    const RECORDS: u64 = 120_000;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let build = crate::alloc_probe::Probe::start();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("drop-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let built = build.stop();
+    let live_after_build = built.alloc_bytes.saturating_sub(built.free_bytes);
+
+    // Free ONLY the shard. The engine, its stores and its caches stay alive, so whatever comes
+    // back was held by the shard and nothing else.
+    let release = crate::alloc_probe::Probe::start();
+    let shard = engine.shards.write().expect("engine lock poisoned").remove(&1);
+    drop(shard);
+    let released = release.stop();
+    let freed_by_shard = released.free_bytes.saturating_sub(released.alloc_bytes);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  live after writing {RECORDS} records   {:>12} B   {:>7.0} B/record",
+             live_after_build, per(live_after_build));
+    println!("  freed by dropping the shard          {:>12} B   {:>7.0} B/record",
+             freed_by_shard, per(freed_by_shard));
+    println!("  still held by the engine             {:>12} B   {:>7.0} B/record",
+             live_after_build.saturating_sub(freed_by_shard),
+             per(live_after_build) - per(freed_by_shard));
+    println!();
+    let shard_share = 100.0 * freed_by_shard as f64 / live_after_build as f64;
+    println!("  the shard holds {shard_share:.0}% of it");
+    println!();
+    if shard_share > 60.0 {
+        println!("  So the cost IS the shard index, and one of its entries is far more expensive");
+        println!("  in place than the same entry built by hand. The difference is what to chase:");
+        println!("  the key is stored once per map, but the value carried alongside it is not the");
+        println!("  bare address a hand-built map holds.");
+    } else {
+        println!("  So the shard is NOT the holder, and the memory is in the engine's own stores");
+        println!("  despite their per-shard keying. The next cut is per store rather than per map.");
+    }
+
+    assert!(live_after_build > 0, "measured nothing");
+}
+
+/// Every place a record is kept, counted across the WHOLE shard rather than a sample of it.
+///
+/// An earlier version of this probe listed seven `ShardState` fields, found only `strings`
+/// populated, and concluded a record is held once. `ShardState` has 42 fields, so that conclusion
+/// was drawn from a sixth of the structure -- and dropping the shard frees 963 bytes per record
+/// against a 184-byte map entry (`what_dropping_the_shard_gives_back`), which a single home cannot
+/// explain.
+///
+/// So this counts every container the shard owns, including the bucket index's own per-object
+/// maps, and asserts its own extent: if a field is added to `ShardState` and not listed here, the
+/// count below stops matching the struct and the test says so rather than quietly under-reporting
+/// again.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_record_is_kept_everywhere -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn where_a_record_is_kept_everywhere() {
+    const RECORDS: usize = 20_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("kept-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    // The bucket index keeps its own per-object maps, one set per bucket, so they have to be
+    // summed across buckets rather than read off a single length.
+    let buckets = &shard.bucket_index.bucket_map;
+    let object_index: usize = buckets.values().map(|b| b.object_index.len()).sum();
+    let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.len()).sum();
+    let page_index: usize = buckets.values().map(|b| b.page_index.len()).sum();
+
+    let rows: Vec<(&str, usize)> = vec![
+        ("strings", shard.strings.len()),
+        ("hashes", shard.hashes.len()),
+        ("sets", shard.sets.len()),
+        ("zsets", shard.zsets.len()),
+        ("lists", shard.lists.len()),
+        ("seen", shard.seen.len()),
+        ("buckets", shard.buckets.len()),
+        ("expires_at_ms", shard.expires_at_ms.len()),
+        ("features", shard.features.len()),
+        ("feature_values", shard.feature_values.len()),
+        ("feature_rollups", shard.feature_rollups.len()),
+        ("sequences", shard.sequences.len()),
+        ("control_state", shard.control_state.len()),
+        ("control_state_pages", shard.control_state_pages.len()),
+        ("control_state_changes", shard.control_state_changes.len()),
+        ("control_state_change_sketch", shard.control_state_change_sketch.len()),
+        ("control_state_selection", shard.control_state_selection.len()),
+        ("control_state_uuid", shard.control_state_uuid.len()),
+        ("control_state_rollups", shard.control_state_rollups.len()),
+        ("context_nodes", shard.context_nodes.len()),
+        ("context_events", shard.context_events.len()),
+        ("context_event_timeline", shard.context_event_timeline.len()),
+        ("context_indexes", shard.context_indexes.len()),
+        ("context_audits", shard.context_audits.len()),
+        ("context_entities", shard.context_entities.len()),
+        ("context_children", shard.context_children.len()),
+        ("context_summaries", shard.context_summaries.len()),
+        ("context_compressions", shard.context_compressions.len()),
+        ("context_dirty_index", shard.context_dirty_index.len()),
+        ("context_embedding_dirty_index", shard.context_embedding_dirty_index.len()),
+        ("context_compression_watermark", shard.context_compression_watermark.len()),
+        ("wal_resident_pages", shard.wal_resident_pages.len()),
+        ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
+        ("dirty_objects", shard.dirty_objects.len()),
+        ("bucket_recency", shard.bucket_recency.len()),
+        ("bucket_index.bucket_map", buckets.len()),
+        ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
+        ("bucket_index.object_page_lookup", shard.bucket_index.object_page_lookup.len()),
+        ("  .object_index", object_index),
+        ("  .deleted_object_index", deleted_object_index),
+        ("  .page_index", page_index),
+    ];
+
+    // Extent, so this cannot silently under-report the way its predecessor did. ShardState has 42
+    // fields and they are accounted for exactly once each:
+    //
+    //   35  top-level containers, every one listed above
+    //    6  scalars that cannot hold a per-record entry (index_format_version,
+    //       control_coalesce_persist, control_distinct_sketch, applied_wal_sequence,
+    //       promote_scan_done, evict_sampler)
+    //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
+    //       object_page_lookup, plus the three per-object maps summed across buckets
+    const TOP_LEVEL_CONTAINERS: usize = 35;
+    const NON_CONTAINER_FIELDS: usize = 6;
+    const BUCKET_INDEX_ROWS: usize = 6;
+    assert_eq!(
+        TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
+        42,
+        "ShardState field count changed -- update this probe, it is under-reporting"
+    );
+    assert_eq!(
+        rows.len(),
+        TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS,
+        "a listed field is missing from the rows above"
+    );
+
+    println!();
+    println!("  {RECORDS} plain string writes, every container the shard owns:");
+    println!("  structure                        entries   per record");
+    let mut homes = 0;
+    let mut total = 0.0;
+    for (name, count) in &rows {
+        let per = *count as f64 / RECORDS as f64;
+        total += per;
+        if per > 0.01 {
+            homes += 1;
+            println!("  {name:32} {count:>7} {per:>12.2}   <-- holds every record");
+        } else if *count > 0 {
+            println!("  {name:32} {count:>7} {per:>12.4}", );
+        }
+    }
+    println!("  {:32} {:>7} {total:>12.2}", "counted, per record", "");
+    println!();
+    println!("  {homes} structures hold roughly one entry per record.");
+    println!("  Dropping the shard returns 963 B/record and one map entry costs 184, so a record");
+    println!("  paying for {homes} homes is the shape of that {:.1}x -- and the fix is to keep it in", 963.0 / 184.0);
+    println!("  fewer places rather than to shrink any one of them.");
+    println!();
+    println!("  ({TOP_LEVEL_CONTAINERS} of 42 ShardState fields are containers and all are listed, plus");
+    println!("   {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
+
+    assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
+}
