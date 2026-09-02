@@ -335,64 +335,202 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(from = "BTreeMap<String, PageIndex>")]
-pub(super) struct PageIndexMap {
-    by_key: BTreeMap<u64, PageIndex>,
+pub(super) enum PageIndexMap {
+    /// A bucket holding nothing: no map, no node, no allocation.
+    #[default]
+    Empty,
+    /// One page, held inline.
+    ///
+    /// This is the ordinary bucket. Keys route one to a bucket, so a bucket holds a single page
+    /// unless its object has components -- and a `BTreeMap` holding one entry costs 1,496 live
+    /// bytes to carry a 120-byte page, because its node is sized for eleven. Measured over a
+    /// store of 2,000 keys, the containers were about 70% of the index's live heap.
+    ///
+    /// The shape `PageRefs` already uses, for the same reason.
+    One(u64, PageIndex),
+    /// Several pages -- an object with components -- which is where a map earns its node.
+    Many(BTreeMap<u64, PageIndex>),
+}
+
+/// Iterating a page index, whichever shape it is in.
+pub(super) enum PageIndexIter<'a> {
+    Empty,
+    One(std::iter::Once<(&'a u64, &'a PageIndex)>),
+    Many(std::collections::btree_map::Iter<'a, u64, PageIndex>),
+}
+
+impl<'a> Iterator for PageIndexIter<'a> {
+    type Item = (&'a u64, &'a PageIndex);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            PageIndexIter::Empty => None,
+            PageIndexIter::One(once) => once.next(),
+            PageIndexIter::Many(iter) => iter.next(),
+        }
+    }
+}
+
+pub(super) enum PageIndexValuesMut<'a> {
+    Empty,
+    One(std::iter::Once<&'a mut PageIndex>),
+    Many(std::collections::btree_map::ValuesMut<'a, u64, PageIndex>),
+}
+
+impl<'a> Iterator for PageIndexValuesMut<'a> {
+    type Item = &'a mut PageIndex;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            PageIndexValuesMut::Empty => None,
+            PageIndexValuesMut::One(once) => once.next(),
+            PageIndexValuesMut::Many(iter) => iter.next(),
+        }
+    }
 }
 
 impl PageIndexMap {
     pub(super) fn get(&self, key: &u64) -> Option<&PageIndex> {
-        self.by_key.get(key)
+        match self {
+            PageIndexMap::Empty => None,
+            PageIndexMap::One(handle, page) => (handle == key).then_some(page),
+            PageIndexMap::Many(map) => map.get(key),
+        }
     }
 
     pub(super) fn get_mut(&mut self, key: &u64) -> Option<&mut PageIndex> {
-        self.by_key.get_mut(key)
+        match self {
+            PageIndexMap::Empty => None,
+            PageIndexMap::One(handle, page) => (&*handle == key).then_some(page),
+            PageIndexMap::Many(map) => map.get_mut(key),
+        }
     }
 
     pub(super) fn remove(&mut self, key: &u64) -> Option<PageIndex> {
-        self.by_key.remove(key)
+        match self {
+            PageIndexMap::Empty => None,
+            PageIndexMap::One(handle, _) => {
+                if handle != key {
+                    return None;
+                }
+                match std::mem::replace(self, PageIndexMap::Empty) {
+                    PageIndexMap::One(_, page) => Some(page),
+                    _ => unreachable!("just matched One"),
+                }
+            }
+            PageIndexMap::Many(map) => {
+                let removed = map.remove(key);
+                self.shrink();
+                removed
+            }
+        }
     }
 
-    /// File a page and return the handle it is filed under.
     /// Install a page and return its handle.
     ///
     /// A page with the same identity replaces the one already there rather than adding beside it,
     /// which is what the rendered string key used to do by being the key.
     pub(super) fn insert(&mut self, page: PageIndex) -> u64 {
         let handle = page_index_handle(&page);
-        self.by_key.insert(handle, page);
+        match self {
+            PageIndexMap::Empty => *self = PageIndexMap::One(handle, page),
+            PageIndexMap::One(existing, held) => {
+                if *existing == handle {
+                    *held = page;
+                } else {
+                    // A second page: this bucket has earned a map.
+                    let (first_handle, first) = match std::mem::replace(self, PageIndexMap::Empty) {
+                        PageIndexMap::One(first_handle, first) => (first_handle, first),
+                        _ => unreachable!("just matched One"),
+                    };
+                    let mut map = BTreeMap::new();
+                    map.insert(first_handle, first);
+                    map.insert(handle, page);
+                    *self = PageIndexMap::Many(map);
+                }
+            }
+            PageIndexMap::Many(map) => {
+                map.insert(handle, page);
+            }
+        }
         handle
     }
 
+    /// Return to an inline shape once a map no longer needs to be one.
+    ///
+    /// Without this, a bucket that briefly held two pages keeps a node for the rest of its life --
+    /// which is the cost this type exists to avoid.
+    fn shrink(&mut self) {
+        let len = match self {
+            PageIndexMap::Many(map) => map.len(),
+            _ => return,
+        };
+        match len {
+            0 => *self = PageIndexMap::Empty,
+            1 => {
+                let map = match std::mem::replace(self, PageIndexMap::Empty) {
+                    PageIndexMap::Many(map) => map,
+                    _ => unreachable!("just matched Many"),
+                };
+                let (handle, page) = map.into_iter().next().expect("length is one");
+                *self = PageIndexMap::One(handle, page);
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn len(&self) -> usize {
-        self.by_key.len()
+        match self {
+            PageIndexMap::Empty => 0,
+            PageIndexMap::One(..) => 1,
+            PageIndexMap::Many(map) => map.len(),
+        }
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.by_key.is_empty()
+        matches!(self, PageIndexMap::Empty)
     }
 
-    pub(super) fn iter(&self) -> std::collections::btree_map::Iter<'_, u64, PageIndex> {
-        self.by_key.iter()
+    pub(super) fn iter(&self) -> PageIndexIter<'_> {
+        match self {
+            PageIndexMap::Empty => PageIndexIter::Empty,
+            PageIndexMap::One(handle, page) => PageIndexIter::One(std::iter::once((handle, page))),
+            PageIndexMap::Many(map) => PageIndexIter::Many(map.iter()),
+        }
     }
 
-    pub(super) fn values(&self) -> std::collections::btree_map::Values<'_, u64, PageIndex> {
-        self.by_key.values()
+    pub(super) fn values(&self) -> impl Iterator<Item = &PageIndex> {
+        self.iter().map(|(_handle, page)| page)
     }
 
-    pub(super) fn values_mut(&mut self) -> std::collections::btree_map::ValuesMut<'_, u64, PageIndex> {
-        self.by_key.values_mut()
+    pub(super) fn values_mut(&mut self) -> PageIndexValuesMut<'_> {
+        match self {
+            PageIndexMap::Empty => PageIndexValuesMut::Empty,
+            PageIndexMap::One(_, page) => PageIndexValuesMut::One(std::iter::once(page)),
+            PageIndexMap::Many(map) => PageIndexValuesMut::Many(map.values_mut()),
+        }
     }
 
     pub(super) fn retain(&mut self, mut keep: impl FnMut(&u64, &mut PageIndex) -> bool) {
-        self.by_key.retain(|key, page| keep(key, page));
+        match self {
+            PageIndexMap::Empty => {}
+            PageIndexMap::One(handle, page) => {
+                let handle = *handle;
+                if !keep(&handle, page) {
+                    *self = PageIndexMap::Empty;
+                }
+            }
+            PageIndexMap::Many(map) => {
+                map.retain(|handle, page| keep(handle, page));
+                self.shrink();
+            }
+        }
     }
 }
 
 impl<'a> IntoIterator for &'a PageIndexMap {
     type Item = (&'a u64, &'a PageIndex);
-    type IntoIter = std::collections::btree_map::Iter<'a, u64, PageIndex>;
+    type IntoIter = PageIndexIter<'a>;
     fn into_iter(self) -> Self::IntoIter {
-        self.by_key.iter()
+        self.iter()
     }
 }
 
@@ -412,11 +550,10 @@ impl From<BTreeMap<String, PageIndex>> for PageIndexMap {
         // The handle is recomputed from the page, not read from the file and not assigned by a
         // counter. A counter would hand out different handles than the ones the lookup refs were
         // written with, and those refs are on disk too.
-        let mut by_key = BTreeMap::new();
-        for (_written_key, page) in flat {
-            by_key.insert(page_index_handle(&page), page);
-        }
-        Self { by_key }
+        //
+        // Built through `insert`, so a loaded index takes the same shape a written one does: a
+        // bucket that loads a single page must not come back holding a map.
+        flat.into_values().collect()
     }
 }
 
@@ -437,7 +574,6 @@ impl Serialize for PageIndexMap {
     {
         use serde::ser::SerializeMap;
         let mut entries: Vec<(String, &PageIndex)> = self
-            .by_key
             .values()
             .map(|page| (page_index_written_key(page), page))
             .collect();
