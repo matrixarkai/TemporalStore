@@ -3069,7 +3069,26 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         }
     }
     if removed {
-        shard.bucket_index.rebuild_object_page_lookup();
+        // Drop this object's own entries rather than rebuilding the lookup for the whole shard.
+        // The rebuild cloned every page in every bucket, so a single delete allocated in
+        // proportion to the store -- 409 allocations at 200 resident keys, 3,851 at 3,200 -- and
+        // deleting a store cost the square of its size.
+        //
+        // Except when the lookup is not established yet. The ref total counts as part of that:
+        // only a rebuild can set it, since a count that starts at "unknown" cannot be decremented
+        // into a right answer, and the load path fills the lookup without one. The rebuild this
+        // replaces was establishing the total on every delete, which hid that. So establish both
+        // here on the first delete that finds them unset, and take the cheap path thereafter --
+        // the same bargain the typed removal path makes.
+        if shard.bucket_index.object_page_lookup.is_empty()
+            || shard.bucket_index.object_component_page_refs.is_none()
+        {
+            shard.bucket_index.rebuild_object_page_lookup();
+        } else {
+            for kind in storage_model_kinds() {
+                shard.bucket_index.remove_object_from_page_lookup(kind, key);
+            }
+        }
     }
     removed
 }

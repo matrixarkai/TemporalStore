@@ -985,6 +985,36 @@ impl CoreIndex {
         }
     }
 
+    /// Drop every ref an object holds under one kind.
+    ///
+    /// The delete path used to call `rebuild_object_page_lookup` instead, which clears the whole
+    /// lookup, clones every page in every bucket into a vector, and re-inserts them -- so one
+    /// delete cost work proportional to the entire shard, and deleting a store cost the square of
+    /// it. Removing the object's own entry is the same result for a fraction of the work.
+    ///
+    /// Maintains `object_component_page_refs` exactly as the per-component removal above does,
+    /// because that counter is what lets the stats path avoid walking the shard.
+    pub(super) fn remove_object_from_page_lookup(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+    ) -> usize {
+        let Some(entry) = self.object_page_lookup.remove(model_id, object_key) else {
+            return 0;
+        };
+        let removed: usize = entry
+            .by_component
+            .iter()
+            .map(|component| component.refs.len())
+            .sum();
+        if removed > 0 {
+            if let Some(total) = self.object_component_page_refs.as_mut() {
+                *total = total.saturating_sub(removed);
+            }
+        }
+        removed
+    }
+
     pub(super) fn contains_object_page_address(
         &self,
         model_id: &str,
