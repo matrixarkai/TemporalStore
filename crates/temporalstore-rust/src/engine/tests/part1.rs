@@ -4396,6 +4396,83 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// How many map entries' worth of memory does one record actually occupy?
+///
+/// A record keeps ~1,040 bytes resident whatever kind it is
+/// (`what_a_records_kind_costs_resident`), and that number sets a node's ceiling at roughly 20M
+/// records on a 32 GB box. A record's primary home is one entry in `strings: HashMap<String,
+/// BlockAddress>`, so this measures what ONE such entry costs on its own and divides.
+///
+/// A ratio near 1 would mean the entry is simply expensive and the only fix is a smaller entry.
+/// A ratio well above 1 means the record is held in several places, and the fix is to hold it in
+/// fewer.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib how_many_map_entries_is_one_record -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn how_many_map_entries_is_one_record() {
+    use std::collections::HashMap;
+
+    const RECORDS: u64 = 20_000;
+
+    // A real address, produced by a real write, so the entry measured is the one the store keeps.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("floor-{index:08}"),
+                value: vec![b'v'; 1536],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let address = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().next().cloned().expect("a written page")
+    };
+
+    // The floor: the same key and the same address, in a map of their own.
+    let probe = crate::alloc_probe::Probe::start();
+    let mut bare: HashMap<String, crate::block_store::BlockAddress> =
+        HashMap::with_capacity(RECORDS as usize);
+    for index in 0..RECORDS {
+        bare.insert(format!("floor-{index:08}"), address.clone());
+    }
+    let counts = probe.stop();
+    let bare_live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+    std::hint::black_box(&bare);
+
+    let per_entry = bare_live as f64 / RECORDS as f64;
+    const RECORD_RESIDENT: f64 = 1040.0;   // measured by what_a_records_kind_costs_resident
+
+    println!();
+    println!("  one HashMap<String, BlockAddress> entry   {per_entry:>8.0} bytes");
+    println!("  a record resident in the engine           {RECORD_RESIDENT:>8.0} bytes");
+    println!("  ratio                                     {:>8.1}x",
+             RECORD_RESIDENT / per_entry);
+    println!();
+    if RECORD_RESIDENT / per_entry > 1.6 {
+        println!("  A record occupies several entries' worth. It is not that the entry is");
+        println!("  expensive -- the record is held in more than one place, and the ceiling moves");
+        println!("  by holding it in fewer rather than by shrinking any single structure.");
+    } else {
+        println!("  A record is about one entry. The entry itself is the cost, so the ceiling");
+        println!("  moves only by making the key or the address smaller.");
+    }
+
+    assert!(bare_live > 0, "measured nothing");
+}
+
 /// How much of a record's resident cost is the core index entry, and how much is its kind?
 ///
 /// A context node keeps ~1.34 kB resident and none of it is the payload
