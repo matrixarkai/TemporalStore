@@ -2392,7 +2392,7 @@ fn fold_delta_page_items(
         // The record's key is not carried into memory: the map assigns a handle, and the
         // record's spelling is only rebuilt when the index is written back out.
         bucket.page_index.insert(
-            PageIndex {
+            BlockIndex {
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: Arc::from(item.model_id.clone()),
                 component: item.component.clone().map(Arc::from),
@@ -3616,7 +3616,7 @@ fn object_manager_stats(
                             .bucket_index
                             .object_page_lookup
                             .values()
-                            .map(crate::engine::state::ObjectPageRefs::total_refs)
+                            .map(crate::engine::state::ObjectBlockRefs::total_refs)
                             .sum::<usize>()
                     }),
                     shard.dirty_objects.len(),
