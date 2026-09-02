@@ -4005,6 +4005,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # Set when records were appended to the cache without compacting it -- see
         # _compact_read_cache_if_dirty_locked.
         self._read_cache_dirty = False
+        # (record_type, field) -> {value: record}, kept current as records are appended so an
+        # embedding can find its owner without reading the whole set. None until first use.
+        self._embedding_owner_index: dict[tuple[str, str], dict[Any, Json]] | None = None
         self._read_cache_size = -1
         self._read_cache_mtime_ns = -1
         self._read_cache_source = "empty"
@@ -4524,6 +4527,27 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             except Exception:
                 pass
 
+    def _note_embedding_owners(self, records: list[Json]) -> None:
+        """Fold newly appended records into whichever owner buckets have been built.
+
+        Only existing buckets are updated: a (type, field) nobody has asked about is built
+        from a read when first needed, and includes these records by then. Later records
+        overwrite earlier ones, which is the newest-wins answer the backwards scan gave.
+        """
+        index = self._embedding_owner_index
+        if not index:
+            return
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            record_type = record.get("record_type")
+            for (indexed_type, field), bucket in index.items():
+                if indexed_type != record_type:
+                    continue
+                value = record.get(field)
+                if value is not None:
+                    bucket[value] = record
+
     def _compact_read_cache_if_dirty_locked(self) -> None:
         """Compact the cache if records were appended since the last compaction.
 
@@ -4586,6 +4610,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # land per attachment, so 50 attachments took 105 s against 12 s for 20.
                 self._read_cache_records.extend(records)
                 self._read_cache_dirty = True
+                self._note_embedding_owners(records)
                 durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
@@ -4849,10 +4874,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
-        records = drop_owner_derivable_postings(
-            records, resolve_owner=self._embedding_owner_resolver()
-        )
+        # One resolver for both, so the record set is read once per write rather than once per
+        # fold. Each resolver reads on first use and indexes; two of them read twice.
+        resolve_owner = self._embedding_owner_resolver()
+        records = fold_embedding_records(records, resolve_owner=resolve_owner)
+        records = drop_owner_derivable_postings(records, resolve_owner=resolve_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4888,10 +4914,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
-        records = drop_owner_derivable_postings(
-            records, resolve_owner=self._embedding_owner_resolver()
-        )
+        # One resolver for both, so the record set is read once per write rather than once per
+        # fold. Each resolver reads on first use and indexes; two of them read twice.
+        resolve_owner = self._embedding_owner_resolver()
+        records = fold_embedding_records(records, resolve_owner=resolve_owner)
+        records = drop_owner_derivable_postings(records, resolve_owner=resolve_owner)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -4931,28 +4958,30 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         The index is built per (record_type, field) on first use, and later records overwrite
         earlier ones, which is the same newest-wins answer the backwards scan gave.
         """
-        records: list[Json] | None = None
-        indexes: dict[tuple[str, str], dict[Any, Json]] = {}
-
         def resolve(record_type: str, field: str, ref_hash: Any) -> Json | None:
-            nonlocal records
-            if records is None:
-                try:
-                    records = self.read_all()
-                except Exception:
-                    records = []
-            key = (record_type, field)
-            index = indexes.get(key)
+            index = self._embedding_owner_index
             if index is None:
                 index = {}
-                for record in records:
+                self._embedding_owner_index = index
+            key = (record_type, field)
+            bucket = index.get(key)
+            if bucket is None:
+                # First question about this (type, field): build it from one read, then keep
+                # it current on every append. Rebuilding per write meant 765 resolvers and
+                # 400 full reads over twenty attachments.
+                bucket = {}
+                try:
+                    known = self.read_all()
+                except Exception:
+                    known = []
+                for record in known:
                     if record.get("record_type") != record_type:
                         continue
                     value = record.get(field)
                     if value is not None:
-                        index[value] = record
-                indexes[key] = index
-            return index.get(ref_hash)
+                        bucket[value] = record
+                index[key] = bucket
+            return bucket.get(ref_hash)
 
         return resolve
 
