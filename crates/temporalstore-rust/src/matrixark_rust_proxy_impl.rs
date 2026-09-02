@@ -21,8 +21,9 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    BatchExecuteRequest, BlockStoreOptions, Command, CommandResponse, ExecuteRequest,
-    TemporalEngine,
+    BatchExecuteRequest, BatchExecuteResponse, BlockStoreOptions, Command, CommandResponse,
+    ExecuteRequest, ExecuteResponse, ShardId, Status, TemporalEngine, TemporalStoreClient,
+    TemporalStoreTable,
 };
 use temporalstore_rust::{Config, SetConfigRequest};
 
@@ -1011,7 +1012,7 @@ fn monotonic_record_count_enabled() -> bool {
 // correct high sequence -> placement never regresses. Gated (default on;
 // MATRIXARK_MONOTONIC_RECORD_COUNT=0 restores prior behavior). Inert for async, whose
 // counter already advances monotonically (the clamp only ever raises a low write).
-fn clamp_record_count_value(engine: &TemporalEngine, key: &str, value: Vec<u8>) -> Vec<u8> {
+fn clamp_record_count_value(engine: &RecordStore, key: &str, value: Vec<u8>) -> Vec<u8> {
     if !monotonic_record_count_enabled() || !is_record_count_key(key) {
         return value;
     }
@@ -1031,7 +1032,7 @@ fn clamp_record_count_value(engine: &TemporalEngine, key: &str, value: Vec<u8>) 
     value
 }
 
-fn clamp_record_count_command(engine: &TemporalEngine, command: Command) -> Command {
+fn clamp_record_count_command(engine: &RecordStore, command: Command) -> Command {
     match command {
         Command::StringSet { key, value } if is_record_count_key(&key) => {
             let value = clamp_record_count_value(engine, &key, value);
@@ -1210,7 +1211,7 @@ fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
 /// always relied on. A location whose field is missing or empty is a stale index entry: the
 /// record was physically removed after its entry was written, and skipping it is the contract.
 fn fetch_indexed_payload_values(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     locations: &std::collections::BTreeSet<String>,
 ) -> Result<(Vec<String>, u64), String> {
@@ -1253,7 +1254,7 @@ fn fetch_indexed_payload_values(
 /// nine times the time, because a shard on the larger store is full and the whole thing was being
 /// decoded to reach five fields.
 fn fetch_shard_fields(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     key: String,
     fields: &[String],
 ) -> Result<BTreeMap<String, String>, String> {
@@ -1302,7 +1303,7 @@ fn fetch_shard_fields(
     }
 }
 
-fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, String>, String> {
+fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, String>, String> {
     if let Ok(cache) = hgetall_snapshot_cache().lock() {
         if let Some(cached) = cache.get(&key) {
             return Ok(cached.clone());
@@ -1571,7 +1572,7 @@ fn type_index_ready_key(record_hash_key: &str) -> String {
 /// sees a truncated list, and here that is not a slow answer but a wrong one: one of these callers
 /// decides which records a delete touches, so a missed chunk leaves records undeleted.
 fn locator_location_values(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     locator_key: &str,
     id: &str,
 ) -> Result<Vec<Value>, String> {
@@ -1693,7 +1694,7 @@ fn newest_locations(mut locations: Vec<String>, limit: Option<usize>) -> Vec<Str
 }
 
 fn type_index_payloads(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     allowed_types: &HashSet<String>,
     newest_by_type: Option<&BTreeMap<String, usize>>,
@@ -1787,7 +1788,7 @@ fn query_scope_bucket(query_scope: Option<&Value>) -> Option<String> {
 /// scopeless bucket, intersected with the requested types' locations when the type index can
 /// answer. `Ok(None)` = the scope index cannot answer; the caller walks (and backfills).
 fn scope_index_payloads(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     allowed_types: &HashSet<String>,
     bucket: &str,
@@ -1877,7 +1878,7 @@ fn scope_index_payloads(
 
 /// Persist a walk-built scope index and its ready-marker, once. Returns whether it wrote.
 fn persist_scope_index_backfill(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     entries_by_index_key: BTreeMap<String, Vec<(String, Vec<u8>)>>,
 ) -> Result<bool, String> {
@@ -1938,7 +1939,7 @@ fn record_id_linked(record: &Value, ids: &HashSet<String>) -> bool {
 /// id, so the locator covers them; tombstones and feedback point at an id without carrying it,
 /// and they are sparse). `Ok(None)` = compose cannot answer; the caller walks.
 fn id_scoped_payloads(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     allowed_types: &HashSet<String>,
     requested_ids: &[String],
@@ -1998,7 +1999,7 @@ fn id_scoped_payloads(
 
 /// Persist a walk-built index and its ready-marker, once. Returns whether it wrote.
 fn persist_type_index_backfill(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     entries_by_index_key: BTreeMap<String, Vec<(String, Vec<u8>)>>,
 ) -> Result<bool, String> {
@@ -2019,7 +2020,7 @@ fn persist_type_index_backfill(
 }
 
 fn scan_matrixark_candidates(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     command: &RecordLogRequest,
 ) -> Result<Value, String> {
     let count_key = required_option(command.count_key.clone(), "count_key")?;
@@ -2431,7 +2432,7 @@ fn encode_forget_survivors(original: &str, survivors: Vec<Value>) -> String {
 /// resurrecting -- the delete is a first-class WAL mutation, not a read-time filter. Leaving
 /// `count_key` untouched keeps forget idempotent and other scopes intact.
 fn forget_scope_records(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     count_key: &str,
     shard_size: u64,
@@ -2723,7 +2724,7 @@ const LOCATOR_FILING_LIST_FIELDS: &[&str] = &["ref_hashes", "source_event_ids", 
 /// filtered in place and written back, and `location_chunks` is untouched -- so no second opinion
 /// about how the list should be split can drift from the writer's.
 fn prune_locator_locations(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     stale: &BTreeMap<String, BTreeSet<(String, String)>>,
     commands: &mut Vec<Command>,
@@ -2843,7 +2844,7 @@ fn record_addressable_ids(record: &Value) -> Vec<String> {
 /// marker attests (it is stamped by the batch that writes the store's first record). Without it
 /// the caller must walk, because a missed field would leave a deleted record physically present.
 fn located_fields_for_ids(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     ids: &[String],
 ) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
@@ -2874,7 +2875,7 @@ fn located_fields_for_ids(
 }
 
 fn delete_records_by_ids(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     record_hash_key: &str,
     count_key: &str,
     shard_size: u64,
@@ -3205,7 +3206,7 @@ include!("matrixark_rust_proxy_impl/native_serving.rs");
 
 include!("matrixark_rust_proxy_impl/retrieve_pack.rs");
 fn execute_record_log_request(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     request: RecordLogRequest,
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
@@ -3688,13 +3689,13 @@ fn execute_record_log_request(
         }
         "matrixark_retrieve_context_pack" => {
             if matrixark_compact_snapshot_retrieve_enabled() {
-                retrieve_context_pack_output(&engine, &request, root)?
+                retrieve_context_pack_output(engine, &request, root)?
             } else {
-                json_output(retrieve_context_pack_native(&engine, &request)?, root)?
+                json_output(retrieve_context_pack_native(engine, &request)?, root)?
             }
         }
         "matrixark_retrieve_context_pack_full_scan" => {
-            json_output(retrieve_context_pack_native(&engine, &request)?, root)?
+            json_output(retrieve_context_pack_native(engine, &request)?, root)?
         }
         other => return Err(format!("unsupported op {other:?}")),
     };
@@ -3835,7 +3836,7 @@ fn value_output(value: String, root: PathBuf) -> RecordLogOutput {
 }
 
 fn hash_entries_output(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     key: String,
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
@@ -3878,8 +3879,111 @@ fn hash_entries_output(
     }
 }
 
-fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, TemporalEngine>> {
-    static ENGINE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, TemporalEngine>>> = OnceLock::new();
+/// Where a record-log request is actually served from.
+///
+/// `Local` is the historical behaviour: an embedded `TemporalEngine` under
+/// `record_log_root()`. It keeps the zero-dependency single-process dev path working.
+///
+/// `Remote` is the deployed topology the gateway is documented to use: commands are
+/// issued through the **ProxyService**, which resolves shard placement from the
+/// **metaserver** and forwards to the **datanode**. In this mode the CLI owns no
+/// storage at all — nothing is written under `/tmp`, and every gateway worker sees
+/// one shared store instead of a private per-worker one.
+///
+/// Selected by `MATRIXARK_TEMPORALSTORE_PROXY_ADDR`; unset keeps `Local`, so this cannot
+/// change the behaviour of an existing deployment. Deliberately NOT `TS_PROXY_ADDR`: that
+/// name is already exported on any host running the proxy or the client binaries, and
+/// reusing it would silently flip a colocated CLI into remote mode.
+#[derive(Clone)]
+enum RecordStore {
+    Local(TemporalEngine),
+    Remote(Box<TemporalStoreTable>),
+}
+
+impl std::fmt::Debug for RecordStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Names the variant only: which store answered is the thing a failing
+        // assertion needs, and neither inner type is Debug.
+        match self {
+            RecordStore::Local(_) => f.write_str("RecordStore::Local"),
+            RecordStore::Remote(_) => f.write_str("RecordStore::Remote"),
+        }
+    }
+}
+
+impl RecordStore {
+    fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
+        match self {
+            RecordStore::Local(engine) => engine.execute(request),
+            RecordStore::Remote(table) => match table.execute(request.command) {
+                Ok(response) => response,
+                Err(error) => ExecuteResponse {
+                    status: Status::error("record_log_remote_execute_failed", error.to_string()),
+                    response: CommandResponse::Empty,
+                },
+            },
+        }
+    }
+
+    /// Remote writes are committed by the datanode that owns the shard, so the
+    /// durability barrier lives there; the client call is the durable call.
+    fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
+        match self {
+            RecordStore::Local(engine) => engine.execute_durable(request),
+            RecordStore::Remote(_) => self.execute(request),
+        }
+    }
+
+    fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        match self {
+            RecordStore::Local(engine) => engine.batch_execute(request),
+            RecordStore::Remote(table) => match table.batch_execute(request.commands) {
+                Ok(response) => response,
+                Err(error) => BatchExecuteResponse {
+                    status: Status::error("record_log_remote_batch_failed", error.to_string()),
+                    responses: Vec::new(),
+                },
+            },
+        }
+    }
+
+    /// Make buffered writes visible to readers.
+    ///
+    /// Only an embedded engine has an unpublished index to flush. In remote mode the
+    /// write already landed in the datanode's own engine, which publishes its index
+    /// itself — so this is a no-op reporting zero bytes, not a failure.
+    fn publish_shard_index_snapshot_for_keys(
+        &self,
+        shard_id: ShardId,
+        selected_keys: impl IntoIterator<Item = String>,
+    ) -> Result<usize, Status> {
+        match self {
+            RecordStore::Local(engine) => {
+                engine.publish_shard_index_snapshot_for_keys(shard_id, selected_keys)
+            }
+            RecordStore::Remote(_) => Ok(0),
+        }
+    }
+
+    fn unload_shard(&self, shard_id: ShardId) {
+        // Only meaningful for an embedded engine; a remote store's shards are the
+        // datanode's to load and unload.
+        if let RecordStore::Local(engine) = self {
+            engine.unload_shard(shard_id);
+        }
+    }
+}
+
+/// The ProxyService address for remote mode, or `None` to serve locally.
+fn record_log_proxy_addr() -> Option<String> {
+    env::var("MATRIXARK_TEMPORALSTORE_PROXY_ADDR")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, RecordStore>> {
+    static ENGINE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, RecordStore>>> = OnceLock::new();
     ENGINE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -3951,7 +4055,7 @@ fn default_engine_cache_bytes() -> usize {
     grant
 }
 
-fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
+fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
     let root = record_log_root(request);
     {
         let cache = engine_cache()
@@ -3960,6 +4064,14 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         if let Some(engine) = cache.get(&root) {
             return Ok(engine.clone());
         }
+    }
+    if let Some(proxy_addr) = record_log_proxy_addr() {
+        let store = open_remote_store(request, &proxy_addr)?;
+        let mut cache = engine_cache()
+            .lock()
+            .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
+        cache.insert(root, store.clone());
+        return Ok(store);
     }
     std::fs::create_dir_all(&root).map_err(|error| {
         format!(
@@ -4097,11 +4209,82 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             }
         });
     }
+    let store = RecordStore::Local(engine);
     let mut cache = engine_cache()
         .lock()
         .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
-    cache.insert(root, engine.clone());
-    Ok(engine)
+    cache.insert(root, store.clone());
+    Ok(store)
+}
+
+/// Open the record log against the deployed tier: ProxyService -> metaserver -> datanode.
+///
+/// Topology comes from the metaserver via `open_table_from_meta`, so shard placement is
+/// the cluster's answer, not this process's guess. If the table is not registered yet we
+/// fall back to a single-shard table so a fresh cluster still serves, and let the client's
+/// own topology refresh correct it on the first write.
+fn open_remote_store(request: &RecordLogRequest, proxy_addr: &str) -> Result<RecordStore, String> {
+    let namespace = non_empty_or(&request.namespace, "deploy_ns").to_string();
+    let table = non_empty_or(&request.table, "deploy_table").to_string();
+    // The engine-library defaults (200ms) are tuned for key/value RPC; a context ingest
+    // batch through the proxy is far heavier, so use the proxy's own context timeout.
+    let io_timeout_ms = env_u64_any(
+        &[
+            "MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS",
+            "TS_PROXY_CONTEXT_IO_TIMEOUT_MS",
+        ],
+        30_000,
+    );
+    let connect_timeout_ms = env_u64_any(
+        &["MATRIXARK_TEMPORALSTORE_PROXY_CONNECT_TIMEOUT_MS"],
+        2_000,
+    );
+    // `request.metaserver` has, until now, only been hashed into a directory name. Feeding it
+    // to the client is what makes shard placement the cluster's answer rather than a guess:
+    // without a meta_addr the client cannot sync topology at all and every table silently
+    // collapses to one shard.
+    let meta_addr = non_empty_or(&request.metaserver, "").to_string();
+    let client = TemporalStoreClient::with_options(temporalstore_rust::ClientOptions {
+        proxy_addr: proxy_addr.to_string(),
+        meta_addr: if meta_addr.is_empty() {
+            None
+        } else {
+            Some(meta_addr)
+        },
+        io_timeout_ms,
+        connect_timeout_ms,
+        meta_sync_deadline_ms: env_u64_any(
+            &["MATRIXARK_TEMPORALSTORE_META_SYNC_DEADLINE_MS"],
+            2_000,
+        ),
+        ..Default::default()
+    });
+    let handle = match client.open_table_from_meta(namespace.clone(), table.clone()) {
+        Ok(handle) => handle,
+        Err(error) => {
+            // Once per process: the CLI serves a request stream, and one line per request
+            // would drown the log (and every distinct scope opens its own table).
+            static WARNED: OnceLock<()> = OnceLock::new();
+            if WARNED.set(()).is_ok() {
+                eprintln!(
+                    "matrixark_rust_proxy: metaserver topology sync for {namespace}.{table} \
+                     failed ({error}); falling back to a single-shard table on {proxy_addr}"
+                );
+            }
+            client.open_table(
+                namespace,
+                table,
+                temporalstore_rust::TableOptions {
+                    first_shard_id: DEFAULT_SHARD_ID,
+                    shard_count: 1,
+                    io_timeout_ms,
+                    connect_timeout_ms,
+                    ..Default::default()
+                },
+            )
+        }
+    };
+    Ok(RecordStore::Remote(Box::new(handle)))
 }
 
 fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
@@ -4162,6 +4345,14 @@ fn env_usize_any(names: &[&str], default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn env_u64_any(names: &[&str], default: u64) -> u64 {
+    names
+        .iter()
+        .find_map(|name| env::var(name).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
 fn env_i32_any(names: &[&str], default: i32) -> i32 {
     names
         .iter()
@@ -4170,7 +4361,7 @@ fn env_i32_any(names: &[&str], default: i32) -> i32 {
         .unwrap_or(default)
 }
 
-fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
+fn execute_empty(engine: &RecordStore, command: Command) -> Result<(), String> {
     // conformance monotonic serving sequence: never let a record_count write regress.
     let command = clamp_record_count_command(engine, command);
     let retrieve_cache_keys = match &command {
@@ -4235,7 +4426,7 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
 }
 
 fn execute_empty_batch_runtime(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     commands: Vec<Command>,
     invalidate_matrixark_scan_cache: bool,
 ) -> Result<(), String> {
@@ -4358,7 +4549,7 @@ fn execute_empty_batch_runtime(
     Ok(())
 }
 
-fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, String> {
+fn read_bytes(engine: &RecordStore, command: Command) -> Result<String, String> {
     let response = engine.execute(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
         command,
@@ -4381,7 +4572,7 @@ fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, Strin
     }
 }
 
-fn read_record_count(engine: &TemporalEngine, key: &str) -> Result<String, String> {
+fn read_record_count(engine: &RecordStore, key: &str) -> Result<String, String> {
     if let Ok(cache) = record_count_cache().lock() {
         if let Some(value) = cache.get(key) {
             return Ok(value.clone());
@@ -4402,7 +4593,7 @@ fn read_record_count(engine: &TemporalEngine, key: &str) -> Result<String, Strin
 }
 
 fn load_retrieve_candidate_snapshot(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     storage_prefix: &str,
     record_hash_key: &str,
     count: usize,
@@ -4516,7 +4707,7 @@ fn load_retrieve_candidate_snapshot(
 }
 
 fn retrieve_context_pack_output(
-    engine: &TemporalEngine,
+    engine: &RecordStore,
     request: &RecordLogRequest,
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
@@ -5044,6 +5235,18 @@ fn compare_scored_candidate(left: (f64, usize), right: (f64, usize)) -> std::cmp
 }
 
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
+    // Remote mode owns no local storage, so there is no directory to report. Name the tier
+    // that actually serves the request instead — reporting a /tmp path the process never
+    // touches is how the embedded store stayed invisible in the first place. This value is
+    // also the store cache key, and one table handle per namespace/table is exactly right
+    // when the datanode (not a per-prefix directory) is the store.
+    if let Some(proxy_addr) = record_log_proxy_addr() {
+        return PathBuf::from(format!(
+            "proxy://{proxy_addr}/{}/{}",
+            non_empty_or(&request.namespace, "deploy_ns"),
+            non_empty_or(&request.table, "deploy_table"),
+        ));
+    }
     if let Ok(root) = env::var("MATRIXARK_TEMPORALSTORE_RUST_ROOT") {
         return PathBuf::from(root);
     }
@@ -5391,6 +5594,7 @@ mod tests {
             root.join("bar-index"),
         );
         engine.load_shard(DEFAULT_SHARD_ID);
+        let engine = RecordStore::Local(engine);
 
         let mut clear = request("durability_barriers");
         clear.field = "reset".to_string();
@@ -5472,7 +5676,7 @@ mod tests {
     }
 
     fn typed_scan(
-        engine: &TemporalEngine,
+        engine: &RecordStore,
         storage_prefix: &str,
         types: &[&str],
         root: PathBuf,
@@ -5505,7 +5709,7 @@ mod tests {
     }
 
     fn append_one(
-        engine: &TemporalEngine,
+        engine: &RecordStore,
         storage_prefix: &str,
         sequence: u64,
         payload: &str,
@@ -5523,7 +5727,7 @@ mod tests {
     }
 
     fn pinned_scan(
-        engine: &TemporalEngine,
+        engine: &RecordStore,
         storage_prefix: &str,
         tenant: u64,
         user: u64,
@@ -7491,7 +7695,7 @@ mod tests {
         }
     }
 
-    fn forget_engine(root: &std::path::Path, role: &str) -> TemporalEngine {
+    fn forget_engine(root: &std::path::Path, role: &str) -> RecordStore {
         let engine = TemporalEngine::with_local_dirs(
             1 << 20,
             root.join(format!("{role}-cache")),
@@ -7499,7 +7703,7 @@ mod tests {
             root.join(format!("{role}-index")),
         );
         engine.load_shard(DEFAULT_SHARD_ID);
-        engine
+        RecordStore::Local(engine)
     }
 
     fn subject_scope(user_id: &str) -> Value {
@@ -7514,7 +7718,7 @@ mod tests {
         })
     }
 
-    fn seed_records(engine: &TemporalEngine, hash_key: &str, count_key: &str, fields: &[(&str, Value)]) {
+    fn seed_records(engine: &RecordStore, hash_key: &str, count_key: &str, fields: &[(&str, Value)]) {
         let mut commands = Vec::new();
         commands.push(Command::StringSet {
             key: count_key.to_string(),
@@ -7530,7 +7734,7 @@ mod tests {
         execute_empty_batch_runtime(engine, commands, true).expect("seed records");
     }
 
-    fn shard_fields(engine: &TemporalEngine, hash_key: &str) -> BTreeMap<String, String> {
+    fn shard_fields(engine: &RecordStore, hash_key: &str) -> BTreeMap<String, String> {
         clear_native_caches();
         hgetall_map(engine, format!("{hash_key}:000000")).expect("hgetall shard 0")
     }
