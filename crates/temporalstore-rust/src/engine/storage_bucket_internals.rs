@@ -901,14 +901,6 @@ pub(super) fn rebuild_bucket_page_ownership(
             });
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
-            Arc::from(format!(
-                "{}:{}:{}:{}:{}",
-                entry.kind,
-                entry.object_key,
-                entry.component.clone().unwrap_or_default(),
-                entry.address.page_slab_id,
-                entry.address.offset
-            )),
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
@@ -1440,7 +1432,7 @@ pub(super) fn upsert_bucket_index_page_with(
             classify_bucket_layout_in_place(bucket);
         }
     }
-    let page_ref_key = page_index_ref_key(&entry);
+    let mut page_ref_key: u64 = 0;
     // Give the address the id the entry is filed under, so one field answers for both. Without
     // this, a page whose address arrived without an object id would lose the fallback identity
     // computed for it.
@@ -1473,8 +1465,8 @@ pub(super) fn upsert_bucket_index_page_with(
         }
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
-        bucket.page_index
-            .insert(page_ref_key.clone(), page_index.clone());
+        // The handle the map assigns is what the lookup records, so the two cannot disagree.
+        page_ref_key = bucket.page_index.insert(page_index.clone());
         classify_bucket_layout_in_place(bucket);
         touched_buckets.push(routing_bucket);
     }
@@ -1614,7 +1606,7 @@ pub(super) fn sync_bucket_index_object_pages(
         bucket.in_memory = true;
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
-        let page_ref_key = page_index_ref_key(&entry);
+        let mut page_ref_key: u64 = 0;
         let page = PageIndex {
             object_key: entry.object_key,
             model_id: entry.kind,
@@ -1628,7 +1620,8 @@ pub(super) fn sync_bucket_index_object_pages(
             deleted: entry.deleted,
             log_backed: entry.log_backed,
         };
-        bucket.page_index.insert(Arc::clone(&page_ref_key), page.clone());
+        // The map assigns the handle; the lookup records the same one.
+        let page_ref_key = bucket.page_index.insert(page.clone());
         update_bucket_layout(bucket);
         // The bucket borrow has to end before the lookup, which borrows the index itself.
         if !lookup_needs_establishing {
@@ -2001,7 +1994,6 @@ pub(super) fn rebuild_bucket_first_index(
         bucket.in_memory |= true;
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
-            page_index_ref_key(&entry),
             PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,

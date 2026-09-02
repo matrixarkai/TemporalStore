@@ -2389,10 +2389,9 @@ fn fold_delta_page_items(
                 ..BucketNode::default()
             });
         bucket.object_index.insert(item.object_id);
+        // The record's key is not carried into memory: the map assigns a handle, and the
+        // record's spelling is only rebuilt when the index is written back out.
         bucket.page_index.insert(
-            // The record carries an owned String; the in-memory structures share one allocation,
-            // so it is converted once here as the page is installed.
-            std::sync::Arc::from(item.page_ref_key.as_str()),
             PageIndex {
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: Arc::from(item.model_id.clone()),

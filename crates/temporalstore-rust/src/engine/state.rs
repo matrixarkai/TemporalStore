@@ -320,7 +320,154 @@ pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
 /// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
 /// page, instead of each of the three keeping its own copy of the same ~117-byte string.
-pub(super) type PageIndexMap = BTreeMap<Arc<str>, PageIndex>;
+/// Pages of one bucket, keyed by an id assigned when the page is filed.
+///
+/// The key used to be a rendered string of the page's identity and address -- 45.6 B a page, and
+/// three quarters of what a page cost on the heap. It was never read as a name: every lookup goes
+/// through a ref this map handed out, and a rewrite produces a different key while leaving one
+/// entry, so identity comes from the lookup rather than from key equality.
+///
+/// Serializes as the string map it always was. The key is rebuilt from the value, which carries
+/// every part of it, and the handle is recomputed from the page on load.
+///
+/// The handle is NOT free to choose: the lookup's refs hold handles and the lookup is written to
+/// disk, so a handle has to mean the same page in every process that reads the file. Assigning
+/// them from a counter compiled, round-tripped, and lost an object on the first reload.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(from = "BTreeMap<String, PageIndex>", into = "BTreeMap<String, PageIndex>")]
+pub(super) struct PageIndexMap {
+    by_key: BTreeMap<u64, PageIndex>,
+}
+
+impl PageIndexMap {
+    pub(super) fn get(&self, key: &u64) -> Option<&PageIndex> {
+        self.by_key.get(key)
+    }
+
+    pub(super) fn get_mut(&mut self, key: &u64) -> Option<&mut PageIndex> {
+        self.by_key.get_mut(key)
+    }
+
+    pub(super) fn remove(&mut self, key: &u64) -> Option<PageIndex> {
+        self.by_key.remove(key)
+    }
+
+    /// File a page and return the handle it is filed under.
+    /// Install a page and return its handle.
+    ///
+    /// A page with the same identity replaces the one already there rather than adding beside it,
+    /// which is what the rendered string key used to do by being the key.
+    pub(super) fn insert(&mut self, page: PageIndex) -> u64 {
+        let handle = page_index_handle(&page);
+        self.by_key.insert(handle, page);
+        handle
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.by_key.len()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.by_key.is_empty()
+    }
+
+    pub(super) fn iter(&self) -> std::collections::btree_map::Iter<'_, u64, PageIndex> {
+        self.by_key.iter()
+    }
+
+    pub(super) fn values(&self) -> std::collections::btree_map::Values<'_, u64, PageIndex> {
+        self.by_key.values()
+    }
+
+    pub(super) fn values_mut(&mut self) -> std::collections::btree_map::ValuesMut<'_, u64, PageIndex> {
+        self.by_key.values_mut()
+    }
+
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&u64, &mut PageIndex) -> bool) {
+        self.by_key.retain(|key, page| keep(key, page));
+    }
+}
+
+impl<'a> IntoIterator for &'a PageIndexMap {
+    type Item = (&'a u64, &'a PageIndex);
+    type IntoIter = std::collections::btree_map::Iter<'a, u64, PageIndex>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.by_key.iter()
+    }
+}
+
+/// Collecting pages assigns handles, the same as inserting them one at a time.
+impl FromIterator<PageIndex> for PageIndexMap {
+    fn from_iter<I: IntoIterator<Item = PageIndex>>(pages: I) -> Self {
+        let mut map = Self::default();
+        for page in pages {
+            map.insert(page);
+        }
+        map
+    }
+}
+
+impl From<BTreeMap<String, PageIndex>> for PageIndexMap {
+    fn from(flat: BTreeMap<String, PageIndex>) -> Self {
+        // The handle is recomputed from the page, not read from the file and not assigned by a
+        // counter. A counter would hand out different handles than the ones the lookup refs were
+        // written with, and those refs are on disk too.
+        let mut by_key = BTreeMap::new();
+        for (_written_key, page) in flat {
+            by_key.insert(page_index_handle(&page), page);
+        }
+        Self { by_key }
+    }
+}
+
+impl From<PageIndexMap> for BTreeMap<String, PageIndex> {
+    fn from(map: PageIndexMap) -> Self {
+        map.by_key
+            .into_values()
+            .map(|page| (page_index_written_key(&page), page))
+            .collect()
+    }
+}
+
+/// The key this map writes, rebuilt from the page it is stored against.
+///
+/// The same spelling the map used to hold, so a dump written now reads the same as one written
+/// before. Shared with the replay log so the two cannot drift.
+/// The in-memory handle for a page: its identity, hashed.
+///
+/// Derived rather than assigned, because handles are written to disk inside the lookup's refs.
+/// Two processes holding the same page must compute the same handle or those refs point at
+/// nothing -- which is what a counter did, silently, until a reload lost an object.
+///
+/// Hashes exactly the fields [`page_index_written_key`] renders, so the handle and the written
+/// key always name the same page. Equal identity therefore lands on one slot, which is also how
+/// this map keeps a rewrite from accumulating a second entry for the same page.
+pub(super) fn page_index_handle(page: &PageIndex) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    page.model_id.hash(&mut hasher);
+    page.object_key.hash(&mut hasher);
+    page.component.as_deref().hash(&mut hasher);
+    page.address.page_slab_id.hash(&mut hasher);
+    page.address.offset.hash(&mut hasher);
+    page.address.length.hash(&mut hasher);
+    page.address.page_id().unwrap_or_default().hash(&mut hasher);
+    page.address.generation().unwrap_or_default().hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(super) fn page_index_written_key(page: &PageIndex) -> String {
+    crate::index_log::page_ref_key_from_parts(
+        &page.model_id,
+        &page.object_key,
+        page.component.as_deref(),
+        page.address.page_slab_id,
+        page.address.offset,
+        page.address.length,
+        page.address.page_id().unwrap_or_default(),
+        page.address.generation().unwrap_or_default(),
+    )
+}
 /// One entry per OBJECT, with its components nested inside.
 ///
 /// This replaced two maps keyed by overlapping composites -- (model, object) and
@@ -641,7 +788,7 @@ impl From<PageRefs> for Vec<PageLookupRef> {
 pub(super) struct PageLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
-    pub(super) page_ref_key: Arc<str>,
+    pub(super) page_ref_key: u64,
 }
 
 /// Rust-native core index mirroring the shape:
@@ -714,7 +861,7 @@ impl CoreIndex {
             .iter()
             .flat_map(|(routing_bucket, bucket)| {
                 bucket.page_index.iter().map(move |(page_ref_key, page)| {
-                    (*routing_bucket, page_ref_key.clone(), page.clone())
+                    (*routing_bucket, *page_ref_key, page.clone())
                 })
             })
             .collect::<Vec<_>>();
@@ -723,12 +870,13 @@ impl CoreIndex {
         }
     }
 
-    /// Takes the key by shared pointer: both lookups clone the `Arc`, not the string, so the
-    /// three structures that point at a page hold one allocation between them.
+    /// Takes the handle the page index filed this page under, so the two cannot name different
+    /// things. It used to take the rendered key by shared pointer; the key is a number now and
+    /// costs nothing to copy.
     pub(super) fn insert_object_page_lookup(
         &mut self,
         routing_bucket: u32,
-        page_ref_key: Arc<str>,
+        page_ref_key: u64,
         page: &PageIndex,
     ) {
         if page.deleted {
@@ -975,7 +1123,7 @@ mod component_lookup_tests {
         for (i, component) in components.iter().enumerate() {
             index.insert_object_page_lookup(
                 i as u32,
-                Arc::from(format!("p{i}").as_str()),
+                i as u64,
                 &page(object, *component),
             );
         }
@@ -1037,11 +1185,11 @@ mod component_lookup_tests {
         for i in 0..3u32 {
             index.insert_object_page_lookup(
                 i,
-                Arc::from(format!("p{i}").as_str()),
+                i as u64,
                 &page("k", Some("dup")),
             );
         }
-        index.insert_object_page_lookup(9, Arc::from("p9"), &page("k", Some("keep")));
+        index.insert_object_page_lookup(9, 9, &page("k", Some("keep")));
         index.remove_object_page_lookup_entry("hash", "k", Some("dup"));
         assert_eq!(components_left(&index, "k"), vec![Some("keep".to_string())]);
     }

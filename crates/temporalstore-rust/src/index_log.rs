@@ -210,6 +210,33 @@ pub struct IndexDeltaRecord {
     pub key_states: Vec<serde_json::Value>,
 }
 
+/// The key a page is written under, from its parts.
+///
+/// One definition, called from the page index's serialization and from the replay log, so the two
+/// cannot drift into different spellings of the same page.
+pub fn page_ref_key_from_parts(
+    kind: &str,
+    object_key: &str,
+    component: Option<&str>,
+    page_slab_id: u64,
+    offset: u64,
+    length: u64,
+    page_id: u64,
+    generation: u64,
+) -> String {
+    format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}",
+        kind,
+        object_key,
+        component.unwrap_or(""),
+        page_slab_id,
+        offset,
+        length,
+        page_id,
+        generation
+    )
+}
+
 /// Fold an ordered stream of delta items onto a base map keyed by `(routing_bucket,
 /// page_ref_key)`. Later items win; a `deleted` tombstone removes the key. This is the
 /// pure replay step: `base` is the page-index projection of the base snapshot and the
