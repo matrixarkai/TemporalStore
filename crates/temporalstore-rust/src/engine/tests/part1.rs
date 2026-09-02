@@ -7212,3 +7212,90 @@ fn where_a_record_is_kept_everywhere() {
 
     assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
 }
+
+/// What a bounded routing-slot range would save a one-box node.
+///
+/// A record is kept in seven places (`where_a_record_is_kept_everywhere`), and four of them --
+/// the slot map, slot recency, the object index and the page index -- hold one entry per record
+/// only because each record gets its own routing slot. That happens when a shard has the default
+/// full-u32 slot range, which is what a node with no meta server to assign it one inherits: the
+/// live one-box soak node reports routing_slot_count 4,294,967,295 and a dirty slot count equal
+/// to its object count.
+///
+/// A meta-server-managed shard gets 0..1023 instead. This loads the same corpus both ways and
+/// counts, so the saving is measured rather than argued.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_bounded_slot_range_saves() {
+    const RECORDS: usize = 40_000;
+
+    let run = |end_routing_bucket: u32| -> (usize, usize, usize, usize, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = crate::alloc_probe::Probe::start();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        let load = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: Some(1),
+            shard_uri: "local://shard/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket,
+            readonly: false,
+            table_name: String::new(),
+        });
+        assert!(load.status.ok, "load: {:?}", load.status);
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("slot-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let buckets = &shard.bucket_index.bucket_map;
+        let objects: usize = buckets.values().map(|b| b.object_index.len()).sum();
+        let pages: usize = buckets.values().map(|b| b.page_index.len()).sum();
+        (buckets.len(), shard.bucket_recency.len(), objects, pages, live)
+    };
+
+    let (wide_slots, wide_recency, wide_objects, wide_pages, wide_live) = run(u32::MAX);
+    let (narrow_slots, narrow_recency, narrow_objects, narrow_pages, narrow_live) = run(1023);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  {RECORDS} records, same corpus, two slot ranges");
+    println!("  structure            0..u32::MAX      0..1023");
+    println!("  slot map          {wide_slots:>13} {narrow_slots:>12}");
+    println!("  slot recency      {wide_recency:>13} {narrow_recency:>12}");
+    println!("  object index      {wide_objects:>13} {narrow_objects:>12}");
+    println!("  page index        {wide_pages:>13} {narrow_pages:>12}");
+    println!();
+    println!("  live memory       {:>11.0} B {:>10.0} B  per record",
+             per(wide_live), per(narrow_live));
+    println!("  bounding the range saves {:>6.0} B/record  ({:+.1}%)",
+             per(wide_live) - per(narrow_live),
+             100.0 * (per(wide_live) - per(narrow_live)) / per(wide_live));
+    println!();
+    println!("  The object and page indexes still hold one entry per record either way -- an");
+    println!("  object has to be findable. What collapses is the PER-SLOT overhead: one slot");
+    println!("  node per record becomes one per 1024 records, and slot recency with it.");
+
+    assert!(narrow_slots <= 1024, "a bounded range must not exceed its slot count");
+    assert_eq!(wide_objects, RECORDS, "every record should be indexed either way");
+    assert_eq!(narrow_objects, RECORDS, "every record should be indexed either way");
+}
