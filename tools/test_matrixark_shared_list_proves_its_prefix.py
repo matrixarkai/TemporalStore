@@ -92,20 +92,63 @@ class ASharedListCanProveItsPrefix(unittest.TestCase):
         with adapter_module._LOCAL_READ_CACHE_LOCK:
             adapter_module._LOCAL_READ_CACHE.clear()
 
-    def test_one_adapter_still_appends_its_tail(self):
-        """The path that already worked must keep working."""
-        with tempfile.TemporaryDirectory() as store:
-            _log, rewrites, total = _ingest(store, 1)
-            self.assertLessEqual(rewrites, 2,
-                                 "a single adapter should write the base once, then tails")
-            self.assertGreater(total, 0)
+    def _seeded(self, store):
+        """An adapter whose snapshot base is already on disk, with the list that produced it."""
+        log = Path(store) / "events.jsonl"
+        adapter = adapter_module.MatrixArkLocalAdapter(log)
+        for i in range(10):
+            adapter.append({"record_type": "context_document", "id": "doc-%d" % i,
+                            "node_path": "/n/%d" % i, "text": "some body text " * 20})
+        records = adapter.read_all()          # installs the base
+        return adapter, records
 
-    def test_several_adapters_stop_rewriting_the_whole_base(self):
+    def test_a_list_it_did_not_build_can_still_append_its_tail(self):
+        """The fix, asserted on one write rather than on a count over many.
+
+        epoch=None is how the process-wide list arrives -- shared between every adapter over this
+        log, so no instance can vouch for it from its own bookkeeping. Before the head recorded a
+        fingerprint, that meant rewriting the whole base. Counting rewrites across a whole ingest
+        turned out to depend on process state other tests leave behind, so this asserts the file
+        effect of a single call instead.
+        """
         with tempfile.TemporaryDirectory() as store:
-            _log, rewrites, _total = _ingest(store, 2)
-            self.assertLessEqual(rewrites, 2,
-                                 "the base was rewritten %d times; a shared list must be able to "
-                                 "prove its prefix from the head instead" % rewrites)
+            adapter, records = self._seeded(store)
+            base = adapter._durable_read_cache_path()
+            delta = adapter._durable_read_cache_delta_path()
+            base_before = base.stat().st_size
+            delta_before = delta.stat().st_size if delta.exists() else 0
+
+            longer = list(records) + [{"record_type": "context_document", "id": "doc-extra",
+                                       "node_path": "/n/extra", "text": "appended after the base"}]
+            adapter._write_durable_read_cache(
+                longer, adapter._jsonl_cache_signature_detail(), epoch=None)
+
+            self.assertEqual(base_before, base.stat().st_size,
+                             "the whole base was rewritten for a tail of one record")
+            self.assertGreater(delta.stat().st_size if delta.exists() else 0, delta_before,
+                               "the tail was not appended")
+
+    def test_a_list_that_is_not_a_continuation_rewrites_the_base(self):
+        """The other half. The fingerprint has to REFUSE as well as permit, or it proves nothing."""
+        with tempfile.TemporaryDirectory() as store:
+            adapter, records = self._seeded(store)
+            base = adapter._durable_read_cache_path()
+            base_before = base.read_bytes()
+
+            # same length as the persisted prefix plus one, but a different record at the position
+            # the head named -- so this list is NOT a continuation of what is on disk
+            diverged = [dict(r) for r in records]
+            diverged[-1] = {"record_type": "context_document", "id": "doc-different",
+                            "node_path": "/n/different", "text": "not what the head recorded"}
+            diverged.append({"record_type": "context_document", "id": "doc-extra2",
+                             "node_path": "/n/extra2", "text": "tail"})
+            adapter._durable_read_cache_state = None      # force the fingerprint path
+            adapter._write_durable_read_cache(
+                diverged, adapter._jsonl_cache_signature_detail(), epoch=None)
+
+            self.assertNotEqual(base_before, base.read_bytes(),
+                                "a list that is not a continuation was appended as a tail, which "
+                                "would leave the snapshot missing records")
 
     def test_a_cold_reader_is_served_from_the_snapshot_and_gets_everything(self):
         """The point of the snapshot. It was being discarded: its signature described a shorter
