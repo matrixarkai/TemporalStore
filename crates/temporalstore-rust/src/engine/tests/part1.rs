@@ -4396,6 +4396,498 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// Is a put expensive because it STORES, or because it EVICTS?
+///
+/// Storing a 1 KB page measured 51 allocations and 43.6 KB
+/// (`what_the_page_cache_costs_per_call`), which is a 43x amplification and too large to be the
+/// copy. That measurement used a cache too small to hold the working set, so every put also
+/// evicted. This separates the two: the same put into a cache with room to spare cannot be
+/// evicting.
+///
+/// It matters which it is. If storing is expensive, every write to the cache costs it. If
+/// EVICTING is expensive, only a cache under pressure pays -- which is every cache on a corpus
+/// larger than it, but the fix is an admission policy rather than a cheaper store.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_a_put_expensive_to_store_or_to_evict -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn is_a_put_expensive_to_store_or_to_evict() {
+    use matrixcache::CacheKey;
+
+    const ROUNDS: u64 = 200;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    let measure = |cache_bytes: usize, label: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            cache_bytes,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let cache = &engine.cache;
+
+        // Keys and buffers built outside the window; `put` takes both by value.
+        let mut pending: Vec<(CacheKey, Vec<u8>)> = (0..ROUNDS)
+            .map(|round| {
+                (
+                    CacheKey::page_with_slot(1, 2, round * 4096, 1024, Some(3)),
+                    vec![b'p'; 1024],
+                )
+            })
+            .collect();
+        // Warm: the first put touches one-off structures.
+        if let Some((key, value)) = pending.pop() {
+            let _ = cache.put(key, value);
+        }
+
+        let mut allocs = 0u64;
+        let mut bytes = 0u64;
+        let mut n = 0u64;
+        for (key, value) in pending.drain(..) {
+            let probe = crate::alloc_probe::Probe::start();
+            let stored = cache.put(key, value);
+            let counts = probe.stop();
+            assert!(stored.is_ok(), "{label}: the put must succeed");
+            allocs += counts.allocs;
+            bytes += counts.alloc_bytes;
+            n += 1;
+        }
+        let per_n = |v: u64| v as f64 / n as f64;
+        println!("  {label:38} {:>7.2} {:>9.0}", per_n(allocs), per_n(bytes));
+        (per_n(allocs), per_n(bytes))
+    };
+
+    println!();
+    println!("  cache size                              allocs     bytes   (per 1 KB put)");
+    // 200 pages of 1 KB need ~200 KB; 64 MB has room for all of them, 8 KB for none.
+    let (roomy_allocs, roomy_bytes) = measure(64 * 1024 * 1024, "64 MB (room to spare, no eviction)");
+    let (tight_allocs, tight_bytes) = measure(8 * 1024, "8 KB (evicts on every put)");
+
+    println!();
+    println!("  eviction adds {:+.2} allocations and {:+.0} bytes per put",
+             tight_allocs - roomy_allocs, tight_bytes - roomy_bytes);
+    if roomy_allocs > tight_allocs - roomy_allocs {
+        println!("  STORING dominates: the cost is paid by every put, pressure or not.");
+    } else {
+        println!("  EVICTING dominates: a cache with room is cheap and one under pressure is not,");
+        println!("  so the fix is to stop admitting pages that will be evicted before they are");
+        println!("  read again, rather than to make the store itself cheaper.");
+    }
+
+    assert!(roomy_allocs > 0.0 && tight_allocs > 0.0, "measured nothing");
+    let _ = (roomy_bytes, tight_bytes);
+}
+
+/// Does a missed lookup pay for tiers that hold nothing?
+///
+/// A cache miss costs 18 allocations (`what_the_page_cache_costs_per_call`), which contradicts
+/// `get_with_tier`'s own claim that a miss "releases the lock having touched nothing". One
+/// candidate: the lookup walks memory, then pmem, then SSD, and the SSD tier builds its key as a
+/// String before asking -- so a tier with no capacity still costs something to consult.
+///
+/// `disk_cache_tier: false` zeroes the pmem and SSD capacities, which is what a one-box or raft
+/// node runs with. If the miss gets cheaper, walking dead tiers is part of the 18.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_miss_pay_for_empty_tiers -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn does_a_miss_pay_for_empty_tiers() {
+    use matrixcache::CacheKey;
+
+    const ROUNDS: u64 = 200;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    let measure = |disk_cache_tier: bool, label: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+            8 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+            Default::default(),
+            disk_cache_tier,
+        );
+        engine.load_shard(1);
+        let cache = &engine.cache;
+
+        // Keys built outside the window: this measures the lookup, not the key.
+        let absent: Vec<CacheKey> = (0..ROUNDS)
+            .map(|round| CacheKey::page_with_slot(1, 3, 5_000_000 + round * 4096, 1024, Some(4)))
+            .collect();
+        // Warm whatever one-off structures the first lookup touches.
+        let _ = cache.get(&absent[0]);
+
+        let mut allocs = 0u64;
+        let mut bytes = 0u64;
+        for key in &absent {
+            let probe = crate::alloc_probe::Probe::start();
+            let got = cache.get(key);
+            let counts = probe.stop();
+            assert!(matches!(got, Ok(None)), "{label}: this key must be absent");
+            allocs += counts.allocs;
+            bytes += counts.alloc_bytes;
+        }
+        println!("  {label:34} {:>7.2} {:>8.0}", per(allocs), per(bytes));
+        (allocs, bytes)
+    };
+
+    println!();
+    println!("  cache shape                       allocs    bytes   (per missed lookup)");
+    let (with_disk, _) = measure(true, "memory + pmem + ssd tiers");
+    let (memory_only, _) = measure(false, "memory only (one-box / raft)");
+
+    println!();
+    let saved = per(with_disk) - per(memory_only);
+    if saved > 0.5 {
+        println!("  Walking the empty disk tiers costs {saved:.2} allocations per missed lookup.");
+        println!("  A one-box or raft node has those tiers switched off already, so it does not");
+        println!("  pay this -- but a shared-storage node consults them on every miss.");
+    } else {
+        println!("  The disk tiers are not the cost: a miss allocates about the same either way,");
+        println!("  so the {:.0} allocations are in the memory-tier lookup itself.", per(memory_only));
+    }
+
+    assert!(with_disk > 0, "measured nothing");
+    assert!(memory_only > 0, "measured nothing");
+}
+
+/// What the CACHE costs, split into the three calls a page-read miss makes.
+///
+/// A miss spends ~60 allocations and ~86 KB inside the cache against 13 allocations and 1.5 KB
+/// actually reading the page (`where_a_page_read_miss_allocates`). That is the read path's real
+/// memory cost, and 60 is too many to guess at: this splits it into building the key, the lookup
+/// that misses, and the put that stores the page.
+///
+/// Keys and buffers are built BEFORE the measured window -- `put` takes both by value, and
+/// counting their construction would attribute the caller's work to the cache.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_page_cache_costs_per_call -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_the_page_cache_costs_per_call() {
+    use matrixcache::CacheKey;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let cache = &engine.cache;
+
+    const ROUNDS: u64 = 100;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    // --- building the key -----------------------------------------------------------------
+    let mut key_allocs = 0u64;
+    let mut key_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let probe = crate::alloc_probe::Probe::start();
+        let key = CacheKey::page_with_slot(1, 0, round * 4096, 1024, Some(7));
+        let counts = probe.stop();
+        std::hint::black_box(&key);
+        key_allocs += counts.allocs;
+        key_bytes += counts.alloc_bytes;
+    }
+
+    // --- a lookup that misses -------------------------------------------------------------
+    let absent: Vec<CacheKey> = (0..ROUNDS)
+        .map(|round| CacheKey::page_with_slot(1, 9, 1_000_000 + round * 4096, 1024, Some(7)))
+        .collect();
+    let mut miss_allocs = 0u64;
+    let mut miss_bytes = 0u64;
+    for key in &absent {
+        let probe = crate::alloc_probe::Probe::start();
+        let got = cache.get(key);
+        let counts = probe.stop();
+        assert!(matches!(got, Ok(None)), "this key must not be present");
+        miss_allocs += counts.allocs;
+        miss_bytes += counts.alloc_bytes;
+    }
+
+    // --- storing a page -------------------------------------------------------------------
+    let mut pending: Vec<(CacheKey, Vec<u8>)> = (0..ROUNDS)
+        .map(|round| {
+            (
+                CacheKey::page_with_slot(1, 0, round * 4096, 1024, Some(7)),
+                vec![b'v'; 1024],
+            )
+        })
+        .collect();
+    let mut put_allocs = 0u64;
+    let mut put_bytes = 0u64;
+    for (key, value) in pending.drain(..) {
+        let probe = crate::alloc_probe::Probe::start();
+        let stored = cache.put(key, value);
+        let counts = probe.stop();
+        assert!(stored.is_ok(), "the put must succeed");
+        put_allocs += counts.allocs;
+        put_bytes += counts.alloc_bytes;
+    }
+
+    println!();
+    println!("  call                     allocs   bytes    (1 KB page, cache too small to hold it)");
+    println!("  CacheKey::page_with_slot {:>7.2} {:>7.0}", per(key_allocs), per(key_bytes));
+    println!("  get (misses)             {:>7.2} {:>7.0}", per(miss_allocs), per(miss_bytes));
+    println!("  put (stores + evicts)    {:>7.2} {:>7.0}", per(put_allocs), per(put_bytes));
+    println!("  ------------------------------------------");
+    println!("  sum                      {:>7.2} {:>7.0}",
+             per(key_allocs) + per(miss_allocs) + per(put_allocs),
+             per(key_bytes) + per(miss_bytes) + per(put_bytes));
+    println!();
+    println!("  The read path calls all three on every miss. Whichever dominates is where the");
+    println!("  read path's memory goes, and a page nothing will ask for again pays it for");
+    println!("  nothing.");
+
+    assert!(key_allocs + miss_allocs + put_allocs > 0, "measured nothing");
+}
+
+/// Where the 38 allocations of a page-read MISS actually go.
+///
+/// A hit costs 2 allocations and 92 bytes; a miss costs 38 and 141 KB for a 1 KB page
+/// (`what_a_page_read_costs_hit_against_miss`). On a corpus larger than the cache essentially
+/// every read misses, so the miss path is the one a deployment runs. This splits it into the
+/// three things it does -- the failed cache lookup, the block-store read, and the put that
+/// caches the result -- because each implies a different fix and 38 is too many to guess at.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_page_read_miss_allocates -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn where_a_page_read_miss_allocates() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("attrib-{index:03}"),
+                value: vec![b'v'; 1024],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let addresses: Vec<_> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().cloned().collect()
+    };
+    assert!(addresses.len() >= 8, "need several pages: {}", addresses.len());
+    let page_store = &engine.page_store;
+
+    const ROUNDS: u64 = 100;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    // The block-store read on its own: no cache involved at all.
+    let mut store_allocs = 0u64;
+    let mut store_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = page_store.read(address);
+        let counts = probe.stop();
+        assert!(got.is_ok(), "the page must read back from the block store");
+        store_allocs += counts.allocs;
+        store_bytes += counts.alloc_bytes;
+    }
+
+    // The whole miss, for the total these parts have to add up to.
+    let mut whole_allocs = 0u64;
+    let mut whole_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_bytes(&engine.cache, page_store, 1, address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back");
+        whole_allocs += counts.allocs;
+        whole_bytes += counts.alloc_bytes;
+    }
+
+    println!();
+    println!("  part                          allocs/read   bytes/read");
+    println!("  block-store read alone        {:>11.2} {:>12.0}",
+             per(store_allocs), per(store_bytes));
+    println!("  whole miss (read_page_bytes)  {:>11.2} {:>12.0}",
+             per(whole_allocs), per(whole_bytes));
+    println!("  ---------------------------------------------------------");
+    println!("  cache lookup + put + key      {:>11.2} {:>12.0}",
+             per(whole_allocs) - per(store_allocs), per(whole_bytes) - per(store_bytes));
+    println!();
+    if per(store_allocs) > per(whole_allocs) - per(store_allocs) {
+        println!("  the BLOCK STORE dominates: the read itself is the cost, and caching it is cheap.");
+    } else {
+        println!("  the CACHE dominates: reading the page is cheap and storing it is not, so an");
+        println!("  admission policy that declined to cache a page nothing will ask for again");
+        println!("  would remove most of a miss.");
+    }
+
+    assert!(store_allocs > 0, "measured nothing on the block-store read");
+    assert!(whole_allocs >= store_allocs,
+            "the whole miss cannot cost less than the read it contains");
+}
+
+/// What a page read costs on a HIT against a MISS.
+///
+/// `read_page_shared` exists so the node fetch does not own a copy of the page, and on a cache
+/// hit that is exactly what happens: `get_shared` hands back an `Arc<[u8]>`. Its miss path is
+/// `read_page_bytes(..).map(Arc::from)`, and `Arc::<[u8]>::from(Vec<u8>)` allocates a second
+/// buffer and copies the page into it before dropping the Vec -- so a miss pays MORE than the
+/// owning read it delegates to, and the saving applies to hits only.
+///
+/// Whether that matters depends on the hit rate. A soak reading uniformly over 276k records
+/// measured the oldest 5,000 records and the newest 5,000 at indistinguishable latency (0.856 vs
+/// 0.864 ms), i.e. essentially always missing -- so on a corpus larger than the cache the miss
+/// path is the common one.
+///
+/// The cache clear sits OUTSIDE the measured window, so what is counted is the read alone.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_page_read_costs_hit_against_miss -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_page_read_costs_hit_against_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("page-read-{index:03}"),
+                value: vec![b'v'; 1024],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let address = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard
+            .strings
+            .values()
+            .next()
+            .cloned()
+            .expect("the writes above put at least one page in the index")
+    };
+
+    let cache = &engine.cache;
+    let page_store = &engine.page_store;
+
+    // Warm once: the first read of anything touches one-off structures that would otherwise be
+    // counted against whichever arm ran first.
+    let warm = super::read_page_shared(cache, page_store, 1, &address)
+        .expect("the page reads back");
+    assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
+
+    const ROUNDS: u64 = 100;
+
+    let mut hit_allocs = 0u64;
+    let mut hit_bytes = 0u64;
+    for _ in 0..ROUNDS {
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_shared(cache, page_store, 1, &address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back on the hit path");
+        hit_allocs += counts.allocs;
+        hit_bytes += counts.alloc_bytes;
+    }
+
+    // Misses the way they actually happen: a cache too small to hold the working set, read
+    // round-robin so each page has been evicted by the time it comes round again. Clearing the
+    // whole cache instead would fold the cost of rebuilding its internals into the read.
+    let small = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache-small"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    small.load_shard(1);
+    let addresses: Vec<_> = {
+        let shards = small.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().cloned().collect()
+    };
+    assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
+    let small_cache = &small.cache;
+    let small_pages = &small.page_store;
+    for address in &addresses {
+        let _ = super::read_page_shared(small_cache, small_pages, 1, address);
+    }
+
+    let mut miss_allocs = 0u64;
+    let mut miss_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_shared(small_cache, small_pages, 1, address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back on the miss path");
+        miss_allocs += counts.allocs;
+        miss_bytes += counts.alloc_bytes;
+    }
+
+    // And the owning read on a miss, for the comparison that matters: the shared read is
+    // supposed to be the cheaper of the two.
+    let mut owning_allocs = 0u64;
+    let mut owning_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_bytes(small_cache, small_pages, 1, address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back");
+        owning_allocs += counts.allocs;
+        owning_bytes += counts.alloc_bytes;
+    }
+
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+    println!();
+    println!("  path                       allocs/read   bytes/read");
+    println!("  shared, cache hit          {:>11.2} {:>12.0}", per(hit_allocs), per(hit_bytes));
+    println!("  shared, cache miss         {:>11.2} {:>12.0}", per(miss_allocs), per(miss_bytes));
+    println!("  owning (read_page_bytes)   {:>11.2} {:>12.0}", per(owning_allocs), per(owning_bytes));
+    println!();
+    println!(
+        "  a miss costs {:+.2} allocations and {:+.0} bytes against a hit",
+        per(miss_allocs) - per(hit_allocs),
+        per(miss_bytes) - per(hit_bytes)
+    );
+    println!(
+        "  the shared read costs {:+.2} allocations and {:+.0} bytes against the OWNING read it",
+        per(miss_allocs) - per(owning_allocs),
+        per(miss_bytes) - per(owning_bytes)
+    );
+    println!("  delegates to on a miss -- the Arc::from is the difference. Positive means the");
+    println!("  zero-copy read is the more expensive one whenever the page is not already cached.");
+
+    assert!(hit_allocs > 0, "measured nothing on the hit path");
+    assert!(
+        miss_allocs > hit_allocs,
+        "a miss must cost more than a hit, or the cache was not actually cleared"
+    );
+}
+
+
 
 /// Reading the page, or decoding it: which half of a node fetch costs the 15 allocations?
 ///
