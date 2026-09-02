@@ -935,3 +935,187 @@ mod disk_cache_tier_tests {
         std::env::remove_var("TS_CACHE_DISK_TIER");
     }
 }
+
+/// Env var: force the standalone/distributed topology explicitly.
+pub const TS_STANDALONE: &str = "TS_STANDALONE";
+/// Env var: opt into the distributed topology without naming a metaserver.
+pub const TS_DISTRIBUTED: &str = "TS_DISTRIBUTED";
+
+/// Values of `TS_META_ADDR` that name no metaserver at all.
+const META_ADDR_SENTINELS: [&str; 5] = ["", "local", "none", "standalone", "off"];
+
+/// Truthy exactly as the datanode has always read these flags.
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
+/// Is this node running as a **single node** - no metaserver, no peers?
+///
+/// This is the one implementation of that rule. The datanode decides whether to
+/// register with a metaserver from it, and [`DeploymentProfile`] names the node
+/// from it. A second copy would let the name in the log drift away from the
+/// topology it claims to describe, which is the failure this function exists to
+/// make impossible.
+///
+/// Single-node is the default: a fresh datanode with no configuration is one
+/// box. A node opts into the distributed topology with a real `TS_META_ADDR` or
+/// `TS_DISTRIBUTED=1`; `TS_STANDALONE` forces the answer and wins over both.
+pub fn single_node(meta_addr_raw: Option<&str>) -> bool {
+    let meta_addr_is_real = meta_addr_raw
+        .map(|value| !META_ADDR_SENTINELS.contains(&value.trim().to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    match std::env::var(TS_STANDALONE)
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("1") | Some("true") | Some("yes") | Some("on") => true,
+        Some("0") | Some("false") | Some("no") | Some("off") => false,
+        _ => !(meta_addr_is_real || env_truthy(TS_DISTRIBUTED)),
+    }
+}
+
+/// The **shape** a node is deployed in, as distinct from [`StorageBackend`],
+/// which says where durable bytes live.
+///
+/// The two are not the same axis, and conflating them is why a single process
+/// used to announce itself as `raft-replication`: one box and a raft member
+/// resolve to the same backend and hold the same tiers (memory plus this node's
+/// own disk), and differ in how many nodes there are. Shared storage is the
+/// only profile that adds a tier, because it is the only one with a distance
+/// between a node and the authoritative copy.
+///
+/// Derived, never configured. A profile an operator could set independently of
+/// the topology would be a second source of truth able to disagree with the one
+/// the node is actually running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploymentProfile {
+    /// One node, one process, no metaserver and no peers.
+    OneBox,
+    /// Several nodes, each holding its own durable copy, kept in step by the
+    /// raft log. This is what scaling out means by default here - shared
+    /// storage is the opt-in, raft is what a distributed node gets otherwise.
+    Raft,
+    /// Several nodes over one authoritative shared store.
+    SharedStorage,
+}
+
+impl DeploymentProfile {
+    /// Name the deployment from the backend it resolved and whether it stands alone.
+    pub fn resolve(backend: &StorageBackend, single_node: bool) -> Self {
+        match backend {
+            StorageBackend::MatrixObject { .. } | StorageBackend::SharedPath { .. } => {
+                Self::SharedStorage
+            }
+            StorageBackend::RaftReplication if single_node => Self::OneBox,
+            StorageBackend::RaftReplication => Self::Raft,
+        }
+    }
+
+    /// Short stable name, for logs and `/metrics`.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Self::OneBox => "one-box",
+            Self::Raft => "raft",
+            Self::SharedStorage => "shared-storage",
+        }
+    }
+
+    /// The tiers this profile actually keeps bytes in - the operator-facing
+    /// statement of what storage it needs provisioned.
+    pub fn durable_tiers(&self) -> &'static str {
+        match self {
+            Self::OneBox | Self::Raft => "memory + local disk",
+            Self::SharedStorage => "memory + local disk + shared store (disk cache tier)",
+        }
+    }
+
+    /// Does this profile span more than one node?
+    pub fn is_scaled(&self) -> bool {
+        !matches!(self, Self::OneBox)
+    }
+}
+
+#[cfg(test)]
+mod deployment_profile_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn shared_path() -> StorageBackend {
+        StorageBackend::SharedPath {
+            root: PathBuf::from("/srv/shared"),
+            cluster_id: "temporalstore".to_string(),
+        }
+    }
+
+    #[test]
+    fn one_node_on_raft_is_a_one_box_not_a_raft_cluster() {
+        let profile = DeploymentProfile::resolve(&StorageBackend::RaftReplication, true);
+        assert_eq!(profile, DeploymentProfile::OneBox);
+        assert!(!profile.is_scaled());
+    }
+
+    #[test]
+    fn several_nodes_on_raft_are_the_scaled_default() {
+        let profile = DeploymentProfile::resolve(&StorageBackend::RaftReplication, false);
+        assert_eq!(profile, DeploymentProfile::Raft);
+        assert!(profile.is_scaled());
+    }
+
+    #[test]
+    fn shared_storage_stays_shared_storage_whatever_the_node_count() {
+        for alone in [true, false] {
+            assert_eq!(
+                DeploymentProfile::resolve(&shared_path(), alone),
+                DeploymentProfile::SharedStorage
+            );
+        }
+    }
+
+    #[test]
+    fn only_shared_storage_asks_for_a_third_tier() {
+        assert_eq!(
+            DeploymentProfile::OneBox.durable_tiers(),
+            DeploymentProfile::Raft.durable_tiers()
+        );
+        assert_ne!(
+            DeploymentProfile::SharedStorage.durable_tiers(),
+            DeploymentProfile::Raft.durable_tiers()
+        );
+    }
+
+    #[test]
+    fn the_tiers_a_profile_names_are_the_tiers_the_backend_builds() {
+        // The profile's operator-facing sentence and wants_disk_cache_tier() must
+        // agree, or a deploy script provisions storage the node never opens.
+        let cases = [
+            (StorageBackend::RaftReplication, true),
+            (StorageBackend::RaftReplication, false),
+            (shared_path(), false),
+        ];
+        for (backend, alone) in cases {
+            let profile = DeploymentProfile::resolve(&backend, alone);
+            let names_shared = profile.durable_tiers().contains("shared store");
+            assert_eq!(
+                names_shared,
+                matches!(profile, DeploymentProfile::SharedStorage),
+                "{} named the wrong tiers",
+                profile.describe()
+            );
+        }
+    }
+
+    #[test]
+    fn a_sentinel_meta_addr_is_not_a_metaserver() {
+        for sentinel in ["", "local", "none", "standalone", "off", " LOCAL "] {
+            assert!(
+                META_ADDR_SENTINELS.contains(&sentinel.trim().to_ascii_lowercase().as_str()),
+                "{sentinel:?} should name no metaserver"
+            );
+        }
+        assert!(!META_ADDR_SENTINELS.contains(&"10.0.0.4:17001"));
+    }
+}
