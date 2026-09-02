@@ -4067,6 +4067,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # model_ref -> {node_hash}, so 'is this node already embedded' does not read the
         # store. None until first use; see _existing_node_embedding_refs.
         self._node_embedding_refs_index: dict[str, set[int]] | None = None
+        # The resolved event-log path, which never changes. Path.resolve walks the path and
+        # stats each component, and this was recomputed at a dozen sites on every append.
+        self._resolved_cache_key: str | None = None
+        self._resolved_paths: dict[Path, str] = {}
         # The keys the compacted cache already holds, kept current so a write can tell whether
         # it supersedes anything without scanning. None means unknown -- rebuilt on the next
         # compaction.
@@ -4264,7 +4268,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             mtime_ns = int(stat.st_mtime_ns)
             total_size += size
             max_mtime_ns = max(max_mtime_ns, mtime_ns)
-            entries.append({"path": str(path.resolve()), "size": size, "mtime_ns": mtime_ns})
+            # Resolving is a walk over every component; the retained paths do not move, so the
+            # resolved form is remembered per path rather than recomputed on each signature.
+            resolved = self._resolved_paths.get(path)
+            if resolved is None:
+                resolved = str(path.resolve())
+                self._resolved_paths[path] = resolved
+            entries.append({"path": resolved, "size": size, "mtime_ns": mtime_ns})
         if total_size <= 0 and max_mtime_ns < 0:
             return {"total_size": -1, "max_mtime_ns": -1, "paths": []}
         return {"total_size": total_size, "max_mtime_ns": max_mtime_ns, "paths": entries}
@@ -4287,7 +4297,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return None
         if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
             return None
-        if head.get("cache_key") != str(self.event_log.resolve()):
+        if head.get("cache_key") != self._cache_key_str():
             return None
         if head.get("signature") != signature:
             return None
@@ -4320,7 +4330,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
                 head = json.load(handle)
-            if head.get("cache_key") != str(self.event_log.resolve()):
+            if head.get("cache_key") != self._cache_key_str():
                 return ""
             if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
                 return ""
@@ -4334,7 +4344,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
                 head = json.load(handle)
-            if head.get("cache_key") != str(self.event_log.resolve()):
+            if head.get("cache_key") != self._cache_key_str():
                 return (0, 0)
             if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
                 return (0, 0)
@@ -4380,7 +4390,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             epoch is not None
             and appended > 0
             and self._durable_read_cache_state
-            == (str(self.event_log.resolve()), base_count, delta_count, epoch)
+            == (self._cache_key_str(), base_count, delta_count, epoch)
         )
         if not contiguous and appended > 0 and base_count > 0:
             # The list handed over is often the process-wide one, shared by every adapter over this
@@ -4401,7 +4411,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             with tmp.open("w", encoding="utf-8") as handle:
                 json.dump({
                     "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
-                    "cache_key": str(self.event_log.resolve()),
+                    "cache_key": self._cache_key_str(),
                     "signature": signature,
                     "record_count": record_count,
                     "delta_count": deltas,
@@ -4429,7 +4439,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
                 write_head(base_count, delta_count + appended)
                 self._durable_read_cache_state = (
-                    str(self.event_log.resolve()), base_count, delta_count + appended, epoch
+                    self._cache_key_str(), base_count, delta_count + appended, epoch
                 )
                 self._durable_read_cache_last_write_ms = now
                 return
@@ -4443,7 +4453,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         payload = {
             "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
-            "cache_key": str(self.event_log.resolve()),
+            "cache_key": self._cache_key_str(),
             "signature": signature,
             "record_count": len(records),
             "records": records,
@@ -4460,7 +4470,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 pass
             write_head(len(records), 0)
             self._durable_read_cache_state = (
-                str(self.event_log.resolve()), len(records), 0, epoch
+                self._cache_key_str(), len(records), 0, epoch
             )
             self._durable_read_cache_last_write_ms = now
         except OSError:
@@ -4470,7 +4480,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 pass
 
     def _clear_jsonl_read_caches(self) -> None:
-        cache_key = str(self.event_log.resolve())
+        cache_key = self._cache_key_str()
         with self._read_cache_lock:
             self._read_cache_records = None
             self._read_cache_value_keys = None
@@ -4648,6 +4658,18 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 if value is not None:
                     bucket[value] = record
 
+    def _cache_key_str(self) -> str:
+        """The resolved event-log path, computed once.
+
+        Path.resolve() walks every component and stats it. This value is the same for the life
+        of the adapter, and it was being recomputed at each of a dozen call sites on every
+        append -- 428 filesystem stats per attachment came through here and the retained-path
+        scan beside it.
+        """
+        if self._resolved_cache_key is None:
+            self._resolved_cache_key = str(self.event_log.resolve())
+        return self._resolved_cache_key
+
     def _compact_read_cache_if_dirty_locked(self) -> None:
         """Compact the cache if records were appended since the last compaction.
 
@@ -4682,7 +4704,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         """
         if not records:
             return
-        cache_key = str(self.event_log.resolve())
+        cache_key = self._cache_key_str()
         signature = self._jsonl_cache_signature_detail()
         size = int(signature.get("total_size", -1))
         mtime_ns = int(signature.get("max_mtime_ns", -1))
@@ -5531,7 +5553,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return filter_live_memory_records(self._read_all_compacted())
 
     def _read_all_compacted(self) -> list[Json]:
-        cache_key = str(self.event_log.resolve())
+        cache_key = self._cache_key_str()
         paths = self._retained_jsonl_paths()
         if not paths:
             with self._read_cache_lock:
