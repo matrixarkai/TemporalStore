@@ -499,11 +499,21 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         `_read_all_compacted` beneath it differs per backend.
         """
         try:
-            from tools.matrixark_mcp_local_adapter import filter_live_memory_records
+            from tools.matrixark_mcp_local_adapter import (
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
         except ModuleNotFoundError:  # Direct script execution from tools/.
-            from matrixark_mcp_local_adapter import filter_live_memory_records
+            from matrixark_mcp_local_adapter import (
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
         records = self._read_all_compacted()
-        return filter_live_memory_records(records)
+        # All three serving stages, in the order every other read path uses. This ran only the
+        # last of them: expiry and retention were applied, compaction and tombstones were not. A
+        # forget wrote its tombstone, reported an accurate removed_count, and then served every
+        # one of those records straight back on the next read.
+        return filter_live_memory_records(compact_and_apply_tombstones(records))
 
     def _read_all_compacted(self) -> list[Json]:
         """The compacted, tombstone-swept view -- WITHOUT the expiry/retention filter.
@@ -2456,13 +2466,50 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         a TTL record never expires, because expiry is enforced on read and is never cached.
         """
         try:
-            from tools.matrixark_mcp_local_adapter import filter_live_memory_records
+            from tools.matrixark_mcp_local_adapter import (
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
         except ModuleNotFoundError:  # Direct script execution from tools/.
-            from matrixark_mcp_local_adapter import filter_live_memory_records
+            from matrixark_mcp_local_adapter import (
+                compact_and_apply_tombstones,
+                filter_live_memory_records,
+            )
         self._recover_serving_from_disk_fallback_if_needed(reason="read_all")
         records = self.read_all_without_disk_fallback_recovery()
         self._register_persisted_tenant_policies(records)
-        return filter_live_memory_records(records)
+        # All three serving stages, in the order every other read path uses. This ran only the
+        # last of them: expiry and retention were applied, compaction and tombstones were not. A
+        # forget wrote its tombstone, reported an accurate removed_count, and then served every
+        # one of those records straight back on the next read.
+        return filter_live_memory_records(compact_and_apply_tombstones(records))
+
+    def _register_persisted_tenant_policies(self, records: list[Json]) -> None:
+        """Absorb tenant and user policy rows from the store, so a policy written by another
+        process -- or by an earlier run -- applies to this reader.
+
+        This was called here but never defined, so every read through this adapter raised
+        AttributeError. Five tests in test_mem0_native_read_path failed on it, each on its first
+        `read_all`.
+
+        The functions it needs already existed and had no caller: a policy row could be written and
+        would be read back as an ordinary record, but nothing turned it into an active policy. So
+        the call was right and only the wiring was missing.
+
+        Best effort by design: a malformed policy row in the store must not make the store
+        unreadable. It is skipped, and the records are still served.
+        """
+        if not records:
+            return
+        try:
+            from tools import matrixark_tenant_policy as tenant_policy
+        except ModuleNotFoundError:  # Direct script execution from tools/.
+            import matrixark_tenant_policy as tenant_policy
+        try:
+            tenant_policy.register_tenant_policy_records(records)
+            tenant_policy.register_user_policy_records(records)
+        except (TypeError, ValueError, KeyError, AttributeError):
+            return
 
     def append(self, record: Json) -> None:
         self.append_many([record])
