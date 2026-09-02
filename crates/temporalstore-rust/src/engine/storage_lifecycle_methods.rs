@@ -638,24 +638,53 @@ impl TemporalEngine {
         let mut durable_index_log_frontier = u64::MAX;
         let mut covered_bucket_count = 0usize;
 
+        // Decode each manifest's index ONCE, not once per bucket.
+        //
+        // This sat inside the loop below, so every bucket re-deserialized every manifest's
+        // WHOLE shard index out of JSON and rebuilt the generation fingerprints for every
+        // bucket in it -- identical work, repeated once per bucket. The manifests are read
+        // before the loop and do not change while the plan is computed, so one pass produces
+        // the same answer every visit would have.
+        //
+        // The cost was quadratic in the corpus: a real (non-dry-run) WAL reclaim took 6.5s at
+        // 1k records, 23s at 2k and 100s at 4k -- x4 per doubling -- and a 40k shard did not
+        // finish in ten minutes with a core pegged at 100%. Reclaim is the only thing that
+        // removes WAL and index-log bytes, so a shard large enough to need it was a shard on
+        // which it could not run.
+        let manifest_fingerprints = manifests
+            .iter()
+            .map(|manifest| {
+                crate::engine::decode_index_bytes(&manifest.index_bytes)
+                    .ok()
+                    .map(|manifest_state| {
+                        bucket_generation_fingerprints_by_bucket(&manifest_state)
+                    })
+            })
+            .collect::<Vec<_>>();
+
         for summary in &bucket_summaries {
-            let matching_manifest = manifests.iter().rev().find(|manifest| {
-                let Ok(manifest_state) =
-                    crate::engine::decode_index_bytes(&manifest.index_bytes)
-                else {
-                    return false;
-                };
-                let manifest_bucket_fingerprints =
-                    bucket_generation_fingerprints_by_bucket(&manifest_state);
-                manifest.bucket_summaries.iter().any(|manifest_summary| {
-                    bucket_dump_summary_matches_current_generation(
-                        manifest_summary,
-                        summary,
-                        &manifest_bucket_fingerprints,
-                        &current_bucket_fingerprints,
-                    )
+            let matching_manifest = manifests
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(manifest_index, manifest)| {
+                    // A manifest whose index will not decode matched nothing before and
+                    // matches nothing now.
+                    let Some(manifest_bucket_fingerprints) =
+                        manifest_fingerprints[*manifest_index].as_ref()
+                    else {
+                        return false;
+                    };
+                    manifest.bucket_summaries.iter().any(|manifest_summary| {
+                        bucket_dump_summary_matches_current_generation(
+                            manifest_summary,
+                            summary,
+                            manifest_bucket_fingerprints,
+                            &current_bucket_fingerprints,
+                        )
+                    })
                 })
-            });
+                .map(|(_, manifest)| manifest);
             let Some(manifest) = matching_manifest else {
                 missing_bucket_generations.push(summary.routing_bucket);
                 continue;

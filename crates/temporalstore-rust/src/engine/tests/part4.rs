@@ -1667,6 +1667,68 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
 }
 
 // shared-corpus: storage_wal_index_gc_generation_retention
+/// Each manifest must be judged against ITS OWN fingerprints.
+///
+/// The plan decodes every manifest's index once, up front, and indexes into that by position
+/// while walking buckets -- so a mis-paired index would judge one manifest's buckets against
+/// another's fingerprints and anchor reclaim on the wrong dump. THREE manifests, because an
+/// off-by-one can coincidentally pick the right one out of two.
+///
+/// This guards the shape of the lookup, not the old behaviour: before, the decode happened
+/// inside the loop and could not be mispaired -- it was merely quadratic, taking 100s at 4k
+/// records and not finishing at all at 40k.
+#[test]
+fn the_reclaim_plan_pairs_each_manifest_with_its_own_fingerprints() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let mut manifests = Vec::new();
+    for round in 0..3 {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "reclaim-slot".to_string(),
+                        value: format!("v{round}").into_bytes(),
+                    },
+                })
+                .status
+                .ok
+        );
+        manifests.push(engine.create_bucket_dump_manifest(1, Vec::new()).unwrap());
+    }
+
+    // Strictly increasing, or the assertion below cannot tell the three apart.
+    assert!(manifests[1].wal_sequence > manifests[0].wal_sequence);
+    assert!(manifests[2].wal_sequence > manifests[1].wal_sequence);
+
+    let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+
+    // The newest manifest is the only one whose fingerprints still match the live state, so it
+    // is the one the frontier must anchor on. Pairing manifest N with manifest N-1's
+    // fingerprints would anchor on an older dump and reclaim a span that dump does not cover.
+    assert_eq!(
+        plan.durable_bucket_generation_frontier_wal_sequence, manifests[2].wal_sequence,
+        "the frontier must anchor on the newest matching manifest: {plan:?}"
+    );
+    assert!(
+        plan.retained_manifest_ids
+            .contains(&manifests[2].manifest_id),
+        "the newest manifest must be retained: {plan:?}"
+    );
+    assert!(
+        plan.missing_bucket_generations.is_empty(),
+        "every live bucket is covered by the newest dump: {plan:?}"
+    );
+}
+
 #[test]
 fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_release() {
     let dir = tempfile::tempdir().unwrap();
