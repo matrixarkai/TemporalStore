@@ -5729,3 +5729,100 @@ fn do_the_batch_reads_scale_with_the_batch() {
 "
     );
 }
+
+
+/// Does a batch embeddings query answer for every node it was asked about?
+///
+/// The batch probe showed `query embeddings` at 3.80 allocations per node for a batch of 256 and
+/// 8.23 for 64. A per-item cost that halves as the batch grows is the signature of a cap rather than
+/// of amortisation, and the arm confirms it: `.take(context_limit(None))`, which is 100.
+///
+/// So a caller asking about 256 nodes is answered about 100, silently -- no error, no field saying
+/// it was truncated, and no `limit` parameter to raise, unlike `ContextQuerySummaries`.
+///
+/// This is a retrieval question before it is a cost one: a scoring pass that asks for its
+/// candidates' embeddings and receives a prefix scores the remainder as if they had none.
+#[test]
+fn a_batch_embeddings_query_answers_for_every_node_asked() {
+    use crate::context_workflow::{
+        ingest_extract_context, ContextExtractRequest, ContextIngestExtractRequest,
+        ContextModelProviderConfig, ContextSourceKind,
+    };
+
+    const TENANT: u64 = 8677;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let mut hashes = Vec::new();
+    for index in 0..160_usize {
+        let report = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: TENANT,
+                sources: vec![ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: format!("CAP-{index:06}"),
+                    title: format!("cap {index}"),
+                    body: format!(
+                        "{}{}",
+                        format!("entry {index} covering the depot rota "),
+                        "context payload sentence. ".repeat(12)
+                    ),
+                    timestamp_ms: 1_000 + index as u64,
+                    provider: ContextModelProviderConfig::default(),
+                }],
+                provider: ContextModelProviderConfig::default(),
+                start_time_ms: 0,
+                end_time_ms: 0,
+                max_events: 0,
+                query: String::new(),
+            },
+        );
+        assert!(report.status.ok, "ingest {index}: {:?}", report.status);
+        hashes.extend(report.node_hashes.iter().copied());
+    }
+    assert!(
+        hashes.len() > 100,
+        "this test needs more than the default cap of nodes to say anything, got {}",
+        hashes.len()
+    );
+
+    let answered_for = |batch: &[u64]| {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryNodeEmbeddings {
+                tenant_hash: TENANT,
+                node_hashes: batch.to_vec(),
+            },
+        });
+        assert!(out.status.ok, "{:?}", out.status);
+        match out.response {
+            CommandResponse::ContextNodeEmbeddings { embeddings, .. } => embeddings.len(),
+            other => panic!("expected embeddings, got {other:?}"),
+        }
+    };
+
+    // Below the cap, every node asked about is answered for.
+    let small: Vec<u64> = hashes.iter().copied().take(64).collect();
+    assert_eq!(answered_for(&small), 64, "a batch under the cap must answer for all of it");
+
+    // Above it, the caller is answered about a prefix -- and has no way to ask for the rest.
+    let large: Vec<u64> = hashes.iter().copied().take(160).collect();
+    let answered = answered_for(&large);
+    assert_eq!(
+        answered, 160,
+        "asked about {} nodes and answered about {answered}: the batch is truncated at the default \
+         limit with nothing telling the caller, so the nodes past it score as if they had no \
+         embedding",
+        large.len()
+    );
+}
