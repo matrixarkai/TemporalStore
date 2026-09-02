@@ -4856,3 +4856,99 @@ fn a_sized_vector_decodes_exactly_what_a_grown_one_did() {
         }
     }
 }
+
+
+/// What does encoding a record cost?
+///
+/// `update` is the largest per-call cost of any api -- 192 allocations, flat in the corpus, so the
+/// cost is the call and not the store. A write encodes the record first, and every
+/// `encode_context_proto_value` starts from `Vec::new()`: the shape that made a decode eighteen
+/// allocations instead of four.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_encoding_a_record_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_encoding_a_record_costs() {
+    use crate::types::{ContextNode, ContextSummary, ContextWire};
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    let node_with = |mutate: fn(&mut ContextNode)| {
+        let mut node = ContextNode {
+            node_hash: 4242,
+            parent_hash: 7,
+            kind: 1,
+            canonical_name: "session/a-canonical-name-of-ordinary-length".to_string(),
+            l0: "the text an extract actually produces, long enough that its length is not noise \
+                 next to the vectors it sits beside"
+                .to_string(),
+            status: 0,
+            last_event_time_ms: 1_781_700_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: (0..384).map(|index| index as f32 / 1024.0).collect(),
+            embedding_model_hash: 7,
+            embedding_updated_at_ms: 1,
+            summary_vector: (0..384).map(|index| index as f32 / 512.0).collect(),
+            summary_vector_valid_from_ms: 1_781_700_000_000,
+            summary_vector_model_hash: 7,
+        };
+        mutate(&mut node);
+        node
+    };
+
+    let measure = |node: &ContextNode| {
+        let warm = node.encode_context_value();
+        assert!(!warm.is_empty(), "an empty encoding would make this vacuous");
+        let probe = crate::alloc_probe::Probe::start();
+        let encoded = node.encode_context_value();
+        let counts = probe.stop();
+        (counts.allocs, counts.alloc_bytes, encoded.len())
+    };
+
+    let (base, base_bytes, encoded_len) = measure(&node_with(|_| {}));
+    println!(
+        "
+  encoding one node: {base} allocations, {base_bytes} bytes allocated, {encoded_len} bytes produced
+
+  field emptied            allocs   saved
+"
+    );
+    for (label, mutate) in [
+        ("canonical_name  ", (|node: &mut ContextNode| node.canonical_name.clear()) as fn(&mut ContextNode)),
+        ("l0 (the text)   ", |node: &mut ContextNode| node.l0.clear()),
+        ("vector          ", |node: &mut ContextNode| node.vector.clear()),
+        ("summary_vector  ", |node: &mut ContextNode| node.summary_vector.clear()),
+    ] {
+        let (allocs, _, _) = measure(&node_with(mutate));
+        println!("  {label}       {allocs:>6}   {:>5}", base.saturating_sub(allocs));
+    }
+
+    // The other record an ingest writes, at the same vector width.
+    let summary = ContextSummary {
+        node_hash: 4242,
+        level: 2,
+        text: "a summary of ordinary length for one turn".to_string(),
+        valid_from_ms: 1_781_700_000_000,
+        vector: (0..384).map(|index| index as f32 / 768.0).collect(),
+        embedding_model_hash: 7,
+    };
+    let warm = summary.encode_context_value();
+    assert!(!warm.is_empty());
+    let probe = crate::alloc_probe::Probe::start();
+    let encoded = summary.encode_context_value();
+    let counts = probe.stop();
+    println!(
+        "
+  encoding one summary: {} allocations, {} bytes produced
+",
+        counts.allocs,
+        encoded.len(),
+    );
+}

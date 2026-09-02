@@ -5280,3 +5280,218 @@ fn does_a_summary_write_rebuild_the_whole_index() {
 "
     );
 }
+
+
+/// What every API costs, on the same store, in the same units.
+///
+/// `add` and `retrieve` have been measured all session. The others have been taken on trust. Each
+/// goes through its own commands, and a cost nothing counts is a cost nothing fixes.
+///
+/// Two corpus sizes, so an API whose cost is proportional to the store shows it as a ratio instead
+/// of leaving it to be inferred from one number.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_every_api_costs_on_the_same_store -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_every_api_costs_on_the_same_store() {
+    const TENANT: u64 = 6607;
+
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    fn grown(rung: usize) -> (TemporalEngine, tempfile::TempDir, Vec<u64>) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let mut hashes = Vec::with_capacity(rung);
+        for index in 0..rung {
+            let report = ingest_extract_context(
+                &engine,
+                ContextIngestExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: TENANT,
+                    sources: vec![ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash: TENANT,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: format!("API-{index:06}"),
+                        title: format!("api {index}"),
+                        body: format!(
+                            "{}{}",
+                            format!("entry {index} covering the depot rota "),
+                            "context payload sentence. ".repeat(40)
+                        ),
+                        timestamp_ms: 1_000 + index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    }],
+                    provider: ContextModelProviderConfig::default(),
+                    start_time_ms: 0,
+                    end_time_ms: 0,
+                    max_events: 0,
+                    query: String::new(),
+                },
+            );
+            assert!(report.status.ok, "grow {index}: {:?}", report.status);
+            assert!(
+                !report.node_hashes.is_empty(),
+                "ingest {index} reported no node, so the reads below would have nothing to ask for"
+            );
+            hashes.extend(report.node_hashes.iter().copied());
+        }
+        (engine, dir, hashes)
+    }
+
+    fn measure(engine: &TemporalEngine, mut call: impl FnMut(&TemporalEngine)) -> (u64, u64) {
+        call(engine); // warm: the first call of a shape touches one-off structures
+        let probe = crate::alloc_probe::Probe::start();
+        call(engine);
+        let counts = probe.stop();
+        (counts.allocs, counts.alloc_bytes)
+    }
+
+    println!(
+        "
+  api                    corpus 40   corpus 320   growth   bytes @320
+"
+    );
+
+    let (small, _small_dir, small_hashes) = grown(40);
+    let (large, _large_dir, large_hashes) = grown(320);
+
+    let mut row = |label: &str,
+                   mut build: Box<dyn FnMut(&TemporalEngine, &[u64]) -> Box<dyn FnMut(&TemporalEngine)>>| {
+        let mut small_call = build(&small, &small_hashes);
+        let (small_allocs, _) = measure(&small, |engine| small_call(engine));
+        let mut large_call = build(&large, &large_hashes);
+        let (large_allocs, large_bytes) = measure(&large, |engine| large_call(engine));
+        println!(
+            "  {label:<22} {small_allocs:>9}   {large_allocs:>10}   {:>6.2}x   {large_bytes:>10}",
+            large_allocs as f64 / small_allocs.max(1) as f64,
+        );
+    };
+
+    // get_all: every node the tenant holds, which is the shape a listing takes.
+    row(
+        "get_all (all nodes)",
+        Box::new(|_engine, hashes| {
+            let hashes = hashes.to_vec();
+            Box::new(move |engine: &TemporalEngine| {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextGetNodes {
+                        tenant_hash: TENANT,
+                        node_hashes: hashes.clone(),
+                    },
+                });
+                assert!(out.status.ok, "{:?}", out.status);
+            })
+        }),
+    );
+
+    // get: one node by id, the cheapest read there is.
+    row(
+        "get (one node)",
+        Box::new(|_engine, hashes| {
+            let hash = hashes[hashes.len() / 2];
+            Box::new(move |engine: &TemporalEngine| {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextGetNode { tenant_hash: TENANT, node_hash: hash },
+                });
+                assert!(out.status.ok, "{:?}", out.status);
+            })
+        }),
+    );
+
+    // history: the summaries a node accumulated, which is what a history read returns.
+    row(
+        "history (summaries)",
+        Box::new(|_engine, hashes| {
+            let hash = hashes[hashes.len() / 2];
+            Box::new(move |engine: &TemporalEngine| {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextQuerySummaries {
+                        tenant_hash: TENANT,
+                        node_hash: hash,
+                        level: 2,
+                        as_of_ms: 4_000_000_000_000,
+                        limit: None,
+                    },
+                });
+                assert!(out.status.ok, "{:?}", out.status);
+            })
+        }),
+    );
+
+    // update: rewriting a node in place, which is what an update does after it resolves the id.
+    row(
+        "update (rewrite node)",
+        Box::new(|_engine, hashes| {
+            let hash = hashes[hashes.len() / 2];
+            let mut turn = 0_u64;
+            Box::new(move |engine: &TemporalEngine| {
+                turn += 1;
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextUpsertNode {
+                        tenant_hash: TENANT,
+                        node: crate::types::ContextNode {
+                            node_hash: hash,
+                            parent_hash: 0,
+                            kind: 1,
+                            canonical_name: format!("session/updated-{turn}"),
+                            l0: format!("the text as of turn {turn}"),
+                            status: 0,
+                            last_event_time_ms: 1_781_700_000_000 + turn,
+                            l1_ref: String::new(),
+                            raw_metadata_ref: String::new(),
+                            vector: vec![0.25_f32; 384],
+                            embedding_model_hash: 7,
+                            embedding_updated_at_ms: turn,
+                            summary_vector: vec![0.5_f32; 384],
+                            summary_vector_valid_from_ms: 1_781_700_000_000 + turn,
+                            summary_vector_model_hash: 7,
+                        },
+                    },
+                });
+                assert!(out.status.ok, "{:?}", out.status);
+            })
+        }),
+    );
+
+    // embeddings query: the batch read the drainer and the scoring pass both use.
+    row(
+        "query embeddings (32)",
+        Box::new(|_engine, hashes| {
+            let batch: Vec<u64> = hashes.iter().copied().take(32).collect();
+            Box::new(move |engine: &TemporalEngine| {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextQueryNodeEmbeddings {
+                        tenant_hash: TENANT,
+                        node_hashes: batch.clone(),
+                    },
+                });
+                assert!(out.status.ok, "{:?}", out.status);
+            })
+        }),
+    );
+
+    println!(
+        "
+  growth ~1x  => that api costs the same on a big store as a small one.
+  growth >>1x => it does work proportional to the corpus, and that is where to look next.
+"
+    );
+}
