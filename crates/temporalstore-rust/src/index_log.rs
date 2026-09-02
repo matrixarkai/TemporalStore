@@ -36,7 +36,9 @@ impl From<crate::log_framing::FramingError> for IndexLogError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct IndexLogRecord {
+    #[serde(rename = "s", alias = "shard_id")]
     pub shard_id: ShardId,
+    #[serde(rename = "q", alias = "sequence")]
     pub sequence: u64,
     // Default so a delta-record line (which carries `items`/`meta` but no `index`) still
     // parses as an IndexLogRecord for the sequence-tail scan (`last_sequence_at`), which
@@ -173,7 +175,9 @@ pub struct MetaItem {
 /// `items`/`meta` fields, so legacy whole-index records replay untouched.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexDeltaRecord {
+    #[serde(rename = "s", alias = "shard_id")]
     pub shard_id: ShardId,
+    #[serde(rename = "q", alias = "sequence")]
     pub sequence: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<IndexItem>,
@@ -184,7 +188,7 @@ pub struct IndexDeltaRecord {
     /// folded into the base and are skipped; folding the rest advances the reconstructed
     /// anchor so WAL replay re-executes only the uncaptured tail (never relocating the
     /// pages the deltas already pin at their original addresses).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "aw", alias = "applied_wal_sequence", default, skip_serializing_if = "Option::is_none")]
     pub applied_wal_sequence: Option<u64>,
     /// When true, this record's items are the exact pages the write produced: replay replaces
     /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
@@ -193,7 +197,7 @@ pub struct IndexDeltaRecord {
     /// object's whole page set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
     /// every page of each of them, every time.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(rename = "u", alias = "upsert", default, skip_serializing_if = "std::ops::Not::not")]
     pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
@@ -202,7 +206,7 @@ pub struct IndexDeltaRecord {
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
     /// write produced, so reconstruction from physical pages cannot resurrect evicted data.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "ks", alias = "key_states", default, skip_serializing_if = "Vec::is_empty")]
     pub key_states: Vec<serde_json::Value>,
 }
 
@@ -894,10 +898,15 @@ impl LocalIndexLogStore {
         wal_anchor: u64,
         meta_sequence: u64,
     ) -> Result<IndexLogGcReport, IndexLogError> {
+        // A SECOND reader of the same on-disk record, so it has to know every spelling the
+        // record has ever used. It previously named the long forms only; when those were
+        // shortened this probe stopped seeing `sequence` at all and read
+        // `applied_wal_sequence` as None, which silently changed what the sweep removed.
         #[derive(serde::Deserialize)]
         struct AnchorProbe {
+            #[serde(rename = "q", alias = "sequence")]
             sequence: u64,
-            #[serde(default)]
+            #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
             applied_wal_sequence: Option<u64>,
         }
         let inner = self.inner.lock().expect("index log lock poisoned");
@@ -1212,6 +1221,53 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_delta_record_written_with_the_old_field_names_still_loads() {
+        // The record-level names are short now. `items` and `meta` are NOT among them: whole-index
+        // and delta records are told apart on read by the PRESENCE of those two keys, so renaming
+        // them breaks record-type detection rather than just the labels.
+        let legacy = serde_json::json!({
+            "shard_id": 7,
+            "sequence": 3,
+            "items": [],
+            "applied_wal_sequence": 11,
+            "upsert": true,
+            "key_states": [{"key": "m:0"}]
+        });
+        let record: IndexDeltaRecord =
+            serde_json::from_value(legacy).expect("a legacy delta record must load");
+        assert_eq!(record.shard_id, 7);
+        assert_eq!(record.sequence, 3);
+        assert_eq!(record.applied_wal_sequence, Some(11));
+        assert!(record.upsert);
+        assert_eq!(record.key_states.len(), 1);
+    }
+
+    #[test]
+    fn a_delta_record_still_announces_itself_by_its_items_key() {
+        // The property the discriminator depends on: a written delta record carries a literal
+        // `items` key, which is how a reader tells it from a whole-index line.
+        let record = IndexDeltaRecord {
+            shard_id: 7,
+            sequence: 1,
+            items: vec![page_item(1, "a", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: Vec::new(),
+        };
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(encoded.contains("\"items\""), "the discriminator must survive: {encoded}");
+        // And the long record-level spellings are gone from the written form.
+        for gone in ["shard_id", "applied_wal_sequence", "key_states"] {
+            assert!(!encoded.contains(gone), "{gone} should not be written any more");
+        }
+        // Not vacuous: it still round-trips with its values.
+        let back: IndexDeltaRecord = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(back.shard_id, 7);
+        assert_eq!(back.applied_wal_sequence, Some(2));
+    }
+
     fn append_delta_grows_log_by_only_the_changed_items() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalIndexLogStore::new(dir.path());

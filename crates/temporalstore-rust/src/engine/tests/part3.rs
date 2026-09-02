@@ -249,8 +249,10 @@ fn control_api_reads_and_scans_index_log_stream() {
     let text = String::from_utf8(stream.data).unwrap();
     // The index-log advances one record per write in both the whole-index and the delta
     // formats; assert the per-write sequence rather than a format-specific record shape.
-    assert!(text.contains("\"sequence\":1"));
-    assert!(text.contains("\"sequence\":2"));
+    // The sequence field is written short (`q`), with `sequence` still accepted on read; assert
+    // the per-write advance without pinning either spelling, which is what this test is about.
+    assert!(text.contains("\"q\":1") || text.contains("\"sequence\":1"));
+    assert!(text.contains("\"q\":2") || text.contains("\"sequence\":2"));
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
