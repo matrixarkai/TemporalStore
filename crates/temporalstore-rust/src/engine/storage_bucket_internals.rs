@@ -1294,22 +1294,6 @@ pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePag
     entries
 }
 
-/// The key a page is filed under, as ONE allocation shared by every structure that points at the
-/// page: the bucket's `page_index`, and the two object lookups.
-pub(super) fn page_index_ref_key(entry: &LivePageEntry) -> Arc<str> {
-    Arc::from(format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}",
-        entry.kind,
-        entry.object_key,
-        entry.component.as_deref().unwrap_or(""),
-        entry.address.page_slab_id,
-        entry.address.offset,
-        entry.address.length,
-        entry.address.page_id().unwrap_or_default(),
-        entry.address.generation().unwrap_or_default()
-    ))
-}
-
 pub(super) fn page_physical_identity_key(
     address: &BlockAddress,
 ) -> (
