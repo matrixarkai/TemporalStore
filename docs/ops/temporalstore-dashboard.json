@@ -4,7 +4,7 @@
   "version": 3,
   "panels": [
     {
-      "title": "Production Readiness",
+      "title": "Build & Config Readiness (not runtime health)",
       "type": "stat",
       "targets": [
         {
