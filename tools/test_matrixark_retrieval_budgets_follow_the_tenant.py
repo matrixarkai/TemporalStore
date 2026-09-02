@@ -45,6 +45,24 @@ BUDGETS = (
 )
 
 
+def _set_policy(tenant, knobs):
+    """Set a tenant policy on EVERY loaded copy of the policy module.
+
+    Under `unittest discover` the module is imported under two names in one process -- once as
+    `matrixark_tenant_policy` and once through the `tools.` package path -- and each copy keeps its
+    own `_RECORD_POLICIES`. Setting the policy on the copy the test imported while the production
+    helper's lazy import binds the other makes the override vanish: the budget falls back to the
+    build default and the failure reads as "the knob is not wired", which is exactly what it is not.
+
+    These tests passed alone and failed in the full suite for that reason. Same root cause as the
+    GatewayConfig identity failure in the readiness-sources tests: two definitions of one name, and
+    which one you get depends on how you arrived.
+    """
+    for module in list(sys.modules.values()):
+        if getattr(module, "__name__", "").endswith("matrixark_tenant_policy") and                 hasattr(module, "set_tenant_policy"):
+            module.set_tenant_policy(tenant, knobs)
+
+
 def _limit(name, tenant, build_default):
     return retrieve._tenant_retrieval_limit(name, {"tenant_id": tenant}, build_default)
 
@@ -55,7 +73,7 @@ class TheTenantSettingIsReadTest(unittest.TestCase):
         for name, _env, build_default in BUDGETS:
             with self.subTest(knob=name):
                 tenant = "explicit_%s" % name
-                policy.set_tenant_policy(tenant, {name: 5})
+                _set_policy(tenant, {name: 5})
                 self.assertEqual(5, _limit(name, tenant, build_default),
                                  "%s ignored an explicit tenant setting" % name)
 
@@ -102,7 +120,7 @@ class BothExplicitLevelsApplyWithoutARestartTest(unittest.TestCase):
 
     def test_a_tenant_override_beats_the_environment(self) -> None:
         name, env, build_default = BUDGETS[2]
-        policy.set_tenant_policy("beats_env", {name: 7})
+        _set_policy("beats_env", {name: 7})
         try:
             os.environ[env] = "21"
             self.assertEqual(7, _limit(name, "beats_env", build_default),
@@ -119,7 +137,7 @@ class NonsenseFallsBackTest(unittest.TestCase):
         for bad in (0, -3, "abc", None, ""):
             with self.subTest(value=bad):
                 tenant = "junk_%s" % str(bad)
-                policy.set_tenant_policy(tenant, {name: bad})
+                _set_policy(tenant, {name: bad})
                 self.assertEqual(build_default, _limit(name, tenant, build_default),
                                  "a %r budget was accepted" % bad)
         for bad in ("0", "-1", "not-a-number"):
