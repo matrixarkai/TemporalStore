@@ -2189,7 +2189,7 @@ fn collect_command_index_items(
                 object_key: page.object_key.clone().to_string(),
                 model_id: page.model_id.clone().to_string(),
                 component: page.component.clone().map(|value| value.to_string()),
-                object_id: page.object_id,
+                object_id: page.object_id(),
                 page_id: page.address.page_id().unwrap_or(0),
                 address: Some(page.address.clone()),
                 size: page.address.length,
@@ -2382,8 +2382,12 @@ fn fold_delta_page_items(
                 object_key: Arc::from(item.object_key.clone()),
                 model_id: Arc::from(item.model_id.clone()),
                 component: item.component.clone().map(Arc::from),
-                object_id: item.object_id,
-                address,
+                address: {
+                    // The record carries the id separately; the address holds it now.
+                    let mut address = address;
+                    address.set_object_id(Some(item.object_id));
+                    address
+                },
                 dirty: false,
                 deleted: false,
                 log_backed: item.in_log,
@@ -3032,7 +3036,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         let mut deleted_object_ids = BTreeSet::new();
         bucket.page_index.retain(|_, page| {
             if page.object_key == Arc::from(key) {
-                deleted_object_ids.insert(page.object_id);
+                deleted_object_ids.insert(page.object_id());
                 removed = true;
                 false
             } else {
@@ -3124,7 +3128,7 @@ fn mark_bucket_index_page_deleted(
                 && page.object_key == Arc::from(key)
                 && page.component.as_deref() == component;
             if matches {
-                deleted_object_ids.insert(page.object_id);
+                deleted_object_ids.insert(page.object_id());
                 bucket_removed = true;
                 removed = true;
                 false

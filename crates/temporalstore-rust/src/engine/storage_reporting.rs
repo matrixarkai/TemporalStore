@@ -420,7 +420,7 @@ pub(super) fn storage_physical_index_report(
                 offset: page.address.offset,
                 length: page.address.length,
                 page_id: page.address.page_id(),
-                object_id: Some(page.object_id),
+                object_id: Some(page.object_id()),
                 zone_id: page.address.band_id(),
                 checksum: None,
                 dirty: page.dirty,

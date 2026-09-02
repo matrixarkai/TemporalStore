@@ -1827,7 +1827,7 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
             .flat_map(|bucket| bucket.page_index.values_mut())
             .find(|page| page.object_key == Arc::from("owned"))
             .expect("owned slot page");
-        page.address.set_object_id(Some(page.object_id.wrapping_add(1)));
+        page.address.set_object_id(Some(page.object_id().wrapping_add(1)));
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -1880,7 +1880,7 @@ fn recovery_reports_reused_object_id_conflicts() {
             .values()
             .flat_map(|bucket| bucket.page_index.values())
             .find(|page| page.object_key == Arc::from("first"))
-            .map(|page| page.object_id)
+            .map(|page| page.object_id())
             .expect("first object id");
         let second = shard
             .bucket_index
@@ -3867,7 +3867,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                     page.object_key,
                     page.model_id,
                     page.component,
-                    page.object_id,
+                    page.object_id(),
                     page.address.page_slab_id,
                     page.address.offset,
                     page.address.length,

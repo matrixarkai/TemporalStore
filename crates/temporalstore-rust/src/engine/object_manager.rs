@@ -87,15 +87,15 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         }
         for page in bucket.page_index.values() {
             live_page_ref_count = live_page_ref_count.saturating_add(1);
-            object_ids.insert(page.object_id);
-            *object_ref_counts.entry(page.object_id).or_default() += 1;
-            if page.address.object_id() != Some(page.object_id) {
+            object_ids.insert(page.object_id());
+            *object_ref_counts.entry(page.object_id()).or_default() += 1;
+            if page.address.object_id() != Some(page.object_id()) {
                 missing_object_owner_refs = missing_object_owner_refs.saturating_add(1);
             }
             let object = objects
-                .entry(page.object_id)
+                .entry(page.object_id())
                 .or_insert_with(|| ObjectRuntimeState {
-                    object_id: page.object_id,
+                    object_id: page.object_id(),
                     routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
@@ -113,7 +113,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             object.page_ref_count = object.page_ref_count.saturating_add(1);
             object.dirty |= page.dirty || bucket.dirty;
             let object_deleted =
-                page.deleted || bucket.deleted || bucket.deleted_object_index.contains(&page.object_id);
+                page.deleted || bucket.deleted || bucket.deleted_object_index.contains(&page.object_id());
             object.deleted |= object_deleted;
             if object_deleted {
                 object.deleted_page_ref_count = object.deleted_page_ref_count.saturating_add(1);

@@ -913,8 +913,11 @@ pub(super) fn rebuild_bucket_page_ownership(
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
-                object_id,
-                address: entry.address,
+                address: {
+                    let mut address = entry.address;
+                    address.set_object_id(Some(object_id));
+                    address
+                },
                 dirty: entry.dirty,
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,
@@ -1406,12 +1409,12 @@ pub(super) fn upsert_bucket_index_page_with(
             let removed_object_id = bucket
                 .page_index
                 .remove(&page_ref.page_ref_key)
-                .map(|page| page.object_id);
+                .map(|page| page.object_id());
             if let Some(removed_object_id) = removed_object_id {
                 if !bucket
                     .page_index
                     .values()
-                    .any(|page| page.object_id == removed_object_id)
+                    .any(|page| page.object_id() == removed_object_id)
                 {
                     bucket.object_index.remove(&removed_object_id);
                 }
@@ -1430,7 +1433,7 @@ pub(super) fn upsert_bucket_index_page_with(
             if !bucket
                 .page_index
                 .values()
-                .any(|page| page.object_id == object_id)
+                .any(|page| page.object_id() == object_id)
             {
                 bucket.object_index.remove(&object_id);
             }
@@ -1438,12 +1441,16 @@ pub(super) fn upsert_bucket_index_page_with(
         }
     }
     let page_ref_key = page_index_ref_key(&entry);
+    // Give the address the id the entry is filed under, so one field answers for both. Without
+    // this, a page whose address arrived without an object id would lose the fallback identity
+    // computed for it.
+    let mut address = entry.address;
+    address.set_object_id(Some(object_id));
     let page_index = PageIndex {
         object_key: entry.object_key,
         model_id: entry.kind,
         component: entry.component.clone(),
-        object_id,
-        address: entry.address,
+        address,
         dirty: entry.dirty,
         deleted: entry.deleted,
         log_backed: entry.log_backed,
@@ -1612,8 +1619,11 @@ pub(super) fn sync_bucket_index_object_pages(
             object_key: entry.object_key,
             model_id: entry.kind,
             component: entry.component.clone(),
-            object_id,
-            address: entry.address,
+            address: {
+                let mut address = entry.address;
+                address.set_object_id(Some(object_id));
+                address
+            },
             dirty: entry.dirty,
             deleted: entry.deleted,
             log_backed: entry.log_backed,
@@ -1732,7 +1742,7 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
         .page_index
         .values()
         .filter(|page| !page.deleted)
-        .map(|page| page.object_id)
+        .map(|page| page.object_id())
         .collect();
     if !live_object_ids.is_empty() {
         bucket.object_index = live_object_ids;
@@ -1996,8 +2006,11 @@ pub(super) fn rebuild_bucket_first_index(
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
-                object_id,
-                address: entry.address,
+                address: {
+                    let mut address = entry.address;
+                    address.set_object_id(Some(object_id));
+                    address
+                },
                 dirty: page_dirty,
                 deleted: entry.deleted,
                 log_backed: entry.log_backed,

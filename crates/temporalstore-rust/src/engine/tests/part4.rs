@@ -4457,6 +4457,70 @@ fn the_page_and_the_lookup_point_at_one_object_key() {
     );
 }
 
+/// A page filed with an address that carries no object id still knows which object it belongs to.
+///
+/// This is the one way removing the entry's own copy could lose information. The id is computed as
+/// `address.object_id().unwrap_or_else(stable_page_object_id)`, so before this change the entry
+/// could hold a fallback the address did not have. Reading through the address would then answer
+/// zero for exactly those pages. The write path now puts the computed id into the address; this
+/// asserts it, because the census that motivated the removal cannot see the case at all -- every
+/// address in it already carried an id.
+#[test]
+fn a_page_whose_address_carries_no_object_id_still_reports_one() {
+    use crate::block_store::BlockAddress;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    {
+        let mut shards = engine.shards.write().expect("shards lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        // Deliberately no object id, and no routing slot either.
+        let address = BlockAddress::from_parts(0, 0, 16, Some(7), None, None, None, None);
+        assert!(address.object_id().is_none(), "the case under test");
+        crate::engine::storage_bucket_internals::upsert_bucket_index_page(
+            shard,
+            1,
+            "string",
+            "orphan-key",
+            None,
+            address,
+            false,
+        );
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let mut seen = 0usize;
+    for bucket in shard.bucket_index.bucket_map.values() {
+        for (_ref_key, page) in bucket.page_index.iter() {
+            if page.object_key.as_ref() != "orphan-key" {
+                continue;
+            }
+            seen += 1;
+            assert_ne!(
+                page.object_id(),
+                0,
+                "a page filed from an address with no object id must still report the computed one"
+            );
+            // Cross-checked against what the write path recorded, rather than by recomputing
+            // the same function and comparing it with itself: the bucket's object index was
+            // populated from the id the write path actually used.
+            assert!(
+                bucket.object_index.contains(&page.object_id()),
+                "the id the page reports must be the one the write path filed it under"
+            );
+        }
+    }
+    assert_eq!(seen, 1, "the page must be in the index, or nothing was tested");
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
@@ -5145,7 +5209,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
             .page_index
             .values()
             .filter(|page| !page.deleted)
-            .map(|page| page.object_id)
+            .map(|page| page.object_id())
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty page index leaves the
         // stored set untouched, so only compare where the rebuild would actually assign.
@@ -10340,7 +10404,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
             .page_index
             .values()
             .filter(|page| !page.deleted)
-            .map(|page| page.object_id)
+            .map(|page| page.object_id())
             .collect();
         checked += 1;
         live_total += rebuilt.len();
@@ -10544,22 +10608,28 @@ fn what_one_page_costs_to_index() {
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut entries = 0usize;
     let mut heap = 0usize;
+    let mut ref_key_bytes = 0usize;
+    let mut object_key_bytes = 0usize;
+    let mut shared_bytes = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (ref_key, page) in bucket.page_index.iter() {
             entries += 1;
-            // Everything this entry owns beyond its inline bytes.
-            heap += ref_key.len();
-            heap += page.object_key.len();
-            heap += page.model_id.len();
-            heap += page.component.as_ref().map_or(0, |name| name.len());
-            // The digest is 32 inline bytes now, not a 64-character allocation: it costs
-            // nothing on the heap, which is the whole point of the change.
-            heap += 0;
+            // The map key: kind, object key, component and five numbers rendered as decimal.
+            ref_key_bytes += ref_key.len();
+            // Shared with the lookup, so one allocation answers for both holders.
+            object_key_bytes += page.object_key.len();
+            // One allocation across every page of that kind or component, not one per page.
+            shared_bytes += page.model_id.len()
+                + page.component.as_ref().map_or(0, |name| name.len());
+            heap += ref_key.len() + page.object_key.len();
         }
     }
     assert!(entries > 0, "the workload must produce pages, or this measures nothing");
 
     let per_entry_heap = heap as f64 / entries as f64;
+    let map_key_b = ref_key_bytes as f64 / entries as f64;
+    let object_key_b = object_key_bytes as f64 / entries as f64;
+    let shared_b = shared_bytes as f64 / entries as f64;
     let total = inline as f64 + per_entry_heap;
     println!(
         "
@@ -10569,6 +10639,10 @@ fn what_one_page_costs_to_index() {
       String is                  {string_inline:>5} B inline, Option<String> {option_string_inline} B
     heap owned, measured         {per_entry_heap:>7.1} B over {entries} pages
     total per page               {total:>7.1} B
+
+      of which the map key      {map_key_b:>6.1} B   <- kind, key and five numbers as text
+      of which the object key   {object_key_b:>6.1} B   (shared with the lookup)
+      shared across pages       {shared_b:>6.1} B   (kind and component, one allocation each)
 
     the design being followed     17 B, packed, static_assert(sizeof == 17)
     ratio                        {:>7.1}x
@@ -10737,7 +10811,7 @@ fn which_parts_of_a_page_address_restate_their_surroundings() {
             if page.address.routing_bucket() == Some(*bucket_key) {
                 routing_matches_bucket += 1;
             }
-            if page.address.object_id() == Some(page.object_id) {
+            if page.address.object_id() == Some(page.object_id()) {
                 object_id_matches_entry += 1;
             }
         }
