@@ -138,5 +138,66 @@ class RepeatedValuesAreShared(unittest.TestCase):
         self.assertLessEqual(len(table), limit)
 
 
+class RepeatedListsAreShared(unittest.TestCase):
+    """A list a column repeats is held once too.
+
+    Sharing lists was left out when values were first shared, because making one safe meant
+    turning it into a tuple and changing the type a caller sees. A list SUBCLASS keeps the type
+    and refuses the mutation instead. Worth 11.8% of a cold read; `node_path` alone was 147
+    objects for THREE distinct values.
+    """
+
+    def test_a_repeated_flat_list_is_held_once(self):
+        table = {}
+        records = [{"record_type": "context_node", "node_path": ["a", "b"]},
+                   {"record_type": "context_node", "node_path": ["a", "b"]}]
+        first, second = adapter_module.share_repeated_values(records, table)
+        self.assertEqual(["a", "b"], first["node_path"])
+        self.assertIs(first["node_path"], second["node_path"],
+                      "the same path in two records is two objects")
+
+    def test_a_shared_list_refuses_every_way_of_changing_it(self):
+        table = {}
+        shared = adapter_module.share_repeated_values(
+            [{"record_type": "context_node", "node_path": ["a"]}], table)[0]["node_path"]
+        self.assertIsInstance(shared, list, "a caller must still see a list")
+        for change in (lambda: shared.append("b"),
+                       lambda: shared.extend(["b"]),
+                       lambda: shared.insert(0, "b"),
+                       lambda: shared.pop(),
+                       lambda: shared.clear(),
+                       lambda: shared.sort(),
+                       lambda: shared.reverse(),
+                       lambda: shared.__setitem__(0, "b")):
+            with self.assertRaises(TypeError):
+                change()
+        self.assertEqual(["a"], list(shared), "a refused change still happened")
+
+    def test_the_way_a_caller_is_told_to_change_one_works(self):
+        table = {}
+        shared = adapter_module.share_repeated_values(
+            [{"record_type": "context_node", "node_path": ["a"]}], table)[0]["node_path"]
+        mine = list(shared)
+        mine.append("b")
+        self.assertEqual(["a"], list(shared), "the copy reached the shared list")
+
+    def test_a_list_holding_a_container_is_left_alone(self):
+        table = {}
+        record = {"record_type": "context_node", "tags": [{"k": "v"}]}
+        out = adapter_module.share_repeated_values([record], table)
+        self.assertIs(out[0], record)
+        self.assertEqual({}, table)
+
+    def test_a_shared_list_survives_json_and_copying(self):
+        """It is serialised on the way out and deep-copied by callers that need their own."""
+        import copy as copy_module
+        table = {}
+        shared = adapter_module.share_repeated_values(
+            [{"record_type": "context_node", "node_path": ["a", "b"]}], table)[0]["node_path"]
+        self.assertEqual('["a", "b"]', json.dumps(shared))
+        copied = copy_module.deepcopy(shared)
+        copied.append("c")
+        self.assertEqual(["a", "b"], list(shared))
+
 if __name__ == "__main__":
     unittest.main()

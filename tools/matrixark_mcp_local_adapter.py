@@ -643,6 +643,51 @@ def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, 
     return dict_records + encoded_records
 
 
+class _SharedInternedList(list):
+    """The list counterpart of :class:`_SharedInternedValue`.
+
+    Sharing a list was left out when values were first shared, on the grounds that making it safe
+    meant turning it into a tuple, which changes the type a caller sees and breaks anything doing
+    ``.append``. A list subclass keeps the type -- ``isinstance``, indexing, iteration and JSON
+    encoding all behave -- and refuses the mutation instead, so a path that does append fails
+    where it happens rather than silently rewriting records it never looked at.
+
+    Worth 11.8% of a cold read, of which `node_path` alone is 3.6%: 147 objects for THREE distinct
+    values.
+    """
+
+    __slots__ = ()
+
+    def _refuse(self, *_args, **_kwargs):
+        raise TypeError(
+            "this list is shared by every record carrying it, so changing it here would change "
+            "them all -- copy it first: list(record['node_path'])")
+
+    __setitem__ = _refuse
+    __delitem__ = _refuse
+    append = _refuse
+    extend = _refuse
+    insert = _refuse
+    pop = _refuse
+    remove = _refuse
+    clear = _refuse
+    sort = _refuse
+    reverse = _refuse
+    __iadd__ = _refuse
+    __imul__ = _refuse
+
+    def __copy__(self):
+        return list(self)
+
+    def __deepcopy__(self, memo):
+        copied = [_copy.deepcopy(v, memo) for v in self]
+        memo[id(self)] = copied
+        return copied
+
+    def __reduce__(self):
+        return (list, (list(self),))
+
+
 class _SharedInternedValue(dict):
     """One object, shared by every record that carries this interned value.
 
@@ -747,19 +792,26 @@ def share_repeated_values(records: list[Json], table: dict) -> list[Json]:
             continue
         replacements = None
         for field, value in record.items():
-            if type(value) is not dict or not value:
+            kind = type(value)
+            if kind is dict:
+                if not value or not all(type(v) in _SHAREABLE_SCALARS for v in value.values()):
+                    continue      # empty, or holds a container -- cannot be keyed cheaply
+                try:
+                    key = (field, tuple(sorted(value.items())))
+                except TypeError:
+                    continue      # keys of mixed type do not sort
+            elif kind is list:
+                if not value or not all(type(v) in _SHAREABLE_SCALARS for v in value):
+                    continue
+                key = (field, tuple(value))
+            else:
                 continue
-            if not all(type(v) in _SHAREABLE_SCALARS for v in value.values()):
-                continue          # holds a container -- cannot be keyed cheaply
-            try:
-                key = (field, tuple(sorted(value.items())))
-            except TypeError:
-                continue          # keys of mixed type do not sort
             shared = table.get(key)
             if shared is None:
                 if len(table) >= _SHARED_VALUE_TABLE_LIMIT:
                     continue
-                shared = _SharedInternedValue(value)
+                shared = (_SharedInternedValue(value) if kind is dict
+                          else _SharedInternedList(value))
                 table[key] = shared
             if replacements is None:
                 replacements = {}
