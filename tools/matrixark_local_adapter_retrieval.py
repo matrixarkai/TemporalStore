@@ -39,19 +39,30 @@ def _idle_drain_min_interval_ms() -> int:
 # Fields the retrieval scan actually reads, measured with a probe that recorded every key access
 # rather than chosen by inspection. `text`, `heading` and `source_locator` are absent because the
 # scan never asks for them -- they exist to RETURN a hit, not to find one.
-RETRIEVAL_SCAN_FIELDS = (
-    "record_type", "node_path", "access_scope", "metadata", "scope", "scope_key", "envelope",
-    "node_hash", "memory_scope", "session_continuity", "embedding_meta", "vector",
-    "event_id_hash", "entity_hash", "segment_hash", "summary_hash", "compression_id_hash",
-    "chunk_hash", "section_hash", "skill_hash", "ref_hash", "ref_hashes", "ref_type",
-    "index_name", "batch_id_hash", "batch_id_hashes", "node_hashes", "updated_at_ms",
-    "stale_or_superseded", "superseded_by_ref_hash", "superseded_by_entity_hash",
-    "profile_shadowed_by_ref_hash", "expires_at", "tombstone_kind", "posting_part",
-    # The pack is built from these same rows, so a row that reaches the answer must still carry
-    # what the answer prints. Dropping them shrank the scan and emptied the reply: retrieval came
-    # back with "text": "" for every hit. Narrowing the scan further needs the pack to re-read the
-    # chosen rows in a second pass, not a shorter row here.
-    "text", "summary_text", "heading", "source_locator",
+# The scan carries every field EXCEPT the ones proven unused, rather than only the ones on a list.
+#
+# An allowlist fails dangerously here: the pack is built from these same rows, so any field the
+# list forgets is a field the answer cannot print. That shipped once -- retrieval returned
+# "text": "" for every hit while every ranking number stayed green, because ranking does not read
+# the fields it dropped. Extending the list one failing test at a time fixed the case in hand and
+# left the next. A denylist inverts the failure: a field nobody thought of is kept.
+#
+# Two fields hold 38% of the scanned bytes, and neither is read while serving:
+#
+#   storage_route     80.5 KB   24.0%
+#   storage_options   47.4 KB   14.1%
+#
+# Both are routing metadata for the WRITE path. They are read from records by the indexing and
+# latest-state paths, which work from the full records, not from this projected copy.
+#
+# The evidence for dropping a field is deliberately two-sided, because each side alone was wrong:
+# a runtime probe over every ingest kind said `model` and `model_ref` were unread, when the encoder
+# guard reads them on a path the corpus never triggered; a source scan cannot tell record.get from
+# os.environ.get. A field is dropped only when the probe never saw it read AND the serving source
+# never names it.
+RETRIEVAL_SCAN_DROPPED_FIELDS = (
+    "storage_route",
+    "storage_options",
 )
 
 # OFF by default. A projected record cannot serve the resource and skill scans' lexical, keyword and
@@ -126,7 +137,8 @@ def project_scan_record(record, enabled=None):
         enabled = retrieval_scan_projection()
     if not enabled:
         return record
-    return {key: value for key, value in record.items() if key in RETRIEVAL_SCAN_FIELDS}
+    return {key: value for key, value in record.items()
+            if key not in RETRIEVAL_SCAN_DROPPED_FIELDS}
 
 
 class _LocalAdapterRetrievalMixin:
