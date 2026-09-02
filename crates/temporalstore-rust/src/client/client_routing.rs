@@ -319,10 +319,8 @@ impl TemporalStoreClient {
                             .continuous_backend_failures += 1;
                     } else {
                         self.inner
-                            .stats
-                            .lock()
-                            .expect("client stats lock poisoned")
-                            .route_cache_hits += 1;
+                            .route_cache_hits
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return Ok(server_addr);
                     }
                 }

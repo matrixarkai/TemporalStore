@@ -643,6 +643,12 @@ struct ClientInner {
     /// is atomic. It writes only when a route is fetched, replaced by a topology sync, or
     /// cleared.
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
+    /// Cached-route hits, counted outside `stats`.
+    ///
+    /// Every request that finds its route cached lands here, and taking the stats mutex to add one
+    /// serialised those requests against each other. It is folded into `ClientStats` when the
+    /// stats are read, so callers see the same number; only the write side stops taking a lock.
+    route_cache_hits: AtomicU64,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
     /// How many entries `backend_failures` holds, maintained under that lock.
     ///
@@ -800,6 +806,7 @@ impl TemporalStoreClient {
             inner: Arc::new(ClientInner {
                 options,
                 routes: RwLock::default(),
+                route_cache_hits: AtomicU64::new(0),
                 backend_failures: Mutex::default(),
                 backend_failure_entries: AtomicUsize::new(0),
                 tables: RwLock::default(),
