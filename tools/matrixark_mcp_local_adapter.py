@@ -125,6 +125,22 @@ LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
 # passes with a 250ms floor. The cache is validated by signature on read, so a slightly
 # staler file costs nothing but a rebuild.
 LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "250")))
+
+
+def _snapshot_prefix_fingerprint(record: "Json") -> str:
+    """Fingerprint one record, so a snapshot can prove on disk which prefix it already holds.
+
+    The head names the last record it persisted. A caller holding a longer list can then check
+    that its own record at that position is the same one, which establishes that the file is a
+    prefix of the list in hand -- something per-instance bookkeeping cannot establish for a list
+    the instance did not build.
+    """
+    try:
+        return _hashlib.sha256(
+            json.dumps(record, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:32]
+    except (TypeError, ValueError):
+        return ""
 LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 1
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
 
@@ -4071,7 +4087,27 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             if len(tail) != delta_count:
                 return None
             records.extend(record for record in tail if isinstance(record, dict))
+        # A tail appended against the wrong base would still satisfy the counts, so check the
+        # record the head named. A mismatch returns None and the caller re-derives from the log,
+        # which is the same fallback a missing snapshot takes.
+        recorded = head.get("tail_fingerprint")
+        if recorded and records and _snapshot_prefix_fingerprint(records[-1]) != recorded:
+            return None
         return expand_interned_records(records)
+
+    def _durable_read_cache_tail_fingerprint(self) -> str:
+        """The fingerprint the head recorded, or "" when there is none to trust."""
+        try:
+            with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
+                head = json.load(handle)
+            if head.get("cache_key") != str(self.event_log.resolve()):
+                return ""
+            if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
+                return ""
+            recorded = head.get("tail_fingerprint")
+            return recorded if isinstance(recorded, str) else ""
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            return ""
 
     def _durable_read_cache_counts(self) -> tuple[int, int]:
         """(base_count, delta_count) as recorded on disk, or (0, 0)."""
@@ -4125,6 +4161,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             and self._durable_read_cache_state
             == (str(self.event_log.resolve()), base_count, delta_count, epoch)
         )
+        if not contiguous and appended > 0 and base_count > 0:
+            # The list handed over is often the process-wide one, shared by every adapter over this
+            # log, and no instance can vouch for it from its own bookkeeping -- so `epoch` arrives
+            # as None and the whole base was being rewritten on every read. Measured with two
+            # adapters on one log, 290 of 291 writes took that path.
+            #
+            # Disk can answer the question that bookkeeping cannot: the head names the last record
+            # it persisted, so if this list carries that same record at that same position, the
+            # file is a prefix of it and only the tail is missing.
+            persisted = base_count + delta_count
+            recorded = self._durable_read_cache_tail_fingerprint()
+            if recorded and recorded == _snapshot_prefix_fingerprint(records[persisted - 1]):
+                contiguous = True
 
         def write_head(record_count: int, deltas: int) -> None:
             tmp = head_path.with_name(f"{head_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
@@ -4135,6 +4184,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     "signature": signature,
                     "record_count": record_count,
                     "delta_count": deltas,
+                    # The last record this snapshot holds, so another adapter over the same log
+                    # can prove the file is a prefix of its own list -- see the contiguity check.
+                    "tail_fingerprint": _snapshot_prefix_fingerprint(records[-1]) if records else "",
                 }, handle, separators=(",", ":"))
                 handle.write("\n")
             tmp.replace(head_path)
