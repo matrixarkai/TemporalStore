@@ -1168,7 +1168,27 @@ pub(super) fn sync_context_pages_for_object(
         uncovered_maintenance::note(object_key);
         return false;
     }
-    for (kind, key, live) in groups {
+    for (kind, key, mut live) in groups {
+        // File the newest page, not every page the object has ever had.
+        //
+        // These kinds carry no component, so all of an object's pages file under the same
+        // (kind, key, None). `upsert_bucket_index_page_with` drops that entry's existing refs
+        // before inserting, so filing a list leaves only its last element -- the other entries
+        // are removed again on the way past. The index holds ONE ref per object here either way;
+        // this reaches it without the removals and inserts in between.
+        //
+        // That is worth stating plainly because the list is the object's whole series and this
+        // runs on every write: a node holding 850 events re-filed 850 pages to add its 851st, so
+        // filling a node cost the square of its length -- 2,072 allocations per message at 50
+        // events, 23,822 at 800.
+        //
+        // Whether the index SHOULD hold every page of a series rather than the newest is a
+        // separate question. It holds one today, and this keeps that.
+        if live.len() > 1 {
+            let newest = live.pop().expect("length checked");
+            live.clear();
+            live.push(newest);
+        }
         sync_bucket_index_object_pages(shard, shard_id, kind, &key, live, true);
     }
     true
