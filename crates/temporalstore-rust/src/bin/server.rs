@@ -138,10 +138,24 @@ fn main() {
     // line below is not reachable from a portal, an operator's browser, or a dashboard.
     let storage_reason = storage_decision.reason.clone();
     let disk_cache_tier = storage_backend.wants_disk_cache_tier();
+    // What SHAPE this node runs in, as opposed to where its bytes live. One box
+    // and a raft member resolve the same backend and hold the same tiers, so the
+    // backend line alone announces a single process as "raft-replication" and
+    // nothing in the log says otherwise. Resolved here, once, and reused below
+    // as the standalone decision itself.
+    let is_single_node =
+        temporalstore_rust::storage_backend::single_node(meta_addr_raw.as_deref());
+    let deployment_profile = temporalstore_rust::storage_backend::DeploymentProfile::resolve(
+        &storage_backend,
+        is_single_node,
+    );
     info!(
+        profile = deployment_profile.describe(),
+        tiers = deployment_profile.durable_tiers(),
+        scaled = deployment_profile.is_scaled(),
         backend = %storage_backend.describe(),
         disk_cache_tier,
-        "cache tier follows the storage backend"
+        "deployment profile - cache tier follows the storage backend"
     );
     let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
         cache_memory_bytes,
@@ -326,24 +340,9 @@ fn main() {
     // explicitly and wins over both: TS_STANDALONE=1 → standalone, =0 → distributed
     // (using TS_META_ADDR, defaulting to 127.0.0.1:17001). Sentinels for TS_META_ADDR
     // ("local", "none", "standalone", "off", or empty) always mean standalone.
-    let meta_addr_is_real = meta_addr_raw
-        .as_deref()
-        .map(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "" | "local" | "none" | "standalone" | "off"
-            )
-        })
-        .unwrap_or(false);
-    let standalone = match std::env::var("TS_STANDALONE")
-        .ok()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("1") | Some("true") | Some("yes") | Some("on") => true,
-        Some("0") | Some("false") | Some("no") | Some("off") => false,
-        _ => !(meta_addr_is_real || env_bool("TS_DISTRIBUTED", false)),
-    };
+    // Decided once, up where the deployment profile is named, so the profile the
+    // node logs and the topology it actually runs cannot drift apart.
+    let standalone = is_single_node;
     if standalone {
         info!(
             shard_id,
