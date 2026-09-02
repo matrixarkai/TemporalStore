@@ -2392,9 +2392,13 @@ pub(crate) fn execute_on_shard(
             // One node read per hash, and the vector comes back with it -- where the separate
             // record meant a second lookup per node on top of the node read retrieval does
             // anyway.
+            // Every id asked about is answered for. A limit belongs on a query that searches,
+            // where the caller cannot know how many results exist; this batch is a list of ids the
+            // caller already holds, so truncating it drops nodes the caller named, with nothing in
+            // the response saying so. The sibling `ContextGetNodes` reads its whole batch, and
+            // `command_validation` already declares a key for every hash in this one.
             let embeddings = dedupe_nonzero_u64_preserve_order(node_hashes)
                 .into_iter()
-                .take(context_limit(None))
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     let node = shard
