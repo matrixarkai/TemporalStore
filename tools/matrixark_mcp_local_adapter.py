@@ -778,6 +778,10 @@ def expand_interned_records(records: list[Json]) -> list[Json]:
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
+# Cache keys whose entry has records appended but not yet compacted. Compacting on every
+# append walks the whole entry, which is O(corpus) per write; it is compacted when something
+# reads it. Guarded by _LOCAL_READ_CACHE_LOCK, like the cache itself.
+_LOCAL_READ_CACHE_DIRTY: set[str] = set()
 
 
 def profile_promotion_decision(profile_node_hash: int) -> Json:
@@ -4407,6 +4411,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_source = "empty"
         with _LOCAL_READ_CACHE_LOCK:
             _LOCAL_READ_CACHE.pop(cache_key, None)
+            _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         for cache_file in (self._durable_read_cache_path(),
                            self._durable_read_cache_delta_path(),
                            self._durable_read_cache_head_path()):
@@ -4602,16 +4607,18 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # The shared entry does not cover the log as it stood before this write either
                 # (a writer in another process got in), so it is stale the same way.
                 _LOCAL_READ_CACHE.pop(cache_key, None)
+                _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
                 cached = None
             if cached is not None:
                 _, _, cached_records = cached
-                cached_records = compact_and_apply_tombstones(list(cached_records) + list(records))
-                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
-                if durable_records is None:
-                    # Shared across adapters over this log, so its prefix is not necessarily the
-                    # one already persisted -- never claim a tail append from here.
-                    durable_records = list(cached_records)
-                    durable_epoch = None
+                # Extend now, compact when something reads -- see _LOCAL_READ_CACHE_DIRTY.
+                _LOCAL_READ_CACHE[cache_key] = (
+                    self._read_cache_size, self._read_cache_mtime_ns,
+                    list(cached_records) + list(records))
+                _LOCAL_READ_CACHE_DIRTY.add(cache_key)
+                # No snapshot is taken from here while the entry is uncompacted: a cold reader
+                # is served the snapshot as-is, so writing this list would serve superseded and
+                # tombstoned records after a restart. The next read compacts and refreshes it.
             elif self._read_cache_records is not None:
                 with self._read_cache_lock:
                     self._compact_read_cache_if_dirty_locked()
@@ -4620,6 +4627,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         self._read_cache_mtime_ns,
                         list(self._read_cache_records),
                     )
+                _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         if durable_records is not None:
             # Only continue the tail here; never rewrite the whole base from a write.
             #
@@ -4841,9 +4849,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
+        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
         records = drop_owner_derivable_postings(
-            records, resolve_owner=self._resolve_embedding_owner
+            records, resolve_owner=self._embedding_owner_resolver()
         )
         if not records:
             return
@@ -4880,9 +4888,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
         records = drop_vectors_for_opted_out_tenants(records)
-        records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
+        records = fold_embedding_records(records, resolve_owner=self._embedding_owner_resolver())
         records = drop_owner_derivable_postings(
-            records, resolve_owner=self._resolve_embedding_owner
+            records, resolve_owner=self._embedding_owner_resolver()
         )
         if not records:
             return
@@ -4910,14 +4918,43 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         """The newest durable record of ``record_type`` whose ``field`` equals ``ref_hash`` --
         the owner a late-arriving embedding folds onto. None when no such owner exists yet, in
         which case the embedding record is kept as-is rather than losing the vector."""
-        try:
-            records = self.read_all()
-        except Exception:
-            return None
-        for record in reversed(records):
-            if record.get("record_type") == record_type and record.get(field) == ref_hash:
-                return record
-        return None
+        return self._embedding_owner_resolver()(record_type, field, ref_hash)
+
+    def _embedding_owner_resolver(self):
+        """A resolver that reads the record set ONCE and indexes it.
+
+        The per-embedding form read the whole set and scanned it backwards for every embedding
+        it was asked about: 24 full reads per attachment, 480 of the 561 a twenty-attachment
+        ingest performed. Each of those reads compacts the cache when it is dirty, so the cost
+        grew with the corpus once per embedding rather than once per ingest.
+
+        The index is built per (record_type, field) on first use, and later records overwrite
+        earlier ones, which is the same newest-wins answer the backwards scan gave.
+        """
+        records: list[Json] | None = None
+        indexes: dict[tuple[str, str], dict[Any, Json]] = {}
+
+        def resolve(record_type: str, field: str, ref_hash: Any) -> Json | None:
+            nonlocal records
+            if records is None:
+                try:
+                    records = self.read_all()
+                except Exception:
+                    records = []
+            key = (record_type, field)
+            index = indexes.get(key)
+            if index is None:
+                index = {}
+                for record in records:
+                    if record.get("record_type") != record_type:
+                        continue
+                    value = record.get(field)
+                    if value is not None:
+                        index[value] = record
+                indexes[key] = index
+            return index.get(ref_hash)
+
+        return resolve
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         if not hasattr(self, "_session_buffer_cache_lock"):
@@ -5300,6 +5337,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_source = "empty"
             with _LOCAL_READ_CACHE_LOCK:
                 _LOCAL_READ_CACHE.pop(cache_key, None)
+                _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
             for cache_file in (self._durable_read_cache_path(),
                                self._durable_read_cache_delta_path(),
                                self._durable_read_cache_head_path()):
@@ -5322,6 +5360,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 return list(self._read_cache_records)
         with _LOCAL_READ_CACHE_LOCK:
             cached = _LOCAL_READ_CACHE.get(cache_key)
+            if cached is not None and cache_key in _LOCAL_READ_CACHE_DIRTY:
+                # Appends left it uncompacted. This is the read, so compact it once here.
+                cached = (cached[0], cached[1], compact_and_apply_tombstones(cached[2]))
+                _LOCAL_READ_CACHE[cache_key] = cached
+                _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
             if cached is not None:
                 cached_size, cached_mtime_ns, cached_records = cached
                 if cached_size == size and cached_mtime_ns == mtime_ns:
@@ -5333,6 +5376,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         self._read_cache_source = "process"
                     return list(records)
                 _LOCAL_READ_CACHE.pop(cache_key, None)
+                _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         durable_records = self._load_durable_read_cache(signature)
         if durable_records is not None:
             records = list(durable_records)
@@ -5343,6 +5387,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_source = "durable"
             with _LOCAL_READ_CACHE_LOCK:
                 _LOCAL_READ_CACHE[cache_key] = (size, mtime_ns, list(records))
+                _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
                 self._retrieval_records_cache.clear()
@@ -5373,6 +5418,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_source = "jsonl"
         with _LOCAL_READ_CACHE_LOCK:
             _LOCAL_READ_CACHE[cache_key] = (size, mtime_ns, list(records))
+            _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         # These records were just installed as the cached list, so the epoch describes them
         # exactly -- passing it lets the next append continue this base instead of
         # rewriting it once before the tail path can start.
