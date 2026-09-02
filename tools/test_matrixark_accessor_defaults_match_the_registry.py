@@ -52,9 +52,20 @@ def _bool_accessors():
 class AccessorsAgreeWithTheRegistryTest(unittest.TestCase):
 
     def setUp(self) -> None:
+        # Restore the ENTIRE environment afterwards. These tests ask what an accessor returns for an
+        # UNCONFIGURED tenant, which means unsetting each knob's env var -- and `unittest discover`
+        # runs the whole suite in ONE process, so unsetting without restoring silently reconfigures
+        # every test that comes after. It did: 35 unrelated tests failed, none of them near this
+        # file. Same defect as the ~180 set_var sites that make the Rust suite look flaky.
+        self._saved_environ = dict(os.environ)
+        self.addCleanup(self._restore_environ)
         self.accessors = _bool_accessors()
         self.assertGreater(len(self.accessors), 5,
                            "found almost no bool accessors, so these comparisons prove nothing")
+
+    def _restore_environ(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._saved_environ)
 
     def test_the_resolved_default_matches_the_registry_default(self) -> None:
         for knob_name, func in self.accessors:
