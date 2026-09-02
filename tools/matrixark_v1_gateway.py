@@ -1922,6 +1922,12 @@ _GRAFANA_ASSETS = {
     # had no way to find out the engine was monitorable at all.
     "engine": ("../docs/ops/temporalstore-dashboard.json", "application/json"),
     "engine-alerts": ("../docs/ops/temporalstore-alerts.yml", "text/yaml; charset=utf-8"),
+    # The metaserver is the control plane, and 37 of its 41 declared families were on no
+    # dashboard at all: convictions, placement shortfalls, shard divergence, safe mode, and
+    # the topology version each server last applied. A customer running raft or shared
+    # storage could see traffic and storage, and nothing about whether the cluster agreed
+    # with itself.
+    "cluster": ("../docs/ops/temporalstore-cluster-dashboard.json", "application/json"),
 }
 _GRAFANA_CACHE: dict[str, Optional[bytes]] = {}
 
@@ -1942,7 +1948,15 @@ _MONITORING_ASSETS: tuple = (
      "filename": "temporalstore-dashboard.json", "scrape": "engine",
      "covers": "Raft commit, apply and lease; metaserver scheduler and topology; proxy routing, "
                "admission and quarantine; object and page store lifecycle; cache pressure; data "
-               "node lifecycle; ingestion lag and dead letters; replica replay; and the scale SLO."},
+               "node lifecycle; and ingestion lag and dead letters. Replica replay and the scale "
+               "SLO are no longer listed here: nothing emits their series, so those panels were "
+               "blank on every deployment and have been removed."},
+    {"asset": "cluster", "kind": "dashboard", "label": "Cluster control plane",
+     "filename": "temporalstore-cluster-dashboard.json", "scrape": "engine",
+     "covers": "Whether the cluster agrees with itself: the topology version each server last "
+               "applied against the current one, safe mode and change-muted switches, "
+               "convictions and damage severity, shard divergence, placement and calibration "
+               "shortfalls, retention blocked or capped, and per-server records and bytes."},
     {"asset": "alerts", "kind": "rules", "label": "Gateway alert rules",
      "filename": "matrixark-gateway-alerts.yml", "scrape": "gateway",
      "covers": "Retrieval running on hash vectors, extraction with no model call, live "

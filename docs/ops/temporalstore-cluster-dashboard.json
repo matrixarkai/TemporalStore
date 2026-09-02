@@ -1,0 +1,223 @@
+{
+  "title": "TemporalStore Cluster (metaserver control plane)",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Topology Version And What Each Server Applied",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_topology_version"
+        },
+        {
+          "expr": "temporalstore_meta_server_applied_topology"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Topology Lag (current minus slowest server)",
+      "targets": [
+        {
+          "expr": "max(temporalstore_meta_topology_version) - min(temporalstore_meta_server_applied_topology)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Safety Switches: Safe Mode, Change Muted, Detector Paused",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_location_safe_mode"
+        },
+        {
+          "expr": "temporalstore_meta_change_muted"
+        },
+        {
+          "expr": "temporalstore_meta_detector_paused"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Convictions",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_convicted_total"
+        },
+        {
+          "expr": "temporalstore_meta_conviction_held_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Damage Severity",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_damage_severity"
+        },
+        {
+          "expr": "temporalstore_meta_abnormal_resources"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Shard Divergence",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_shard_divergence"
+        },
+        {
+          "expr": "temporalstore_meta_shard_divergence_total"
+        },
+        {
+          "expr": "temporalstore_meta_divergence_skipped"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Placement Shortfall",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_placement_short"
+        },
+        {
+          "expr": "temporalstore_meta_placement_short_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Calibration Shortfall",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_calibration_shortfall_groups"
+        },
+        {
+          "expr": "temporalstore_meta_calibration_shortfall_proxies"
+        },
+        {
+          "expr": "temporalstore_meta_calibration_capped"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retention Blocked Or Capped",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_retention_blocked"
+        },
+        {
+          "expr": "temporalstore_meta_retention_capped"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Retention Purged",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_retention_purged_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Freeze Aging",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_freeze_aged_total"
+        },
+        {
+          "expr": "temporalstore_meta_freeze_aging_capped"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Metaserver Requests",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_requests_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Topology Query Latency And Failures",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_topology_query_latency_us"
+        },
+        {
+          "expr": "temporalstore_meta_topology_query_failed_total"
+        },
+        {
+          "expr": "temporalstore_meta_topology_query_bytes_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scheduler Queue And Executions",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_scheduler_queue_depth"
+        },
+        {
+          "expr": "temporalstore_meta_scheduler_executions_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Per Server: Records And Stored Bytes",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_server_records"
+        },
+        {
+          "expr": "temporalstore_meta_server_storage_bytes"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Resource State And Inventory",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_resource_state"
+        },
+        {
+          "expr": "temporalstore_meta_inventory"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Proxy Restarts And Attachments",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_proxy_restarts"
+        },
+        {
+          "expr": "temporalstore_meta_proxy_attachments_total"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Mutation Apply Failures",
+      "targets": [
+        {
+          "expr": "temporalstore_meta_mutation_apply_failed_total"
+        }
+      ]
+    }
+  ]
+}
