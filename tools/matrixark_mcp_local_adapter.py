@@ -4061,6 +4061,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # (record_type, field) -> {value: record}, kept current as records are appended so an
         # embedding can find its owner without reading the whole set. None until first use.
         self._embedding_owner_index: dict[tuple[str, str], dict[Any, Json]] | None = None
+        # dirty_hash -> the newest summary-dirty or refresh-audit row, so the outstanding set
+        # can be answered without reading everything. None until first use.
+        self._summary_dirty_index: dict[Any, Json] | None = None
         # The keys the compacted cache already holds, kept current so a write can tell whether
         # it supersedes anything without scanning. None means unknown -- rebuilt on the next
         # compaction.
@@ -4469,6 +4472,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_records = None
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
+            self._summary_dirty_index = None
             self._read_cache_size = -1
             self._read_cache_mtime_ns = -1
             self._read_cache_source = "empty"
@@ -4695,6 +4699,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_records = None
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
+                self._summary_dirty_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4725,6 +4730,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     self._read_cache_value_keys = None
                     self._read_cache_state_keys = None
                 self._note_embedding_owners(records)
+                if self._summary_dirty_index is not None:
+                    for record in records:
+                        self._note_summary_dirty_row(self._summary_dirty_index, record)
                 durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
@@ -4739,6 +4747,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_records = None
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
+                self._summary_dirty_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -4878,29 +4887,56 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             kept.append(record)
         return kept
 
+    #: The only two row types the outstanding-dirty answer depends on.
+    _SUMMARY_DIRTY_TYPES = ("context_summary_dirty", "context_summary_refresh_audit")
+
+    def _summary_dirty_rows(self) -> list[Json]:
+        """The newest summary-dirty and refresh-audit row per dirty_hash.
+
+        This was answered by scanning the whole live view twice, once per append -- 40 of the 85
+        full reads a twenty-attachment ingest performs. Those two types are a small fraction of the
+        store, so the adapter keeps just them, built from one read the first time and folded
+        forward on every append. Newest wins per dirty_hash, which is what compaction does with
+        these rows.
+        """
+        index = self._summary_dirty_index
+        if index is None:
+            index = {}
+            try:
+                live = self.read_all()
+            except (OSError, ValueError):
+                live = []
+            for record in live:
+                self._note_summary_dirty_row(index, record)
+            self._summary_dirty_index = index
+        return list(index.values())
+
+    @staticmethod
+    def _note_summary_dirty_row(index: dict[Any, Json], record: Json) -> None:
+        if not isinstance(record, dict):
+            return
+        if str(record.get("record_type") or "") not in MatrixArkLocalAdapter._SUMMARY_DIRTY_TYPES:
+            return
+        dirty_hash = record.get("dirty_hash")
+        if dirty_hash is None:
+            return
+        index[dirty_hash] = record
+
     def _outstanding_dirty_nodes(self) -> set[tuple[str, Any]]:
-        """(scope_key, node_hash) pairs with an uncompleted pending context_summary_dirty marker in the
-        current live view. Computed from read_all() so it always reflects durable+own state -- a node is
-        reported outstanding only if a pending marker is really present, so coalescing can never drop
-        the last marker for a node that still needs regeneration."""
+        """(scope_key, node_hash) pairs with an uncompleted pending context_summary_dirty marker.
+
+        A node is reported outstanding only if a pending marker is really present, so coalescing can
+        never drop the last marker for a node that still needs regeneration.
+        """
+        rows = self._summary_dirty_rows()
         completed: set[Any] = set()
-        pending: dict[tuple[str, Any], Any] = {}
-        try:
-            live = self.read_all()
-        except (OSError, ValueError):
-            return set()
-        for record in live:
-            if not isinstance(record, dict):
-                continue
-            rt = str(record.get("record_type") or "")
-            if rt not in ("context_summary_dirty", "context_summary_refresh_audit"):
-                continue
+        for record in rows:
             dirty_hash = record.get("dirty_hash")
-            status = record.get("status")
-            if dirty_hash is not None and status in ("completed", "refreshed"):
+            if dirty_hash is not None and record.get("status") in ("completed", "refreshed"):
                 completed.add(dirty_hash)
-        for record in live:
-            if not isinstance(record, dict) or str(record.get("record_type") or "") != "context_summary_dirty":
+        pending: set[tuple[str, Any]] = set()
+        for record in rows:
+            if str(record.get("record_type") or "") != "context_summary_dirty":
                 continue
             if record.get("status") != "pending":
                 continue
@@ -4908,9 +4944,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             node_hash = record.get("node_hash")
             if node_hash is None or dirty_hash in completed:
                 continue
-            key = (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
-            pending[key] = record
-        return set(pending.keys())
+            pending.add(
+                (str(record.get("scope_key") or _canonical_scope_key_of(record)), node_hash)
+            )
+        return pending
 
     def _coalesce_summary_dirty(self, records: list[Json]) -> list[Json]:
         """Drop redundant pending summary-dirty markers for a (scope, node) that already has an
@@ -5483,6 +5520,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_records = []
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
+                self._summary_dirty_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
@@ -5537,6 +5575,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_records = list(records)
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
+                self._summary_dirty_index = None
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
                 self._read_cache_source = "durable"
@@ -5570,6 +5609,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_records = list(records)
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
+            self._summary_dirty_index = None
             self._read_cache_size = size
             self._read_cache_mtime_ns = mtime_ns
             self._read_cache_source = "jsonl"
