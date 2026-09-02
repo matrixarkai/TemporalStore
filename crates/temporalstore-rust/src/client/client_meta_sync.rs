@@ -184,11 +184,7 @@ impl TemporalStoreClient {
                 })
             })
             .collect::<Vec<_>>();
-        self.inner
-            .tables
-            .write()
-            .expect("client table cache lock poisoned")
-            .insert(table_key.clone(), options.clone());
+        self.with_tables_mut(|tables| tables.insert(table_key.clone(), options.clone()));
 
         // "unchanged" means the metaserver did not rebuild the shard list because we already
         // have this version -- so the response carries NO shards, and running the route
@@ -538,11 +534,9 @@ impl TemporalStoreClient {
 
     pub fn close_table(&self, table: &TemporalStoreTable) -> Result<(), ClientError> {
         let removed = self
-            .inner
-            .tables
-            .write()
-            .expect("client table cache lock poisoned")
-            .remove(&table_combine_name(table.namespace(), table.table_name()))
+            .with_tables_mut(|tables| {
+                tables.remove(&table_combine_name(table.namespace(), table.table_name()))
+            })
             .is_some();
         self.inner
             .stats
@@ -631,12 +625,7 @@ impl TemporalStoreClient {
     }
 
     pub fn native_partition_set_report(&self) -> Vec<ClientPartitionSetReport> {
-        let tables = self
-            .inner
-            .tables
-            .read()
-            .expect("client table cache lock poisoned")
-            .clone();
+        let tables = self.with_tables(|tables| tables.clone());
         let routes = self
             .inner
             .routes

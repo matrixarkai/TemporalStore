@@ -702,6 +702,39 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
 }
 
 #[test]
+fn a_table_opened_after_a_lookup_is_still_found() {
+    // Table lookups read a per-thread snapshot of the open-table map, refreshed only when the
+    // version moves. A thread that has already looked one up holds a snapshot; if opening a table
+    // does not move the version, that thread never sees the new table and every request for it
+    // takes the miss path to the metaserver instead.
+    let client = TemporalStoreClient::new("127.0.0.1:1");
+    let _first = client.open_table("ns", "a", TableOptions::default());
+    assert!(
+        client.cached_table("ns", "a").is_some(),
+        "the table just opened is in the cache"
+    );
+
+    // Same thread, so the snapshot taken above is the one in hand.
+    let _second = client.open_table("ns", "b", TableOptions::default());
+    assert!(
+        client.cached_table("ns", "b").is_some(),
+        "a table opened after this thread cached a snapshot must still be found -- a miss here          means the open did not move the version"
+    );
+
+    // And closing must reach it too, or a closed table keeps being served from a stale snapshot.
+    let first = client.cached_table("ns", "a").expect("still open");
+    client.close_table(&first).expect("close");
+    assert!(
+        client.cached_table("ns", "a").is_none(),
+        "a closed table must leave the snapshot too"
+    );
+    assert!(
+        client.cached_table("ns", "b").is_some(),
+        "closing one table must not drop the other"
+    );
+}
+
+#[test]
 fn the_backend_failure_count_tracks_the_map_it_stands_in_for() {
     // The route lookup skips the failure-map lock when this count is zero, so the count is only
     // safe while it equals the map's length. Every mutation goes through `with_backend_failures`
