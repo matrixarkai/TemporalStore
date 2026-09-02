@@ -1532,7 +1532,7 @@ pub(super) fn sync_bucket_index_object_pages(
         };
         let before = bucket.page_index.len();
         bucket.page_index.retain(|_, page| {
-            let matches_object = &*page.model_id == kind && page.object_key == Arc::from(object_key);
+            let matches_object = &*page.model_id == kind && &*page.object_key == object_key;
             if matches_object {
                 removed_components.insert(page.component.clone());
             }
@@ -1936,7 +1936,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
         note_site(&bucket_visit_sites::CLEAR_DIRTY, bucket.page_index.len());
         let mut touched = false;
         for page in bucket.page_index.values_mut() {
-            if page.object_key == Arc::from(object_key) {
+            if &*page.object_key == object_key {
                 page.dirty = false;
                 touched = true;
             }

@@ -3050,7 +3050,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         };
         let mut deleted_object_ids = BTreeSet::new();
         bucket.page_index.retain(|_, page| {
-            if page.object_key == Arc::from(key) {
+            if &*page.object_key == key {
                 deleted_object_ids.insert(page.object_id());
                 removed = true;
                 false
@@ -3140,7 +3140,7 @@ fn mark_bucket_index_page_deleted(
         let mut deleted_object_ids = BTreeSet::new();
         bucket.page_index.retain(|_, page| {
             let matches = page.model_id.as_ref() == model_id
-                && page.object_key == Arc::from(key)
+                && &*page.object_key == key
                 && page.component.as_deref() == component;
             if matches {
                 deleted_object_ids.insert(page.object_id());
@@ -3358,7 +3358,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         shard.bucket_index.bucket_map.values().any(|bucket| {
             bucket.page_index
                 .values()
-                .any(|page| page.object_key == Arc::from(key) && !page.deleted)
+                .any(|page| &*page.object_key == key && !page.deleted)
         })
     } else {
         storage_model_kinds().iter().any(|kind| {
@@ -3373,7 +3373,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                             .get(&page_ref.routing_bucket)
                             .and_then(|bucket| bucket.page_index.get(&page_ref.page_ref_key))
                             .map(|page| {
-                                !page.deleted && page.model_id.as_ref() == *kind && page.object_key == Arc::from(key)
+                                !page.deleted && page.model_id.as_ref() == *kind && &*page.object_key == key
                             })
                             .unwrap_or(false)
                     })

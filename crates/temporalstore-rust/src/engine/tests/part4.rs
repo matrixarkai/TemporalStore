@@ -4521,6 +4521,65 @@ fn a_page_whose_address_carries_no_object_id_still_reports_one() {
     assert_eq!(seen, 1, "the page must be in the index, or nothing was tested");
 }
 
+/// Deleting an object costs a bounded number of allocations, not one per page examined.
+///
+/// The scan compared each page's key against the wanted one by building a fresh `Arc<str>` from
+/// the wanted key inside the loop -- a heap allocation and a copy of the key per page, to compare
+/// and immediately drop. Twelve sites did this. Borrowing compares the same bytes with no
+/// allocation at all.
+///
+/// Measured as allocations rather than time because the allocation IS the cost here, and counted
+/// with `allocs` rather than `outstanding`: this pattern frees everything it takes, so a live-heap
+/// measurement reports zero while the work still happens.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn deleting_an_object_does_not_allocate_per_page_scanned() {
+    let delete_from_a_hash_of = |fields: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for field in 0..fields {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "wide".to_string(),
+                    field: format!("f{field}"),
+                    value: vec![b'v'; 16],
+                },
+            });
+        }
+
+        let probe = crate::alloc_probe::Probe::start();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonDelete {
+                key: "wide".to_string(),
+            },
+        });
+        probe.stop().allocs
+    };
+
+    let narrow = delete_from_a_hash_of(20);
+    let wide = delete_from_a_hash_of(200);
+
+    println!("delete allocations: {narrow} at 20 fields, {wide} at 200 fields");
+
+    // Guard the guard: an upper bound passes hardest at zero, so prove the probe saw the work.
+    assert!(narrow > 0, "the probe must observe the delete: {narrow}");
+
+    // 180 more pages to scan. Per-page allocation would put ~180 extra allocations here.
+    let growth = wide.saturating_sub(narrow);
+    assert!(
+        growth < 180,
+        "deleting scanned 180 more pages and allocated {growth} more times          ({narrow} at 20 fields, {wide} at 200) -- that is per-page allocation"
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
