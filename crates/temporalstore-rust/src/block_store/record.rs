@@ -148,10 +148,30 @@ fn encode_page_record_payload(
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
         return Ok((payload.to_vec(), PageRecordCompression::None));
     }
-    let compressed = zstd::stream::encode_all(
-        Cursor::new(payload),
-        options.compression_level.clamp(-7, 22),
-    )?;
+    // Reuse one compression context per thread, the mirror of the decoder below.
+    //
+    // `zstd::stream::encode_all` constructs a compressor, uses it once and drops it, and a
+    // compressor allocates its working buffers up front. Measured by sweeping value sizes
+    // through a write: cost is flat at 2.0 B allocated per payload byte on both sides of a
+    // step between 192 and 256 bytes worth 32,535 B per write -- and 256 is
+    // `PAGE_RECORD_COMPRESSION_MIN_BYTES`, so the step IS this call. At the 1,244-byte average
+    // of a soak corpus that is about 80% of everything a write allocates.
+    //
+    // The level is per-call rather than fixed, so it is set on the held compressor each time;
+    // that is a parameter update, not a rebuild. A compressor is `&mut` to compress, so this is
+    // thread-local for the same reason the decompressor is: one shared instance would serialise
+    // every writer behind a lock on a path that is otherwise concurrent.
+    //
+    // The stored bytes CHANGE -- the bulk API frames a stream without the content-size header
+    // the streaming call writes, so output is a little smaller. Both are ordinary zstd frames,
+    // both decode through the path below and through the streaming fallback, so a record written
+    // by either build reads on either. It is still a change to what lands on disk.
+    let level = options.compression_level.clamp(-7, 22);
+    let compressed = ZSTD_COMPRESSOR.with(|cell| {
+        let mut compressor = cell.borrow_mut();
+        compressor.set_compression_level(level)?;
+        compressor.compress(payload)
+    })?;
     if compressed.len() < payload.len() {
         Ok((compressed, PageRecordCompression::Zstd))
     } else {
@@ -461,6 +481,13 @@ thread_local! {
     static ZSTD_DECOMPRESSOR: std::cell::RefCell<zstd::bulk::Decompressor<'static>> =
         std::cell::RefCell::new(
             zstd::bulk::Decompressor::new().expect("zstd decompressor construction"),
+        );
+
+    /// The write-side mirror. Level is set per call, so the level chosen here is only a starting
+    /// point and never the one a record is actually compressed at.
+    static ZSTD_COMPRESSOR: std::cell::RefCell<zstd::bulk::Compressor<'static>> =
+        std::cell::RefCell::new(
+            zstd::bulk::Compressor::new(0).expect("zstd compressor construction"),
         );
 }
 
