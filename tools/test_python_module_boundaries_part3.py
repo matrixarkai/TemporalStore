@@ -109,10 +109,31 @@ class _ModuleBoundaryPart3:
         retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
 
-        self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
-        self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
-        self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
-        self.assertIs(server_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
+        # `assertIs` on a class cannot survive a module being loaded twice. Another file in this
+        # suite drops a module from sys.modules and re-imports it to pick up an environment change,
+        # which builds a second module object holding a second class of the same qualified name:
+        #
+        #   <class 'tools.matrixark_mcp_local_adapter.MatrixArkLocalAdapter'>
+        #     is not <class 'tools.matrixark_mcp_local_adapter.MatrixArkLocalAdapter'>
+        #
+        # so whether these are one object depends on what ran first. It failed in 7 of 8 CI runs and
+        # passed alone every time.
+        #
+        # What the test means is that the entrypoint re-exports these rather than defining its own
+        # copies, and that holds however many times a module was loaded. A copy defined in the
+        # entrypoint still fails it: its __module__ would be matrixark_mcp_server.
+        for name, split_mod in (
+            ("MatrixArkServiceMetrics", metrics_mod),
+            ("MatrixArkLocalAdapter", local_mod),
+            ("MatrixArkTemporalStoreDirectAdapter", temporal_mod),
+            ("MatrixArkTemporalStoreRustAdapter", temporal_mod),
+        ):
+            exported = getattr(server_mod, name)
+            defined = getattr(split_mod, name)
+            self.assertEqual(exported.__qualname__, defined.__qualname__)
+            self.assertEqual(exported.__module__.rsplit(".", 1)[-1],
+                             defined.__module__.rsplit(".", 1)[-1],
+                             "%s is not re-exported from the split module" % name)
         self.assertTrue(ingestion_mod.is_ingestion_tool("matrixark_ingest"))
         self.assertTrue(retrieval_mod.is_retrieval_tool("matrixark_retrieve"))
         self.assertTrue(admin_mod.is_admin_tool("matrixark_management_portal"))
