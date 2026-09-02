@@ -208,7 +208,22 @@ def return_all_candidate_threshold(scope: Any = None) -> int:
 
 
 def node_path_embeddings_enabled(scope: Any = None) -> bool:
-    """Whether to store a `context_node` embedding of the node path (default OFF)."""
+    """Whether to store a `context_node` embedding of the node path (default ON).
+
+    Said as ON, and worth saying loudly: turning this off is a CORRECTNESS risk, not a memory
+    trade. A path is not content, so embedding it looks like pure waste -- but it is the only
+    embedding a node is guaranteed to have AT CREATION TIME. The node's other embedding comes from
+    its summary, written later by refresh_summaries, so switching this off leaves a window where a
+    node cannot be scored at all: retrieval selects no node, traversal has nothing to descend, and
+    the pack falls back to profile entities alone.
+
+    Measured with it off: a 40-event store returned 1 pack item instead of 38, in 8 of 10 retrieves
+    on a loaded machine. One retrieve per fresh process is what exposes it -- 25 inside one process
+    all succeed, because the first warms the state the rest rely on.
+
+    This docstring previously said "(default OFF)", which is both wrong and the opposite of a
+    measured warning.
+    """
     return bool(resolve_tenant_policy("node_path_embeddings", scope))
 
 
@@ -315,14 +330,24 @@ def audit_payload_retain_per_scope(scope: Any = None) -> int:
 
 
 def summarize_aggregation_only_nodes_enabled(scope: Any = None) -> bool:
-    """Whether nodes with no direct events still get summaries (default OFF)."""
+    """Whether nodes with no direct events still get summaries (default ON).
+
+    Said as ON deliberately: this used to default to OFF, on the argument that traversal visits the
+    spine nodes unconditionally so a summary there cannot help it prune. That was true and beside
+    the point -- retrieval also INJECTS summaries as their own memory layer, the profile node's
+    summary is what carries cross-session memory into a fresh session, and `node_l1` is only
+    generated where child summaries exist, which is exactly these nodes. Skipping them removed
+    every L1 in the store. The skip is now opt-in per tenant.
+    """
     return bool(resolve_tenant_policy("summarize_aggregation_only_nodes", scope))
 
 
 def node_summary_plan(scope: Any = None, *, conditional_l1: bool, has_direct_events: bool = True) -> tuple[bool, bool]:
     """Return ``(generate_l0, generate_l1)`` for `scope`'s tenant given the content rule's verdict.
 
-    A node with NO direct events (tenant / user / profile -- the spine) is skipped by default. Two
+    A node with NO direct events (tenant / user / profile -- the spine) is SUMMARIZED by default;
+    the skip is opt-in per tenant. (It was the other way round once, which removed every L1 in the
+    store -- see summarize_aggregation_only_nodes_enabled.) Two
     facts make that safe: the traversal reaches those nodes unconditionally, so a summary cannot
     change which subtree is chosen; and index compaction tombstones are built from a node's OWN
     ``source_event_ids``, which is empty for them, so no posting cleanup depends on their summary.
