@@ -65,8 +65,27 @@ class _LocalAdapterContextNodeMixin:
         """
         refs: set[int] = set()
         for record in self.read_all():
+            record_type = str(record.get("record_type") or "")
+            # A node embedding now lives ON the node: fold_embedding_records moves the vector onto
+            # the owner and drops the separate context_embedding row. Looking only for that row
+            # found nothing in any log written since, so every node was reported un-embedded and
+            # re-embedded on every ingest -- 60 embeddings for 3 distinct nodes over 20 ingests.
+            if record_type == "context_node":
+                meta = record.get("embedding_meta")
+                if not isinstance(meta, dict):
+                    continue
+                if str(meta.get("model_ref") or "") != current_model_ref:
+                    continue
+                if not record.get("vector") and not record_vector(record):
+                    continue
+                try:
+                    refs.add(int(record.get("node_hash")))
+                except (TypeError, ValueError):
+                    pass
+                continue
+            # Logs written before the fold carry the embedding as its own row.
             if (
-                record.get("record_type") != "context_embedding"
+                record_type != "context_embedding"
                 or record.get("ref_type") != "node"
                 or record.get("ref_hash") is None
             ):
