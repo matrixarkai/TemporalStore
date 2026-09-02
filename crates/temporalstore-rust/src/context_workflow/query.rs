@@ -88,14 +88,6 @@ pub(super) fn context_query_matches_plan(plan: &ContextQueryPlan, text: &str) ->
     matched_groups > 0
 }
 
-#[allow(dead_code)]
-pub(super) fn context_query_understanding_debug(
-    request: &ContextRetrieveRequest,
-) -> ContextQueryUnderstandingDebug {
-    let plan = context_query_plan(&request.query);
-    context_query_understanding_debug_for_plan(request, &plan)
-}
-
 pub(super) fn context_query_understanding_debug_for_plan(
     request: &ContextRetrieveRequest,
     plan: &ContextQueryPlan,
@@ -766,12 +758,6 @@ pub(super) fn context_query_terms(query: &str) -> Vec<String> {
         .map(|term| term.trim().to_ascii_lowercase())
         .filter(|term| term.len() >= 3 && !is_context_query_stopword(term))
         .collect()
-}
-
-#[allow(dead_code)]
-pub(super) fn context_query_term_groups(query: &str) -> Vec<Vec<String>> {
-    let terms = context_query_terms(query);
-    context_query_term_groups_from_terms(&terms)
 }
 
 pub(super) fn context_query_term_groups_from_terms(terms: &[String]) -> Vec<Vec<String>> {
