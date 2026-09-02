@@ -65,6 +65,33 @@ def _cold_read(log):
 
 
 class ASharedListCanProveItsPrefix(unittest.TestCase):
+    # These switches are read into module constants at import, so setting the environment here
+    # would not reach them. The whole suite shares one process and other files set these, which is
+    # why this passed alone and failed in CI -- pin them for the test and restore afterwards.
+    _PINNED = {
+        "LOCAL_DURABLE_READ_CACHE_ENABLED": True,
+        "LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS": 0.0,
+        "LOCAL_JSONL_ENABLED": True,
+    }
+
+    def setUp(self):
+        self._saved = {}
+        for name, value in self._PINNED.items():
+            self._saved[name] = getattr(adapter_module, name)
+            setattr(adapter_module, name, value)
+        # a delta cap below the corpus would force a base rewrite for reasons unrelated to this
+        self._saved["LOCAL_DURABLE_READ_CACHE_MAX_DELTA"] =             adapter_module.LOCAL_DURABLE_READ_CACHE_MAX_DELTA
+        adapter_module.LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
+            2000, adapter_module.LOCAL_DURABLE_READ_CACHE_MAX_DELTA)
+        with adapter_module._LOCAL_READ_CACHE_LOCK:
+            adapter_module._LOCAL_READ_CACHE.clear()
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            setattr(adapter_module, name, value)
+        with adapter_module._LOCAL_READ_CACHE_LOCK:
+            adapter_module._LOCAL_READ_CACHE.clear()
+
     def test_one_adapter_still_appends_its_tail(self):
         """The path that already worked must keep working."""
         with tempfile.TemporaryDirectory() as store:
