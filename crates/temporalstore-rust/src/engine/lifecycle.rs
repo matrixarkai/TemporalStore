@@ -493,7 +493,7 @@ impl TemporalEngine {
                     page.model_id,
                     page.object_key,
                     page.component,
-                    page.object_id,
+                    page.object_id(),
                     page.address.page_slab_id,
                     page.address.offset,
                     page.address.length,

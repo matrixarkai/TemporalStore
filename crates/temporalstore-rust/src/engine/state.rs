@@ -685,11 +685,22 @@ pub(super) struct PageIndex {
     pub(super) model_id: Arc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<Arc<str>>,
-    pub(super) object_id: u64,
     pub(super) address: BlockAddress,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
+}
+
+impl PageIndex {
+    /// The object this page belongs to.
+    ///
+    /// Held once, in the address, rather than beside it. The entry used to carry its own copy and
+    /// the two agreed on every page -- necessarily, since the field was assigned from the address.
+    /// The write path now puts the computed id into the address, including the fallback used when
+    /// an address arrives without one, so this can always answer.
+    pub(super) fn object_id(&self) -> u64 {
+        self.address.object_id().unwrap_or_default()
+    }
 }
 
 impl CoreIndex {
@@ -949,8 +960,7 @@ mod component_lookup_tests {
             object_key: Arc::from(object.to_string()),
             model_id: Arc::from("hash".to_string()),
             component: component.map(str::to_string).map(Arc::from),
-            object_id: 0,
-            address: BlockAddress::from_parts(0, 0, 0, None, None, None, None, None),
+            address: BlockAddress::from_parts(0, 0, 0, None, Some(0), None, None, None),
             dirty: false,
             deleted: false,
             log_backed: false,
