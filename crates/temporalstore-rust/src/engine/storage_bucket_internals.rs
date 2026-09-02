@@ -988,7 +988,9 @@ pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<
             entries.push(LivePageEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
-                component: page.component.clone().map(|value| value.to_string()).map(Arc::from),
+                // Both sides are `Option<Arc<str>>`; going through a String allocated the text
+                // twice per page to arrive at the same pointer a clone hands back for free.
+                component: page.component.clone(),
                 address: page.address.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
@@ -1114,17 +1116,38 @@ pub(super) fn sync_context_pages_for_object(
     // A context node's page lives in `shard.hashes` under a single field, so the rebuild derives
     // it as kind "hash" with that field as the component -- a different shape from the kinds
     // above, which carry no component. It is filed here the same way the rebuild would file it.
+    //
+    // Only the fields whose page is not already filed. This ran on every write and re-filed
+    // EVERY field of the object each time -- cloning each field name to do it -- so writing a
+    // hash cost work proportional to the fields it already had: 800 allocations per write at 100
+    // fields, 8,388 at 1,600. Filtering before the clone makes the ordinary case, where the write
+    // path already registered its own page, cost nothing here.
+    //
+    // `had_hash_pages` still asks whether the object HAS hash pages, not how many needed filing.
+    // Those differ once the filter can empty the list, and answering the second question would
+    // report an already-synced object as uncovered -- which sends the caller into a full rebuild.
+    let had_hash_pages = shard
+        .hashes
+        .get(object_key)
+        .is_some_and(|fields| !fields.is_empty());
     let hash_fields: Vec<(String, BlockAddress)> = shard
         .hashes
         .get(object_key)
         .map(|fields| {
             fields
                 .iter()
+                .filter(|(field, address)| {
+                    !shard.bucket_index.contains_object_page_address(
+                        "hash",
+                        object_key,
+                        Some(field.as_str()),
+                        address,
+                    )
+                })
                 .map(|(field, address)| (field.clone(), address.clone()))
                 .collect()
         })
         .unwrap_or_default();
-    let had_hash_pages = !hash_fields.is_empty();
     for (field, address) in hash_fields {
         // `stage: false` -- the write staged its own outcome under its own kind already, and a
         // second one would have replay install the same page twice.
