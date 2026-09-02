@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -644,6 +644,12 @@ struct ClientInner {
     /// cleared.
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
+    /// How many entries `backend_failures` holds, maintained under that lock.
+    ///
+    /// Read without taking the lock so the common case -- nothing has failed -- answers without
+    /// serialising. Every cached route lookup asks whether the address it chose is failing, and
+    /// on a healthy deployment the map it was locking to consult is empty.
+    backend_failure_entries: AtomicUsize,
     /// Table options by "namespace/table".
     ///
     /// A reader-writer lock, not a mutex: every table-scoped request reads this at least
@@ -795,6 +801,7 @@ impl TemporalStoreClient {
                 options,
                 routes: RwLock::default(),
                 backend_failures: Mutex::default(),
+                backend_failure_entries: AtomicUsize::new(0),
                 tables: RwLock::default(),
                 meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),

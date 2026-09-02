@@ -702,6 +702,43 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
 }
 
 #[test]
+fn the_backend_failure_count_tracks_the_map_it_stands_in_for() {
+    // The route lookup skips the failure-map lock when this count is zero, so the count is only
+    // safe while it equals the map's length. Every mutation goes through `with_backend_failures`
+    // for that reason; this fails if a path is ever added that does not.
+    let client = TemporalStoreClient::new("127.0.0.1:1");
+    assert_eq!(
+        client.backend_failure_entries_for_test(),
+        0,
+        "a fresh client has recorded no failures"
+    );
+
+    client.insert_backend_failure_for_test("10.0.0.1:7", 50, 10, 3);
+    assert_eq!(
+        client.backend_failure_entries_for_test(),
+        1,
+        "an inserted failure must be visible to the fast path, or the lookup skips a check it          should have made"
+    );
+
+    client.insert_backend_failure_for_test("10.0.0.2:7", 50, 10, 1);
+    assert_eq!(client.backend_failure_entries_for_test(), 2);
+
+    client.record_backend_success("10.0.0.1:7");
+    assert_eq!(
+        client.backend_failure_entries_for_test(),
+        1,
+        "clearing one address must not clear the count for the other"
+    );
+
+    client.record_backend_success("10.0.0.2:7");
+    assert_eq!(
+        client.backend_failure_entries_for_test(),
+        0,
+        "with the map empty again the lookup may go back to skipping the lock"
+    );
+}
+
+#[test]
 fn client_backend_pool_skips_cached_route_after_continuous_failure_threshold() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -766,14 +803,7 @@ fn client_backend_pool_skips_cached_route_after_continuous_failure_threshold() {
         1,
         CachedRoute::for_shard(1, bad_server.clone(), "test_insert"),
     );
-    client.inner.backend_failures.lock().unwrap().insert(
-        bad_server,
-        BackendFailureState {
-            first_failed_at: Instant::now() - Duration::from_millis(20),
-            last_failed_at: Instant::now() - Duration::from_millis(10),
-            consecutive_failures: 3,
-        },
-    );
+    client.insert_backend_failure_for_test(bad_server, 20, 10, 3);
 
     let table = client.open_table(
         "ns",
