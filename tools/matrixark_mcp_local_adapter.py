@@ -641,18 +641,68 @@ def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, 
     return dict_records + encoded_records
 
 
-def _copy_interned_value(value: Any) -> Any:
-    """Copy an expanded interned value.
+class _SharedInternedValue(dict):
+    """One object, shared by every record that carries this interned value.
 
-    The copy itself is not optional: downstream mutates storage_route and placement in place, so
-    records sharing a token must not alias one object.
+    Sharing is the whole saving. Measured over 331 expanded records, storing each distinct value
+    once costs 852 KB of real memory against 2,386 KB for a copy per record -- 64% less. Serialised
+    size understates this badly: the same records are 787 KB as JSON, so the copies cost about
+    three times what the bytes suggest.
 
-    But every value the bundle actually holds is flat -- routing and placement dicts of scalars,
-    measured at nesting depth 1 with none containing a container. For those a shallow copy is
-    indistinguishable from a deep one and 48x cheaper: 2.94 ms of deepcopy per read against 0.06 ms,
-    over the 179 values a read expands. Anything that does contain a container still gets the deep
-    copy, so a nested value appearing later is handled rather than aliased.
+    It is only safe while nothing mutates one, because a mutation would reach every record sharing
+    it. The expansion previously deep-copied for exactly that reason, but a tripwire that recorded
+    every in-place change to an expanded value, run over the whole test suite, found no production
+    code that mutates one.
+
+    That is evidence, not proof, so this refuses rather than trusting it. A path that does mutate
+    fails where it happens, instead of silently rewriting records it never looked at.
     """
+
+    __slots__ = ()
+
+    def _refuse(self, *_args, **_kwargs):
+        raise TypeError(
+            "this value is shared by every record carrying it, so changing it here would change "
+            "them all -- copy it first: dict(record['storage_route'])")
+
+    __setitem__ = _refuse
+    __delitem__ = _refuse
+    update = _refuse
+    setdefault = _refuse
+    pop = _refuse
+    popitem = _refuse
+    clear = _refuse
+
+    # Taking a copy is exactly what a caller who needs to change one should do, so it has to work.
+    # copy.deepcopy rebuilds a dict subclass by assigning into a new instance of the same class,
+    # which lands on the refusal above -- the suite found this on a path that deep-copies a whole
+    # record and never touches the value itself. Both copies hand back a plain, writable dict.
+    def __copy__(self):
+        return dict(self)
+
+    def __deepcopy__(self, memo):
+        copied = {_copy.deepcopy(k, memo): _copy.deepcopy(v, memo) for k, v in self.items()}
+        memo[id(self)] = copied
+        return copied
+
+    def __reduce__(self):
+        return (dict, (dict(self),))
+
+
+def _shared_interned_value(value: Any) -> Any:
+    """Wrap an interned value so every record can hold the same object.
+
+    Only dicts are shared. A list would have to become a tuple to be safe to share, and that
+    changes the type a caller sees -- anything doing .append on it would break, for a field that
+    holds little of the memory. Lists keep the copy they had.
+    """
+    if type(value) is dict:
+        return _SharedInternedValue(value)
+    return _copy_interned_value(value)
+
+
+def _copy_interned_value(value: Any) -> Any:
+    """Kept for callers that genuinely need their own copy."""
     if type(value) is dict:
         if not any(isinstance(v, (dict, list, set)) for v in value.values()):
             return dict(value)
@@ -660,7 +710,7 @@ def _copy_interned_value(value: Any) -> Any:
         if not any(isinstance(v, (dict, list, set)) for v in value):
             return list(value)
     elif not isinstance(value, (dict, list, set)):
-        return value          # immutable scalar: nothing to copy
+        return value
     return _copy.deepcopy(value)
 
 
@@ -690,6 +740,15 @@ def expand_interned_records(records: list[Json]) -> list[Json]:
     if not dict_map and not bundle_map and not saw_token:
         # Fast path: nothing interned. Still drop any stray dict records (none here) and return as-is.
         return list(records)
+    # One wrapper per distinct value, built once here: every record that carries the value then
+    # holds the same object, which is where the memory saving comes from.
+    shared_bundles: dict[str, dict[str, Any]] = {
+        token: {str(field): _shared_interned_value(value) for field, value in bundle.items()}
+        for token, bundle in bundle_map.items()
+    }
+    shared_fields: dict[tuple[str, str], Any] = {
+        key: _shared_interned_value(value) for key, value in dict_map.items()
+    }
     expanded_out: list[Json] = []
     for record in records:
         if not isinstance(record, dict):
@@ -705,16 +764,15 @@ def expand_interned_records(records: list[Json]) -> list[Json]:
         expanded = dict(record)
         if isinstance(bundle_token, str):
             expanded.pop(INTERN_BUNDLE_TOKEN_KEY, None)
-            bundle = bundle_map.get(bundle_token)
+            bundle = shared_bundles.get(bundle_token)
             if isinstance(bundle, dict):
-                for field, value in bundle.items():
-                    expanded[str(field)] = _copy_interned_value(value)
+                expanded.update(bundle)
         if isinstance(token_map, dict):
             expanded.pop(INTERN_TOKEN_KEY, None)
             for field, token in token_map.items():
                 key = (str(field), str(token))
-                if key in dict_map:
-                    expanded[str(field)] = _copy_interned_value(dict_map[key])
+                if key in shared_fields:
+                    expanded[str(field)] = shared_fields[key]
         expanded_out.append(expanded)
     return expanded_out
 
