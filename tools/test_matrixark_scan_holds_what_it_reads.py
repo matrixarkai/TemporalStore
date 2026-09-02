@@ -43,6 +43,11 @@ def _record():
         "text": "the body of the section, which the scan never reads",
         "heading": "Step 1",
         "source_locator": "heading=doc/step-1",
+        # routing metadata for the WRITE path -- the two fields the scan drops, and 38% of its bytes
+        "storage_route": {"tier": "hot", "replicas": 3, "region": "eu-central"},
+        "storage_options": {"replicas": 3, "tier": "hot"},
+        # kept: named by the serving source, so it is not eligible to be dropped
+        "storage_record_kind": "node",
     }
 
 
@@ -96,13 +101,20 @@ class TheScanCanHoldOnlyWhatItReads(unittest.TestCase):
     def test_enabled_it_drops_what_the_scan_never_reads(self):
         with _projection(True) as reloaded:
             _ignored = None
-            projected = reloaded.project_scan_record(_record())
-            for absent in ("storage_record_kind", "storage_part"):
+            record = _record()
+            projected = reloaded.project_scan_record(record)
+            for absent in ("storage_route", "storage_options"):
+                self.assertIn(absent, record,
+                              "the fixture must carry %s, or the next assertion proves nothing "
+                              "-- assertNotIn passes for free on a field that was never there"
+                              % absent)
                 self.assertNotIn(absent, projected,
-                                 "%s is neither scored nor printed" % absent)
+                                 "%s is write-path routing; serving never reads it" % absent)
             for printed in ("text", "heading", "source_locator"):
                 self.assertIn(printed, projected,
                               "%s is printed by the answer, which is built from this row" % printed)
+            self.assertIn("storage_record_kind", projected,
+                          "only the named fields go; the serving source names this one")
 
     def test_enabled_it_keeps_everything_the_scan_reads(self):
         """The probe's field list, asserted rather than trusted."""
