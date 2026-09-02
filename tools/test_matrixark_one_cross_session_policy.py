@@ -100,5 +100,53 @@ class ThereIsOnlyOneImplementationTest(unittest.TestCase):
         self.fail("build_cross_session_policy is not defined in matrixark_mcp_budget_policies")
 
 
+class EachModulesFlagGovernsItsOwnPathTest(unittest.TestCase):
+    """Delegation must not move which copy of a module-level flag is read.
+
+    `MODE_DEPENDENT_QUOTA_ENABLED` is defined once, in matrixark_mcp_runtime_config, and imported by
+    both modules -- one definition, but each importer binds its own name. Rebinding one module's
+    attribute is how this behaviour is toggled, and a naive delegation made the call read the OTHER
+    module's binding: the toggle stopped reaching the code it controls and two budget ratios changed
+    silently, 0.6 to 0.12 and 0.30 to 0.12.
+
+    Nothing in a body-to-body comparison of the two functions could have shown that, because the
+    difference was not in either body. Only calling it both ways does.
+    """
+
+    def _ratio(self, module, mode):
+        args = {"query": "what did we ship", "cross_session": {}}
+        out = module.build_cross_session_policy(
+            args, {}, question_type="latest", session_scope="prefer",
+            remote_budget_tokens=8192, context_source_mode=mode)
+        return out.get("budget_ratio")
+
+    def test_toggling_one_module_does_not_reach_through_the_other(self) -> None:
+        original = budget_policies.MODE_DEPENDENT_QUOTA_ENABLED
+        try:
+            budget_policies.MODE_DEPENDENT_QUOTA_ENABLED = False
+            off = self._ratio(budget_policies, "local_and_remote")
+            budget_policies.MODE_DEPENDENT_QUOTA_ENABLED = True
+            on = self._ratio(budget_policies, "local_and_remote")
+        finally:
+            budget_policies.MODE_DEPENDENT_QUOTA_ENABLED = original
+        self.assertNotEqual(
+            off, on,
+            "toggling matrixark_mcp_budget_policies.MODE_DEPENDENT_QUOTA_ENABLED changed nothing. "
+            "The delegation is reading the other module's binding of the flag, so this path is "
+            "governed by a switch nobody here can see.")
+
+    def test_the_retrieval_path_keeps_its_own_flag(self) -> None:
+        original = core_scoring.MODE_DEPENDENT_QUOTA_ENABLED
+        try:
+            core_scoring.MODE_DEPENDENT_QUOTA_ENABLED = False
+            off = self._ratio(core_scoring, "local_and_remote")
+            core_scoring.MODE_DEPENDENT_QUOTA_ENABLED = True
+            on = self._ratio(core_scoring, "local_and_remote")
+        finally:
+            core_scoring.MODE_DEPENDENT_QUOTA_ENABLED = original
+        self.assertNotEqual(off, on,
+                            "the retrieval path no longer responds to its own flag")
+
+
 if __name__ == "__main__":
     unittest.main()

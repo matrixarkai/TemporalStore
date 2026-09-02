@@ -141,6 +141,10 @@ def build_cross_session_policy(
         session_scope=session_scope,
         remote_budget_tokens=remote_budget_tokens,
         context_source_mode=context_source_mode,
+        # THIS module's binding, looked up now rather than captured at import, so a rebound
+        # attribute is seen. Without it the delegation would read the other module's copy and a
+        # toggle here would silently stop working -- which it did, changing two budget ratios.
+        mode_dependent_quota=MODE_DEPENDENT_QUOTA_ENABLED,
     )
 
 
