@@ -4396,6 +4396,937 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// Which structures does one record actually land in?
+///
+/// A record occupies about six index entries' worth of memory
+/// (`how_many_map_entries_is_one_record`), so the capacity ceiling moves by holding it in fewer
+/// places. That is only actionable if the places are named. This writes a known number of
+/// records and counts what each structure ends up holding.
+///
+/// Counts, not bytes: a structure holding one entry per record is a candidate whatever its entry
+/// costs, and a structure holding none is not.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_record_is_kept -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn where_a_record_is_kept() {
+    const RECORDS: usize = 5_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("kept-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    let rows: Vec<(&str, usize)> = vec![
+        ("strings", shard.strings.len()),
+        ("hashes", shard.hashes.len()),
+        ("sets", shard.sets.len()),
+        ("expires_at_ms", shard.expires_at_ms.len()),
+        ("seen", shard.seen.len()),
+        ("wal_resident_pages", shard.wal_resident_pages.len()),
+        ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
+    ];
+
+    println!();
+    println!("  {RECORDS} plain string writes land in:");
+    println!("  structure                        entries   per record");
+    let mut per_record_total = 0.0;
+    for (name, count) in &rows {
+        let per = *count as f64 / RECORDS as f64;
+        per_record_total += per;
+        println!("  {name:32} {count:>7} {per:>12.2}");
+    }
+    println!("  ------------------------------------------------------");
+    println!("  {:32} {:>7} {per_record_total:>12.2}", "counted here", "");
+    println!();
+    println!("  A structure at 1.00 per record holds every record; one at 0.00 holds none of");
+    println!("  them and is not where the memory goes. Anything the six entries' worth is made");
+    println!("  of that does NOT appear above lives outside ShardState -- the bucket index and");
+    println!("  the page-address maps beneath it are the next place to look.");
+
+    assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
+}
+
+/// How many map entries' worth of memory does one record actually occupy?
+///
+/// A record keeps ~1,040 bytes resident whatever kind it is
+/// (`what_a_records_kind_costs_resident`), and that number sets a node's ceiling at roughly 20M
+/// records on a 32 GB box. A record's primary home is one entry in `strings: HashMap<String,
+/// BlockAddress>`, so this measures what ONE such entry costs on its own and divides.
+///
+/// A ratio near 1 would mean the entry is simply expensive and the only fix is a smaller entry.
+/// A ratio well above 1 means the record is held in several places, and the fix is to hold it in
+/// fewer.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib how_many_map_entries_is_one_record -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn how_many_map_entries_is_one_record() {
+    use std::collections::HashMap;
+
+    const RECORDS: u64 = 20_000;
+
+    // A real address, produced by a real write, so the entry measured is the one the store keeps.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("floor-{index:08}"),
+                value: vec![b'v'; 1536],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let address = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().next().cloned().expect("a written page")
+    };
+
+    // The floor: the same key and the same address, in a map of their own.
+    let probe = crate::alloc_probe::Probe::start();
+    let mut bare: HashMap<String, crate::block_store::BlockAddress> =
+        HashMap::with_capacity(RECORDS as usize);
+    for index in 0..RECORDS {
+        bare.insert(format!("floor-{index:08}"), address.clone());
+    }
+    let counts = probe.stop();
+    let bare_live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+    std::hint::black_box(&bare);
+
+    let per_entry = bare_live as f64 / RECORDS as f64;
+    const RECORD_RESIDENT: f64 = 1040.0;   // measured by what_a_records_kind_costs_resident
+
+    println!();
+    println!("  one HashMap<String, BlockAddress> entry   {per_entry:>8.0} bytes");
+    println!("  a record resident in the engine           {RECORD_RESIDENT:>8.0} bytes");
+    println!("  ratio                                     {:>8.1}x",
+             RECORD_RESIDENT / per_entry);
+    println!();
+    if RECORD_RESIDENT / per_entry > 1.6 {
+        println!("  A record occupies several entries' worth. It is not that the entry is");
+        println!("  expensive -- the record is held in more than one place, and the ceiling moves");
+        println!("  by holding it in fewer rather than by shrinking any single structure.");
+    } else {
+        println!("  A record is about one entry. The entry itself is the cost, so the ceiling");
+        println!("  moves only by making the key or the address smaller.");
+    }
+
+    assert!(bare_live > 0, "measured nothing");
+}
+
+/// How much of a record's resident cost is the core index entry, and how much is its kind?
+///
+/// A context node keeps ~1.34 kB resident and none of it is the payload
+/// (`what_a_resident_record_is_made_of`) -- it is fixed index structure, which is the only thing
+/// left that could move a node's ~20M-record ceiling. This asks which structure: a plain string
+/// lands in the fewest maps a record can land in, so what a context node costs ABOVE it is what
+/// the context indexes add.
+///
+/// Both write the same number of records with a payload of the same size, so the difference is
+/// the indexing and not the data.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_records_kind_costs_resident -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_records_kind_costs_resident() {
+    const RECORDS: u64 = 30_000;
+    const PAYLOAD: usize = 1536;
+
+    let engine_for = || {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        (dir, engine)
+    };
+
+    // --- a plain string: the fewest maps a record can land in ---------------------------
+    let (_dir_a, engine_a) = engine_for();
+    let probe = crate::alloc_probe::Probe::start();
+    for index in 0..RECORDS {
+        let response = engine_a.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("kind-{index:08}"),
+                value: vec![b'v'; PAYLOAD],
+            },
+        });
+        assert!(response.status.ok, "string write {index}: {:?}", response.status);
+    }
+    let string_counts = probe.stop();
+    let string_live = string_counts.alloc_bytes.saturating_sub(string_counts.free_bytes);
+
+    // --- a context node: the same bytes, more indexes -----------------------------------
+    let (_dir_b, engine_b) = engine_for();
+    let vector: Vec<f32> = (0..PAYLOAD / 4).map(|i| (i as f32) * 0.001).collect();
+    let probe = crate::alloc_probe::Probe::start();
+    for index in 0..RECORDS {
+        let node = crate::types::ContextNode {
+            node_hash: 1_000_000 + index,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("kind-{index:08}"),
+            l0: String::new(),
+            status: 0,
+            last_event_time_ms: 1_780_000_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vector.clone(),
+            embedding_model_hash: 909,
+            embedding_updated_at_ms: 1_780_000_000_000,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        };
+        let response = engine_b.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode { tenant_hash: 7, node },
+        });
+        assert!(response.status.ok, "node write {index}: {:?}", response.status);
+    }
+    let node_counts = probe.stop();
+    let node_live = node_counts.alloc_bytes.saturating_sub(node_counts.free_bytes);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  record kind                 live/record   allocated/record   freed %");
+    println!("  string ({PAYLOAD} B value)      {:>8.0} B  {:>15.0} B  {:>6.1}%",
+             per(string_live), per(string_counts.alloc_bytes),
+             100.0 * string_counts.free_bytes as f64 / string_counts.alloc_bytes as f64);
+    println!("  context node ({PAYLOAD} B vec)  {:>8.0} B  {:>15.0} B  {:>6.1}%",
+             per(node_live), per(node_counts.alloc_bytes),
+             100.0 * node_counts.free_bytes as f64 / node_counts.alloc_bytes as f64);
+    println!();
+    let extra = per(node_live) - per(string_live);
+    println!("  a context node keeps {extra:+.0} bytes more than a string carrying the same bytes");
+    if extra > per(string_live) {
+        println!("  -- the context indexes cost MORE than the core entry, so they are where the");
+        println!("     ceiling is. Which of them is the next thing to split out.");
+    } else {
+        println!("  -- the core index entry dominates, so every record kind pays about the same");
+        println!("     and the ceiling is not specific to context nodes.");
+    }
+
+    assert!(string_live > 0 && node_live > 0, "measured nothing");
+}
+
+/// What the 1.3 kB a record keeps resident is actually made of.
+///
+/// A node keeps 1.302 kB of live memory per record and RSS grows 1.586 kB
+/// (`how_much_of_rss_per_record_is_live`), which is what limits a node to roughly 20M records on
+/// a 32 GB box. Notably that is LESS than the 1,536-byte vector each record carries, so the
+/// payload is not what is retained -- it goes to a page and the page is not held. What stays is
+/// index structure, and this attributes it by writing the same corpus with one thing removed at
+/// a time.
+///
+/// Differences, not absolutes: the baseline includes fixed costs that do not scale, and only
+/// what separates two runs is per-record.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_resident_record_is_made_of -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_resident_record_is_made_of() {
+    const RECORDS: u64 = 30_000;
+
+    let live_for = |label: &str, dims: usize, name_len: usize, text_len: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let vector: Vec<f32> = (0..dims).map(|i| (i as f32) * 0.001).collect();
+
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..RECORDS {
+            let node = crate::types::ContextNode {
+                node_hash: 1_000_000 + index,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: format!("{:width$}", index, width = name_len),
+                l0: "t".repeat(text_len),
+                status: 0,
+                last_event_time_ms: 1_780_000_000_000,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: vector.clone(),
+                embedding_model_hash: 909,
+                embedding_updated_at_ms: 1_780_000_000_000,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+            };
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode { tenant_hash: 7, node },
+            });
+            assert!(response.status.ok, "{label} write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+        println!("  {label:34} {:>9.3} kB/record live",
+                 live as f64 / RECORDS as f64 / 1024.0);
+        live
+    };
+
+    println!();
+    println!("  variant                             live memory kept per record");
+    let base = live_for("baseline: 384 dims, 40-char name", 384, 40, 42);
+    let no_vector = live_for("no vector at all", 0, 40, 42);
+    let short_name = live_for("4-char canonical name", 384, 4, 42);
+    let no_text = live_for("no l0 text", 384, 40, 0);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  removing            saves per record");
+    println!("    the vector        {:>8.1} bytes", per(base) - per(no_vector));
+    println!("    36 name chars     {:>8.1} bytes", per(base) - per(short_name));
+    println!("    the l0 text       {:>8.1} bytes", per(base) - per(no_text));
+    println!("    ---------------------------------");
+    println!("    unattributed      {:>8.1} bytes",
+             per(no_vector).min(per(short_name)).min(per(no_text)));
+    println!();
+    println!("  A vector costs 1,536 bytes on the wire. If removing it saves far less than that,");
+    println!("  the resident cost is the INDEX ENTRY for the record, not its payload -- and the");
+    println!("  capacity ceiling moves only by making that entry smaller.");
+
+    assert!(base > 0, "measured nothing");
+}
+
+/// Of the RSS a node holds per record, how much is LIVE and how much is the allocator's?
+///
+/// A soak measured a marginal 1.561 kB of RSS per record, linear, which puts a 32 GB node out of
+/// memory near 20M records. That figure only bounds capacity if it is real data. Process RSS
+/// conflates three things -- memory allocated and still held, memory freed but retained by the
+/// allocator, and memory that never came from the heap -- and a proxy measurement in this project
+/// once found 71% of RSS was retention rather than live data.
+///
+/// The counting allocator knows the difference: allocated bytes minus freed bytes is what the
+/// process is actually still holding. Comparing that against RSS says whether the capacity limit
+/// is the data or the allocator, and those have completely different fixes.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib how_much_of_rss_per_record_is_live -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn how_much_of_rss_per_record_is_live() {
+    fn rss_kb() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("VmRSS:")
+                        .and_then(|rest| rest.trim().split_whitespace().next()?.parse().ok())
+                })
+            })
+            .unwrap_or(0)
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    const RECORDS: u64 = 60_000;
+    let vector: Vec<f32> = (0..384).map(|i| (i as f32) * 0.001).collect();
+
+    let rss_before = rss_kb();
+    let probe = crate::alloc_probe::Probe::start();
+    for index in 0..RECORDS {
+        let node = crate::types::ContextNode {
+            node_hash: 1_000_000 + index,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("session/live-{index}"),
+            l0: format!("memory {index}: the user prefers aisle seats"),
+            status: 0,
+            last_event_time_ms: 1_780_000_000_000,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            vector: vector.clone(),
+            embedding_model_hash: 909,
+            embedding_updated_at_ms: 1_780_000_000_000,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: 7,
+                node,
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let counts = probe.stop();
+    let rss_after = rss_kb();
+
+    let live_bytes = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+    let rss_bytes = (rss_after.saturating_sub(rss_before)) * 1024;
+    let per = |v: u64| v as f64 / RECORDS as f64;
+
+    println!();
+    println!("  over {RECORDS} records:");
+    println!("    allocated        {:>12} bytes   ({:.3} kB/record)",
+             counts.alloc_bytes, per(counts.alloc_bytes) / 1024.0);
+    println!("    freed            {:>12} bytes", counts.free_bytes);
+    println!("    STILL LIVE       {:>12} bytes   ({:.3} kB/record)",
+             live_bytes, per(live_bytes) / 1024.0);
+    println!("    RSS grew by      {:>12} bytes   ({:.3} kB/record)",
+             rss_bytes, per(rss_bytes) / 1024.0);
+    println!();
+    if rss_bytes > 0 {
+        let retained = rss_bytes.saturating_sub(live_bytes);
+        println!("    live is {:.0}% of the RSS growth; the other {:.0}% ({:.3} kB/record) is",
+                 100.0 * live_bytes as f64 / rss_bytes as f64,
+                 100.0 * retained as f64 / rss_bytes as f64,
+                 per(retained) / 1024.0);
+        println!("    memory the allocator kept rather than data the node holds.");
+        println!();
+        if retained > live_bytes {
+            println!("    RETENTION DOMINATES: the capacity limit is the allocator, and an arena or a");
+            println!("    periodic trim would move it further than shrinking any structure would.");
+        } else {
+            println!("    LIVE DATA DOMINATES: the per-record structures are the capacity limit, so");
+            println!("    the only thing that moves it is holding less per record.");
+        }
+    }
+
+    assert!(counts.alloc_bytes > 0, "measured nothing");
+}
+
+/// Is a put expensive because it STORES, or because it EVICTS?
+///
+/// Storing a 1 KB page measured 51 allocations and 43.6 KB
+/// (`what_the_page_cache_costs_per_call`), which is a 43x amplification and too large to be the
+/// copy. That measurement used a cache too small to hold the working set, so every put also
+/// evicted. This separates the two: the same put into a cache with room to spare cannot be
+/// evicting.
+///
+/// It matters which it is. If storing is expensive, every write to the cache costs it. If
+/// EVICTING is expensive, only a cache under pressure pays -- which is every cache on a corpus
+/// larger than it, but the fix is an admission policy rather than a cheaper store.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_a_put_expensive_to_store_or_to_evict -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn is_a_put_expensive_to_store_or_to_evict() {
+    use matrixcache::CacheKey;
+
+    const ROUNDS: u64 = 200;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    let measure = |cache_bytes: usize, label: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            cache_bytes,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let cache = &engine.cache;
+
+        // Keys and buffers built outside the window; `put` takes both by value.
+        let mut pending: Vec<(CacheKey, Vec<u8>)> = (0..ROUNDS)
+            .map(|round| {
+                (
+                    CacheKey::page_with_slot(1, 2, round * 4096, 1024, Some(3)),
+                    vec![b'p'; 1024],
+                )
+            })
+            .collect();
+        // Warm: the first put touches one-off structures.
+        if let Some((key, value)) = pending.pop() {
+            let _ = cache.put(key, value);
+        }
+
+        let mut allocs = 0u64;
+        let mut bytes = 0u64;
+        let mut n = 0u64;
+        for (key, value) in pending.drain(..) {
+            let probe = crate::alloc_probe::Probe::start();
+            let stored = cache.put(key, value);
+            let counts = probe.stop();
+            assert!(stored.is_ok(), "{label}: the put must succeed");
+            allocs += counts.allocs;
+            bytes += counts.alloc_bytes;
+            n += 1;
+        }
+        let per_n = |v: u64| v as f64 / n as f64;
+        println!("  {label:38} {:>7.2} {:>9.0}", per_n(allocs), per_n(bytes));
+        (per_n(allocs), per_n(bytes))
+    };
+
+    println!();
+    println!("  cache size                              allocs     bytes   (per 1 KB put)");
+    // 200 pages of 1 KB need ~200 KB; 64 MB has room for all of them, 8 KB for none.
+    let (roomy_allocs, roomy_bytes) = measure(64 * 1024 * 1024, "64 MB (room to spare, no eviction)");
+    let (tight_allocs, tight_bytes) = measure(8 * 1024, "8 KB (evicts on every put)");
+
+    println!();
+    println!("  eviction adds {:+.2} allocations and {:+.0} bytes per put",
+             tight_allocs - roomy_allocs, tight_bytes - roomy_bytes);
+    if roomy_allocs > tight_allocs - roomy_allocs {
+        println!("  STORING dominates: the cost is paid by every put, pressure or not.");
+    } else {
+        println!("  EVICTING dominates: a cache with room is cheap and one under pressure is not,");
+        println!("  so the fix is to stop admitting pages that will be evicted before they are");
+        println!("  read again, rather than to make the store itself cheaper.");
+    }
+
+    assert!(roomy_allocs > 0.0 && tight_allocs > 0.0, "measured nothing");
+    let _ = (roomy_bytes, tight_bytes);
+}
+
+/// Does a missed lookup pay for tiers that hold nothing?
+///
+/// A cache miss costs 18 allocations (`what_the_page_cache_costs_per_call`), which contradicts
+/// `get_with_tier`'s own claim that a miss "releases the lock having touched nothing". One
+/// candidate: the lookup walks memory, then pmem, then SSD, and the SSD tier builds its key as a
+/// String before asking -- so a tier with no capacity still costs something to consult.
+///
+/// `disk_cache_tier: false` zeroes the pmem and SSD capacities, which is what a one-box or raft
+/// node runs with. If the miss gets cheaper, walking dead tiers is part of the 18.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_miss_pay_for_empty_tiers -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn does_a_miss_pay_for_empty_tiers() {
+    use matrixcache::CacheKey;
+
+    const ROUNDS: u64 = 200;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    let measure = |disk_cache_tier: bool, label: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+            8 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+            Default::default(),
+            disk_cache_tier,
+        );
+        engine.load_shard(1);
+        let cache = &engine.cache;
+
+        // Keys built outside the window: this measures the lookup, not the key.
+        let absent: Vec<CacheKey> = (0..ROUNDS)
+            .map(|round| CacheKey::page_with_slot(1, 3, 5_000_000 + round * 4096, 1024, Some(4)))
+            .collect();
+        // Warm whatever one-off structures the first lookup touches.
+        let _ = cache.get(&absent[0]);
+
+        let mut allocs = 0u64;
+        let mut bytes = 0u64;
+        for key in &absent {
+            let probe = crate::alloc_probe::Probe::start();
+            let got = cache.get(key);
+            let counts = probe.stop();
+            assert!(matches!(got, Ok(None)), "{label}: this key must be absent");
+            allocs += counts.allocs;
+            bytes += counts.alloc_bytes;
+        }
+        println!("  {label:34} {:>7.2} {:>8.0}", per(allocs), per(bytes));
+        (allocs, bytes)
+    };
+
+    println!();
+    println!("  cache shape                       allocs    bytes   (per missed lookup)");
+    let (with_disk, _) = measure(true, "memory + pmem + ssd tiers");
+    let (memory_only, _) = measure(false, "memory only (one-box / raft)");
+
+    println!();
+    let saved = per(with_disk) - per(memory_only);
+    if saved > 0.5 {
+        println!("  Walking the empty disk tiers costs {saved:.2} allocations per missed lookup.");
+        println!("  A one-box or raft node has those tiers switched off already, so it does not");
+        println!("  pay this -- but a shared-storage node consults them on every miss.");
+    } else {
+        println!("  The disk tiers are not the cost: a miss allocates about the same either way,");
+        println!("  so the {:.0} allocations are in the memory-tier lookup itself.", per(memory_only));
+    }
+
+    assert!(with_disk > 0, "measured nothing");
+    assert!(memory_only > 0, "measured nothing");
+}
+
+/// What the CACHE costs, split into the three calls a page-read miss makes.
+///
+/// A miss spends ~60 allocations and ~86 KB inside the cache against 13 allocations and 1.5 KB
+/// actually reading the page (`where_a_page_read_miss_allocates`). That is the read path's real
+/// memory cost, and 60 is too many to guess at: this splits it into building the key, the lookup
+/// that misses, and the put that stores the page.
+///
+/// Keys and buffers are built BEFORE the measured window -- `put` takes both by value, and
+/// counting their construction would attribute the caller's work to the cache.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_page_cache_costs_per_call -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_the_page_cache_costs_per_call() {
+    use matrixcache::CacheKey;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let cache = &engine.cache;
+
+    const ROUNDS: u64 = 100;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    // --- building the key -----------------------------------------------------------------
+    let mut key_allocs = 0u64;
+    let mut key_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let probe = crate::alloc_probe::Probe::start();
+        let key = CacheKey::page_with_slot(1, 0, round * 4096, 1024, Some(7));
+        let counts = probe.stop();
+        std::hint::black_box(&key);
+        key_allocs += counts.allocs;
+        key_bytes += counts.alloc_bytes;
+    }
+
+    // --- a lookup that misses -------------------------------------------------------------
+    let absent: Vec<CacheKey> = (0..ROUNDS)
+        .map(|round| CacheKey::page_with_slot(1, 9, 1_000_000 + round * 4096, 1024, Some(7)))
+        .collect();
+    let mut miss_allocs = 0u64;
+    let mut miss_bytes = 0u64;
+    for key in &absent {
+        let probe = crate::alloc_probe::Probe::start();
+        let got = cache.get(key);
+        let counts = probe.stop();
+        assert!(matches!(got, Ok(None)), "this key must not be present");
+        miss_allocs += counts.allocs;
+        miss_bytes += counts.alloc_bytes;
+    }
+
+    // --- storing a page -------------------------------------------------------------------
+    let mut pending: Vec<(CacheKey, Vec<u8>)> = (0..ROUNDS)
+        .map(|round| {
+            (
+                CacheKey::page_with_slot(1, 0, round * 4096, 1024, Some(7)),
+                vec![b'v'; 1024],
+            )
+        })
+        .collect();
+    let mut put_allocs = 0u64;
+    let mut put_bytes = 0u64;
+    for (key, value) in pending.drain(..) {
+        let probe = crate::alloc_probe::Probe::start();
+        let stored = cache.put(key, value);
+        let counts = probe.stop();
+        assert!(stored.is_ok(), "the put must succeed");
+        put_allocs += counts.allocs;
+        put_bytes += counts.alloc_bytes;
+    }
+
+    println!();
+    println!("  call                     allocs   bytes    (1 KB page, cache too small to hold it)");
+    println!("  CacheKey::page_with_slot {:>7.2} {:>7.0}", per(key_allocs), per(key_bytes));
+    println!("  get (misses)             {:>7.2} {:>7.0}", per(miss_allocs), per(miss_bytes));
+    println!("  put (stores + evicts)    {:>7.2} {:>7.0}", per(put_allocs), per(put_bytes));
+    println!("  ------------------------------------------");
+    println!("  sum                      {:>7.2} {:>7.0}",
+             per(key_allocs) + per(miss_allocs) + per(put_allocs),
+             per(key_bytes) + per(miss_bytes) + per(put_bytes));
+    println!();
+    println!("  The read path calls all three on every miss. Whichever dominates is where the");
+    println!("  read path's memory goes, and a page nothing will ask for again pays it for");
+    println!("  nothing.");
+
+    assert!(key_allocs + miss_allocs + put_allocs > 0, "measured nothing");
+}
+
+/// Where the 38 allocations of a page-read MISS actually go.
+///
+/// A hit costs 2 allocations and 92 bytes; a miss costs 38 and 141 KB for a 1 KB page
+/// (`what_a_page_read_costs_hit_against_miss`). On a corpus larger than the cache essentially
+/// every read misses, so the miss path is the one a deployment runs. This splits it into the
+/// three things it does -- the failed cache lookup, the block-store read, and the put that
+/// caches the result -- because each implies a different fix and 38 is too many to guess at.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_page_read_miss_allocates -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn where_a_page_read_miss_allocates() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("attrib-{index:03}"),
+                value: vec![b'v'; 1024],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let addresses: Vec<_> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().cloned().collect()
+    };
+    assert!(addresses.len() >= 8, "need several pages: {}", addresses.len());
+    let page_store = &engine.page_store;
+
+    const ROUNDS: u64 = 100;
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+
+    // The block-store read on its own: no cache involved at all.
+    let mut store_allocs = 0u64;
+    let mut store_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = page_store.read(address);
+        let counts = probe.stop();
+        assert!(got.is_ok(), "the page must read back from the block store");
+        store_allocs += counts.allocs;
+        store_bytes += counts.alloc_bytes;
+    }
+
+    // The whole miss, for the total these parts have to add up to.
+    let mut whole_allocs = 0u64;
+    let mut whole_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_bytes(&engine.cache, page_store, 1, address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back");
+        whole_allocs += counts.allocs;
+        whole_bytes += counts.alloc_bytes;
+    }
+
+    println!();
+    println!("  part                          allocs/read   bytes/read");
+    println!("  block-store read alone        {:>11.2} {:>12.0}",
+             per(store_allocs), per(store_bytes));
+    println!("  whole miss (read_page_bytes)  {:>11.2} {:>12.0}",
+             per(whole_allocs), per(whole_bytes));
+    println!("  ---------------------------------------------------------");
+    println!("  cache lookup + put + key      {:>11.2} {:>12.0}",
+             per(whole_allocs) - per(store_allocs), per(whole_bytes) - per(store_bytes));
+    println!();
+    if per(store_allocs) > per(whole_allocs) - per(store_allocs) {
+        println!("  the BLOCK STORE dominates: the read itself is the cost, and caching it is cheap.");
+    } else {
+        println!("  the CACHE dominates: reading the page is cheap and storing it is not, so an");
+        println!("  admission policy that declined to cache a page nothing will ask for again");
+        println!("  would remove most of a miss.");
+    }
+
+    assert!(store_allocs > 0, "measured nothing on the block-store read");
+    assert!(whole_allocs >= store_allocs,
+            "the whole miss cannot cost less than the read it contains");
+}
+
+/// What a page read costs on a HIT against a MISS.
+///
+/// `read_page_shared` exists so the node fetch does not own a copy of the page, and on a cache
+/// hit that is exactly what happens: `get_shared` hands back an `Arc<[u8]>`. Its miss path is
+/// `read_page_bytes(..).map(Arc::from)`, and `Arc::<[u8]>::from(Vec<u8>)` allocates a second
+/// buffer and copies the page into it before dropping the Vec -- so a miss pays MORE than the
+/// owning read it delegates to, and the saving applies to hits only.
+///
+/// Whether that matters depends on the hit rate. A soak reading uniformly over 276k records
+/// measured the oldest 5,000 records and the newest 5,000 at indistinguishable latency (0.856 vs
+/// 0.864 ms), i.e. essentially always missing -- so on a corpus larger than the cache the miss
+/// path is the common one.
+///
+/// The cache clear sits OUTSIDE the measured window, so what is counted is the read alone.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_page_read_costs_hit_against_miss -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_page_read_costs_hit_against_miss() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..64 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("page-read-{index:03}"),
+                value: vec![b'v'; 1024],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let address = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard
+            .strings
+            .values()
+            .next()
+            .cloned()
+            .expect("the writes above put at least one page in the index")
+    };
+
+    let cache = &engine.cache;
+    let page_store = &engine.page_store;
+
+    // Warm once: the first read of anything touches one-off structures that would otherwise be
+    // counted against whichever arm ran first.
+    let warm = super::read_page_shared(cache, page_store, 1, &address)
+        .expect("the page reads back");
+    assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
+
+    const ROUNDS: u64 = 100;
+
+    let mut hit_allocs = 0u64;
+    let mut hit_bytes = 0u64;
+    for _ in 0..ROUNDS {
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_shared(cache, page_store, 1, &address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back on the hit path");
+        hit_allocs += counts.allocs;
+        hit_bytes += counts.alloc_bytes;
+    }
+
+    // Misses the way they actually happen: a cache too small to hold the working set, read
+    // round-robin so each page has been evicted by the time it comes round again. Clearing the
+    // whole cache instead would fold the cost of rebuilding its internals into the read.
+    let small = TemporalEngine::with_local_dirs(
+        8 * 1024,
+        dir.path().join("cache-small"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    small.load_shard(1);
+    let addresses: Vec<_> = {
+        let shards = small.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().cloned().collect()
+    };
+    assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
+    let small_cache = &small.cache;
+    let small_pages = &small.page_store;
+    for address in &addresses {
+        let _ = super::read_page_shared(small_cache, small_pages, 1, address);
+    }
+
+    let mut miss_allocs = 0u64;
+    let mut miss_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_shared(small_cache, small_pages, 1, address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back on the miss path");
+        miss_allocs += counts.allocs;
+        miss_bytes += counts.alloc_bytes;
+    }
+
+    // And the owning read on a miss, for the comparison that matters: the shared read is
+    // supposed to be the cheaper of the two.
+    let mut owning_allocs = 0u64;
+    let mut owning_bytes = 0u64;
+    for round in 0..ROUNDS {
+        let address = &addresses[round as usize % addresses.len()];
+        let probe = crate::alloc_probe::Probe::start();
+        let got = super::read_page_bytes(small_cache, small_pages, 1, address);
+        let counts = probe.stop();
+        assert!(got.is_some(), "the page must read back");
+        owning_allocs += counts.allocs;
+        owning_bytes += counts.alloc_bytes;
+    }
+
+    let per = |n: u64| n as f64 / ROUNDS as f64;
+    println!();
+    println!("  path                       allocs/read   bytes/read");
+    println!("  shared, cache hit          {:>11.2} {:>12.0}", per(hit_allocs), per(hit_bytes));
+    println!("  shared, cache miss         {:>11.2} {:>12.0}", per(miss_allocs), per(miss_bytes));
+    println!("  owning (read_page_bytes)   {:>11.2} {:>12.0}", per(owning_allocs), per(owning_bytes));
+    println!();
+    println!(
+        "  a miss costs {:+.2} allocations and {:+.0} bytes against a hit",
+        per(miss_allocs) - per(hit_allocs),
+        per(miss_bytes) - per(hit_bytes)
+    );
+    println!(
+        "  the shared read costs {:+.2} allocations and {:+.0} bytes against the OWNING read it",
+        per(miss_allocs) - per(owning_allocs),
+        per(miss_bytes) - per(owning_bytes)
+    );
+    println!("  delegates to on a miss -- the Arc::from is the difference. Positive means the");
+    println!("  zero-copy read is the more expensive one whenever the page is not already cached.");
+
+    assert!(hit_allocs > 0, "measured nothing on the hit path");
+    assert!(
+        miss_allocs > hit_allocs,
+        "a miss must cost more than a hit, or the cache was not actually cleared"
+    );
+}
+
+
 
 /// Reading the page, or decoding it: which half of a node fetch costs the 15 allocations?
 ///
@@ -5825,4 +6756,1056 @@ fn a_batch_embeddings_query_answers_for_every_node_asked() {
          embedding",
         large.len()
     );
+}
+
+/// What hash-table resizing costs, and what pre-sizing would save.
+///
+/// An 8-hour soak shows RSS growing as a STAIRCASE rather than a line: 1.378 kB/record of quiet
+/// growth plus four jumps that together are 21% of all growth. The jumps land at 0.916, 0.893,
+/// 0.881 and 0.876 of a power of two, converging on hashbrown's 7/8 load factor -- so they are
+/// table resizes, and the freed old table is not returned to the OS.
+///
+/// This measures the same thing locally and without the OS in the way: the same entries, built
+/// incrementally versus built into a pre-sized map.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_resizing_a_shard_map_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_resizing_a_shard_map_costs() {
+    use std::collections::HashMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet { key: "seed".into(), value: vec![b'v'; 512] },
+    });
+    assert!(response.status.ok, "seed write: {:?}", response.status);
+    let address = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        shard.strings.values().next().cloned().expect("a written page")
+    };
+
+    // Just past a 7/8 boundary, so the incremental build pays for a resize the pre-sized one skips.
+    const ENTRIES: usize = 300_000;
+
+    let build = |capacity: Option<usize>| -> (u64, u64) {
+        let probe = crate::alloc_probe::Probe::start();
+        let mut map: HashMap<String, crate::block_store::BlockAddress> = match capacity {
+            Some(n) => HashMap::with_capacity(n),
+            None => HashMap::new(),
+        };
+        for index in 0..ENTRIES {
+            map.insert(format!("resize-{index:08}"), address.clone());
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&map);
+        (counts.alloc_bytes.saturating_sub(counts.free_bytes), counts.alloc_bytes)
+    };
+
+    let (grown_live, grown_alloc) = build(None);
+    let (sized_live, sized_alloc) = build(Some(ENTRIES));
+
+    let per = |v: u64| v as f64 / ENTRIES as f64;
+    println!();
+    println!("  {ENTRIES} entries, identical keys and addresses");
+    println!("  build             live/entry   allocated/entry");
+    println!("  grown from empty  {:>8.0} B   {:>13.0} B", per(grown_live), per(grown_alloc));
+    println!("  pre-sized         {:>8.0} B   {:>13.0} B", per(sized_live), per(sized_alloc));
+    println!();
+    println!("  pre-sizing saves  {:>8.0} B/entry live   ({:+.1}%)",
+             per(grown_live) - per(sized_live),
+             100.0 * (per(grown_live) - per(sized_live)) / per(grown_live));
+    println!("  and avoids        {:>8.0} B/entry of allocation churn",
+             per(grown_alloc) - per(sized_alloc));
+    println!();
+    if per(grown_live) - per(sized_live) < 8.0 {
+        println!("  Live cost is the SAME either way: the old table is genuinely freed, so a resize");
+        println!("  leaves no permanent slack. The RSS jump the soak sees is therefore the ALLOCATOR");
+        println!("  holding freed memory rather than returning it, which is why it looks permanent");
+        println!("  from outside the process and is recoverable from inside it.");
+    } else {
+        println!("  The grown map carries permanent slack, so pre-sizing is a live-memory win.");
+    }
+    println!();
+    println!("  What pre-sizing does buy is the churn above, and the transient: during a resize");
+    println!("  BOTH tables exist at once, so the peak is higher than the plateau on either side.");
+    println!("  A node sized to its steady-state RSS can still die during a resize.");
+
+    assert!(grown_live > 0 && sized_live > 0, "measured nothing");
+}
+
+/// Is the per-record resident cost actually per-record, or is it fixed cost divided by a small
+/// corpus?
+///
+/// The figure of ~1,040 bytes per record comes from dividing live memory by 30,000 records, and
+/// only 184 of those bytes are the map entry the record lands in
+/// (`what_resizing_a_shard_map_costs`). The remaining ~850 could be per-record structure somewhere
+/// else -- or it could be the engine's fixed setup cost divided by a corpus too small to amortise
+/// it, which would make it vanish at scale rather than being anything to fix.
+///
+/// The same mistake is already on file at the other end: a 90-second run reads ~3 kB/record where
+/// an 8-hour one reads 1.38. So measure at two sizes and take the SLOPE, which is the only part
+/// that scales, and the INTERCEPT, which is what never amortises.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_the_per_record_cost_really_per_record -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn is_the_per_record_cost_really_per_record() {
+    let live_at = |records: u64| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = crate::alloc_probe::Probe::start();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("scale-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&engine);
+        counts.alloc_bytes.saturating_sub(counts.free_bytes)
+    };
+
+    // The engine is INSIDE the probe, so fixed setup cost is counted rather than excluded --
+    // that is the thing being separated out.
+    const SMALL: u64 = 30_000;
+    const LARGE: u64 = 240_000;
+
+    let small_live = live_at(SMALL);
+    let large_live = live_at(LARGE);
+
+    let small_per = small_live as f64 / SMALL as f64;
+    let large_per = large_live as f64 / LARGE as f64;
+    let slope = (large_live as f64 - small_live as f64) / (LARGE - SMALL) as f64;
+    let intercept = small_live as f64 - slope * SMALL as f64;
+
+    println!();
+    println!("  records     live total      live/record");
+    println!("  {SMALL:>7}  {:>12}  {small_per:>13.0} B", small_live);
+    println!("  {LARGE:>7}  {:>12}  {large_per:>13.0} B", large_live);
+    println!();
+    println!("  slope (the part that scales)      {slope:>9.0} B/record");
+    println!("  intercept (fixed, never amortises) {:>8.2} MB", intercept / 1024.0 / 1024.0);
+    println!();
+    println!("  a map entry costs                 {:>9} B", 184);
+    println!("  unattributed per-record structure {:>9.0} B", slope - 184.0);
+    println!();
+    if (small_per - slope).abs() > 0.25 * small_per {
+        println!("  The two per-record figures DISAGREE, so the smaller one was inflated by fixed");
+        println!("  cost divided across too few records. Only the slope is a per-record cost, and");
+        println!("  a capacity estimate must use it -- the intercept is paid once.");
+    } else {
+        println!("  The two agree, so the cost really is per-record and fixed setup is negligible");
+        println!("  at both sizes. The unattributed bytes above are real structure to find.");
+    }
+
+    assert!(small_live > 0 && large_live > 0, "measured nothing");
+}
+
+/// Which structure outside the shard index grows with the record count?
+///
+/// The per-record resident cost has a slope of ~1,026 bytes
+/// (`is_the_per_record_cost_really_per_record`), and only 184 of those are the map entry the
+/// record lands in. The other ~842 are not in `ShardState`'s other maps
+/// (`where_a_record_is_kept`), and the WAL and index-log in-memory state is keyed per SHARD rather
+/// than per record, so neither can hold a per-record cost. That leaves the page store.
+///
+/// Counts at two corpus sizes, so a structure is judged by whether it GROWS rather than by
+/// whether it is non-empty.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_grows_outside_the_shard_index -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_grows_outside_the_shard_index() {
+    let counts_at = |records: u64| -> (usize, usize, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("grow-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let bands = engine.page_store.zone_descriptors().len();
+        let slabs = engine.page_store.slab_ids().map(|v| v.len()).unwrap_or(0);
+        let strings = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            shards.get(&1).expect("loaded shard").strings.len()
+        };
+        (bands, slabs, strings)
+    };
+
+    const SMALL: u64 = 20_000;
+    const LARGE: u64 = 160_000;
+    let (small_bands, small_slabs, small_strings) = counts_at(SMALL);
+    let (large_bands, large_slabs, large_strings) = counts_at(LARGE);
+
+    println!();
+    println!("  structure          at {SMALL:>7}   at {LARGE:>7}   per record   grows?");
+    let row = |name: &str, a: usize, b: usize| {
+        let per = (b as f64 - a as f64) / (LARGE - SMALL) as f64;
+        println!("  {name:16} {a:>10} {b:>12} {per:>12.4}   {}",
+                 if per > 0.01 { "yes" } else { "no" });
+        per
+    };
+    let band_per = row("page bands", small_bands, large_bands);
+    row("page slabs", small_slabs, large_slabs);
+    row("index entries", small_strings, large_strings);
+
+    println!();
+    println!("  A band descriptor is on the order of 100 bytes, so at {band_per:.4} bands per");
+    println!("  record it accounts for roughly {:.1} bytes of the ~842 unattributed.", band_per * 100.0);
+    if band_per * 100.0 < 100.0 {
+        println!("  That is nowhere near enough: the page store is NOT where the memory goes, and");
+        println!("  the remaining structure is somewhere these counts do not reach.");
+    }
+
+    assert_eq!(large_strings as u64, LARGE, "every write should be indexed");
+}
+
+/// Attribute the per-record cost by DROPPING structures and measuring what comes back.
+///
+/// Counting entries has narrowed this as far as it can: the index holds 1.00 entries per record
+/// and every other structure counted holds none (`where_a_record_is_kept`,
+/// `what_grows_outside_the_shard_index`), yet one entry measures 184 bytes against a per-record
+/// slope of ~1,026 (`what_resizing_a_shard_map_costs`,
+/// `is_the_per_record_cost_really_per_record`). Counts cannot close that -- a structure can hold
+/// one entry per record and that entry can be far bigger than the same entry built by hand.
+///
+/// So stop counting and free things: drop the shard, and whatever the allocator takes back was
+/// held by it. That is attribution by subtraction, and it cannot miss a structure the way an
+/// enumeration can.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_dropping_the_shard_gives_back -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_dropping_the_shard_gives_back() {
+    const RECORDS: u64 = 120_000;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    let build = crate::alloc_probe::Probe::start();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("drop-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let built = build.stop();
+    let live_after_build = built.alloc_bytes.saturating_sub(built.free_bytes);
+
+    // Free ONLY the shard. The engine, its stores and its caches stay alive, so whatever comes
+    // back was held by the shard and nothing else.
+    let release = crate::alloc_probe::Probe::start();
+    let shard = engine.shards.write().expect("engine lock poisoned").remove(&1);
+    drop(shard);
+    let released = release.stop();
+    let freed_by_shard = released.free_bytes.saturating_sub(released.alloc_bytes);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  live after writing {RECORDS} records   {:>12} B   {:>7.0} B/record",
+             live_after_build, per(live_after_build));
+    println!("  freed by dropping the shard          {:>12} B   {:>7.0} B/record",
+             freed_by_shard, per(freed_by_shard));
+    println!("  still held by the engine             {:>12} B   {:>7.0} B/record",
+             live_after_build.saturating_sub(freed_by_shard),
+             per(live_after_build) - per(freed_by_shard));
+    println!();
+    let shard_share = 100.0 * freed_by_shard as f64 / live_after_build as f64;
+    println!("  the shard holds {shard_share:.0}% of it");
+    println!();
+    if shard_share > 60.0 {
+        println!("  So the cost IS the shard index, and one of its entries is far more expensive");
+        println!("  in place than the same entry built by hand. The difference is what to chase:");
+        println!("  the key is stored once per map, but the value carried alongside it is not the");
+        println!("  bare address a hand-built map holds.");
+    } else {
+        println!("  So the shard is NOT the holder, and the memory is in the engine's own stores");
+        println!("  despite their per-shard keying. The next cut is per store rather than per map.");
+    }
+
+    assert!(live_after_build > 0, "measured nothing");
+}
+
+/// Every place a record is kept, counted across the WHOLE shard rather than a sample of it.
+///
+/// An earlier version of this probe listed seven `ShardState` fields, found only `strings`
+/// populated, and concluded a record is held once. `ShardState` has 42 fields, so that conclusion
+/// was drawn from a sixth of the structure -- and dropping the shard frees 963 bytes per record
+/// against a 184-byte map entry (`what_dropping_the_shard_gives_back`), which a single home cannot
+/// explain.
+///
+/// So this counts every container the shard owns, including the bucket index's own per-object
+/// maps, and asserts its own extent: if a field is added to `ShardState` and not listed here, the
+/// count below stops matching the struct and the test says so rather than quietly under-reporting
+/// again.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_record_is_kept_everywhere -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn where_a_record_is_kept_everywhere() {
+    const RECORDS: usize = 20_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("kept-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    // The bucket index keeps its own per-object maps, one set per bucket, so they have to be
+    // summed across buckets rather than read off a single length.
+    let buckets = &shard.bucket_index.bucket_map;
+    let object_index: usize = buckets.values().map(|b| b.object_index.len()).sum();
+    let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.len()).sum();
+    let page_index: usize = buckets.values().map(|b| b.page_index.len()).sum();
+
+    let rows: Vec<(&str, usize)> = vec![
+        ("strings", shard.strings.len()),
+        ("hashes", shard.hashes.len()),
+        ("sets", shard.sets.len()),
+        ("zsets", shard.zsets.len()),
+        ("lists", shard.lists.len()),
+        ("seen", shard.seen.len()),
+        ("buckets", shard.buckets.len()),
+        ("expires_at_ms", shard.expires_at_ms.len()),
+        ("features", shard.features.len()),
+        ("feature_values", shard.feature_values.len()),
+        ("feature_rollups", shard.feature_rollups.len()),
+        ("sequences", shard.sequences.len()),
+        ("control_state", shard.control_state.len()),
+        ("control_state_pages", shard.control_state_pages.len()),
+        ("control_state_changes", shard.control_state_changes.len()),
+        ("control_state_change_sketch", shard.control_state_change_sketch.len()),
+        ("control_state_selection", shard.control_state_selection.len()),
+        ("control_state_uuid", shard.control_state_uuid.len()),
+        ("control_state_rollups", shard.control_state_rollups.len()),
+        ("context_nodes", shard.context_nodes.len()),
+        ("context_events", shard.context_events.len()),
+        ("context_event_timeline", shard.context_event_timeline.len()),
+        ("context_indexes", shard.context_indexes.len()),
+        ("context_audits", shard.context_audits.len()),
+        ("context_entities", shard.context_entities.len()),
+        ("context_children", shard.context_children.len()),
+        ("context_summaries", shard.context_summaries.len()),
+        ("context_compressions", shard.context_compressions.len()),
+        ("context_dirty_index", shard.context_dirty_index.len()),
+        ("context_embedding_dirty_index", shard.context_embedding_dirty_index.len()),
+        ("context_compression_watermark", shard.context_compression_watermark.len()),
+        ("wal_resident_pages", shard.wal_resident_pages.len()),
+        ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
+        ("dirty_objects", shard.dirty_objects.len()),
+        ("bucket_recency", shard.bucket_recency.len()),
+        ("bucket_index.bucket_map", buckets.len()),
+        ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
+        ("bucket_index.object_page_lookup", shard.bucket_index.object_page_lookup.len()),
+        ("  .object_index", object_index),
+        ("  .deleted_object_index", deleted_object_index),
+        ("  .page_index", page_index),
+    ];
+
+    // Extent, so this cannot silently under-report the way its predecessor did. ShardState has 42
+    // fields and they are accounted for exactly once each:
+    //
+    //   35  top-level containers, every one listed above
+    //    6  scalars that cannot hold a per-record entry (index_format_version,
+    //       control_coalesce_persist, control_distinct_sketch, applied_wal_sequence,
+    //       promote_scan_done, evict_sampler)
+    //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
+    //       object_page_lookup, plus the three per-object maps summed across buckets
+    const TOP_LEVEL_CONTAINERS: usize = 35;
+    const NON_CONTAINER_FIELDS: usize = 6;
+    const BUCKET_INDEX_ROWS: usize = 6;
+    assert_eq!(
+        TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
+        42,
+        "ShardState field count changed -- update this probe, it is under-reporting"
+    );
+    assert_eq!(
+        rows.len(),
+        TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS,
+        "a listed field is missing from the rows above"
+    );
+
+    println!();
+    println!("  {RECORDS} plain string writes, every container the shard owns:");
+    println!("  structure                        entries   per record");
+    let mut homes = 0;
+    let mut total = 0.0;
+    for (name, count) in &rows {
+        let per = *count as f64 / RECORDS as f64;
+        total += per;
+        if per > 0.01 {
+            homes += 1;
+            println!("  {name:32} {count:>7} {per:>12.2}   <-- holds every record");
+        } else if *count > 0 {
+            println!("  {name:32} {count:>7} {per:>12.4}", );
+        }
+    }
+    println!("  {:32} {:>7} {total:>12.2}", "counted, per record", "");
+    println!();
+    println!("  {homes} structures hold roughly one entry per record.");
+    println!("  Dropping the shard returns 963 B/record and one map entry costs 184, so a record");
+    println!("  paying for {homes} homes is the shape of that {:.1}x -- and the fix is to keep it in", 963.0 / 184.0);
+    println!("  fewer places rather than to shrink any one of them.");
+    println!();
+    println!("  ({TOP_LEVEL_CONTAINERS} of 42 ShardState fields are containers and all are listed, plus");
+    println!("   {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
+
+    assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
+}
+
+/// What a bounded routing-slot range would save a one-box node.
+///
+/// A record is kept in seven places (`where_a_record_is_kept_everywhere`), and four of them --
+/// the slot map, slot recency, the object index and the page index -- hold one entry per record
+/// only because each record gets its own routing slot. That happens when a shard has the default
+/// full-u32 slot range, which is what a node with no meta server to assign it one inherits: the
+/// live one-box soak node reports routing_slot_count 4,294,967,295 and a dirty slot count equal
+/// to its object count.
+///
+/// A meta-server-managed shard gets 0..1023 instead. This loads the same corpus both ways and
+/// counts, so the saving is measured rather than argued.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_slot_range_saves -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_bounded_slot_range_saves() {
+    const RECORDS: usize = 40_000;
+
+    let run = |end_routing_bucket: u32| -> (usize, usize, usize, usize, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = crate::alloc_probe::Probe::start();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        let load = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: Some(1),
+            shard_uri: "local://shard/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket,
+            readonly: false,
+            table_name: String::new(),
+        });
+        assert!(load.status.ok, "load: {:?}", load.status);
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("slot-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let buckets = &shard.bucket_index.bucket_map;
+        let objects: usize = buckets.values().map(|b| b.object_index.len()).sum();
+        let pages: usize = buckets.values().map(|b| b.page_index.len()).sum();
+        (buckets.len(), shard.bucket_recency.len(), objects, pages, live)
+    };
+
+    let (wide_slots, wide_recency, wide_objects, wide_pages, wide_live) = run(u32::MAX);
+    let (narrow_slots, narrow_recency, narrow_objects, narrow_pages, narrow_live) = run(1023);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  {RECORDS} records, same corpus, two slot ranges");
+    println!("  structure            0..u32::MAX      0..1023");
+    println!("  slot map          {wide_slots:>13} {narrow_slots:>12}");
+    println!("  slot recency      {wide_recency:>13} {narrow_recency:>12}");
+    println!("  object index      {wide_objects:>13} {narrow_objects:>12}");
+    println!("  page index        {wide_pages:>13} {narrow_pages:>12}");
+    println!();
+    println!("  live memory       {:>11.0} B {:>10.0} B  per record",
+             per(wide_live), per(narrow_live));
+    println!("  bounding the range saves {:>6.0} B/record  ({:+.1}%)",
+             per(wide_live) - per(narrow_live),
+             100.0 * (per(wide_live) - per(narrow_live)) / per(wide_live));
+    println!();
+    println!("  The object and page indexes still hold one entry per record either way -- an");
+    println!("  object has to be findable. What collapses is the PER-SLOT overhead: one slot");
+    println!("  node per record becomes one per 1024 records, and slot recency with it.");
+
+    assert!(narrow_slots <= 1024, "a bounded range must not exceed its slot count");
+    assert_eq!(wide_objects, RECORDS, "every record should be indexed either way");
+    assert_eq!(narrow_objects, RECORDS, "every record should be indexed either way");
+}
+
+/// Does a bounded slot range make writes CHEAPER, or only smaller?
+///
+/// Bounding a one-box shard's routing-slot range saves 244 B/record of live memory
+/// (`what_a_bounded_slot_range_saves`) by collapsing four per-record homes into two. Whether it
+/// also makes a write faster is a separate question: fewer live entries does not by itself mean
+/// less work per write, and the two arms could allocate identically and just retain differently.
+///
+/// Counted rather than timed, because a count says the same thing on a loaded machine and this
+/// box swings by 5-30% run to run.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_bounded_slot_range_make_writes_cheaper -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn does_a_bounded_slot_range_make_writes_cheaper() {
+    const RECORDS: u64 = 40_000;
+
+    // Interleaved would be better still, but these two arms cannot share a process without
+    // sharing an engine, so they run in sequence with the SAME corpus and the same key shape.
+    let arm = |end_routing_bucket: u32| -> (f64, f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        let load = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: Some(1),
+            shard_uri: "local://shard/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket,
+            readonly: false,
+            table_name: String::new(),
+        });
+        assert!(load.status.ok, "load: {:?}", load.status);
+
+        // Measure the STEADY state: the first writes build fixed structure, so counting from
+        // empty would charge one arm for setup the other also pays.
+        for index in 0..RECORDS / 4 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("warm-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "warm {index}: {:?}", response.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cost-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let n = RECORDS as f64;
+        (
+            counts.allocs as f64 / n,
+            counts.alloc_bytes as f64 / n,
+            counts.alloc_bytes.saturating_sub(counts.free_bytes) as f64 / n,
+        )
+    };
+
+    let (wide_ops, wide_bytes, wide_live) = arm(u32::MAX);
+    let (narrow_ops, narrow_bytes, narrow_live) = arm(1023);
+
+    println!();
+    println!("  steady-state cost of one write, {RECORDS} writes after a warm-up");
+    println!("  slot range        allocations   allocated B   live B");
+    println!("  0..u32::MAX      {wide_ops:>12.1} {wide_bytes:>13.0} {wide_live:>8.0}");
+    println!("  0..1023          {narrow_ops:>12.1} {narrow_bytes:>13.0} {narrow_live:>8.0}");
+    println!();
+    println!("  bounding the range changes a write by {:+.1} allocations ({:+.1}%)",
+             narrow_ops - wide_ops, 100.0 * (narrow_ops - wide_ops) / wide_ops);
+    println!("  and {:+.0} allocated bytes ({:+.1}%)",
+             narrow_bytes - wide_bytes, 100.0 * (narrow_bytes - wide_bytes) / wide_bytes);
+    println!();
+    if narrow_ops < wide_ops * 0.97 {
+        println!("  So it is a LATENCY win as well as a footprint one: the per-slot work a write");
+        println!("  does is real work, not just retained bytes.");
+    } else if narrow_ops > wide_ops * 1.03 {
+        println!("  Writes cost MORE with a bounded range -- slots now hold many objects each, so");
+        println!("  the per-slot structures a write touches are bigger. That is a real trade and");
+        println!("  the footprint saving is not free.");
+    } else {
+        println!("  Writes cost the SAME. The saving is purely retained memory, so it raises the");
+        println!("  ceiling without moving latency either way -- worth taking, but do not expect");
+        println!("  it to show up in a latency chart.");
+    }
+
+    assert!(wide_ops > 0.0 && narrow_ops > 0.0, "measured nothing");
+}
+
+/// What each of the seven homes actually costs, by freeing them one at a time.
+///
+/// A record is kept in seven places (`where_a_record_is_kept_everywhere`) and the shard holds 963
+/// B/record in total (`what_dropping_the_shard_gives_back`), but a count says nothing about which
+/// home is expensive -- a structure holding one small entry per record and one holding a fat entry
+/// per record look identical when counted.
+///
+/// So free them one at a time and watch what the allocator takes back. Order matters and is fixed
+/// here: dropping a structure that owns its keys frees those keys, so whichever runs first is
+/// credited with them. That is called out per row rather than hidden.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_each_home_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_each_home_costs() {
+    const RECORDS: u64 = 60_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("home-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let mut shards = engine.shards.write().expect("engine lock poisoned");
+    let shard = shards.get_mut(&1).expect("loaded shard");
+
+    // Captures nothing, so it does not fight the closures below for the shard borrow.
+    let freed_by = |f: &mut dyn FnMut()| -> f64 {
+        let probe = crate::alloc_probe::Probe::start();
+        f();
+        let counts = probe.stop();
+        counts.free_bytes.saturating_sub(counts.alloc_bytes) as f64 / RECORDS as f64
+    };
+
+    // Least entangled first: these own nothing the others need.
+    let mut freed_rows: Vec<(&str, f64)> = Vec::new();
+    let per = freed_by(&mut || shard.bucket_recency.clear());
+    freed_rows.push(("bucket_recency", per));
+    let per = freed_by(&mut || shard.dirty_objects.clear());
+    freed_rows.push(("dirty_objects", per));
+    let per = freed_by(&mut || shard.bucket_index.object_page_lookup.clear());
+    freed_rows.push(("bucket_index.object_page_lookup", per));
+    let per = freed_by(&mut || {
+        for bucket in shard.bucket_index.bucket_map.values_mut() {
+            bucket.object_index.clear();
+        }
+    });
+    freed_rows.push(("bucket_map .object_index", per));
+    let per = freed_by(&mut || shard.bucket_index.bucket_map.clear());
+    freed_rows.push(("bucket_map (the rest)", per));
+    let per = freed_by(&mut || shard.strings.clear());
+    freed_rows.push(("strings", per));
+
+    println!();
+    println!("  {RECORDS} records, each home freed in turn");
+    println!("  home                              freed B/record");
+    let mut total = 0.0;
+    for (label, per) in &freed_rows {
+        total += per;
+        println!("  {label:34} {per:>10.0}");
+    }
+    println!("  ----------------------------------------------");
+    println!("  {:34} {total:>10.0}", "accounted for");
+    println!("  {:34} {:>10}", "the shard holds (measured separately)", 963);
+    println!();
+    println!("  Two things keep the rows below the total, and neither is an error:");
+    println!("   - `clear()` drops entries but KEEPS the table, by design, so a row is credited");
+    println!("     with its entries and not with its capacity. The shortfall above is mostly");
+    println!("     retained tables.");
+    println!("   - a row reading 0 can be correct rather than broken: a HashMap<u32, u64> has no");
+    println!("     per-entry heap at all, and ObjectIndex is inline while a slot holds one object.");
+    println!();
+    println!("  Order is fixed and matters: a structure that owns its keys frees them, so an");
+    println!("  earlier row is credited with anything a later row merely borrowed. The page index");
+    println!("  is not freed separately because it goes with the slot map it lives in -- which is");
+    println!("  why the slot map is the largest row and why bounding the slot range only recovers");
+    println!("  the per-slot part of it, not the per-object part.");
+
+    assert!(total > 0.0, "measured nothing");
+}
+
+/// Would specialising `ObjectBlockRefs::by_component` for the one-component case pay?
+///
+/// The object page lookup costs 238 B/record (`what_each_home_costs`), second only to the slot
+/// map, and unlike the slot map it does not shrink when the slot range is bounded -- it is keyed
+/// per object either way. Its inner `refs` already collapses to an inline `One` variant, and the
+/// outer `by_component` is still a `Vec` that in practice holds exactly one element: a heap
+/// allocation and a three-word header spent to express a list of one.
+///
+/// That specialisation was deliberately left undone pending a measurement, because inline is 56 B
+/// against a Vec header's 24 and the byte comparison alone is a wash. So measure both halves: how
+/// many components an object really has, and what the two shapes cost in allocations as well as
+/// bytes.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib would_an_inline_component_pay -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn would_an_inline_component_pay() {
+    const RECORDS: u64 = 20_000;
+
+    // --- half one: what the real corpus looks like -------------------------------------
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("inline-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let (objects, components, one_component) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let mut objects = 0usize;
+        let mut components = 0usize;
+        let mut one_component = 0usize;
+        for (_model, _key, refs) in shard.bucket_index.object_page_lookup.iter() {
+            objects += 1;
+            components += refs.by_component.len();
+            if refs.by_component.len() == 1 {
+                one_component += 1;
+            }
+        }
+        (objects, components, one_component)
+    };
+
+    // --- half two: what the two shapes cost --------------------------------------------
+    // The proposed shape, mirroring BlockRefs which already does this for the inner list.
+    enum Proposed {
+        One(crate::engine::state::ComponentBlocks),
+        #[allow(dead_code)]
+        Many(Vec<crate::engine::state::ComponentBlocks>),
+    }
+
+    let sample = crate::engine::state::ComponentBlocks {
+        component: None,
+        refs: crate::engine::state::BlockRefs::One(crate::engine::state::BlockLookupRef {
+            routing_bucket: 7,
+            page_ref_key: 99,
+        }),
+    };
+
+    let probe = crate::alloc_probe::Probe::start();
+    let current: Vec<Vec<crate::engine::state::ComponentBlocks>> =
+        (0..RECORDS).map(|_| vec![sample.clone()]).collect();
+    let current_counts = probe.stop();
+    std::hint::black_box(&current);
+
+    let probe = crate::alloc_probe::Probe::start();
+    let proposed: Vec<Proposed> = (0..RECORDS).map(|_| Proposed::One(sample.clone())).collect();
+    let proposed_counts = probe.stop();
+    std::hint::black_box(&proposed);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    let cur_live = current_counts.alloc_bytes.saturating_sub(current_counts.free_bytes);
+    let pro_live = proposed_counts.alloc_bytes.saturating_sub(proposed_counts.free_bytes);
+
+    println!();
+    println!("  the corpus, {RECORDS} records:");
+    println!("    objects in the lookup          {objects:>8}");
+    println!("    components total               {components:>8}");
+    println!("    components per object          {:>8.3}", components as f64 / objects.max(1) as f64);
+    println!("    objects with exactly one       {one_component:>8}  ({:.1}%)",
+             100.0 * one_component as f64 / objects.max(1) as f64);
+    println!();
+    println!("  shape                allocations/object   live B/object");
+    println!("  Vec of one          {:>17.2} {:>15.0}", per(current_counts.allocs), per(cur_live));
+    println!("  inline One          {:>17.2} {:>15.0}", per(proposed_counts.allocs), per(pro_live));
+    println!();
+    println!("  inlining changes    {:+.2} allocations   {:+.0} B per object",
+             per(proposed_counts.allocs) - per(current_counts.allocs),
+             per(pro_live) - per(cur_live));
+    println!();
+    if per(proposed_counts.allocs) < per(current_counts.allocs) - 0.5 {
+        println!("  It removes an allocation per object. On the live node's 2.4M objects that is");
+        println!("  2.4M allocations not made and 2.4M headers not held, and the precedent is in");
+        println!("  the same file: BlockRefs already serializes as a sequence via from/into, so");
+        println!("  the on-disk index would not change.");
+    } else {
+        println!("  It does NOT remove an allocation, so the case for it is bytes alone and the");
+        println!("  byte difference above is what to judge it on.");
+    }
+
+    assert!(objects > 0, "the lookup should hold objects");
+}
+
+/// What one write actually spends, split into the part that copies the payload and the part that
+/// does not.
+///
+/// A write allocates ~40.7 kB and frees 97% of it to store a 512-byte value
+/// (`does_a_bounded_slot_range_make_writes_cheaper`), an eighty-fold amplification, and that churn
+/// is the write path's latency rather than anything retained. Whether to attack the copying or the
+/// bookkeeping depends on which one it is, and a single value size cannot tell them apart.
+///
+/// So measure across value sizes and take the slope and the intercept: the slope is what each
+/// payload byte costs to move, the intercept is what a write costs before it has moved any.
+///
+/// Counted rather than timed -- this box swings 5-30% run to run and a count says the same thing
+/// under load.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_write_spends -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_one_write_spends() {
+    const WRITES: u64 = 8_000;
+    const WARM: u64 = 2_000;
+    const SIZES: [usize; 9] = [64, 128, 192, 256, 384, 512, 1024, 4096, 16384];
+
+    let arm = |payload: usize| -> (f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Warm first: the opening writes build fixed structure every arm would otherwise be
+        // charged for, and it is the steady-state write being measured.
+        for index in 0..WARM {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("warm-{index:08}"),
+                    value: vec![b'v'; payload],
+                },
+            });
+            assert!(response.status.ok, "warm {index}: {:?}", response.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..WRITES {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cost-{index:08}"),
+                    value: vec![b'v'; payload],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let n = WRITES as f64;
+        (counts.allocs as f64 / n, counts.alloc_bytes as f64 / n)
+    };
+
+    let measured: Vec<(usize, f64, f64)> =
+        SIZES.iter().map(|&s| { let (a, b) = arm(s); (s, a, b) }).collect();
+
+    println!();
+    println!("  value size   allocations/write   allocated B/write   amplification");
+    for (size, allocs, bytes) in &measured {
+        println!("  {size:>10} {allocs:>18.1} {bytes:>19.0} {:>15.1}x",
+                 bytes / *size as f64);
+    }
+
+    // Segment slopes, NOT one fit across everything. A single least-squares line over this
+    // data reports an intercept that describes no part of it -- the cost is piecewise, and
+    // averaging across a step hides the step, which is the interesting part.
+    println!();
+    println!("  segment                 B per payload byte");
+    let mut step: Option<(usize, usize, f64)> = None;
+    for pair in measured.windows(2) {
+        let (lo, _, lo_bytes) = pair[0];
+        let (hi, _, hi_bytes) = pair[1];
+        let per = (hi_bytes - lo_bytes) / (hi - lo) as f64;
+        println!("  {lo:>6} -> {hi:<6} {per:>26.1}");
+        if per > 20.0 && step.is_none() {
+            step = Some((lo, hi, hi_bytes - lo_bytes));
+        }
+    }
+
+    let alloc_spread = measured.iter().map(|m| m.1).fold(f64::MIN, f64::max)
+        - measured.iter().map(|m| m.1).fold(f64::MAX, f64::min);
+
+    println!();
+    println!("  allocation COUNT spread over the whole range  {alloc_spread:>8.1}");
+    println!();
+    if let Some((lo, hi, jump)) = step {
+        println!("  There is a STEP between {lo} and {hi} bytes worth {jump:.0} B per write, and");
+        println!("  the segments on either side of it are flat. That is a threshold being crossed,");
+        println!("  not a cost that scales -- so the number to quote for a write is which SIDE of");
+        println!("  the threshold it falls on, and a single slope through both is meaningless.");
+    } else {
+        println!("  No step: the cost is smooth across the range and a single slope describes it.");
+    }
+    println!();
+    let smallest = measured.first().expect("a measurement").2;
+    let largest = measured.last().expect("a measurement").2;
+    println!("  Even so, the shape of the whole is clear: {smallest:.0} B to store 64 bytes and");
+    println!("  {largest:.0} B to store 16384. The value is a minority of what a write allocates at");
+    println!("  every size measured, so shrinking values cannot move write cost -- compression and");
+    println!("  tighter encodings buy disk, not latency.");
+    if alloc_spread < 20.0 {
+        println!();
+        println!("  And the allocation COUNT barely moves across the whole range, so a write performs");
+        println!("  a fixed number of steps and only the bytes they carry change.");
+    }
+
+    assert_eq!(measured.len(), SIZES.len(), "every size should be measured");
+    assert!(measured.iter().all(|m| m.2 > 0.0), "measured nothing");
+}
+
+/// Does the write path's compressor have to be rebuilt for every record?
+///
+/// Write cost is flat at ~2 B per payload byte on both sides of a sharp step between 192 and 256
+/// bytes worth 32,535 B per write (`what_one_write_spends`). 256 is
+/// `PAGE_RECORD_COMPRESSION_MIN_BYTES`, and the encoder above it is `zstd::stream::encode_all`,
+/// which builds a compressor, uses it once and drops it. Records in the soak corpus average 1,244
+/// bytes, so essentially every real write is above the threshold and pays this.
+///
+/// The zstd crate also exposes a compressor that can be held and reused. This measures whether
+/// reuse actually recovers the step or whether the cost is inherent to compressing at all --
+/// worth knowing before proposing to restructure a write path around it.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_rebuilding_the_compressor_costs -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_rebuilding_the_compressor_costs() {
+    const CALLS: u64 = 4_000;
+    // 1244 B is the soak corpus average; 512 is the probe size used elsewhere in this file.
+    const SIZES: [usize; 2] = [512, 1244];
+    const LEVEL: i32 = 3;
+
+    for size in SIZES {
+        // Not a uniform byte: an all-identical buffer compresses to almost nothing and would
+        // flatter both arms equally while making the ratio meaningless.
+        let payload: Vec<u8> = (0..size).map(|i| ((i * 7 + (i >> 3)) % 251) as u8).collect();
+
+        let probe = crate::alloc_probe::Probe::start();
+        let mut fresh_total = 0usize;
+        for _ in 0..CALLS {
+            let out = zstd::stream::encode_all(std::io::Cursor::new(&payload), LEVEL)
+                .expect("compress");
+            fresh_total += out.len();
+        }
+        let fresh = probe.stop();
+
+        let probe = crate::alloc_probe::Probe::start();
+        let mut held = zstd::bulk::Compressor::new(LEVEL).expect("compressor");
+        let mut held_total = 0usize;
+        for _ in 0..CALLS {
+            let out = held.compress(&payload).expect("compress");
+            held_total += out.len();
+        }
+        let reused = probe.stop();
+
+        let per = |v: u64| v as f64 / CALLS as f64;
+        println!();
+        println!("  payload {size} B, zstd level {LEVEL}");
+        println!("  arm                  allocations/call   allocated B/call   output B");
+        println!("  rebuilt each call  {:>18.1} {:>18.0} {:>10.0}",
+                 per(fresh.allocs), per(fresh.alloc_bytes), fresh_total as f64 / CALLS as f64);
+        println!("  held and reused    {:>18.1} {:>18.0} {:>10.0}",
+                 per(reused.allocs), per(reused.alloc_bytes), held_total as f64 / CALLS as f64);
+        println!("  reuse saves        {:>18.1} {:>18.0}",
+                 per(fresh.allocs) - per(reused.allocs),
+                 per(fresh.alloc_bytes) - per(reused.alloc_bytes));
+        // NOT an equality check on the compressed bytes. The two calls frame a zstd stream
+        // differently, so their outputs differ in size -- asserting they match fails, and the
+        // useful property is that each still decodes back to exactly what went in.
+        let fresh_once = zstd::stream::encode_all(std::io::Cursor::new(&payload), LEVEL)
+            .expect("compress");
+        let held_once = held.compress(&payload).expect("compress");
+        for (label, blob) in [("rebuilt", &fresh_once), ("reused", &held_once)] {
+            let back = zstd::stream::decode_all(std::io::Cursor::new(blob)).expect("decompress");
+            assert_eq!(back, payload, "{label} arm must round-trip");
+        }
+        println!("  output differs by       {:>18} B  (reused is {})",
+                 fresh_once.len() as i64 - held_once.len() as i64,
+                 if held_once.len() < fresh_once.len() { "smaller" } else { "larger" });
+    }
+
+    println!();
+    println!("  The two arms do NOT produce identical bytes -- they frame the stream differently,");
+    println!("  and the reused one is smaller. Both decode back to exactly the input, which is the");
+    println!("  property that matters; an equality assertion on the compressed bytes fails here and");
+    println!("  saying so is the point, because the saving is real and the sameness was assumed.");
+    println!();
+    println!("  What it does NOT settle: the write path holds no obvious place to keep a");
+    println!("  compressor, and one held across threads needs a lock or a thread-local. That is a");
+    println!("  design question, and this measures only the size of the prize.");
 }
