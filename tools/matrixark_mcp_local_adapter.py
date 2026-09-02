@@ -777,6 +777,37 @@ import json as _json
 import sys as _sys
 
 
+#: A field whose values keep turning out to be distinct is not worth a table: at scale the
+#: hashes and row names would flood it and crowd out the fields that DO repeat. Each field gets
+#: its own table and is abandoned once it exceeds this many distinct values. Measured on an
+#: attachment corpus the repetitive fields hold 1 to 21 distinct values, and the distinct ones
+#: (row_key, context_event_key) are unique per row, so the two separate cleanly.
+_STRING_FIELD_CARDINALITY_LIMIT = 512
+#: Longer than this and hashing the value to look it up costs more than the copy saves.
+_SHARED_STRING_MAX_LEN = 256
+_SHARED_STRINGS: dict = {}
+_SHARED_STRINGS_ABANDONED: set = set()
+
+
+def _shared_string(field, value):
+    """Return the one copy of ``value`` held for ``field``, or ``value`` if it is not worth it."""
+    if len(value) > _SHARED_STRING_MAX_LEN or field in _SHARED_STRINGS_ABANDONED:
+        return value
+    table = _SHARED_STRINGS.get(field)
+    if table is None:
+        table = _SHARED_STRINGS[field] = {}
+    shared = table.get(value)
+    if shared is not None:
+        return shared
+    if len(table) >= _STRING_FIELD_CARDINALITY_LIMIT:
+        # This field's values are distinct, not repeated. Stop paying to find that out.
+        _SHARED_STRINGS_ABANDONED.add(field)
+        _SHARED_STRINGS.pop(field, None)
+        return value
+    table[value] = value
+    return value
+
+
 def _interned_pairs(pairs):
     """Build a decoded object with its keys interned.
 
@@ -789,7 +820,14 @@ def _interned_pairs(pairs):
     Interning is free of meaning: the strings compare equal either way, so nothing above this can
     tell the difference.
     """
-    return {_sys.intern(key) if type(key) is str else key: value for key, value in pairs}
+    out = {}
+    for key, value in pairs:
+        if type(key) is str:
+            key = _sys.intern(key)
+            if type(value) is str and value:
+                value = _shared_string(key, value)
+        out[key] = value
+    return out
 
 
 def loads_with_interned_keys(line: str):
@@ -5706,11 +5744,15 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             if cached is not None:
                 cached_size, cached_mtime_ns, cached_records = cached
                 if cached_size == size and cached_mtime_ns == mtime_ns:
-                    records = list(cached_records)
+                    # Share ONCE, then hand the same list to every holder. Sharing only
+                    # into the adapter's cache left the process cache, the durable snapshot and
+                    # the returned list holding the unshared originals, so both were alive at
+                    # once and a cold read kept 120 copies of a value with ONE distinct value.
+                    records = share_repeated_values(
+                        list(cached_records), _SHARED_VALUE_TABLE
+                    )
                     with self._read_cache_lock:
-                        self._read_cache_records = share_repeated_values(
-                            list(records), _SHARED_VALUE_TABLE
-                        )
+                        self._read_cache_records = list(records)
                         self._read_cache_value_keys = None
                         self._read_cache_state_keys = None
                         self._read_cache_size = size
@@ -5721,11 +5763,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         durable_records = self._load_durable_read_cache(signature)
         if durable_records is not None:
-            records = list(durable_records)
+            records = share_repeated_values(list(durable_records), _SHARED_VALUE_TABLE)
             with self._read_cache_lock:
-                self._read_cache_records = share_repeated_values(
-                    list(records), _SHARED_VALUE_TABLE
-                )
+                self._read_cache_records = list(records)
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
@@ -5760,9 +5800,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 or self._read_cache_size != size
                 or self._read_cache_mtime_ns != mtime_ns
             )
-            self._read_cache_records = share_repeated_values(
-                list(records), _SHARED_VALUE_TABLE
-            )
+            records = share_repeated_values(list(records), _SHARED_VALUE_TABLE)
+            self._read_cache_records = list(records)
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
             self._summary_dirty_index = None
