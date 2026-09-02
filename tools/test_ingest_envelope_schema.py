@@ -72,7 +72,11 @@ try:
             raise SchemaError("; ".join(e.message for e in errors))
 
     ACTIVE_VALIDATOR = "jsonschema (Draft202012Validator)"
-except ImportError:
+except (ImportError, AttributeError):
+    # AttributeError as well as ImportError: a jsonschema old enough to predate
+    # Draft202012Validator imports perfectly well and then fails on the attribute, which skipped
+    # this fallback entirely and took the whole module down at import time. The structural
+    # validator below is exactly what that case wants.
     # Minimal structural validator driven by the published schema's enums.
     _KIND_ENUM = set(SCHEMA["properties"]["kind"]["enum"])
     _ROLE_ENUM = set(SCHEMA["$defs"]["message"]["properties"]["role"]["enum"])
