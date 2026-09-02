@@ -2932,26 +2932,28 @@ mod tests {
         );
     }
 
-    /// Measured on the public tree, best of three per point, 16 cores:
+    /// Measured on the public tree, best of five per point, 16 cores, load ~10:
     ///
-    ///     threads   ns/op (aggregate)   throughput vs one thread   of linear
-    ///     1              163                   1.00x                 100%
-    ///     2              164                   0.99x                  50%
-    ///     4              130                   1.25x                  31%
-    ///     8              107                   1.52x                  19%
-    ///     16             112                   1.46x                   9%
+    ///     threads   ns/op   spread over five runs   vs one thread
+    ///     1          226         226-350                1.00x
+    ///     2          185         185-210                1.22x
+    ///     4          105         105-113                2.15x
+    ///     8           66          66- 70                3.42x
+    ///     16          57          57- 62                3.96x
     ///
-    /// Two threads move no more traffic than one, which is the shape a shared exclusive
-    /// operation makes -- not a shared read. `table_for_request` takes the client (an RwLock read
-    /// and an Arc clone), clones the namespace and table name, builds a `{namespace}/{table}` key
-    /// with `format!`, takes the table-cache read lock, clones the options, and clones the client
-    /// Arc a second time into the returned table. Two clone/drop pairs land on the same refcount,
-    /// so every thread writes the same cache line on every request.
+    /// The one-thread point is much the noisiest -- a single thread finishes fast enough that
+    /// scheduler interference dominates -- so the ratios it anchors are indicative, not exact.
+    /// The widths that matter are stable to within a few percent.
     ///
-    /// Left as it is: making this scale means not materialising a `TemporalStoreTable` per
-    /// request, which is a change to what the client hands out rather than a local fix. The
-    /// numbers are here so the shape is known before someone tries a smaller one -- the
-    /// allocations are the visible cost and are not the reason it stops scaling.
+    /// This used to read 0.99x at two threads: two threads moved no more traffic than one. Three
+    /// changes since took the locks off the path (the backend-failure map, the stats counter, the
+    /// table cache) and halved the client-handle clones, and it now gains through to eight.
+    ///
+    /// It still falls away from linear, and the reason is the same: the returned
+    /// `TemporalStoreTable` clones the client Arc, so every request writes a refcount line shared
+    /// with every other thread. One clone remains where there were two. Removing the last one
+    /// means not materialising a table per request, which changes what the client hands out --
+    /// the allocations on the path are the visible cost and are still not the reason.
     /// What looking up an already-cached table costs, per request, under contention.
     ///
     /// The proxy resolves a table on every table-scoped request. On the cache-HIT path --
