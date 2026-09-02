@@ -868,6 +868,44 @@ def explicit_int(name: str, scope: Any, fallback: int) -> int:
     return fallback
 
 
+def explicit_bool(name: str, scope: Any, fallback: bool) -> bool:
+    """An explicitly-set boolean for `scope`: a tenant override, else an env var, else `fallback`.
+
+    The bool sibling of `explicit_int`, and explicit-only for the same reason: `resolve()` returns
+    the registry default when nobody has set anything, which silently substitutes the registry's
+    opinion for the caller's. With nothing set the caller's own default is returned unchanged.
+    """
+    truthy = {"1", "true", "yes", "on"}
+    falsy = {"0", "false", "no", "off"}
+
+    def _as_bool(value: Any):
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return None
+        text = str(value).strip().lower()
+        if text in truthy:
+            return True
+        if text in falsy:
+            return False
+        return None
+
+    try:
+        override = _as_bool((tenant_policy(scope) or {}).get(name))
+    except Exception:  # pragma: no cover - a malformed policy must not break retrieval
+        override = None
+    if override is not None:
+        return override
+
+    knob = KNOBS.get(name)
+    env_name = getattr(knob, "env", "") if knob is not None else ""
+    if env_name:
+        from_env = _as_bool(os.environ.get(env_name))
+        if from_env is not None:
+            return from_env
+    return fallback
+
+
 def tenant_policy(scope: Any = None) -> Json:
     """The merged override set for `scope`'s tenant (file defaults < file tenant < store record)."""
     file_defaults, file_tenants = _load_file_policies()
