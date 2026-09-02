@@ -5780,6 +5780,13 @@ fn a_bucket_holding_one_page_holds_no_node() {
 
 
 
+
+
+
+
+
+
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
