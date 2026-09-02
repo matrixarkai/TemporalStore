@@ -4030,8 +4030,8 @@ fn single_page_components_are_held_inline() {
     );
 
     // The spilled arm has to keep working: sorted, deduplicated, and reporting what it added.
-    let first = PageLookupRef { routing_bucket: 7, page_ref_key: Arc::from("bbb") };
-    let second = PageLookupRef { routing_bucket: 7, page_ref_key: Arc::from("aaa") };
+    let first = PageLookupRef { routing_bucket: 7, page_ref_key: 2 };
+    let second = PageLookupRef { routing_bucket: 7, page_ref_key: 1 };
     let mut refs = PageRefs::One(first.clone());
     assert!(!refs.insert(first.clone()), "re-inserting the same ref adds nothing");
     assert_eq!(refs.len(), 1);
@@ -4055,7 +4055,7 @@ fn page_refs_serialize_as_a_sequence() {
 
     let single = PageRefs::One(PageLookupRef {
         routing_bucket: 3,
-        page_ref_key: Arc::from("page-a"),
+        page_ref_key: 1,
     });
     let json = serde_json::to_value(&single).unwrap();
     assert!(json.is_array(), "must encode as a sequence, got {json}");
@@ -4073,7 +4073,7 @@ fn page_refs_serialize_as_a_sequence() {
     let mut pair = single.clone();
     pair.insert(PageLookupRef {
         routing_bucket: 4,
-        page_ref_key: Arc::from("page-b"),
+        page_ref_key: 2,
     });
     let round_tripped: PageRefs = serde_json::from_value(serde_json::to_value(&pair).unwrap()).unwrap();
     assert_eq!(round_tripped, pair);
@@ -4580,6 +4580,173 @@ fn deleting_an_object_does_not_allocate_per_page_scanned() {
     );
 }
 
+/// What happens to the index when the same logical object is written twice.
+///
+/// Reported, not asserted into a particular answer: the point is to find out whether the map
+/// deduplicates by key collision or through the lookup, because that decides whether the key can
+/// become an opaque assigned id.
+#[test]
+fn rewriting_a_page_does_not_reuse_its_index_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let key = "rewritten-object";
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet { key: key.to_string(), value: vec![b'a'; 64] },
+    });
+    let after_first: Vec<String> = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.page_index.iter())
+            .filter(|(_, page)| page.object_key.as_ref() == key)
+            .map(|(ref_key, _)| ref_key.to_string())
+            .collect()
+    };
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet { key: key.to_string(), value: vec![b'b'; 64] },
+    });
+    let after_second: Vec<String> = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.page_index.iter())
+            .filter(|(_, page)| page.object_key.as_ref() == key)
+            .map(|(ref_key, _)| ref_key.to_string())
+            .collect()
+    };
+
+    assert_eq!(after_first.len(), 1, "the first write must produce exactly one entry");
+    println!(
+        "
+  rewriting one object:
+    entries after the first write   {}
+    entries after the second        {}
+    key reused?                     {}
+    first  key: {}
+    second key: {}
+",
+        after_first.len(),
+        after_second.len(),
+        after_second == after_first,
+        after_first.first().map(String::as_str).unwrap_or("-"),
+        after_second.first().map(String::as_str).unwrap_or("-"),
+    );
+
+    // The property that must hold either way: one live entry per object, however that is achieved.
+    assert_eq!(
+        after_second.len(),
+        1,
+        "a rewrite must leave one entry, not accumulate them"
+    );
+}
+
+/// The same page, installed twice, is one entry with one handle.
+///
+/// This is the property the rendered string key provided for free: it WAS the key, so installing
+/// a page whose identity already appeared replaced it. A handle from a counter compiles, dumps
+/// and reloads perfectly and still breaks this -- each install takes a fresh slot, so a rebuild
+/// accumulates entries and the object counts drift apart. Three tests caught that as a wrong
+/// number; this one states the reason.
+#[test]
+fn installing_the_same_page_twice_replaces_it() {
+    let page = || crate::engine::state::PageIndex {
+        object_key: Arc::from("twice".to_string()),
+        model_id: Arc::from("string".to_string()),
+        component: None,
+        address: BlockAddress::from_parts(1, 0, 4, Some(1), Some(30), Some(3), Some(1), None),
+        dirty: false,
+        deleted: false,
+        log_backed: true,
+    };
+
+    let mut map = crate::engine::state::PageIndexMap::default();
+    let first = map.insert(page());
+    let second = map.insert(page());
+
+    assert_eq!(first, second, "the same page must land on the same handle");
+    assert_eq!(map.len(), 1, "installing it twice must not add a second entry");
+
+    // A page differing in one identity field is a different page and keeps its own slot.
+    let mut moved = page();
+    moved.address = BlockAddress::from_parts(1, 64, 4, Some(1), Some(30), Some(3), Some(1), None);
+    let third = map.insert(moved);
+    assert_ne!(first, third, "a page at another offset is not the same page");
+    assert_eq!(map.len(), 2);
+}
+
+/// The page index is keyed by a number in memory and by the old string on disk.
+///
+/// This is what makes the numeric key an in-memory change rather than a format change. Asserted on
+/// the literal key rather than by round-tripping alone: a round trip through a consistently wrong
+/// spelling would pass, and an index written now has to be readable by something expecting the old
+/// one.
+#[test]
+fn the_page_index_still_writes_string_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet { key: "dumped".to_string(), value: vec![b'v'; 32] },
+    });
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let bucket = shard
+        .bucket_index
+        .bucket_map
+        .values()
+        .find(|bucket| !bucket.page_index.is_empty())
+        .expect("the write must produce a page");
+
+    // In memory: a handle, not text.
+    let (handle, page) = bucket.page_index.iter().next().expect("one page");
+    assert!(*handle > 0, "the map assigns a handle");
+
+    // On the wire: the same rendered key it always wrote, rebuilt from the page.
+    let json = serde_json::to_value(&bucket.page_index).unwrap();
+    let written = json.as_object().expect("the wire form is a map of string keys");
+    let expected = crate::engine::state::page_index_written_key(page);
+    assert!(
+        written.contains_key(&expected),
+        "the dump must carry the rendered key {expected:?}, got {:?}",
+        written.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        expected.contains("dumped"),
+        "and that key names the object: {expected}"
+    );
+
+    // And a document in that shape loads back, with handles assigned afresh.
+    let restored: crate::engine::state::PageIndexMap = serde_json::from_value(json).unwrap();
+    assert_eq!(restored.len(), bucket.page_index.len());
+    assert!(
+        restored.iter().all(|(handle, _)| *handle > 0),
+        "every loaded page gets a handle"
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
@@ -4911,9 +5078,9 @@ fn per_record_structure_census() {
         .bucket_map
         .values()
         .flat_map(|bucket| bucket.page_index.iter())
-        .map(|(ref_key, page)| {
-            ref_key.len()
-                + page.object_key.len()
+        .map(|(_handle, page)| {
+            // The key is an inline number now, not text on the heap.
+            page.object_key.len()
                 + page.model_id.len()
                 + page.component.as_ref().map_or(0, |name| name.len())
         })
@@ -4929,7 +5096,7 @@ fn per_record_structure_census() {
             object.len()
                 + entry
                     .all_refs()
-                    .map(|page_ref| page_ref.page_ref_key.len())
+                    .map(|_page_ref| 0usize)
                     .sum::<usize>()
         })
         .sum();
@@ -10671,16 +10838,16 @@ fn what_one_page_costs_to_index() {
     let mut object_key_bytes = 0usize;
     let mut shared_bytes = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (ref_key, page) in bucket.page_index.iter() {
+        for (_handle, page) in bucket.page_index.iter() {
             entries += 1;
-            // The map key: kind, object key, component and five numbers rendered as decimal.
-            ref_key_bytes += ref_key.len();
+            // The map key is an inline number now, not a rendered string on the heap.
+            ref_key_bytes += 0;
             // Shared with the lookup, so one allocation answers for both holders.
             object_key_bytes += page.object_key.len();
             // One allocation across every page of that kind or component, not one per page.
             shared_bytes += page.model_id.len()
                 + page.component.as_ref().map_or(0, |name| name.len());
-            heap += ref_key.len() + page.object_key.len();
+            heap += page.object_key.len();
         }
     }
     assert!(entries > 0, "the workload must produce pages, or this measures nothing");

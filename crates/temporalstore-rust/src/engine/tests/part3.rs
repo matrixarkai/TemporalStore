@@ -2373,7 +2373,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 },
             )]
             .into_iter()
-            .map(|(key, page): (String, PageIndex)| (std::sync::Arc::from(key), page))
+            .map(|(_key, page): (String, PageIndex)| page)
             .collect(),
             ..BucketNode::default()
         },
@@ -2414,7 +2414,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
-            .map(|(key, page): (String, PageIndex)| (std::sync::Arc::from(key), page))
+            .map(|(_key, page): (String, PageIndex)| page)
             .collect(),
             ..BucketNode::default()
         },
@@ -2454,7 +2454,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
-            .map(|(key, page): (String, PageIndex)| (std::sync::Arc::from(key), page))
+            .map(|(_key, page): (String, PageIndex)| page)
             .collect(),
             ..BucketNode::default()
         },
