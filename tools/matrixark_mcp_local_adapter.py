@@ -3998,6 +3998,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         self._context_node_cache_loaded = False
         self._read_cache_lock = threading.RLock()
         self._read_cache_records: list[Json] | None = None
+        # Set when records were appended to the cache without compacting it -- see
+        # _compact_read_cache_if_dirty_locked.
+        self._read_cache_dirty = False
         self._read_cache_size = -1
         self._read_cache_mtime_ns = -1
         self._read_cache_source = "empty"
@@ -4516,6 +4519,25 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             except Exception:
                 pass
 
+    def _compact_read_cache_if_dirty_locked(self) -> None:
+        """Compact the cache if records were appended since the last compaction.
+
+        Callers hold ``_read_cache_lock``. Compaction only ever REMOVES -- tombstoned and
+        superseded records -- so a total that did not change means nothing was dropped and any
+        persisted prefix still stands, which is what the epoch records.
+
+        Deferring is the point: the read path serves this list without re-compacting, so it has to
+        be compact when READ, not after every append.
+        """
+        if not self._read_cache_dirty or self._read_cache_records is None:
+            self._read_cache_dirty = False
+            return
+        before = len(self._read_cache_records)
+        self._read_cache_records = compact_and_apply_tombstones(self._read_cache_records)
+        self._read_cache_dirty = False
+        if len(self._read_cache_records) != before:
+            self._read_cache_compaction_epoch += 1
+
     def _update_read_cache_after_append(
         self, records: list[Json], *, pre_size: int | None = None
     ) -> None:
@@ -4554,18 +4576,20 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_mtime_ns = -1
                 self._read_cache_source = "empty"
             if self._read_cache_records is not None:
-                before = len(self._read_cache_records)
+                # Extend now, compact when something reads. Compacting here walked the whole cache
+                # on every append, which is what made ingest quadratic in the corpus: 27 records
+                # land per attachment, so 50 attachments took 105 s against 12 s for 20.
                 self._read_cache_records.extend(records)
-                self._read_cache_records = compact_and_apply_tombstones(self._read_cache_records)
-                # Compaction only ever REMOVES (tombstones, duplicates), so an unchanged total
-                # means nothing was dropped and the prefix still stands.
-                if len(self._read_cache_records) != before + len(records):
-                    self._read_cache_compaction_epoch += 1
+                self._read_cache_dirty = True
                 durable_epoch = self._read_cache_compaction_epoch
             if size >= 0:
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
                 if self._read_cache_records is not None:
+                    # The snapshot is served to a cold reader without re-compacting, so it has to
+                    # be compact when written.
+                    self._compact_read_cache_if_dirty_locked()
+                    durable_epoch = self._read_cache_compaction_epoch
                     durable_records = list(self._read_cache_records)
             else:
                 self._read_cache_records = None
@@ -4589,11 +4613,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     durable_records = list(cached_records)
                     durable_epoch = None
             elif self._read_cache_records is not None:
-                _LOCAL_READ_CACHE[cache_key] = (
-                    self._read_cache_size,
-                    self._read_cache_mtime_ns,
-                    compact_and_apply_tombstones(list(self._read_cache_records)),
-                )
+                with self._read_cache_lock:
+                    self._compact_read_cache_if_dirty_locked()
+                    _LOCAL_READ_CACHE[cache_key] = (
+                        self._read_cache_size,
+                        self._read_cache_mtime_ns,
+                        list(self._read_cache_records),
+                    )
         if durable_records is not None:
             # Only continue the tail here; never rewrite the whole base from a write.
             #
@@ -5291,6 +5317,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 and self._read_cache_size == size
                 and self._read_cache_mtime_ns == mtime_ns
             ):
+                self._compact_read_cache_if_dirty_locked()
                 self._read_cache_source = "instance"
                 return list(self._read_cache_records)
         with _LOCAL_READ_CACHE_LOCK:
