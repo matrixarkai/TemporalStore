@@ -14,19 +14,52 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "docs" / "ops" / "temporalstore-dashboard.json"
 ALERTS = ROOT / "docs" / "ops" / "temporalstore-alerts.yml"
-DOC = ROOT / "docs" / "ops" / "temporalstore-grafana-metrics-parity.md"
-RUST_SOURCES = [
-    ROOT / "crates" / "temporalstore-rust" / "src" / "engine.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "raft.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "proxy.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "ingestion.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "server.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "metaserver.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "ops_scale_readiness_harness.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_proxy.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_direct_sdk.rs",
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_proxy_impl.rs",
-]
+# The coverage doc this is checked against. The previous path named a file that has never
+# existed, and `DOC.exists()` turned that into ten separate "family is undocumented" failures
+# with one root cause -- a missing file reported as a missing description, ten times over.
+DOC = ROOT / "docs" / "ops" / "temporalstore-grafana-metrics-coverage.md"
+# Files known to emit metrics when this discovery was written. Kept as a FLOOR: if the walk below
+# stops returning one of these, something has moved and the scan has silently narrowed, which is the
+# failure this whole guard exists to prevent.
+RUST_SOURCE_FLOOR = (
+    "engine.rs",
+    "raft.rs",
+    "proxy.rs",
+    "ingestion.rs",
+    "bin/server.rs",
+    "bin/metaserver.rs",
+    "bin/ops_scale_readiness_harness.rs",
+    "bin/matrixark_rust_proxy.rs",
+    "bin/matrixark_rust_direct_sdk.rs",
+    # NOT under bin/: the hand-maintained list said bin/matrixark_rust_proxy_impl.rs, which does
+    # not exist, and the loader skipped it with `if path.exists()` -- so a file with 33 series was
+    # silently absent from a scan that reported itself complete.
+    "matrixark_rust_proxy_impl.rs",
+)
+
+RUST_SRC_ROOT = ROOT / "crates" / "temporalstore-rust" / "src"
+
+
+def _discover_rust_sources() -> list:
+    """Every non-test Rust file under the crate, not a hand-maintained list.
+
+    The list this replaces named ten files while twenty emit Prometheus series, so the validator
+    reported conformance over 15% of its subject. A file added later -- or a metric moved into a
+    submodule, which is how `bin/server/metrics.rs` came to hold 26 of them -- would never be seen.
+
+    Test modules are excluded: a series named only inside a `#[cfg(test)]` fixture is not something
+    a deployment emits, and counting it would let a panel query a series that exists only in tests.
+    """
+    out = []
+    for path in sorted(RUST_SRC_ROOT.rglob("*.rs")):
+        parts = path.relative_to(RUST_SRC_ROOT).parts
+        if "tests" in parts or path.name.startswith("test_"):
+            continue
+        out.append(path)
+    return out
+
+
+RUST_SOURCES = _discover_rust_sources()
 
 
 METRIC_FAMILIES = {
@@ -248,6 +281,27 @@ def metric_names(text: str) -> set[str]:
     return set(re.findall(r"(?:temporalstore|matrixark)_[A-Za-z0-9_]+", text))
 
 
+# Queried by a panel or an alert and emitted by nothing, so that panel is blank on every
+# deployment. Tracked here rather than left inside a mass failure, because a validator that always
+# fails is one nobody runs -- which is how this one came to be red and unnoticed in the first place.
+# Each entry is either a panel to remove or a metric to add; neither is a decision this script makes.
+KNOWN_UNEMITTED = {
+    # Its siblings (`temporalstore_block_store_operations_total`, the slot gauges) are emitted; this
+    # one never was. Documented in docs/ops/temporalstore-grafana-metrics-coverage.md.
+    "storage_cache:rust:temporalstore_block_store_extent_bytes",
+}
+
+
+def check_scan_extent() -> list:
+    """Names from the floor that discovery no longer returns.
+
+    Reported as a failure rather than a warning. A guard whose reach shrinks reports success over
+    less and less, and the report reads identically either way.
+    """
+    found = {str(p.relative_to(RUST_SRC_ROOT)).replace("\\", "/") for p in RUST_SOURCES}
+    return [name for name in RUST_SOURCE_FLOOR if name not in found]
+
+
 def main() -> int:
     dash = dashboard_text()
     alerts = read(ALERTS)
@@ -291,7 +345,18 @@ def main() -> int:
         "missing": missing,
     }
     print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if not missing else 1
+    # A known gap stays in the report -- it is not hidden -- but does not fail the run. A gap that
+    # gets FIXED does fail, so the list cannot go stale the way the one it replaces did.
+    unexpected = [m for m in missing if m not in KNOWN_UNEMITTED]
+    fixed_but_listed = sorted(KNOWN_UNEMITTED - set(missing))
+    if fixed_but_listed:
+        print("These are listed as known-unemitted but now resolve: %s. Remove them from "
+              "KNOWN_UNEMITTED." % ", ".join(fixed_but_listed), file=sys.stderr)
+    lost = check_scan_extent()
+    if lost:
+        print("SCAN NARROWED: these files used to be scanned and are no longer discovered: %s"
+              % ", ".join(lost), file=sys.stderr)
+    return 0 if (not unexpected and not lost and not fixed_but_listed) else 1
 
 
 if __name__ == "__main__":
