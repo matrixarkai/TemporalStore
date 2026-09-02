@@ -112,158 +112,36 @@ def build_cross_session_policy(
     remote_budget_tokens: int,
     context_source_mode: str = "",
 ) -> Json:
-    raw = args.get("cross_session", ranking.get("cross_session", {}))
-    if isinstance(raw, bool):
-        config: Json = {"enabled": raw}
-    elif raw is None:
-        config = {}
-    elif isinstance(raw, dict):
-        config = raw
-    else:
-        raise MatrixArkError("cross_session must be an object or boolean")
+    """Delegates to the one implementation, in matrixark_mcp_core_scoring.
 
-    normalized_question_type = str(question_type or "fact").strip().lower()
-    query_text = str(args.get("query") or ranking.get("query") or "")
-    query_lower = query_text.lower()
-    profile_memory_query = normalized_question_type == "profile_memory" or bool(
-        query_lower and PROFILE_MEMORY_QUERY_RE.search(query_lower)
-    )
-    feature_memory_query = bool(query_lower and FEATURE_MEMORY_QUERY_RE.search(query_lower))
-    cross_session_query = normalized_question_type in {
-        "current_state",
-        "latest",
-        "multi_hop",
-        "date",
-        "broad_exploration",
-        "evidence",
-        "benchmark_quality",
-    }
-    cross_session_allowed = session_scope == "prefer" or profile_memory_query or feature_memory_query or cross_session_query
-    default_enabled = cross_session_allowed and remote_budget_tokens > 0
-    enabled = bool(config.get("enabled", default_enabled)) and cross_session_allowed and remote_budget_tokens > 0
-    profile_budget_query = profile_memory_query or feature_memory_query
-    if normalized_question_type in {"current_state", "latest", "profile_memory"} or profile_budget_query:
-        default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO if profile_budget_query else DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
-        if profile_budget_query:
-            question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
-        else:
-            question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
-    elif normalized_question_type in {"multi_hop", "date"}:
-        default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
-        question_budget_reason = (
-            "multi_hop_or_date_queries_need cross-session memory for comparisons, timelines, "
-            "and facts that may live outside the active session"
+    This module used to carry its own copy. The two had drifted: this one matched a single
+    profile-memory pattern where the other matches three, and it had no handling for an explicitly
+    requested cross-session bridge. Callers reaching this module -- matrixark_mcp_budget_pack --
+    therefore behaved differently from callers reaching the other, for no reason anyone chose.
+
+    Comparing them by identifier and then line by line showed this copy held nothing the other
+    lacked: every line unique to it was a narrower form of a line over there. So it delegates, and
+    the difference disappears rather than being maintained in two places.
+
+    Imported here rather than at module scope: neither module imports the other, and keeping it
+    that way avoids a new edge between two modules that both sit low in the import graph.
+    """
+    try:  # package path
+        from tools.matrixark_mcp_core_scoring import (  # type: ignore
+            build_cross_session_policy as _build,
         )
-    elif normalized_question_type in {"broad_exploration", "evidence"}:
-        default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
-        question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
-    else:
-        default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
-        question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
-    # Mode-dependent quota (opt-in). Augment: local carries the current session, so route the
-    # memory budget to cross-session + long-term profile. Remote-only: remote reconstructs the
-    # working context too, so cross-session takes the minority. OFF by default (legacy ratios).
-    _mode = str(context_source_mode or "").strip().lower()
-    if MODE_DEPENDENT_QUOTA_ENABLED and _mode == "local_and_remote":
-        default_ratio = max(default_ratio, DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO)
-        question_budget_reason = "augment_mode_routes_memory_budget_to_cross_session_and_profile_local_carries_current_session"
-    elif MODE_DEPENDENT_QUOTA_ENABLED and _mode == "remote_only":
-        default_ratio = DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO
-        question_budget_reason = "remote_only_reserves_majority_of_budget_for_current_session_reconstruction"
-    default_max_budget_ratio = DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
-    if MODE_DEPENDENT_QUOTA_ENABLED and _mode in {"local_and_remote", "remote_only"}:
-        # do not let the profile/default max-ratio cap the mode-dependent cross-session allocation
-        default_max_budget_ratio = max(default_max_budget_ratio, default_ratio)
-    max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", default_max_budget_ratio))))
-    budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
-    max_budget_default = (
-        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS
-        if profile_budget_query
-        else DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
-    )
-    max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
-    ratio_budget_cap = int(remote_budget_tokens * max_budget_ratio) if max_budget_ratio > 0 else 0
-    max_budget_cap = max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens
-    computed_budget_before_floor = int(remote_budget_tokens * budget_ratio)
-    computed_budget = computed_budget_before_floor
-    budget_floor_tokens = DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS
-    budget_floor_applied = False
-    budget_floor_eligible = (
-        remote_budget_tokens >= 1200
-        and computed_budget > 0
-        and (ratio_budget_cap == 0 or ratio_budget_cap >= budget_floor_tokens)
-        and max_budget_cap >= budget_floor_tokens
-    )
-    if budget_floor_eligible:
-        computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
-        budget_floor_applied = computed_budget != computed_budget_before_floor
-    budget_floor_status = (
-        "floor_applied"
-        if budget_floor_applied
-        else (
-            "remote_budget_too_small_for_profile_floor"
-            if enabled
-            and remote_budget_tokens > 0
-            and computed_budget_before_floor < budget_floor_tokens
-            and not budget_floor_eligible
-            else "not_needed"
+    except ImportError:
+        from matrixark_mcp_core_scoring import (  # type: ignore
+            build_cross_session_policy as _build,
         )
+    return _build(
+        args,
+        ranking,
+        question_type=question_type,
+        session_scope=session_scope,
+        remote_budget_tokens=remote_budget_tokens,
+        context_source_mode=context_source_mode,
     )
-    budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
-    budget_tokens = min(
-        remote_budget_tokens,
-        budget_tokens,
-        ratio_budget_cap if ratio_budget_cap > 0 else remote_budget_tokens,
-        max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens,
-    )
-    max_sessions_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_SESSIONS
-    max_candidates_default = DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_CANDIDATES
-    min_bridge_default = DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS if profile_budget_query else DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS
-    max_sessions = integer_arg(config, "max_sessions", max_sessions_default, minimum=0)
-    max_candidates = integer_arg(config, "max_candidates", max_candidates_default, minimum=0)
-    min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", min_bridge_default, minimum=0)
-    parallelism = integer_arg(config, "parallelism", DEFAULT_CROSS_SESSION_PARALLELISM, minimum=1)
-    min_score = float_arg(config, "min_score", DEFAULT_CROSS_SESSION_MIN_SCORE, minimum=0.0, maximum=1.0)
-    raw_evidence_min_score = float_arg(config, "raw_evidence_min_score", DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE, minimum=0.0, maximum=1.0)
-    preferred_ref_types = config.get("preferred_ref_types", list(DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES))
-    if not isinstance(preferred_ref_types, list):
-        raise MatrixArkError("cross_session.preferred_ref_types must be an array")
-    preferred_ref_types = [str(item).strip() for item in preferred_ref_types if str(item).strip()]
-    return {
-        "enabled": enabled,
-        "mode": "prefer" if enabled else "disabled",
-        "decision": (
-            "always_consider_same_user_cross_session_for_profile_memory"
-            if enabled and profile_memory_query and session_scope != "prefer"
-            else "always_consider_same_user_cross_session_for_feature_memory"
-            if enabled and feature_memory_query and session_scope != "prefer"
-            else "always_consider_same_user_cross_session_for_query_type"
-            if enabled and cross_session_query and session_scope != "prefer"
-            else "always_consider_same_user_cross_session_when_session_scope_prefer"
-            if enabled
-            else "disabled_by_session_scope_or_budget"
-        ),
-        "question_type": normalized_question_type,
-        "question_budget_reason": question_budget_reason,
-        "budget_ratio": round(budget_ratio, 6),
-        "max_budget_ratio": round(max_budget_ratio, 6),
-        "budget_tokens": budget_tokens if enabled else 0,
-        "remote_budget_tokens": remote_budget_tokens,
-        "computed_budget_tokens": computed_budget_before_floor,
-        "budget_floor_tokens": budget_floor_tokens,
-        "budget_floor_applied": budget_floor_applied if enabled else False,
-        "budget_floor_status": budget_floor_status if enabled else "disabled",
-        "max_budget_tokens": max_budget_tokens,
-        "max_sessions": max_sessions if enabled else 0,
-        "max_candidates": max_candidates if enabled else 0,
-        "min_score": min_score if enabled else 0.0,
-        "raw_evidence_min_score": raw_evidence_min_score if enabled else 0.0,
-        "preferred_ref_types": preferred_ref_types if enabled else [],
-        "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
-        "parallelism": parallelism if enabled else 0,
-        "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-        "budget_guidance": "cross-session budget is a maximum cap, not a quota: keep normal queries small, raise profile-memory queries for long-term profile state, spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events",
-    }
 
 
 def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_tokens: int) -> Json:
