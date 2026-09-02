@@ -31,7 +31,12 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             else:
                 os.environ["MATRIXARK_AUDIT_MODE"] = previous
         self.addCleanup(restore)
-        return MatrixArkMcpServer(MatrixArkLocalAdapter(Path(tmp.name) / "events.jsonl"), line_json=True, access_mode="dev")
+        server = MatrixArkMcpServer(MatrixArkLocalAdapter(Path(tmp.name) / "events.jsonl"), line_json=True, access_mode="dev")
+        # Registered after tmp.cleanup so it runs BEFORE it: cleanups are LIFO, and the server's
+        # background workers keep writing into tmp until they are drained. Removing the directory
+        # first lets a worker re-create the event log inside it, and cleanup fails with ENOTEMPTY.
+        self.addCleanup(server.close, timeout_s=10.0)
+        return server
 
     def test_api_key_hash_only_and_role_limited_viewer(self) -> None:
         server = self.make_server()
