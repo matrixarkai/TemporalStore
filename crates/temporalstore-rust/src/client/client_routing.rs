@@ -373,32 +373,56 @@ impl TemporalStoreClient {
         Ok(server_addr)
     }
 
-    pub(super) fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
+    /// The count the route lookup trusts, for tests that check it against the map.
+    #[cfg(test)]
+    pub(crate) fn backend_failure_entries_for_test(&self) -> usize {
+        self.inner
+            .backend_failure_entries
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Every mutation of the backend-failure map goes through here.
+    ///
+    /// `backend_failure_entries` is what lets the read path skip the lock, and it is only safe to
+    /// trust while it equals the map's length. Updating it at each call site is the kind of
+    /// invariant that holds until someone adds a fourth site, so there is one site: the count is
+    /// restated from the map itself, under the lock that just changed it.
+    pub(super) fn with_backend_failures<R>(
+        &self,
+        f: impl FnOnce(&mut HashMap<String, BackendFailureState>) -> R,
+    ) -> R {
         let mut failures = self
             .inner
             .backend_failures
             .lock()
             .expect("client backend failure lock poisoned");
+        let out = f(&mut failures);
+        self.inner
+            .backend_failure_entries
+            .store(failures.len(), std::sync::atomic::Ordering::Relaxed);
+        out
+    }
+
+    pub(super) fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
         let now = Instant::now();
-        let state =
-            failures
+        self.with_backend_failures(|failures| {
+            let state = failures
                 .entry(server_addr.to_string())
                 .or_insert_with(|| BackendFailureState {
                     first_failed_at: now,
                     last_failed_at: now,
                     consecutive_failures: 0,
                 });
-        state.last_failed_at = now;
-        state.consecutive_failures += 1;
-        state.first_failed_at.elapsed() >= Duration::from_millis(continuous_failed_time_ms)
+            state.last_failed_at = now;
+            state.consecutive_failures += 1;
+            state.first_failed_at.elapsed() >= Duration::from_millis(continuous_failed_time_ms)
+        })
     }
 
     pub(super) fn record_backend_success(&self, server_addr: &str) {
-        self.inner
-            .backend_failures
-            .lock()
-            .expect("client backend failure lock poisoned")
-            .remove(server_addr);
+        self.with_backend_failures(|failures| {
+            failures.remove(server_addr);
+        });
     }
 
     pub(super) fn backend_failure_is_continuous(
@@ -406,6 +430,17 @@ impl TemporalStoreClient {
         server_addr: &str,
         continuous_failed_time_ms: u64,
     ) -> bool {
+        // Nothing has failed, so there is no entry to find and no reason to take the lock.
+        // Every cached route lookup reaches here, so on a healthy deployment this is the whole
+        // path: the map was being locked once per request to be told it was empty.
+        if self
+            .inner
+            .backend_failure_entries
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
+            return false;
+        }
         self.inner
             .backend_failures
             .lock()

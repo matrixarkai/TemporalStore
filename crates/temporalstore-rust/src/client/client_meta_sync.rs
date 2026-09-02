@@ -833,11 +833,8 @@ impl TemporalStoreClient {
         consecutive_failures: u64,
     ) {
         let now = Instant::now();
-        self.inner
-            .backend_failures
-            .lock()
-            .expect("client backend failure lock poisoned")
-            .insert(
+        self.with_backend_failures(|failures| {
+            failures.insert(
                 server_addr.into(),
                 BackendFailureState {
                     first_failed_at: now - Duration::from_millis(first_failed_ago_ms),
@@ -845,6 +842,7 @@ impl TemporalStoreClient {
                     consecutive_failures,
                 },
             );
+        });
     }
 
     pub(super) fn ensure_meta_sync_table_state(&self, namespace: &str, table_name: &str) {

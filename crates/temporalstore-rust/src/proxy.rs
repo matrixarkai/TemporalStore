@@ -3132,6 +3132,59 @@ mod tests {
         );
     }
 
+    /// Splits the cached-route lookup into acquiring the client and using it.
+    ///
+    /// `client()` is an RwLock read plus a clone of the handle, both atomic read-modify-writes,
+    /// and the request path takes it two or three times. Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_proxy_route_lookup_split() {
+        let threads: usize = std::env::var("BENCH_THREADS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+        let per_thread: usize = std::env::var("BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50_000);
+
+        let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+
+        for (label, hoisted) in [("client()+lookup", false), ("lookup, client hoisted", true)] {
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+            let mut handles = Vec::new();
+            for _ in 0..threads {
+                let proxy = std::sync::Arc::clone(&proxy);
+                let gate = std::sync::Arc::clone(&gate);
+                handles.push(std::thread::spawn(move || {
+                    let held = proxy.client();
+                    gate.wait();
+                    for _ in 0..per_thread {
+                        if hoisted {
+                            std::hint::black_box(&held.shard_primary_addr(1, false));
+                        } else {
+                            std::hint::black_box(&proxy.client().shard_primary_addr(1, false));
+                        }
+                    }
+                }));
+            }
+            gate.wait();
+            let start = std::time::Instant::now();
+            for handle in handles {
+                handle.join().expect("thread");
+            }
+            let elapsed = start.elapsed();
+            let ops = (threads * per_thread) as u128;
+            println!(
+                "SPLIT {label}: threads={threads} ops={ops} ns_per_op={}",
+                elapsed.as_nanos() / ops
+            );
+        }
+    }
+
     /// Per-request bookkeeping under CONCURRENCY, measured per function.
     ///
     /// Single-threaded this work is ~110ns against a request whose real cost is a network
