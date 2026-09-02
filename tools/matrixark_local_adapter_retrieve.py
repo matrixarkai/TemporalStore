@@ -252,6 +252,19 @@ except ImportError:
 )
 
 
+def _sibling_sessions_enabled(scope) -> bool:
+    """Whether this tenant's retrieval may descend into other sessions (default ON).
+
+    Lazily imported and defaulting to the knob's own value, so a deployment without the policy
+    module keeps today's behaviour rather than silently narrowing every search.
+    """
+    try:
+        from matrixark_index_growth_bound import traverse_sibling_sessions_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    return bool(traverse_sibling_sessions_enabled(scope))
+
+
 class _LocalAdapterRetrieveMixin:
     def retrieve(self, args: Json) -> Json:
         started_perf = time.perf_counter()
@@ -339,6 +352,11 @@ class _LocalAdapterRetrieveMixin:
         retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
         if retrieval_session_scope not in {"prefer", "only"}:
             raise MatrixArkError("session_scope must be prefer or only")
+        # A tenant that declined sibling sessions gets "only" whatever the request asked for. The
+        # knob is a ceiling rather than another default: it says what this deployment does, so a
+        # per-request argument must not widen it. Narrowing to "only" is always still allowed.
+        if not _sibling_sessions_enabled(scope):
+            retrieval_session_scope = "only"
         retrieval_scope = {**scope, "_session_scope": retrieval_session_scope}
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"

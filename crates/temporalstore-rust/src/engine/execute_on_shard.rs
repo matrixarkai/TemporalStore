@@ -83,6 +83,10 @@ fn load_context_node(
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
         .or_else(|| shard.context_nodes.get(object_key))
         .and_then(|address| {
+            // Owning, not shared: the summary upsert calls this while writing, where the page
+            // is as likely to be a miss as a hit -- and on a miss the shared read wraps an owned
+            // buffer in a fresh Arc, which copies a second time. The query commands, which are
+            // hit-heavy, do share.
             read_page_bytes(cache, page_store, shard_id, address)
                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
         })
@@ -2399,7 +2403,7 @@ pub(crate) fn execute_on_shard(
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .or_else(|| shard.context_nodes.get(&object_key))
                         .and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
+                            read_page_shared(cache, page_store, shard_id, address)
                                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                         })?;
                     if node.vector.is_empty() {
@@ -2478,7 +2482,7 @@ pub(crate) fn execute_on_shard(
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .or_else(|| shard.context_nodes.get(&object_key))
                 .and_then(|address| {
-                    read_page_bytes(cache, page_store, shard_id, address)
+                    read_page_shared(cache, page_store, shard_id, address)
                         .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                 });
             CommandResponse::ContextNode { object_key, node }
@@ -2497,7 +2501,7 @@ pub(crate) fn execute_on_shard(
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .or_else(|| shard.context_nodes.get(&object_key))
                         .and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
+                            read_page_shared(cache, page_store, shard_id, address)
                                 .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                         })
                 })
@@ -3629,7 +3633,7 @@ pub(crate) fn execute_on_shard(
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                 .or_else(|| shard.context_nodes.get(&node_key))
                 .and_then(|address| {
-                    read_page_bytes(cache, page_store, shard_id, address)
+                    read_page_shared(cache, page_store, shard_id, address)
                         .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                 });
             let level = summary_level.unwrap_or(1).max(1);

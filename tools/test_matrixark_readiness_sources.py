@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
 """A readiness row that read a setting and one that counted records both print "ok".
 
 Only one of them survives the deployment being misconfigured in a way that still answers 200, and
@@ -31,9 +32,23 @@ _BACKEND_METRICS = (
 )
 
 
+def _app_with(factory):
+    """Build the app from a plain dict rather than a constructed GatewayConfig.
+
+    Under `unittest discover` the gateway module is imported under two names in one process, so a
+    GatewayConfig built from one copy of the class fails the `isinstance` check in the other and
+    `_coerce_config` falls through to `dict(overrides)` on it. Passing a dict lets whichever copy
+    is live build its own, which is what the app does with a fresh deployment anyway.
+    """
+    return gw.make_v1_app(_FakeServer(), {
+        "api_keys": {"k-acme": "acme", "k-globex": "globex"},
+        "require_auth": True,
+        "blob_connection_factory": factory,
+    })
+
+
 def _overview(response=None):
-    cfg = _cfg(blob_connection_factory=_factory_for(response or _FakeResponse(200, _BACKEND_METRICS)))
-    app = gw.make_v1_app(_FakeServer(), cfg)
+    app = _app_with(_factory_for(response or _FakeResponse(200, _BACKEND_METRICS)))
     status, _headers, body = drive(app, method="GET", path="/v1/admin/overview", headers=ADMIN)
     return status, json.loads(body)
 
@@ -108,7 +123,7 @@ class TheEngineRowReportsTheEngineTest(unittest.TestCase):
     def test_the_overview_still_answers_when_the_datanode_raises(self) -> None:
         def explode(_cfg_arg):
             raise OSError("connection refused")
-        app = gw.make_v1_app(_FakeServer(), _cfg(blob_connection_factory=explode))
+        app = _app_with(explode)
         status, _h, body = drive(app, method="GET", path="/v1/admin/overview", headers=ADMIN)
         self.assertEqual(200, status, "the page that reports on the deployment fell over")
         row = {r["id"]: r for r in _rows(json.loads(body))}["storage_backend"]
@@ -154,6 +169,59 @@ class ThePageShowsTheSourceTest(unittest.TestCase):
         self.assertIn(gw._CHECK_SOURCE_LABELS["configuration"], result["checks"])
         self.assertIn(gw._CHECK_SOURCE_LABELS["measured"], result["checks"])
         self.assertIn(gw._CHECK_SOURCE_LABELS["engine"], result["checks"])
+
+
+_BACKEND_WITH_REASON = (
+    b'temporalstore_storage_backend{backend="shared_path",replication="shared_store"} 1\n'
+    b'temporalstore_storage_backend_info{backend="shared_path",'
+    b'reason="TS_STORAGE_BACKEND=shared: forced shared-path at /srv/a \\"b\\", ok"} 1\n'
+)
+
+
+class TheEngineSaysWhyTest(unittest.TestCase):
+    """The outcome cannot distinguish a backend that was asked for from one fallen back to.
+
+    Those are the cases an operator is actually chasing -- shared storage with no directory, and
+    MatrixObject on a build without the feature, both degrade to auto-detection without erroring --
+    and until now the answer existed only in a startup log line no portal can read.
+    """
+
+    def test_the_reason_reaches_the_checklist(self) -> None:
+        _st, payload = _overview(_FakeResponse(200, _BACKEND_WITH_REASON))
+        row = {r["id"]: r for r in _rows(payload)}["storage_backend"]
+        self.assertEqual("ok", row["status"])
+        self.assertIn("forced shared-path", row["detail"])
+
+    def test_an_engine_that_publishes_no_reason_is_not_an_error(self) -> None:
+        # The gateway talks to whatever datanode is deployed, which is routinely older than this.
+        # Absent means "this engine does not publish it", not "something is wrong".
+        _st, payload = _overview(_FakeResponse(
+            200, b'temporalstore_storage_backend{backend="raft",replication="raft"} 1\n'))
+        row = {r["id"]: r for r in _rows(payload)}["storage_backend"]
+        self.assertEqual("ok", row["status"], "a missing reason was treated as a failure")
+        self.assertIn("raft", row["detail"])
+        self.assertIn("does not publish", row["detail"])
+
+    def test_a_reason_with_quotes_and_commas_survives_the_wire(self) -> None:
+        # The reason carries paths and endpoint URLs, so an escaped quote is a matter of when
+        # rather than whether; splitting on "," and stripping quotes tears the value in half.
+        labels = gw._parse_prom_labels(
+            'temporalstore_storage_backend_info{backend="shared_path",'
+            'reason="forced shared-path at /srv/a \\"b\\", ok"} 1')
+        self.assertEqual("shared_path", labels["backend"])
+        self.assertEqual('forced shared-path at /srv/a "b", ok', labels["reason"])
+
+    def test_a_plain_sample_still_parses(self) -> None:
+        labels = gw._parse_prom_labels(
+            'temporalstore_storage_backend{backend="raft",replication="raft"} 1')
+        self.assertEqual({"backend": "raft", "replication": "raft"}, labels)
+
+    def test_the_deployment_route_stops_saying_the_reason_is_unavailable(self) -> None:
+        app = _app_with(_factory_for(_FakeResponse(200, _BACKEND_WITH_REASON)))
+        _st, _h, body = drive(app, method="GET", path="/v1/admin/deployment", headers=ADMIN)
+        detail = json.loads(body)["live_detail"]
+        self.assertIn("forced shared-path", detail)
+        self.assertNotIn("not readable over HTTP", detail)
 
 
 if __name__ == "__main__":

@@ -9,9 +9,15 @@ except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
 try:
-    from tools.matrixark_mcp_local_adapter import fold_embedding_records
+    from tools.matrixark_mcp_local_adapter import (
+        drop_vectors_for_opted_out_tenants,
+        fold_embedding_records,
+    )
 except ImportError:
-    from matrixark_mcp_local_adapter import fold_embedding_records
+    from matrixark_mcp_local_adapter import (
+        drop_vectors_for_opted_out_tenants,
+        fold_embedding_records,
+    )
 
 try:
     from tools.matrixark_mcp_temporal_append import slim_persisted_storage_route
@@ -261,6 +267,7 @@ class _TemporalDirectWriteMixin:
         # reach the engine. A drain re-entry (allow_queue=False on already-folded records) is a
         # no-op: nothing left to partition. The resolver is consulted only for an embedding with
         # no same-batch owner.
+        records = drop_vectors_for_opted_out_tenants(records)
         records = fold_embedding_records(
             records, resolve_owner=getattr(self, "_resolve_embedding_owner", None)
         )

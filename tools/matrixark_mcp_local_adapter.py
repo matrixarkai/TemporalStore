@@ -758,6 +758,144 @@ def drop_owner_derivable_postings(records: list[Json], resolve_owner=None) -> li
     return [r for i, r in enumerate(records) if i not in drop]
 
 
+def _embeddings_enabled_for(record: Json) -> bool:
+    """Whether this record's tenant stores vectors at all (default ON -- a tenant opts out).
+
+    Imported lazily and failing OPEN: a deployment without the policy module keeps its existing
+    behaviour rather than silently storing nothing, which would be a worse failure than the one
+    this setting exists to allow.
+
+    Gated here rather than at `embedding_for_text` because that producer has 57 callers and most
+    are on the READ path embedding a query. Gating it would stop retrieval working for a tenant who
+    only asked not to STORE vectors, which is a different setting entirely.
+    """
+    try:
+        from matrixark_index_growth_bound import generate_embeddings_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    # Read the scope the way the store itself does. Interning reduces a written record's scope dict
+    # to a `scope_key` holding the tenant HASH, so reading only `scope` sees None on most records,
+    # resolves to the default, and fails OPEN -- which is how the first version of this gate ran
+    # over 82 records and changed nothing while reporting success.
+    scope = record.get("scope") or record.get("access_scope") or record.get("scope_key")
+    return bool(generate_embeddings_enabled(scope))
+
+
+# One function per knob, each naming its gate. Resolving them through getattr would be shorter and
+# would defeat the wiring guard, which requires a real call by name -- and that guard is the reason
+# these knobs were found doing nothing in the first place. Each falls back to the knob's OWN default
+# rather than a blanket True: two of these default ON and one defaults OFF, so a single fail-open
+# would silently turn one of them on for everybody.
+def _embeddings_enabled(scope: Any) -> bool:
+    """Whether this tenant stores vectors at all (default ON -- a tenant opts out)."""
+    try:
+        from matrixark_index_growth_bound import generate_embeddings_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    return bool(generate_embeddings_enabled(scope))
+
+
+def _node_path_vectors_enabled(scope: Any) -> bool:
+    """Whether this tenant stores a vector of the node PATH (default ON).
+
+    Distinct from the knob above: the path is a synthetic string of path segments and a depth
+    marker, not anything a customer wrote, so a tenant may want content vectors without these.
+    """
+    try:
+        from matrixark_index_growth_bound import node_path_embeddings_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return True
+    return bool(node_path_embeddings_enabled(scope))
+
+
+def _event_summary_text_enabled(scope: Any) -> bool:
+    """Whether an event carries its own summary_text (default OFF)."""
+    try:
+        from matrixark_index_growth_bound import store_event_summary_text_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return False
+    return bool(store_event_summary_text_enabled(scope))
+
+
+def _record_scope(record: Json) -> Any:
+    """The scope a record is attributed by.
+
+    Interning reduces a written record's scope dict to a `scope_key` holding the tenant hash, so
+    reading only `scope` sees None on most records and every gate then falls to its default.
+    """
+    return record.get("scope") or record.get("access_scope") or record.get("scope_key")
+
+
+def apply_storage_policy(records: list[Json]) -> list[Json]:
+    """Enforce the per-tenant STORAGE knobs on a batch about to be appended.
+
+    Three knobs, one place:
+
+    * `generate_embeddings` (default ON) -- drop the separate embedding record and strip an inline
+      vector. Not gated at `embedding_for_text`, which has 57 callers and is shared with the READ
+      path: gating there would stop a query being embedded for a tenant who only declined to STORE.
+    * `node_path_embeddings` (default ON) -- drop just the `context_node` embeddings, which vectorise
+      a synthetic path string rather than anything a customer wrote.
+    * `store_event_summary_text` (default OFF) -- strip `summary_text` from an event. Under the
+      truncation limit it is a byte-identical copy of `text`, and every reader is written as
+      `summary_text or text`, so the field is omitted rather than emptied: absent falls back to the
+      text it copied, while "" would read as "summarised to nothing".
+
+    A batch nothing applies to is returned unchanged -- identity, not a copy.
+    """
+    if not records:
+        return records
+    out: list[Json] = []
+    changed = False
+    for record in records:
+        scope = _record_scope(record)
+        kind = record.get("record_type")
+
+        if kind == "context_embedding":
+            if not _embeddings_enabled(scope):
+                changed = True
+                continue
+            if (record.get("embedding_type") == "context_node"
+                    and not _node_path_vectors_enabled(scope)):
+                changed = True
+                continue
+            out.append(record)
+            continue
+
+        edited = record
+        if (record.get("vector") not in (None, "", [])
+                and not _embeddings_enabled(scope)):
+            edited = dict(edited)
+            edited.pop("vector", None)
+            # The metadata describes a vector that is no longer there; leaving it would tell a
+            # reader this record was embedded when it was not.
+            edited.pop("embedding_meta", None)
+            changed = True
+
+        if (kind == "context_event" and "summary_text" in edited
+                and not _event_summary_text_enabled(scope)):
+            edited = dict(edited) if edited is record else edited
+            edited.pop("summary_text", None)
+            changed = True
+
+        out.append(edited)
+    return out if changed else records
+
+
+def drop_vectors_for_opted_out_tenants(records: list[Json]) -> list[Json]:
+    """Remove stored vectors for tenants that turned embeddings off, by BOTH routes.
+
+    A vector reaches storage two ways: as its own `context_embedding` record, and written straight
+    onto the owner as an inline `vector` field. Handling only the first is what the first attempt
+    did, and it silently left nine of ten records carrying vectors for a tenant that had opted out.
+
+    Applied at every append site alongside the fold, so there is one answer rather than one per
+    writer. Records for tenants that have not opted out are returned untouched -- identity, not a
+    copy -- so this costs nothing in the ordinary case.
+    """
+    return apply_storage_policy(records)
+
+
 def fold_embedding_records(
     records: list[Json],
     resolve_owner=None,
@@ -810,6 +948,14 @@ def fold_embedding_records(
                 owner = dict(resolved)
                 replace[index] = owner
         if owner is None:
+            continue
+        # Decided on the OWNER, not the embedding. An embedding record often carries no scope of
+        # its own -- it is addressed by the owner's hash -- so the earlier pass cannot attribute it
+        # and lets it through. Here the owner is in hand, so the tenant is knowable: without this,
+        # 7 of 19 embeddings folded onto records belonging to a tenant that had opted out.
+        if not _embeddings_enabled_for(owner):
+            drop.add(index)
+            replace.pop(index, None)
             continue
         owner["vector"] = vector
         # The separate record carried more than the vector: serving-layer lineage, scope and
@@ -4445,6 +4591,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         records = self._apply_serving_dedup(
             self._stamp_ingest_fields(materialize_serving_record_batch([record]))
         )
+        records = drop_vectors_for_opted_out_tenants(records)
         records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
         records = drop_owner_derivable_postings(
             records, resolve_owner=self._resolve_embedding_owner
@@ -4483,6 +4630,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # their earlier owner through the durable view. The fold runs AFTER the serving
         # materialization so the metadata that rides along under embedding_meta is exactly the
         # shape the separate record used to persist in.
+        records = drop_vectors_for_opted_out_tenants(records)
         records = fold_embedding_records(records, resolve_owner=self._resolve_embedding_owner)
         records = drop_owner_derivable_postings(
             records, resolve_owner=self._resolve_embedding_owner

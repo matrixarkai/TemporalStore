@@ -3461,6 +3461,36 @@ fn read_page_bytes(
     Some(bytes)
 }
 
+/// The page's bytes, shared rather than copied.
+///
+/// `read_page_bytes` hands back a `Vec<u8>` the cache built by copying the `Arc<[u8]>` it already
+/// holds. A caller that parses the bytes and drops them pays that memcpy and that allocation for
+/// nothing -- once per retrieval candidate on the node fetch.
+///
+/// Identical to `read_page_bytes` in every other way: same key, same lookup, same spill and log
+/// fallbacks, same promotion. It differs only in not owning the result. Callers that keep or mutate
+/// the bytes should keep using `read_page_bytes`.
+fn read_page_shared(
+    cache: &MultiLayerCache,
+    page_store: &LocalBlockStore,
+    shard_id: ShardId,
+    address: &BlockAddress,
+) -> Option<std::sync::Arc<[u8]>> {
+    let cache_key = CacheKey::page_with_slot(
+        shard_id,
+        address.page_slab_id,
+        address.offset,
+        address.length,
+        address.routing_bucket());
+    if let Ok(Some(bytes)) = cache.get_shared(&cache_key) {
+        return Some(bytes);
+    }
+    // Every path below writes to the cache and hands back what it wrote, so going through
+    // `read_page_bytes` keeps the spill redirect, the in-log read and the block-store read in one
+    // place rather than duplicating three fallbacks that must not drift apart.
+    read_page_bytes(cache, page_store, shard_id, address).map(std::sync::Arc::from)
+}
+
 fn read_page_bytes_cold(page_store: &LocalBlockStore, address: &BlockAddress) -> Option<Vec<u8>> {
     page_store.read(address).ok()
 }

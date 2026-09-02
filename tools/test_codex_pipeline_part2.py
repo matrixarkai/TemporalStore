@@ -3,6 +3,9 @@
 """_CodexPipelinePart2 methods split from test_matrixark_codex_hook_pipeline.MatrixArkCodexHookPipelineTest (mixin)."""
 from __future__ import annotations
 
+import os
+from unittest import mock
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -1633,6 +1636,10 @@ class _CodexPipelinePart2:
             self.assertTrue(any(ref.get("ref_type") == "summary" for ref in pack["selected_refs"]))
             self.assertLessEqual(pack["used_context_tokens"], 120)
 
+    # This test exercises context_segment rows, which are OFF unless a tenant asks for them.
+    # Patched for the duration of the test only: setting it at module scope would leak across
+    # the single-process suite run and flip the knob for tests that assert it is off.
+    @mock.patch.dict(os.environ, {"MATRIXARK_EXTRACT_SEGMENTS": "1"})
     def test_fast_hook_threshold_commit_persists_real_adapter_memory_layers(self) -> None:
         original_auto_batch = matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT
         matrixark_codex_hook.HOOK_AUTO_BATCH_EXTRACT = True
