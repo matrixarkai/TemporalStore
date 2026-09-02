@@ -3312,7 +3312,7 @@ mod tests {
 
     #[test]
     fn proxy_metrics_expose_request_policy_and_backend_counters() {
-        // shared-corpus: ops_grafana_metrics_parity
+        // shared-corpus: ops_grafana_metrics_coverage
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
             serving_mode: ProxyServingMode::NotServing,

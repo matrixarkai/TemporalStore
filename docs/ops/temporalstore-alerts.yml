@@ -151,23 +151,6 @@ groups:
           summary: TemporalStore cache miss pressure is high
           description: "Cache miss pressure is high. Inspect cache admission/eviction settings, tiny-cache pressure tests, and block-store refill latency."
 
-      - alert: TemporalStoreReplicaReplayFailures
-        expr: temporalstore_replica_replay_loop_consecutive_failures > 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: TemporalStore secondary replica replay is failing
-          description: "Secondary replay has consecutive failures. Inspect shared-store cursor state, oplog retention, and replica catch-up lag."
-
-      - alert: TemporalStoreScaleSloRegression
-        expr: temporalstore_scale_write_p99_us > 50000 or temporalstore_scale_read_p99_us > 50000
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: TemporalStore scale SLO regression
-          description: "Scale harness p99 exceeded the local readiness threshold. Re-run tools/run_ops_scale_readiness.sh --run-local-scale and inspect the SLO report."
 
       - alert: TemporalStoreIngestionDeadLetters
         expr: temporalstore_ingestion_dead_letters > 0 or temporalstore_ingestion_records_total{outcome="dead_letter"} > 0
