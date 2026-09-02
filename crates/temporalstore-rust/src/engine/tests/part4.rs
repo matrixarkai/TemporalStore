@@ -5091,6 +5091,239 @@ fn does_delete_scale_with_the_store() {
     );
 }
 
+/// Exploratory: one page per field, or one page rewritten per write?
+#[test]
+fn how_many_pages_does_a_wide_hash_hold() {
+    for fields in [10usize, 100, 400] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..fields {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "one".to_string(),
+                    field: format!("f{i:06}"),
+                    value: vec![b'v'; 32],
+                },
+            });
+        }
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let pages: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.page_index.len())
+            .sum();
+        let buckets = shard.bucket_index.bucket_map.len();
+        let lookup_refs: usize = shard
+            .bucket_index
+            .object_page_lookup
+            .iter()
+            .map(|(_m, _o, refs)| refs.by_component.iter().map(|c| c.refs.as_slice().len()).sum::<usize>())
+            .sum();
+        println!("fields {fields:5}  pages {pages:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
+    }
+}
+
+/// Every field of a hash is filed in the bucket index after it is written.
+///
+/// The per-write sync used to re-file every field of the object each time, which made this true
+/// by brute force. It now files only the fields that are missing, so the property has to be
+/// checked rather than assumed: skipping one leaves the index quietly short of a page, and a
+/// missing page is a read that returns nothing rather than an error.
+#[test]
+fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..64 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "wide".to_string(),
+                field: format!("f{i:03}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+    // Overwrite some, so a field's address changes and the old filing is stale.
+    for i in (0..64).step_by(5) {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "wide".to_string(),
+                field: format!("f{i:03}"),
+                value: vec![b'w'; 48],
+            },
+        });
+    }
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let fields = shard.hashes.get("wide").expect("the hash exists");
+    assert_eq!(fields.len(), 64, "all fields written");
+
+    for (field, address) in fields.iter() {
+        assert!(
+            shard.bucket_index.contains_object_page_address(
+                "hash",
+                "wide",
+                Some(field.as_str()),
+                address
+            ),
+            "field {field} holds an address the bucket index does not have filed"
+        );
+    }
+}
+
+/// Exploratory: which bucket-visiting site grows with a wide object?
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn which_site_visits_the_pages() {
+    use crate::engine::storage_bucket_internals::bucket_visit_sites;
+    for fields in [100usize, 400, 1600] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..fields {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "one".to_string(),
+                    field: format!("f{i:06}"),
+                    value: vec![b'v'; 32],
+                },
+            });
+        }
+        bucket_visit_sites::reset();
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..100 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "one".to_string(),
+                    field: format!("probe{i:04}"),
+                    value: vec![b'v'; 32],
+                },
+            });
+        }
+        let allocs = probe.stop().allocs as f64 / 100.0;
+        let (layout, clear_dirty, refresh_flags, remove_all) = bucket_visit_sites::snapshot();
+        println!(
+            "fields {fields:5}  allocs/write {allocs:8.1}  visits/write: layout {:7.1} clear_dirty {:7.1} refresh {:7.1} remove_all {:7.1}",
+            layout as f64 / 100.0,
+            clear_dirty as f64 / 100.0,
+            refresh_flags as f64 / 100.0,
+            remove_all as f64 / 100.0
+        );
+    }
+}
+
+/// Exploratory: do writes cost more as the store grows?
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn does_writing_scale_with_the_store() {
+    let cost_at = |resident: usize, wide_object: bool| -> (f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..resident {
+            if wide_object {
+                // Everything under ONE object key: the object's own ref list grows.
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "one".to_string(),
+                        field: format!("f{i:06}"),
+                        value: vec![b'v'; 32],
+                    },
+                });
+            } else {
+                // Spread across many object keys: the store grows, each object stays small.
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: format!("h{i:06}"),
+                        field: "f".to_string(),
+                        value: vec![b'v'; 32],
+                    },
+                });
+            }
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..100 {
+            if wide_object {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "one".to_string(),
+                        field: format!("probe{i:04}"),
+                        value: vec![b'v'; 32],
+                    },
+                });
+            } else {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: format!("probe{i:04}"),
+                        field: "f".to_string(),
+                        value: vec![b'v'; 32],
+                    },
+                });
+            }
+        }
+        let c = probe.stop();
+        (c.allocs as f64 / 100.0, c.alloc_bytes as f64 / 100.0)
+    };
+
+    let (narrow_small, _) = cost_at(100, false);
+    let (narrow_large, _) = cost_at(1600, false);
+    let (wide_small, _) = cost_at(100, true);
+    let (wide_large, _) = cost_at(1600, true);
+    println!(
+        "many objects {narrow_small:.1} -> {narrow_large:.1}   one wide object {wide_small:.1} -> {wide_large:.1}"
+    );
+
+    // A ratio test proves nothing if neither side did any work.
+    assert!(wide_small > 1.0, "the probe must observe writes: {wide_small}");
+
+    // Writing to a store with 16x the objects already cost the same; this is the guard on it.
+    assert!(
+        narrow_large / narrow_small < 1.3,
+        "a write cost {narrow_small:.1} allocations at 100 objects and {narrow_large:.1} at 1,600"
+    );
+
+    // Writing a field to an object that already has 1,600 of them cost 8,388 allocations against
+    // 800 at 100 fields, because the per-write sync re-filed every field the object had.
+    assert!(
+        wide_large / wide_small < 1.3,
+        "a write cost {wide_small:.1} allocations at 100 fields and {wide_large:.1} at 1,600          ({:.1}x) -- the write is scaling with the object again",
+        wide_large / wide_small
+    );
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
