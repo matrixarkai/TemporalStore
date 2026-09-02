@@ -146,3 +146,50 @@ which is a release decision rather than an incident.
 
 **Blank means:** no scale run has been performed against this deployment. That is the normal state
 for a production cluster and is not a fault.
+
+
+## Alerts removed because they could never fire
+
+Two rules watched metrics that nothing declares. A rule on an unemitted metric is worse than no
+rule: the panel is blank, the alert is silent, and silence reads as health. They are removed rather
+than left in place, and recorded here so the loss of intent is visible instead of implied.
+
+| removed rule | watched | why it could not fire |
+|---|---|---|
+| `TemporalStoreReplicaReplayFailures` | `temporalstore_replica_replay_loop_consecutive_failures` | No subsystem publishes it. The raft follower pipeline keeps a `consecutive_failures` counter, but that counts append-entries send failures to a peer -- a different subsystem from the shared-store secondary replay this rule described, so exporting it under this name would have made the alert fire on the wrong thing. |
+| `TemporalStoreScaleSloRegression` | `temporalstore_scale_write_p99_us`, `temporalstore_scale_read_p99_us` | Neither is declared. Both names appear in `ops_scale_readiness_harness.rs`, but only inside a hardcoded list of families it EXPECTS the dashboards and alerts to mention -- a statement of intent, not an emission. |
+
+**What is no longer watched:** secondary replica replay health, and the scale harness p99 SLO. Both
+were already unwatched; removing the rules only stops them claiming otherwise. Restoring either
+means emitting the metric first, then re-adding the rule.
+
+**The guard that now prevents this:** `validate_grafana_metrics_conformance.py` fails when a rule's
+metrics are undeclared. "Declared" means a `# HELP` or `# TYPE` line -- deliberately narrower than
+"the name appears in the Rust source", which is what let these two hide, since the expectations
+list satisfies the looser test. The check asserts its own extent first: it refuses to pass on an
+empty declaration scan, because every comparison below it would then trivially succeed.
+
+
+## Panels removed because they were blank on every deployment
+
+The same two families owned two of the twelve dashboard panels, and every metric behind them is
+undeclared, so both rendered empty wherever this dashboard was loaded.
+
+| removed panel | queried | state |
+|---|---|---|
+| Secondary Replication Replay | `temporalstore_replica_replay_loop_consecutive_failures`, `_enabled`, `_events_total`, `_next_delay_ms` | none declared |
+| Scale SLO | `temporalstore_scale_write_p99_us`, `_read_p99_us`, `_throughput_ops`, `_error_budget_remaining` | none declared |
+
+### How both got through
+
+Each family's spec entry set `"rust": []`. The validator reads that as "this family requires no
+engine-side metric", so it confirmed the panels existed and the alert rules existed, and never asked
+whether anything produced the numbers. Both families were then reported ready.
+
+`check_families_state_their_emission` now fails on an empty `rust` list. An empty list is not the
+same as no requirement: if a family genuinely has no engine-side metric, it does not belong in a
+spec whose entire purpose is tying a panel to an emission.
+
+The scale-harness readiness check carried the same names and additionally verified them against a
+document path that no longer exists, so that check returned false unconditionally. Its lists and
+its path are corrected here.

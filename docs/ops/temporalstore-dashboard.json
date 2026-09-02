@@ -175,42 +175,6 @@
       ]
     },
     {
-      "title": "Secondary Replication Replay",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "temporalstore_replica_replay_loop_enabled"
-        },
-        {
-          "expr": "sum by (kind) (temporalstore_replica_replay_loop_events_total)"
-        },
-        {
-          "expr": "temporalstore_replica_replay_loop_consecutive_failures"
-        },
-        {
-          "expr": "temporalstore_replica_replay_loop_next_delay_ms"
-        }
-      ]
-    },
-    {
-      "title": "Scale SLO",
-      "type": "timeseries",
-      "targets": [
-        {
-          "expr": "temporalstore_scale_write_p99_us"
-        },
-        {
-          "expr": "temporalstore_scale_read_p99_us"
-        },
-        {
-          "expr": "temporalstore_scale_throughput_ops"
-        },
-        {
-          "expr": "temporalstore_scale_error_budget_remaining"
-        }
-      ]
-    },
-    {
       "title": "MatrixArk Backend SLO",
       "type": "timeseries",
       "targets": [

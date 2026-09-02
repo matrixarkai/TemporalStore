@@ -13,7 +13,7 @@ struct OpsScaleReadinessReport {
     autoscale_controller_ready: bool,
     metaserver_rebalance_loop_ready: bool,
     dashboards_ready: bool,
-    grafana_metrics_parity_ready: bool,
+    grafana_metrics_coverage_ready: bool,
     grafana_metric_families: Vec<String>,
     tracing_ready: bool,
     non_raft_auth_tls_ready: bool,
@@ -80,8 +80,8 @@ fn main() {
         "crates/temporalstore-rust/src/bin/metaserver.rs",
         &["cooldown", "safe_mode", "membership"],
     );
-    let grafana_metrics_parity_ready = grafana_metrics_parity_ready(&root);
-    let dashboards_ready = grafana_metrics_parity_ready;
+    let grafana_metrics_coverage_ready = grafana_metrics_coverage_ready(&root);
+    let dashboards_ready = grafana_metrics_coverage_ready;
     let tracing_ready = file_contains(
         &root,
         "docs/ops/temporalstore-api-security-and-tracing.md",
@@ -193,7 +193,7 @@ fn main() {
                 .to_string(),
             covers: vec![
                 "autoscale/rebalance evidence".to_string(),
-                "ops dashboards/Grafana metrics parity/runbooks/tracing/auth coverage".to_string(),
+                "ops dashboards/Grafana metrics coverage/runbooks/tracing/auth coverage".to_string(),
                 "corpus family coverage".to_string(),
             ],
         },
@@ -229,7 +229,7 @@ fn main() {
     let docs = vec![
         "docs/ops/temporalstore-dashboard.json".to_string(),
         "docs/ops/temporalstore-alerts.yml".to_string(),
-        "docs/ops/temporalstore-grafana-metrics-parity.md".to_string(),
+        "docs/ops/temporalstore-grafana-metrics-coverage.md".to_string(),
         "docs/ops/temporalstore-api-security-and-tracing.md".to_string(),
         "docs/ops/temporalstore-fault-runbook.md".to_string(),
         "docs/scale_test_harness.md".to_string(),
@@ -248,7 +248,7 @@ fn main() {
     push_missing(
         &mut missing,
         dashboards_ready,
-        "Grafana dashboard, alert, and Rust metric parity evidence",
+        "Grafana dashboard, alert, and Rust metric emission evidence",
     );
     push_missing(&mut missing, tracing_ready, "tracing evidence");
     push_missing(
@@ -286,7 +286,7 @@ fn main() {
         autoscale_controller_ready,
         metaserver_rebalance_loop_ready,
         dashboards_ready,
-        grafana_metrics_parity_ready,
+        grafana_metrics_coverage_ready,
         grafana_metric_families: grafana_metric_families(),
         tracing_ready,
         non_raft_auth_tls_ready,
@@ -372,15 +372,13 @@ fn grafana_metric_families() -> Vec<String> {
         "storage_cache",
         "data_node",
         "ingestion",
-        "secondary_replication",
-        "scale_slo",
     ]
     .iter()
     .map(|family| family.to_string())
     .collect()
 }
 
-fn grafana_metrics_parity_ready(root: &Path) -> bool {
+fn grafana_metrics_coverage_ready(root: &Path) -> bool {
     let dashboard_metrics = [
         "temporalstore_production_readiness_ready",
         "temporalstore_production_readiness_service_blockers",
@@ -397,8 +395,6 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
         "temporalstore_data_node_lifecycle_snapshot_events_total",
         "temporalstore_ingestion_kafka_lag",
         "temporalstore_ingestion_dead_letters",
-        "temporalstore_scale_write_p99_us",
-        "temporalstore_scale_error_budget_remaining",
     ];
     let alert_rules = [
         "TemporalStoreProductionReadinessBlocked",
@@ -412,7 +408,6 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
         "TemporalStoreBlockStoreReadErrors",
         "TemporalStoreCacheMissPressure",
         "TemporalStoreIngestionDeadLetters",
-        "TemporalStoreScaleSloRegression",
     ];
     let rust_metric_tokens = [
         "temporalstore_production_readiness_ready",
@@ -435,8 +430,6 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
         "storage_cache",
         "data_node",
         "ingestion",
-        "secondary_replication",
-        "scale_slo",
     ];
 
     file_contains(
@@ -446,7 +439,7 @@ fn grafana_metrics_parity_ready(root: &Path) -> bool {
     ) && file_contains(root, "docs/ops/temporalstore-alerts.yml", &alert_rules)
         && file_contains(
             root,
-            "docs/ops/temporalstore-grafana-metrics-parity.md",
+            "docs/ops/temporalstore-grafana-metrics-coverage.md",
             &doc_families,
         )
         && rust_sources_contain(root, &rust_metric_tokens)
@@ -482,10 +475,10 @@ fn push_missing(missing: &mut Vec<String>, ready: bool, capability: &str) {
 mod tests {
     use super::*;
 
-    // shared-corpus: ops_grafana_metrics_parity
+    // shared-corpus: ops_grafana_metrics_coverage
     #[test]
-    fn grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters() {
+    fn grafana_metrics_coverage_contract_covers_dashboard_alerts_and_emitters() {
         let root = repo_root();
-        assert!(grafana_metrics_parity_ready(&root));
+        assert!(grafana_metrics_coverage_ready(&root));
     }
 }

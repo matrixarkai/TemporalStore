@@ -213,14 +213,6 @@ METRIC_FAMILIES = {
             "temporalstore_ingestion_flink_checkpoints",
         ],
     },
-    "secondary_replication": {
-        "dashboard": [
-        ],
-        "alerts": [
-        ],
-        "rust": [
-        ],
-    },
     "matrixark_backend": {
         "dashboard": [
             "matrixark_backend_qps",
@@ -249,18 +241,6 @@ METRIC_FAMILIES = {
             "matrixark_backend_ready",
         ],
     },
-    "scale_slo": {
-        "dashboard": [
-            "temporalstore_scale_write_p99_us",
-            "temporalstore_scale_read_p99_us",
-            "temporalstore_scale_throughput_ops",
-            "temporalstore_scale_error_budget_remaining",
-        ],
-        "alerts": [
-            "TemporalStoreScaleSloRegression",
-        ],
-        "rust": [],
-    },
 }
 
 
@@ -286,6 +266,97 @@ def metric_names(text: str) -> set[str]:
 # fails is one nobody runs -- which is how this one came to be red and unnoticed in the first place.
 # Each entry is either a panel to remove or a metric to add; neither is a decision this script makes.
 KNOWN_UNEMITTED: set = set()
+
+
+DECLARATION = re.compile(r"#\s*(?:HELP|TYPE)\s+((?:temporalstore|matrixark)_[A-Za-z0-9_]+)")
+
+# The engine declared 229 families when this floor was set. Deliberately far below that: it catches
+# a scan that has broken, not a release that trimmed a metric.
+DECLARED_FAMILY_FLOOR = 150
+
+
+def declared_metric_names(text: str) -> set:
+    """Families the engine actually DECLARES, via a `# HELP` or `# TYPE` line.
+
+    Deliberately narrower than `metric_names`, which matches a name anywhere in the source. A metric
+    name also appears in prose, in tests, and -- the case that hid two dead alerts --
+    in `ops_scale_readiness_harness.rs`, which carries a hardcoded list of families it EXPECTS the
+    dashboards and alerts to mention. Presence in that list states an intention, not an emission, so
+    "is the name somewhere in the Rust source" answers yes for a metric nothing ever writes.
+    """
+    return set(DECLARATION.findall(text))
+
+
+def alert_rules(text: str) -> list:
+    """(name, expr) for every alert rule. Scanned line by line rather than with a multiline
+    pattern, because the rule this replaces was easier to get subtly wrong than to read."""
+    rules, pending = [], None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- alert:"):
+            pending = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("expr:") and pending is not None:
+            rules.append((pending, stripped.split(":", 1)[1].strip()))
+            pending = None
+    return rules
+
+
+def check_alert_expressions_are_emitted(alerts_text: str, declared: set) -> list:
+    """Alert rules whose every metric is undeclared, so the rule can never fire.
+
+    A rule on a metric nothing emits is worse than no rule: the panel is blank, the alert is silent,
+    and silence reads as health. Two were found this way -- a scale SLO rule on two p99 families
+    that only ever appeared in that expectations list, and a replica-replay rule on a counter no
+    subsystem publishes.
+
+    Only reported when NONE of a rule's metrics is declared. A rule mixing a live metric with a dead
+    one still fires; `check_alert_metric_names` reports those individually.
+    """
+    rules = alert_rules(alerts_text)
+    if not rules:
+        return ["alert_rules:none_parsed"]
+    failures = []
+    for name, expr in rules:
+        used = set(metric_names(expr))
+        if used and used.isdisjoint(declared):
+            failures.append("alert_never_fires:%s:%s" % (name, ",".join(sorted(used))))
+    return failures
+
+
+def check_alert_metric_names(alerts_text: str, declared: set) -> list:
+    """Individual metric names an alert uses that nothing declares."""
+    used = set(metric_names(alerts_text))
+    return ["alert_metric_undeclared:%s" % name for name in sorted(used - declared)]
+
+
+def check_declaration_extent(declared: set) -> list:
+    """This guard is worthless if the declaration scan comes back empty.
+
+    The checks above pass when `declared` is large AND when it is empty -- in the empty case nothing
+    is reported undeclared only because nothing was compared. Assert the scan found a plausible
+    number of families before believing anything derived from it.
+    """
+    if len(declared) < DECLARED_FAMILY_FLOOR:
+        return ["declaration_scan_narrowed:found_%d_expected_at_least_%d"
+                % (len(declared), DECLARED_FAMILY_FLOOR)]
+    return []
+
+
+def check_families_state_their_emission(families: dict) -> list:
+    """A family may not opt out of the emission check with an empty `rust` list.
+
+    This is the hole both dead panels came through. `scale_slo` and `secondary_replication` each
+    declared dashboard metrics and an alert rule, and `"rust": []` -- so the validator confirmed the
+    panel existed and the rule existed, and never asked whether anything produced the numbers.
+    Both panels were blank on every deployment and both alerts were silent, and the validator
+    reported the families ready.
+
+    An empty list is not the same as "no requirement". If a family genuinely has no engine-side
+    metric, it does not belong in a spec whose purpose is tying panels to emissions.
+    """
+    return ["family_states_no_emission:%s" % name
+            for name, requirements in sorted(families.items())
+            if not requirements.get("rust")]
 
 
 def check_scan_extent() -> list:
@@ -348,11 +419,19 @@ def main() -> int:
     if fixed_but_listed:
         print("These are listed as known-unemitted but now resolve: %s. Remove them from "
               "KNOWN_UNEMITTED." % ", ".join(fixed_but_listed), file=sys.stderr)
+    declared = declared_metric_names(rust)
+    alert_failures = (check_declaration_extent(declared)
+                      + check_families_state_their_emission(METRIC_FAMILIES)
+                      + check_alert_expressions_are_emitted(alerts, declared)
+                      + check_alert_metric_names(alerts, declared))
+    for failure in alert_failures:
+        print("ALERT CANNOT FIRE: %s" % failure, file=sys.stderr)
     lost = check_scan_extent()
     if lost:
         print("SCAN NARROWED: these files used to be scanned and are no longer discovered: %s"
               % ", ".join(lost), file=sys.stderr)
-    return 0 if (not unexpected and not lost and not fixed_but_listed) else 1
+    return 0 if (not unexpected and not lost and not fixed_but_listed
+                 and not alert_failures) else 1
 
 
 if __name__ == "__main__":
