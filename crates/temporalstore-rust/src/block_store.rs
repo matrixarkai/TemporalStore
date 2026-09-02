@@ -2758,6 +2758,49 @@ mod tests {
         assert_eq!(logical, b"bcde");
     }
 
+        /// A record written by the streaming encoder must still decode, and vice versa.
+    ///
+    /// The page-record encoder used to build a zstd compressor per call; it now holds one per
+    /// thread, which removed about 80% of what a write allocates. The two APIs frame a stream
+    /// differently, so the STORED BYTES changed -- and a stored-byte change is only safe if a
+    /// record written by either build reads on either.
+    ///
+    /// This pins that both ways round, which a round-trip test through one encoder cannot: it
+    /// would pass just as happily if the format had shifted under it.
+    #[test]
+    fn page_records_written_by_either_encoder_decode() {
+        let payload: Vec<u8> = (0..4096u32).map(|i| ((i * 7 + (i >> 3)) % 251) as u8).collect();
+        let level = 3;
+
+        // What the old encoder produced, byte for byte.
+        let streaming = zstd::stream::encode_all(std::io::Cursor::new(&payload[..]), level)
+            .expect("streaming encode");
+        // What the held compressor produces now.
+        let bulk = {
+            let mut compressor = zstd::bulk::Compressor::new(level).expect("compressor");
+            compressor.compress(&payload).expect("bulk encode")
+        };
+
+        assert_ne!(
+            streaming, bulk,
+            "if these ever match, this test is no longer proving anything and should be removed"
+        );
+
+        // The decode path a reader takes, given the exact payload length from the header.
+        for (label, blob) in [("streaming", &streaming), ("bulk", &bulk)] {
+            let mut decompressor = zstd::bulk::Decompressor::new().expect("decompressor");
+            let back = decompressor
+                .decompress(blob, payload.len())
+                .unwrap_or_else(|error| panic!("{label} record failed the bulk decode: {error}"));
+            assert_eq!(back, payload, "{label} record decoded to the wrong bytes");
+
+            // And the streaming fallback the decoder uses above its size ceiling.
+            let back = zstd::stream::decode_all(std::io::Cursor::new(&blob[..]))
+                .unwrap_or_else(|error| panic!("{label} record failed the streaming decode: {error}"));
+            assert_eq!(back, payload, "{label} record decoded to the wrong bytes");
+        }
+    }
+
     #[test]
     fn compressed_page_records_round_trip_and_remain_logical() {
         let dir = tempfile::tempdir().unwrap();
