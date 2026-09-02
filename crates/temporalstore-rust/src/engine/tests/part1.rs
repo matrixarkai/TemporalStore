@@ -4396,6 +4396,74 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// Which structures does one record actually land in?
+///
+/// A record occupies about six index entries' worth of memory
+/// (`how_many_map_entries_is_one_record`), so the capacity ceiling moves by holding it in fewer
+/// places. That is only actionable if the places are named. This writes a known number of
+/// records and counts what each structure ends up holding.
+///
+/// Counts, not bytes: a structure holding one entry per record is a candidate whatever its entry
+/// costs, and a structure holding none is not.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_a_record_is_kept -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn where_a_record_is_kept() {
+    const RECORDS: usize = 5_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("kept-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("loaded shard");
+
+    let rows: Vec<(&str, usize)> = vec![
+        ("strings", shard.strings.len()),
+        ("hashes", shard.hashes.len()),
+        ("sets", shard.sets.len()),
+        ("expires_at_ms", shard.expires_at_ms.len()),
+        ("seen", shard.seen.len()),
+        ("wal_resident_pages", shard.wal_resident_pages.len()),
+        ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
+    ];
+
+    println!();
+    println!("  {RECORDS} plain string writes land in:");
+    println!("  structure                        entries   per record");
+    let mut per_record_total = 0.0;
+    for (name, count) in &rows {
+        let per = *count as f64 / RECORDS as f64;
+        per_record_total += per;
+        println!("  {name:32} {count:>7} {per:>12.2}");
+    }
+    println!("  ------------------------------------------------------");
+    println!("  {:32} {:>7} {per_record_total:>12.2}", "counted here", "");
+    println!();
+    println!("  A structure at 1.00 per record holds every record; one at 0.00 holds none of");
+    println!("  them and is not where the memory goes. Anything the six entries' worth is made");
+    println!("  of that does NOT appear above lives outside ShardState -- the bucket index and");
+    println!("  the page-address maps beneath it are the next place to look.");
+
+    assert_eq!(shard.strings.len(), RECORDS, "every write should be in strings");
+}
+
 /// How many map entries' worth of memory does one record actually occupy?
 ///
 /// A record keeps ~1,040 bytes resident whatever kind it is
