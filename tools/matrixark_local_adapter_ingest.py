@@ -27,6 +27,24 @@ def _segments_enabled(scope) -> bool:
     return bool(extract_segments_enabled(scope))
 
 
+def _context_debug_records_enabled() -> bool:
+    """Gate: write context_debug_record rows at all.
+
+    MATRIXARK_CONTEXT_DEBUG_RECORDS defaults OFF and the compact writer already honours it, but
+    the two writers in this module did not, so the rows were written whatever the knob said. The
+    pack strips ``metadata_debug`` from every served item (DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS),
+    so they were carried in memory and never served: 12.1% of the read cache.
+
+    Imported lazily and defaulting to OFF when the module is absent, matching the other gates
+    here: a missing policy module must not start writing rows nobody asked for.
+    """
+    try:
+        from matrixark_mcp_serving_records import context_debug_records_enabled
+    except Exception:  # pragma: no cover - policy module absent
+        return False
+    return bool(context_debug_records_enabled())
+
+
 def _segment_access_scope_enabled() -> bool:
     """Gate: write context_segment records WITH a tenant/user/session access_scope so a
     scored segment passes access_scope_matches_before_scoring instead of being dropped
@@ -830,7 +848,11 @@ class _LocalAdapterIngestMixin:
                         }
                     )
                     skill_debug_metadata = debug_resource_metadata(parsed_skill.metadata)
-                    if skill_debug_metadata or parsed_skill.text:
+                    # MATRIXARK_CONTEXT_DEBUG_RECORDS gates these and defaults OFF, but only the
+                    # compact writer asked. These two wrote regardless, and the pack strips
+                    # metadata_debug from every served item, so the rows were carried and never
+                    # read: 12.1% of the cache.
+                    if _context_debug_records_enabled() and (skill_debug_metadata or parsed_skill.text):
                         self.append(
                             {
                                 "record_type": "context_debug_record",
@@ -1172,7 +1194,7 @@ class _LocalAdapterIngestMixin:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-                if chunk_debug_metadata:
+                if chunk_debug_metadata and _context_debug_records_enabled():
                     self.append(
                         {
                             "record_type": "context_debug_record",
