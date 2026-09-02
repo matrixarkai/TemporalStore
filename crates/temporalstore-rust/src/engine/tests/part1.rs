@@ -4396,6 +4396,92 @@ fn the_maintained_page_lookup_matches_a_rebuilt_one() {
     );
 }
 
+/// What the 1.3 kB a record keeps resident is actually made of.
+///
+/// A node keeps 1.302 kB of live memory per record and RSS grows 1.586 kB
+/// (`how_much_of_rss_per_record_is_live`), which is what limits a node to roughly 20M records on
+/// a 32 GB box. Notably that is LESS than the 1,536-byte vector each record carries, so the
+/// payload is not what is retained -- it goes to a page and the page is not held. What stays is
+/// index structure, and this attributes it by writing the same corpus with one thing removed at
+/// a time.
+///
+/// Differences, not absolutes: the baseline includes fixed costs that do not scale, and only
+/// what separates two runs is per-record.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_resident_record_is_made_of -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_resident_record_is_made_of() {
+    const RECORDS: u64 = 30_000;
+
+    let live_for = |label: &str, dims: usize, name_len: usize, text_len: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let vector: Vec<f32> = (0..dims).map(|i| (i as f32) * 0.001).collect();
+
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..RECORDS {
+            let node = crate::types::ContextNode {
+                node_hash: 1_000_000 + index,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: format!("{:width$}", index, width = name_len),
+                l0: "t".repeat(text_len),
+                status: 0,
+                last_event_time_ms: 1_780_000_000_000,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: vector.clone(),
+                embedding_model_hash: 909,
+                embedding_updated_at_ms: 1_780_000_000_000,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+            };
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode { tenant_hash: 7, node },
+            });
+            assert!(response.status.ok, "{label} write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+        println!("  {label:34} {:>9.3} kB/record live",
+                 live as f64 / RECORDS as f64 / 1024.0);
+        live
+    };
+
+    println!();
+    println!("  variant                             live memory kept per record");
+    let base = live_for("baseline: 384 dims, 40-char name", 384, 40, 42);
+    let no_vector = live_for("no vector at all", 0, 40, 42);
+    let short_name = live_for("4-char canonical name", 384, 4, 42);
+    let no_text = live_for("no l0 text", 384, 40, 0);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    println!();
+    println!("  removing            saves per record");
+    println!("    the vector        {:>8.1} bytes", per(base) - per(no_vector));
+    println!("    36 name chars     {:>8.1} bytes", per(base) - per(short_name));
+    println!("    the l0 text       {:>8.1} bytes", per(base) - per(no_text));
+    println!("    ---------------------------------");
+    println!("    unattributed      {:>8.1} bytes",
+             per(no_vector).min(per(short_name)).min(per(no_text)));
+    println!();
+    println!("  A vector costs 1,536 bytes on the wire. If removing it saves far less than that,");
+    println!("  the resident cost is the INDEX ENTRY for the record, not its payload -- and the");
+    println!("  capacity ceiling moves only by making that entry smaller.");
+
+    assert!(base > 0, "measured nothing");
+}
+
 /// Of the RSS a node holds per record, how much is LIVE and how much is the allocator's?
 ///
 /// A soak measured a marginal 1.561 kB of RSS per record, linear, which puts a 32 GB node out of
