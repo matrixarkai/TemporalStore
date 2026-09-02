@@ -12121,3 +12121,251 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
         kind_of(&missing_after_ingest, &rebuilt)
     );
 }
+
+
+/// Does a time-range feature query cost what the RANGE holds, or what the SERIES holds?
+///
+/// The feature lane carries a quantity sampled over time, so the reader always asks for a window.
+/// Whether the lane scales is therefore whether a narrow window over a long series costs what the
+/// window holds -- not what the series holds.
+///
+/// Window fixed at 32 points, series grown 256 -> 16384. The full-range query is the control: it
+/// SHOULD grow, and if it does not then the narrow-window column is measuring nothing.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_feature_window_cost_the_window_or_the_series -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_a_feature_window_cost_the_window_or_the_series() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  series   append   window(32)   per point   full range   per point   agg(32)
+"
+    );
+
+    for series_len in [256_usize, 1024, 4096, 16384] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        // One point per millisecond, so a window in milliseconds is a window in points.
+        for index in 0..series_len {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: "rate".to_string(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: 1_000 + index as u64,
+                        value: format!("{index}").into_bytes(),
+                    }],
+                },
+            });
+            assert!(out.status.ok, "append {index}: {:?}", out.status);
+        }
+
+        let measure = |command: Command| {
+            let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            (counts.allocs, out.response)
+        };
+
+        // One more point onto an already-long series.
+        let (append, _) = measure(Command::FeatureAppend {
+            key: "rate".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 1_000 + series_len as u64,
+                value: b"tail".to_vec(),
+            }],
+        });
+
+        // A 32-point window at the END of the series: the shape a reader actually asks for.
+        let window_start = 1_000 + (series_len as u64) - 32;
+        let (window, window_response) = measure(Command::FeatureQuery {
+            key: "rate".to_string(),
+            start_ms: window_start,
+            end_ms: window_start + 32,
+            count: None,
+        });
+        let window_points = match &window_response {
+            CommandResponse::FeaturePoints { points } => points.len(),
+            other => panic!("expected feature points, got {other:?}"),
+        };
+        assert!(
+            window_points > 0 && window_points <= 40,
+            "the window must return about 32 points, got {window_points} -- otherwise the per-point \
+             figure below is measuring a different query than the one named"
+        );
+
+        // Control: the whole series. This one SHOULD grow.
+        let (full, full_response) = measure(Command::FeatureQuery {
+            key: "rate".to_string(),
+            start_ms: 0,
+            end_ms: u64::MAX,
+            count: None,
+        });
+        let full_points = match &full_response {
+            CommandResponse::FeaturePoints { points } => points.len(),
+            other => panic!("expected feature points, got {other:?}"),
+        };
+        assert!(
+            full_points >= series_len,
+            "the control must return the whole series, got {full_points} of {series_len}"
+        );
+
+        let (agg, _) = measure(Command::FeatureAggQuery {
+            key: "rate".to_string(),
+            start_ms: window_start,
+            end_ms: window_start + 32,
+            aggregator: "count".to_string(),
+            count: None,
+        });
+
+        println!(
+            "  {series_len:>6}   {append:>6}   {window:>10}   {:>9.2}   {full:>10}   {:>9.2}   {agg:>7}",
+            window as f64 / window_points as f64,
+            full as f64 / full_points as f64,
+        );
+    }
+
+    println!(
+        "
+  window column flat    => the range narrows the read, which is the point of the lane.
+  window column growing => the query reads the whole series and filters, so every reader pays for
+                           all history ever recorded.
+  append column growing => appending one point costs more once the series is long.
+"
+    );
+}
+
+
+/// Is appending one feature point proportional to the series already there?
+///
+/// Every append below uses a FRESH timestamp, so it is genuinely an append and not an overwrite of
+/// a duplicate -- which is the flaw that made the first measurement of this ambiguous. The empty
+/// series gives the floor, so "grows with the series" can be distinguished from "costly in general",
+/// and a duplicate-timestamp append is measured beside it as its own case.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_appending_one_point_cost_the_series -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_appending_one_point_cost_the_series() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  series   append(fresh)   per existing point   append(duplicate)
+"
+    );
+
+    for series_len in [0_usize, 64, 256, 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        for index in 0..series_len {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: "rate".to_string(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: 1_000 + index as u64,
+                        value: format!("{index}").into_bytes(),
+                    }],
+                },
+            });
+            assert!(out.status.ok, "build {index}: {:?}", out.status);
+        }
+
+        // A genuinely new timestamp, past everything written above.
+        let fresh_at = 500_000 + series_len as u64;
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "rate".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: fresh_at,
+                    value: b"fresh".to_vec(),
+                }],
+            },
+        });
+        let fresh = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+
+        // The same timestamp again: an overwrite, not an append.
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "rate".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: fresh_at,
+                    value: b"again".to_vec(),
+                }],
+            },
+        });
+        let duplicate = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+
+        // The series really is as long as claimed -- otherwise the per-point column is fiction.
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "rate".to_string(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: None,
+            },
+        });
+        let held = match &read.response {
+            CommandResponse::FeaturePoints { points } => points.len(),
+            other => panic!("expected feature points, got {other:?}"),
+        };
+        assert!(
+            held >= series_len,
+            "expected at least {series_len} points held, found {held}"
+        );
+
+        let per = if series_len == 0 {
+            0.0
+        } else {
+            fresh as f64 / series_len as f64
+        };
+        println!("  {series_len:>6}   {fresh:>13}   {per:>18.2}   {duplicate:>17}");
+    }
+
+    println!(
+        "
+  append(fresh) flat across series lengths => appending costs what it appends.
+  append(fresh) rising with the series      => building a series is quadratic in its length.
+"
+    );
+}
