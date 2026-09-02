@@ -160,6 +160,11 @@ impl Default for RequestOptions {
     }
 }
 
+fn next_client_instance_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableOptions {
     pub table_id: u64,
@@ -663,7 +668,20 @@ struct ClientInner {
     /// only when a table is opened, refreshed by the metaserver sync, or dropped. Under a
     /// mutex those reads serialized against each other for no reason, which made resolving
     /// a cached table the most expensive thing the proxy did per request.
-    tables: RwLock<HashMap<String, TableOptions>>,
+    /// The open tables, behind an `Arc` so a reader can hold the map without holding the lock.
+    ///
+    /// Every namespaced request looks a table up here. Taking the read lock for it is an atomic
+    /// read-modify-write, so the requests serialise against each other on a map that changes only
+    /// when a table is opened or closed. Readers take a per-thread snapshot instead, refreshed
+    /// when `tables_version` moves.
+    tables: RwLock<Arc<HashMap<String, TableOptions>>>,
+    tables_version: AtomicU64,
+    /// Distinguishes this client from any other on the same thread.
+    ///
+    /// The snapshot is thread-local, so every client a thread touches shares it. Two freshly
+    /// built clients are both on version 0; keyed by version alone they would read each other's
+    /// tables.
+    instance_id: u64,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
     /// Topology version this client last heard from the metaserver.
@@ -809,7 +827,9 @@ impl TemporalStoreClient {
                 route_cache_hits: AtomicU64::new(0),
                 backend_failures: Mutex::default(),
                 backend_failure_entries: AtomicUsize::new(0),
-                tables: RwLock::default(),
+                tables: RwLock::new(Arc::new(HashMap::new())),
+                tables_version: AtomicU64::new(0),
+                instance_id: next_client_instance_id(),
                 meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),
                 known_topology_version: AtomicU64::new(0),
@@ -826,11 +846,9 @@ impl TemporalStoreClient {
         let namespace = namespace.into();
         let table_name = table_name.into();
         let combined_name = table_combine_name(&namespace, &table_name);
-        self.inner
-            .tables
-            .write()
-            .expect("client table cache lock poisoned")
-            .insert(combined_name.clone(), options.clone());
+        self.with_tables_mut(|tables| {
+            tables.insert(combined_name.clone(), options.clone())
+        });
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
@@ -858,6 +876,52 @@ impl TemporalStoreClient {
         Ok(self.open_table(namespace, table_name, options))
     }
 
+    /// Every change to the open-table map goes through here.
+    ///
+    /// The map is published by moving `tables_version`, which is what makes a reader's snapshot
+    /// stale. Bumping it at each call site is an invariant that holds until someone adds another
+    /// site, so there is one site. Released after the write so an Acquire load that sees the new
+    /// version also sees the new map.
+    pub(crate) fn with_tables_mut<R>(
+        &self,
+        f: impl FnOnce(&mut HashMap<String, TableOptions>) -> R,
+    ) -> R {
+        let mut guard = self
+            .inner
+            .tables
+            .write()
+            .expect("client table cache lock poisoned");
+        let out = f(Arc::make_mut(&mut guard));
+        self.inner.tables_version.fetch_add(1, Ordering::Release);
+        out
+    }
+
+    /// Run `f` against the open-table map without taking its lock.
+    ///
+    /// The snapshot is refreshed only when `tables_version` moves, which happens when a table is
+    /// opened, closed or re-synced -- never on a request. Keyed by instance as well as version so
+    /// one client's tables are never served to another on the same thread.
+    fn with_tables<R>(&self, f: impl FnOnce(&HashMap<String, TableOptions>) -> R) -> R {
+        thread_local! {
+            static SNAPSHOT: std::cell::RefCell<Option<(u64, u64, Arc<HashMap<String, TableOptions>>)>> =
+                const { std::cell::RefCell::new(None) };
+        }
+        let instance = self.inner.instance_id;
+        let version = self.inner.tables_version.load(Ordering::Acquire);
+        SNAPSHOT.with(|cell| {
+            let Ok(mut slot) = cell.try_borrow_mut() else {
+                let tables = Arc::clone(&self.inner.tables.read().expect("client table cache lock poisoned"));
+                return f(&tables);
+            };
+            if !matches!(&*slot, Some((id, seen, _)) if *id == instance && *seen == version) {
+                let fresh = Arc::clone(&self.inner.tables.read().expect("client table cache lock poisoned"));
+                *slot = Some((instance, version, fresh));
+            }
+            let (_, _, tables) = slot.as_ref().expect("just filled");
+            f(tables)
+        })
+    }
+
     pub fn cached_table(
         &self,
         namespace: impl Into<String>,
@@ -867,13 +931,7 @@ impl TemporalStoreClient {
         let table_name = table_name.into();
         let combined_name = table_combine_name(&namespace, &table_name);
         // A read, so it shares the lock with every request doing the same.
-        let options = self
-            .inner
-            .tables
-            .read()
-            .expect("client table cache lock poisoned")
-            .get(&combined_name)
-            .cloned()?;
+        let options = self.with_tables(|tables| tables.get(&combined_name).cloned())?;
         Some(TemporalStoreTable {
             client: self.clone(),
             namespace,
