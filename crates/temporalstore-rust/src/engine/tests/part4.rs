@@ -5491,6 +5491,58 @@ fn the_index_wire_keys_are_what_they_were() {
     );
 }
 
+/// A bucket holding one object id holds it inline, and goes back to inline when it can.
+///
+/// Every bucket has one: keys route one to a bucket, and an object with many components is still
+/// one object, so the set that held it was never holding more. A `BTreeSet` with a single member
+/// costs 128 live bytes of node to carry eight bytes of id.
+///
+/// The demotion is checked too. A bucket that briefly held two objects would otherwise keep its
+/// node for the rest of its life, which is the cost being removed and shows up nowhere else.
+#[test]
+fn a_bucket_holding_one_object_holds_no_node() {
+    use crate::engine::state::ObjectIndex;
+
+    let mut index = ObjectIndex::default();
+    assert!(index.is_empty());
+
+    assert!(index.insert(7));
+    assert!(matches!(index, ObjectIndex::One(7)), "one id is held inline");
+    assert!(!index.insert(7), "the same id twice is one entry");
+    assert_eq!(index.len(), 1);
+    assert!(index.contains(&7));
+
+    assert!(index.insert(9));
+    assert!(matches!(index, ObjectIndex::Many(_)), "two ids need a set");
+    assert_eq!(index.len(), 2);
+
+    assert!(index.remove(&9));
+    assert!(
+        matches!(index, ObjectIndex::One(7)),
+        "a set that drops back to one id must give up its node"
+    );
+
+    assert!(index.remove(&7));
+    assert!(index.is_empty(), "and to nothing at all");
+    assert!(!index.remove(&7), "removing what is not there changes nothing");
+
+    // The order it iterates and writes is the order the set had.
+    let mut many = ObjectIndex::default();
+    many.extend([5u64, 1, 3]);
+    let ids: Vec<u64> = many.iter().copied().collect();
+    assert_eq!(ids, vec![1, 3, 5], "ids come out sorted, as the set gave them");
+    assert_eq!(
+        serde_json::to_string(&many).expect("serializes"),
+        "[1,3,5]",
+        "and are written as the same sequence"
+    );
+
+    // A single id writes the same shape, and reads back inline rather than as a set.
+    let one: ObjectIndex = serde_json::from_str("[4]").expect("deserializes");
+    assert!(matches!(one, ObjectIndex::One(4)), "a loaded single id is held inline");
+    assert_eq!(serde_json::to_string(&one).expect("serializes"), "[4]");
+}
+
 /// What a key costs the index in live heap.
 ///
 /// Measured as allocated-minus-freed rather than as a struct size, because the cost this bounds
@@ -5530,8 +5582,8 @@ fn what_a_key_costs_the_index_in_live_heap() {
     assert!(per_key > 100.0, "the probe must observe the writes: {per_key}");
 
     assert!(
-        per_key < 1500.0,
-        "a key costs {per_key:.0} live bytes; a bucket is holding a node for a single page again"
+        per_key < 1060.0,
+        "a key costs {per_key:.0} live bytes; a bucket is holding a node for a single entry again"
     );
 }
 
@@ -6336,10 +6388,10 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
             continue;
         }
         checked += 1;
-        let expected = if recomputed.is_empty() {
-            std::collections::BTreeSet::new()
+        let expected: crate::engine::state::ObjectIndex = if recomputed.is_empty() {
+            crate::engine::state::ObjectIndex::default()
         } else {
-            recomputed
+            recomputed.into()
         };
         if bucket.object_index != expected {
             mismatches.push(format!(
@@ -11519,7 +11571,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
     let mut live_total = 0usize;
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
         // What a rebuild would produce: the ids of the pages that are not deleted.
-        let rebuilt: std::collections::BTreeSet<u64> = bucket
+        let rebuilt: crate::engine::state::ObjectIndex = bucket
             .page_index
             .values()
             .filter(|page| !page.deleted)

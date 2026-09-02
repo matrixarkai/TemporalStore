@@ -1745,7 +1745,7 @@ pub(super) fn update_bucket_layout(bucket: &mut BucketNode) {
         .map(|page| page.object_id())
         .collect();
     if !live_object_ids.is_empty() {
-        bucket.object_index = live_object_ids;
+        bucket.object_index = live_object_ids.into();
     } else if !bucket.page_index.is_empty() {
         bucket.object_index.clear();
     }

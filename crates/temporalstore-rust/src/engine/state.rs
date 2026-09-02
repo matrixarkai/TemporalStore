@@ -317,7 +317,217 @@ pub(super) struct CoreIndex {
 }
 
 pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
-pub(super) type ObjectIndex = BTreeSet<u64>;
+/// The object ids a bucket holds.
+///
+/// Almost always exactly one: keys route one to a bucket, and even an object with many components
+/// is still one object. A `BTreeSet` holding a single id costs 128 live bytes of node to carry
+/// eight bytes of id, once per bucket and so once per key.
+///
+/// The shape `BlockIndexMap` and `BlockRefs` already use here, for the same reason.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) enum ObjectIndex {
+    #[default]
+    Empty,
+    One(u64),
+    Many(BTreeSet<u64>),
+}
+
+pub(super) enum ObjectIndexIter<'a> {
+    Empty,
+    One(std::iter::Once<&'a u64>),
+    Many(std::collections::btree_set::Iter<'a, u64>),
+}
+
+impl<'a> Iterator for ObjectIndexIter<'a> {
+    type Item = &'a u64;
+    fn next(&mut self) -> Option<&'a u64> {
+        match self {
+            ObjectIndexIter::Empty => None,
+            ObjectIndexIter::One(once) => once.next(),
+            ObjectIndexIter::Many(iter) => iter.next(),
+        }
+    }
+}
+
+impl ObjectIndex {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            ObjectIndex::Empty => 0,
+            ObjectIndex::One(_) => 1,
+            ObjectIndex::Many(set) => set.len(),
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        matches!(self, ObjectIndex::Empty)
+    }
+
+    pub(super) fn contains(&self, id: &u64) -> bool {
+        match self {
+            ObjectIndex::Empty => false,
+            ObjectIndex::One(held) => held == id,
+            ObjectIndex::Many(set) => set.contains(id),
+        }
+    }
+
+    pub(super) fn insert(&mut self, id: u64) -> bool {
+        match self {
+            ObjectIndex::Empty => {
+                *self = ObjectIndex::One(id);
+                true
+            }
+            ObjectIndex::One(held) => {
+                if *held == id {
+                    return false;
+                }
+                let first = *held;
+                let mut set = BTreeSet::new();
+                set.insert(first);
+                set.insert(id);
+                *self = ObjectIndex::Many(set);
+                true
+            }
+            ObjectIndex::Many(set) => set.insert(id),
+        }
+    }
+
+    pub(super) fn remove(&mut self, id: &u64) -> bool {
+        match self {
+            ObjectIndex::Empty => false,
+            ObjectIndex::One(held) => {
+                if held != id {
+                    return false;
+                }
+                *self = ObjectIndex::Empty;
+                true
+            }
+            ObjectIndex::Many(set) => {
+                let removed = set.remove(id);
+                self.shrink();
+                removed
+            }
+        }
+    }
+
+    /// Give up the set once it no longer earns one, so a bucket that briefly held two objects
+    /// does not keep a node for the rest of its life.
+    fn shrink(&mut self) {
+        let len = match self {
+            ObjectIndex::Many(set) => set.len(),
+            _ => return,
+        };
+        match len {
+            0 => *self = ObjectIndex::Empty,
+            1 => {
+                let set = match std::mem::replace(self, ObjectIndex::Empty) {
+                    ObjectIndex::Many(set) => set,
+                    _ => unreachable!("just matched Many"),
+                };
+                *self = ObjectIndex::One(set.into_iter().next().expect("length is one"));
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        *self = ObjectIndex::Empty;
+    }
+
+    pub(super) fn iter(&self) -> ObjectIndexIter<'_> {
+        match self {
+            ObjectIndex::Empty => ObjectIndexIter::Empty,
+            ObjectIndex::One(id) => ObjectIndexIter::One(std::iter::once(id)),
+            ObjectIndex::Many(set) => ObjectIndexIter::Many(set.iter()),
+        }
+    }
+
+    /// The ids this holds that `other` does not.
+    pub(super) fn difference<'a>(
+        &'a self,
+        other: &'a ObjectIndex,
+    ) -> impl Iterator<Item = &'a u64> + 'a {
+        self.iter().filter(move |id| !other.contains(id))
+    }
+}
+
+impl<'a> IntoIterator for &'a ObjectIndex {
+    type Item = &'a u64;
+    type IntoIter = ObjectIndexIter<'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl IntoIterator for ObjectIndex {
+    type Item = u64;
+    type IntoIter = std::vec::IntoIter<u64>;
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            ObjectIndex::Empty => Vec::new().into_iter(),
+            ObjectIndex::One(id) => vec![id].into_iter(),
+            ObjectIndex::Many(set) => set.into_iter().collect::<Vec<_>>().into_iter(),
+        }
+    }
+}
+
+impl From<BTreeSet<u64>> for ObjectIndex {
+    fn from(ids: BTreeSet<u64>) -> Self {
+        ids.into_iter().collect()
+    }
+}
+
+impl Extend<u64> for ObjectIndex {
+    fn extend<I: IntoIterator<Item = u64>>(&mut self, ids: I) {
+        for id in ids {
+            self.insert(id);
+        }
+    }
+}
+
+impl<'a> Extend<&'a u64> for ObjectIndex {
+    fn extend<I: IntoIterator<Item = &'a u64>>(&mut self, ids: I) {
+        for id in ids {
+            self.insert(*id);
+        }
+    }
+}
+
+impl FromIterator<u64> for ObjectIndex {
+    fn from_iter<I: IntoIterator<Item = u64>>(ids: I) -> Self {
+        let mut index = ObjectIndex::default();
+        index.extend(ids);
+        index
+    }
+}
+
+impl Serialize for ObjectIndex {
+    /// The same sequence of ids it has always written, in the same order.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for id in self.iter() {
+            seq.serialize_element(&id)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ObjectIndex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Through `insert`, so a loaded bucket takes the shape a written one does: one id comes
+        // back held inline rather than in a set.
+        Ok(BTreeSet::<u64>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
+}
+
 /// Keyed by a SHARED page-ref key: the same allocation is held by the lookups that point at this
 /// page, instead of each of the three keeping its own copy of the same ~117-byte string.
 /// Pages of one bucket, keyed by an id assigned when the page is filed.
