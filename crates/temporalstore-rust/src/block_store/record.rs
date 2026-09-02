@@ -54,8 +54,23 @@ pub(super) const PAGE_RECORD_CHECKSUM_COMPACT_VERSION: u8 = 8;
 /// reading a slab by hand, which the version byte does not do for a hexdump. Reclaiming 24 of the
 /// 28 spare bytes and keeping that is the better trade.
 pub(super) const PAGE_RECORD_CHECKSUM_COMPACT_LEN: usize = 8;
-pub(super) const PAGE_RECORD_HEADER_LEN: usize =
-    PAGE_RECORD_V7_HEADER_LEN - (PAGE_RECORD_CHECKSUM_LEN - PAGE_RECORD_CHECKSUM_COMPACT_LEN);
+/// Bytes of interior padding v7 carried: three after the routing-bucket flag and seven after the
+/// compression byte, both there to keep the 8-byte fields behind them aligned at offsets v6 had
+/// fixed. v8 renumbers anyway, so it places those fields directly and keeps the ten.
+pub(super) const PAGE_RECORD_V7_INTERIOR_PADDING: usize = 10;
+pub(super) const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V7_HEADER_LEN
+    - (PAGE_RECORD_CHECKSUM_LEN - PAGE_RECORD_CHECKSUM_COMPACT_LEN)
+    - PAGE_RECORD_V7_INTERIOR_PADDING;
+
+/// Where the compression byte sits in a record this code writes.
+///
+/// Named rather than derived at each call site. Callers kept computing it -- first as the literal
+/// 92, then as `PAGE_RECORD_HEADER_LEN - 16` -- and both encoded a layout: the literal encoded
+/// v7's offsets, the subtraction encoded v7's trailing padding. Neither survived a renumbering.
+pub(super) const fn page_record_compression_offset() -> usize {
+    // Flag, routing bucket, band id, then the compression byte.
+    28 + PAGE_RECORD_CHECKSUM_COMPACT_LEN + 17 + 4 + 8
+}
 
 /// Where the fields after the checksum begin, for a record at `version`.
 ///
@@ -151,14 +166,12 @@ pub(super) fn encode_page_record(
     record.extend_from_slice(&page_id.to_le_bytes());
     record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
     record.push(u8::from(routing_bucket.is_some()));
-    record.extend_from_slice(&[0, 0, 0]);
     record.extend_from_slice(&routing_bucket.unwrap_or_default().to_le_bytes());
     record.extend_from_slice(&band_id.to_le_bytes());
     record.push(match compression {
         PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
         PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
     });
-    record.extend_from_slice(&[0; 7]);
     record.extend_from_slice(&(stored_len as u64).to_le_bytes());
     record.extend_from_slice(&stored_payload);
     Ok(EncodedPageRecord {
@@ -444,10 +457,17 @@ fn parse_page_record_header(
     } else {
         None
     };
+    // v7 padded after the flag and after the compression byte; v8 does not.
+    let flag_pad = if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION { 0 } else { 3 };
+    let compression_pad = if version >= PAGE_RECORD_CHECKSUM_COMPACT_VERSION { 0 } else { 7 };
+    let routing_at = body + 17 + flag_pad;
+    let band_at = routing_at + 4;
+    let compression_at = band_at + 8;
+    let stored_len_at = compression_at + 1 + compression_pad;
     let routing_bucket = if version >= 4 {
         if record[body + 16] == 1 {
             Some(u32::from_le_bytes(
-                record[body + 20..body + 24]
+                record[routing_at..routing_at + 4]
                     .try_into()
                     .expect("page envelope routing slot slice"),
             ))
@@ -459,7 +479,7 @@ fn parse_page_record_header(
     };
     let band_id = if version >= 5 {
         Some(u64::from_le_bytes(
-            record[body + 24..body + 32]
+            record[band_at..band_at + 8]
                 .try_into()
                 .expect("page envelope band id slice"),
         ))
@@ -467,7 +487,7 @@ fn parse_page_record_header(
         None
     };
     let (compression, stored_len) = if version >= 6 {
-        let compression = match record[body + 32] {
+        let compression = match record[compression_at] {
             PAGE_RECORD_COMPRESSION_NONE => PageRecordCompression::None,
             PAGE_RECORD_COMPRESSION_ZSTD => PageRecordCompression::Zstd,
             codec => {
@@ -478,7 +498,7 @@ fn parse_page_record_header(
             }
         };
         let stored_len = u64::from_le_bytes(
-            record[body + 40..body + 48]
+            record[stored_len_at..stored_len_at + 8]
                 .try_into()
                 .expect("page envelope stored length slice"),
         ) as usize;
