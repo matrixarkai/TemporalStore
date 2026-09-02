@@ -88,9 +88,17 @@ pub struct ProxyOptions {
     /// discover it by retrying.
     #[serde(default)]
     pub drop_percent: u8,
-    /// Account (namespace) this proxy is scoped to when
+    /// Account this proxy admits NAMESPACED requests for when
     /// `enforce_ingestion_account` is set. Empty while enforcement is on is a
     /// misconfiguration and fails closed.
+    ///
+    /// Scoped to the request's namespace, not to the proxy: `execute` and
+    /// `batch_execute` address a shard directly and carry no namespace, so there
+    /// is nothing for this to compare and they are admitted. They still run
+    /// against `namespace`, so a proxy whose `namespace` is not this account
+    /// serves that namespace on those two paths while refusing it on the
+    /// namespaced ones. Pinned by
+    /// `account_enforcement_covers_namespaced_paths_only`.
     #[serde(default)]
     pub ingestion_account: String,
     /// Reject requests whose namespace does not match `ingestion_account`.
@@ -3000,6 +3008,52 @@ mod tests {
         assert!(
             checked >= 20,
             "expected to check every option field, but only reached {checked} -- if the document              shrank this test stopped covering what it claims to"
+        );
+    }
+
+    /// What account enforcement does and does not cover.
+    ///
+    /// `proxy_account_rejection` is reached as `namespace.and_then(..)`, so a request carrying no
+    /// namespace skips it. `execute` and `batch_execute` are those requests: they name a shard,
+    /// not a namespace. They are still served through the client built from `namespace`, so with
+    /// `namespace` and `ingestion_account` set to different values this proxy refuses a namespace
+    /// on one API and serves it on another.
+    ///
+    /// This pins that as it stands rather than changing it: making the shard-addressed paths
+    /// check `namespace` would start refusing them wherever enforcement runs with `namespace`
+    /// unset, which is a live admission change and not one to make from the code alone. The value
+    /// of the test is that the behaviour is now stated and cannot move quietly -- if someone does
+    /// close the hole, this fails and says what to update.
+    #[test]
+    fn account_enforcement_covers_namespaced_paths_only() {
+        let proxy = scoped_proxy(ProxyOptions {
+            enforce_ingestion_account: true,
+            ingestion_account: "acme".to_string(),
+            namespace: "other".to_string(),
+            ..ProxyOptions::default()
+        });
+
+        // The namespaced path compares and refuses.
+        let denied = proxy.table_execute(ProxyTableExecuteRequest {
+            namespace: "other".to_string(),
+            table_name: "t".to_string(),
+            command: read_command(),
+        });
+        assert_eq!(
+            denied.status.code, "proxy_account_denied",
+            "a namespace that is not the account must be refused"
+        );
+
+        // The shard-addressed path has no namespace to compare, so admission lets it through.
+        // It fails later for want of a backend, which is what says it got PAST admission: an
+        // account refusal would have answered `proxy_account_denied` instead.
+        let shard_addressed = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_ne!(
+            shard_addressed.status.code, "proxy_account_denied",
+            "if this now refuses, the shard-addressed paths have been brought under account              enforcement -- update the `ingestion_account` doc, which says they are not"
         );
     }
 
