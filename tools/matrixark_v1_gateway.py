@@ -39,6 +39,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Awaitable, Callable, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -481,6 +482,18 @@ class GatewayConfig:
 
 def _coerce_config(config: Any) -> GatewayConfig:
     if isinstance(config, GatewayConfig):
+        return config
+    # `isinstance` cannot recognise a class python loaded twice. tools/ is importable both flat
+    # (`matrixark_v1_gateway`) and as a package (`tools.matrixark_v1_gateway`), and those are two
+    # module objects with two unrelated GatewayConfig classes. A config built through one spelling
+    # fails `isinstance` against the other, falls through to from_env, and raises there on
+    # `dict(overrides or {})` -- "'GatewayConfig' object is not iterable".
+    #
+    # Each test passes alone, because only one spelling is loaded; the whole suite loads both.
+    #
+    # What this function needs to know is whether it was handed a BUILT config or a mapping to
+    # build one from, and that does not depend on which module object the class came from.
+    if config is not None and not isinstance(config, Mapping) and hasattr(config, "api_keys"):
         return config
     return GatewayConfig.from_env(config or {})
 
