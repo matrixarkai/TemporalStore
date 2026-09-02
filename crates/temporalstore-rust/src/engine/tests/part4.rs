@@ -12516,3 +12516,132 @@ fn does_appending_one_point_cost_the_series() {
 "
     );
 }
+
+
+/// Does `count` narrow a sequence read, or is it applied after reading the range?
+///
+/// `SequenceQuery` carries both a time range and a `count`. The range narrowing is already
+/// established for the feature lane; the count is a separate lever and a separate question. A caller
+/// asking for "the last 8" over an open range is asking the count to narrow -- and if it is applied
+/// only after the range is read, that caller pays for all of history to be handed eight rows.
+///
+/// `history`'s bounded read is the bar: 116 allocations at every size from 8 to 256 summaries.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_sequence_count_narrow_the_read -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_a_sequence_count_narrow_the_read() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  rows   append   count=8 over all time   rows back   full read   rows back
+"
+    );
+
+    for series_len in [256_usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        for index in 0..series_len {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceAdd {
+                    key: "seq".to_string(),
+                    rows: vec![SequenceFeatureRow {
+                        timestamp_ms: 1_000 + index as u64,
+                        gid: index as u64,
+                        action_type: (index % 7) as u32,
+                        duration: (index % 13) as u32,
+                        author_id: (index % 5) as u64,
+                    }],
+                },
+            });
+            assert!(out.status.ok, "build {index}: {:?}", out.status);
+        }
+
+        let measure = |command: Command| {
+            let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            let rows = match &out.response {
+                CommandResponse::SequenceRows { rows } => rows.len(),
+                other => panic!("expected sequence rows, got {other:?}"),
+            };
+            (counts.allocs, rows)
+        };
+
+        // One more row onto an already-long series.
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceAdd {
+                key: "seq".to_string(),
+                rows: vec![SequenceFeatureRow {
+                    timestamp_ms: 900_000 + series_len as u64,
+                    gid: 7,
+                    action_type: 1,
+                    duration: 1,
+                    author_id: 1,
+                }],
+            },
+        });
+        let append = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+
+        // A count of 8 over the whole range: the count is the only thing that can narrow this.
+        let (counted, counted_rows) = measure(Command::SequenceQuery {
+            key: "seq".to_string(),
+            start_ms: 0,
+            end_ms: u64::MAX,
+            count: 8,
+            filters: Vec::new(),
+        });
+        assert!(
+            counted_rows > 0 && counted_rows <= 8,
+            "count=8 must return at most 8 rows, got {counted_rows} -- otherwise this column is \
+             measuring a different query than the one named"
+        );
+
+        // Control: the same range, uncapped. This one SHOULD grow.
+        let (full, full_rows) = measure(Command::SequenceQuery {
+            key: "seq".to_string(),
+            start_ms: 0,
+            end_ms: u64::MAX,
+            count: usize::MAX,
+            filters: Vec::new(),
+        });
+        assert!(
+            full_rows >= series_len,
+            "the control must read the whole series, got {full_rows} of {series_len}"
+        );
+
+        println!(
+            "  {series_len:>4}   {append:>6}   {counted:>21}   {counted_rows:>9}   {full:>9}   {full_rows:>9}"
+        );
+    }
+
+    println!(
+        "
+  count=8 flat while the control grows => the count narrows the read.
+  count=8 tracking the control          => the count is applied after reading the range, so a
+                                           bounded caller still pays for all of history.
+"
+    );
+}
