@@ -7495,3 +7495,118 @@ fn what_each_home_costs() {
 
     assert!(total > 0.0, "measured nothing");
 }
+
+/// Would specialising `ObjectBlockRefs::by_component` for the one-component case pay?
+///
+/// The object page lookup costs 238 B/record (`what_each_home_costs`), second only to the slot
+/// map, and unlike the slot map it does not shrink when the slot range is bounded -- it is keyed
+/// per object either way. Its inner `refs` already collapses to an inline `One` variant, and the
+/// outer `by_component` is still a `Vec` that in practice holds exactly one element: a heap
+/// allocation and a three-word header spent to express a list of one.
+///
+/// That specialisation was deliberately left undone pending a measurement, because inline is 56 B
+/// against a Vec header's 24 and the byte comparison alone is a wash. So measure both halves: how
+/// many components an object really has, and what the two shapes cost in allocations as well as
+/// bytes.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib would_an_inline_component_pay -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn would_an_inline_component_pay() {
+    const RECORDS: u64 = 20_000;
+
+    // --- half one: what the real corpus looks like -------------------------------------
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..RECORDS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("inline-{index:08}"),
+                value: vec![b'v'; 512],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let (objects, components, one_component) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let mut objects = 0usize;
+        let mut components = 0usize;
+        let mut one_component = 0usize;
+        for (_model, _key, refs) in shard.bucket_index.object_page_lookup.iter() {
+            objects += 1;
+            components += refs.by_component.len();
+            if refs.by_component.len() == 1 {
+                one_component += 1;
+            }
+        }
+        (objects, components, one_component)
+    };
+
+    // --- half two: what the two shapes cost --------------------------------------------
+    // The proposed shape, mirroring BlockRefs which already does this for the inner list.
+    enum Proposed {
+        One(crate::engine::state::ComponentBlocks),
+        #[allow(dead_code)]
+        Many(Vec<crate::engine::state::ComponentBlocks>),
+    }
+
+    let sample = crate::engine::state::ComponentBlocks {
+        component: None,
+        refs: crate::engine::state::BlockRefs::One(crate::engine::state::BlockLookupRef {
+            routing_bucket: 7,
+            page_ref_key: 99,
+        }),
+    };
+
+    let probe = crate::alloc_probe::Probe::start();
+    let current: Vec<Vec<crate::engine::state::ComponentBlocks>> =
+        (0..RECORDS).map(|_| vec![sample.clone()]).collect();
+    let current_counts = probe.stop();
+    std::hint::black_box(&current);
+
+    let probe = crate::alloc_probe::Probe::start();
+    let proposed: Vec<Proposed> = (0..RECORDS).map(|_| Proposed::One(sample.clone())).collect();
+    let proposed_counts = probe.stop();
+    std::hint::black_box(&proposed);
+
+    let per = |v: u64| v as f64 / RECORDS as f64;
+    let cur_live = current_counts.alloc_bytes.saturating_sub(current_counts.free_bytes);
+    let pro_live = proposed_counts.alloc_bytes.saturating_sub(proposed_counts.free_bytes);
+
+    println!();
+    println!("  the corpus, {RECORDS} records:");
+    println!("    objects in the lookup          {objects:>8}");
+    println!("    components total               {components:>8}");
+    println!("    components per object          {:>8.3}", components as f64 / objects.max(1) as f64);
+    println!("    objects with exactly one       {one_component:>8}  ({:.1}%)",
+             100.0 * one_component as f64 / objects.max(1) as f64);
+    println!();
+    println!("  shape                allocations/object   live B/object");
+    println!("  Vec of one          {:>17.2} {:>15.0}", per(current_counts.allocs), per(cur_live));
+    println!("  inline One          {:>17.2} {:>15.0}", per(proposed_counts.allocs), per(pro_live));
+    println!();
+    println!("  inlining changes    {:+.2} allocations   {:+.0} B per object",
+             per(proposed_counts.allocs) - per(current_counts.allocs),
+             per(pro_live) - per(cur_live));
+    println!();
+    if per(proposed_counts.allocs) < per(current_counts.allocs) - 0.5 {
+        println!("  It removes an allocation per object. On the live node's 2.4M objects that is");
+        println!("  2.4M allocations not made and 2.4M headers not held, and the precedent is in");
+        println!("  the same file: BlockRefs already serializes as a sequence via from/into, so");
+        println!("  the on-disk index would not change.");
+    } else {
+        println!("  It does NOT remove an allocation, so the case for it is bytes alone and the");
+        println!("  byte difference above is what to judge it on.");
+    }
+
+    assert!(objects > 0, "the lookup should hold objects");
+}
