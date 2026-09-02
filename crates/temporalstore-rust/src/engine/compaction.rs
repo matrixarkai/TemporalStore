@@ -52,7 +52,7 @@ pub(super) fn compaction_utility_report(
 
 pub(super) fn model_compaction_policy_reports(
     shard: &ShardState,
-    entries: &[LivePageEntry],
+    entries: &[LiveBlockEntry],
     slab_page_counts: &BTreeMap<u64, u64>,
 ) -> Vec<ModelCompactionPolicyReport> {
     #[derive(Default)]

@@ -48,7 +48,7 @@ pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
 fn object_lifecycle_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
-    entries: Vec<LivePageEntry>,
+    entries: Vec<LiveBlockEntry>,
     selected_buckets: &BTreeSet<u32>,
     routing_bucket_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {

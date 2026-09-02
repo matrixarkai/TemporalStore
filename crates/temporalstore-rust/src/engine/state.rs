@@ -283,7 +283,7 @@ pub(super) struct CoreIndex {
     #[serde(rename = "slot_map")]
     pub(super) bucket_map: BucketMap,
     #[serde(default)]
-    pub(super) object_page_lookup: ObjectPageLookup,
+    pub(super) object_page_lookup: ObjectBlockLookup,
     /// One shared copy of each page kind, so a page holds a pointer rather than its own string.
     ///
     /// Measured over 2700 pages: `model_id` had 2 distinct values and 2700 copies -- 1350 copies
@@ -334,8 +334,8 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 /// disk, so a handle has to mean the same page in every process that reads the file. Assigning
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
 #[derive(Debug, Default, Clone, Deserialize)]
-#[serde(from = "BTreeMap<String, PageIndex>")]
-pub(super) enum PageIndexMap {
+#[serde(from = "BTreeMap<String, BlockIndex>")]
+pub(super) enum BlockIndexMap {
     /// A bucket holding nothing: no map, no node, no allocation.
     #[default]
     Empty,
@@ -346,77 +346,77 @@ pub(super) enum PageIndexMap {
     /// bytes to carry a 120-byte page, because its node is sized for eleven. Measured over a
     /// store of 2,000 keys, the containers were about 70% of the index's live heap.
     ///
-    /// The shape `PageRefs` already uses, for the same reason.
-    One(u64, PageIndex),
+    /// The shape `BlockRefs` already uses, for the same reason.
+    One(u64, BlockIndex),
     /// Several pages -- an object with components -- which is where a map earns its node.
-    Many(BTreeMap<u64, PageIndex>),
+    Many(BTreeMap<u64, BlockIndex>),
 }
 
 /// Iterating a page index, whichever shape it is in.
-pub(super) enum PageIndexIter<'a> {
+pub(super) enum BlockIndexIter<'a> {
     Empty,
-    One(std::iter::Once<(&'a u64, &'a PageIndex)>),
-    Many(std::collections::btree_map::Iter<'a, u64, PageIndex>),
+    One(std::iter::Once<(&'a u64, &'a BlockIndex)>),
+    Many(std::collections::btree_map::Iter<'a, u64, BlockIndex>),
 }
 
-impl<'a> Iterator for PageIndexIter<'a> {
-    type Item = (&'a u64, &'a PageIndex);
+impl<'a> Iterator for BlockIndexIter<'a> {
+    type Item = (&'a u64, &'a BlockIndex);
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            PageIndexIter::Empty => None,
-            PageIndexIter::One(once) => once.next(),
-            PageIndexIter::Many(iter) => iter.next(),
+            BlockIndexIter::Empty => None,
+            BlockIndexIter::One(once) => once.next(),
+            BlockIndexIter::Many(iter) => iter.next(),
         }
     }
 }
 
-pub(super) enum PageIndexValuesMut<'a> {
+pub(super) enum BlockIndexValuesMut<'a> {
     Empty,
-    One(std::iter::Once<&'a mut PageIndex>),
-    Many(std::collections::btree_map::ValuesMut<'a, u64, PageIndex>),
+    One(std::iter::Once<&'a mut BlockIndex>),
+    Many(std::collections::btree_map::ValuesMut<'a, u64, BlockIndex>),
 }
 
-impl<'a> Iterator for PageIndexValuesMut<'a> {
-    type Item = &'a mut PageIndex;
+impl<'a> Iterator for BlockIndexValuesMut<'a> {
+    type Item = &'a mut BlockIndex;
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            PageIndexValuesMut::Empty => None,
-            PageIndexValuesMut::One(once) => once.next(),
-            PageIndexValuesMut::Many(iter) => iter.next(),
+            BlockIndexValuesMut::Empty => None,
+            BlockIndexValuesMut::One(once) => once.next(),
+            BlockIndexValuesMut::Many(iter) => iter.next(),
         }
     }
 }
 
-impl PageIndexMap {
-    pub(super) fn get(&self, key: &u64) -> Option<&PageIndex> {
+impl BlockIndexMap {
+    pub(super) fn get(&self, key: &u64) -> Option<&BlockIndex> {
         match self {
-            PageIndexMap::Empty => None,
-            PageIndexMap::One(handle, page) => (handle == key).then_some(page),
-            PageIndexMap::Many(map) => map.get(key),
+            BlockIndexMap::Empty => None,
+            BlockIndexMap::One(handle, page) => (handle == key).then_some(page),
+            BlockIndexMap::Many(map) => map.get(key),
         }
     }
 
-    pub(super) fn get_mut(&mut self, key: &u64) -> Option<&mut PageIndex> {
+    pub(super) fn get_mut(&mut self, key: &u64) -> Option<&mut BlockIndex> {
         match self {
-            PageIndexMap::Empty => None,
-            PageIndexMap::One(handle, page) => (&*handle == key).then_some(page),
-            PageIndexMap::Many(map) => map.get_mut(key),
+            BlockIndexMap::Empty => None,
+            BlockIndexMap::One(handle, page) => (&*handle == key).then_some(page),
+            BlockIndexMap::Many(map) => map.get_mut(key),
         }
     }
 
-    pub(super) fn remove(&mut self, key: &u64) -> Option<PageIndex> {
+    pub(super) fn remove(&mut self, key: &u64) -> Option<BlockIndex> {
         match self {
-            PageIndexMap::Empty => None,
-            PageIndexMap::One(handle, _) => {
+            BlockIndexMap::Empty => None,
+            BlockIndexMap::One(handle, _) => {
                 if handle != key {
                     return None;
                 }
-                match std::mem::replace(self, PageIndexMap::Empty) {
-                    PageIndexMap::One(_, page) => Some(page),
+                match std::mem::replace(self, BlockIndexMap::Empty) {
+                    BlockIndexMap::One(_, page) => Some(page),
                     _ => unreachable!("just matched One"),
                 }
             }
-            PageIndexMap::Many(map) => {
+            BlockIndexMap::Many(map) => {
                 let removed = map.remove(key);
                 self.shrink();
                 removed
@@ -428,26 +428,26 @@ impl PageIndexMap {
     ///
     /// A page with the same identity replaces the one already there rather than adding beside it,
     /// which is what the rendered string key used to do by being the key.
-    pub(super) fn insert(&mut self, page: PageIndex) -> u64 {
-        let handle = page_index_handle(&page);
+    pub(super) fn insert(&mut self, page: BlockIndex) -> u64 {
+        let handle = block_index_handle(&page);
         match self {
-            PageIndexMap::Empty => *self = PageIndexMap::One(handle, page),
-            PageIndexMap::One(existing, held) => {
+            BlockIndexMap::Empty => *self = BlockIndexMap::One(handle, page),
+            BlockIndexMap::One(existing, held) => {
                 if *existing == handle {
                     *held = page;
                 } else {
                     // A second page: this bucket has earned a map.
-                    let (first_handle, first) = match std::mem::replace(self, PageIndexMap::Empty) {
-                        PageIndexMap::One(first_handle, first) => (first_handle, first),
+                    let (first_handle, first) = match std::mem::replace(self, BlockIndexMap::Empty) {
+                        BlockIndexMap::One(first_handle, first) => (first_handle, first),
                         _ => unreachable!("just matched One"),
                     };
                     let mut map = BTreeMap::new();
                     map.insert(first_handle, first);
                     map.insert(handle, page);
-                    *self = PageIndexMap::Many(map);
+                    *self = BlockIndexMap::Many(map);
                 }
             }
-            PageIndexMap::Many(map) => {
+            BlockIndexMap::Many(map) => {
                 map.insert(handle, page);
             }
         }
@@ -460,18 +460,18 @@ impl PageIndexMap {
     /// which is the cost this type exists to avoid.
     fn shrink(&mut self) {
         let len = match self {
-            PageIndexMap::Many(map) => map.len(),
+            BlockIndexMap::Many(map) => map.len(),
             _ => return,
         };
         match len {
-            0 => *self = PageIndexMap::Empty,
+            0 => *self = BlockIndexMap::Empty,
             1 => {
-                let map = match std::mem::replace(self, PageIndexMap::Empty) {
-                    PageIndexMap::Many(map) => map,
+                let map = match std::mem::replace(self, BlockIndexMap::Empty) {
+                    BlockIndexMap::Many(map) => map,
                     _ => unreachable!("just matched Many"),
                 };
                 let (handle, page) = map.into_iter().next().expect("length is one");
-                *self = PageIndexMap::One(handle, page);
+                *self = BlockIndexMap::One(handle, page);
             }
             _ => {}
         }
@@ -479,46 +479,46 @@ impl PageIndexMap {
 
     pub(super) fn len(&self) -> usize {
         match self {
-            PageIndexMap::Empty => 0,
-            PageIndexMap::One(..) => 1,
-            PageIndexMap::Many(map) => map.len(),
+            BlockIndexMap::Empty => 0,
+            BlockIndexMap::One(..) => 1,
+            BlockIndexMap::Many(map) => map.len(),
         }
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        matches!(self, PageIndexMap::Empty)
+        matches!(self, BlockIndexMap::Empty)
     }
 
-    pub(super) fn iter(&self) -> PageIndexIter<'_> {
+    pub(super) fn iter(&self) -> BlockIndexIter<'_> {
         match self {
-            PageIndexMap::Empty => PageIndexIter::Empty,
-            PageIndexMap::One(handle, page) => PageIndexIter::One(std::iter::once((handle, page))),
-            PageIndexMap::Many(map) => PageIndexIter::Many(map.iter()),
+            BlockIndexMap::Empty => BlockIndexIter::Empty,
+            BlockIndexMap::One(handle, page) => BlockIndexIter::One(std::iter::once((handle, page))),
+            BlockIndexMap::Many(map) => BlockIndexIter::Many(map.iter()),
         }
     }
 
-    pub(super) fn values(&self) -> impl Iterator<Item = &PageIndex> {
+    pub(super) fn values(&self) -> impl Iterator<Item = &BlockIndex> {
         self.iter().map(|(_handle, page)| page)
     }
 
-    pub(super) fn values_mut(&mut self) -> PageIndexValuesMut<'_> {
+    pub(super) fn values_mut(&mut self) -> BlockIndexValuesMut<'_> {
         match self {
-            PageIndexMap::Empty => PageIndexValuesMut::Empty,
-            PageIndexMap::One(_, page) => PageIndexValuesMut::One(std::iter::once(page)),
-            PageIndexMap::Many(map) => PageIndexValuesMut::Many(map.values_mut()),
+            BlockIndexMap::Empty => BlockIndexValuesMut::Empty,
+            BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(page)),
+            BlockIndexMap::Many(map) => BlockIndexValuesMut::Many(map.values_mut()),
         }
     }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&u64, &mut PageIndex) -> bool) {
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&u64, &mut BlockIndex) -> bool) {
         match self {
-            PageIndexMap::Empty => {}
-            PageIndexMap::One(handle, page) => {
+            BlockIndexMap::Empty => {}
+            BlockIndexMap::One(handle, page) => {
                 let handle = *handle;
                 if !keep(&handle, page) {
-                    *self = PageIndexMap::Empty;
+                    *self = BlockIndexMap::Empty;
                 }
             }
-            PageIndexMap::Many(map) => {
+            BlockIndexMap::Many(map) => {
                 map.retain(|handle, page| keep(handle, page));
                 self.shrink();
             }
@@ -526,17 +526,17 @@ impl PageIndexMap {
     }
 }
 
-impl<'a> IntoIterator for &'a PageIndexMap {
-    type Item = (&'a u64, &'a PageIndex);
-    type IntoIter = PageIndexIter<'a>;
+impl<'a> IntoIterator for &'a BlockIndexMap {
+    type Item = (&'a u64, &'a BlockIndex);
+    type IntoIter = BlockIndexIter<'a>;
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
 /// Collecting pages assigns handles, the same as inserting them one at a time.
-impl FromIterator<PageIndex> for PageIndexMap {
-    fn from_iter<I: IntoIterator<Item = PageIndex>>(pages: I) -> Self {
+impl FromIterator<BlockIndex> for BlockIndexMap {
+    fn from_iter<I: IntoIterator<Item = BlockIndex>>(pages: I) -> Self {
         let mut map = Self::default();
         for page in pages {
             map.insert(page);
@@ -545,8 +545,8 @@ impl FromIterator<PageIndex> for PageIndexMap {
     }
 }
 
-impl From<BTreeMap<String, PageIndex>> for PageIndexMap {
-    fn from(flat: BTreeMap<String, PageIndex>) -> Self {
+impl From<BTreeMap<String, BlockIndex>> for BlockIndexMap {
+    fn from(flat: BTreeMap<String, BlockIndex>) -> Self {
         // The handle is recomputed from the page, not read from the file and not assigned by a
         // counter. A counter would hand out different handles than the ones the lookup refs were
         // written with, and those refs are on disk too.
@@ -557,7 +557,7 @@ impl From<BTreeMap<String, PageIndex>> for PageIndexMap {
     }
 }
 
-impl Serialize for PageIndexMap {
+impl Serialize for BlockIndexMap {
     /// Writes the same map of rendered keys, in the same order, without copying the index first.
     ///
     /// Hand-written rather than `#[serde(into = ...)]`, which is defined as
@@ -573,9 +573,9 @@ impl Serialize for PageIndexMap {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut entries: Vec<(String, &PageIndex)> = self
+        let mut entries: Vec<(String, &BlockIndex)> = self
             .values()
-            .map(|page| (page_index_written_key(page), page))
+            .map(|page| (block_index_written_key(page), page))
             .collect();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
 
@@ -597,10 +597,10 @@ impl Serialize for PageIndexMap {
 /// Two processes holding the same page must compute the same handle or those refs point at
 /// nothing -- which is what a counter did, silently, until a reload lost an object.
 ///
-/// Hashes exactly the fields [`page_index_written_key`] renders, so the handle and the written
+/// Hashes exactly the fields [`block_index_written_key`] renders, so the handle and the written
 /// key always name the same page. Equal identity therefore lands on one slot, which is also how
 /// this map keeps a rewrite from accumulating a second entry for the same page.
-pub(super) fn page_index_handle(page: &PageIndex) -> u64 {
+pub(super) fn block_index_handle(page: &BlockIndex) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     page.model_id.hash(&mut hasher);
@@ -614,7 +614,7 @@ pub(super) fn page_index_handle(page: &PageIndex) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn page_index_written_key(page: &PageIndex) -> String {
+pub(super) fn block_index_written_key(page: &BlockIndex) -> String {
     crate::index_log::page_ref_key_from_parts(
         &page.model_id,
         &page.object_key,
@@ -649,15 +649,15 @@ pub(super) fn page_index_written_key(page: &PageIndex) -> String {
 /// concatenated. A lookup walks two maps instead of building a string.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
-    from = "BTreeMap<String, ObjectPageRefs>",
-    into = "BTreeMap<String, ObjectPageRefs>"
+    from = "BTreeMap<String, ObjectBlockRefs>",
+    into = "BTreeMap<String, ObjectBlockRefs>"
 )]
-pub(super) struct ObjectPageLookup {
-    by_model: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectPageRefs>>,
+pub(super) struct ObjectBlockLookup {
+    by_model: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectBlockRefs>>,
 }
 
-impl ObjectPageLookup {
-    pub(super) fn get(&self, model_id: &str, object_key: &str) -> Option<&ObjectPageRefs> {
+impl ObjectBlockLookup {
+    pub(super) fn get(&self, model_id: &str, object_key: &str) -> Option<&ObjectBlockRefs> {
         self.by_model.get(model_id)?.get(object_key)
     }
 
@@ -665,7 +665,7 @@ impl ObjectPageLookup {
         &mut self,
         model_id: &str,
         object_key: &str,
-    ) -> Option<&mut ObjectPageRefs> {
+    ) -> Option<&mut ObjectBlockRefs> {
         self.by_model.get_mut(model_id)?.get_mut(object_key)
     }
 
@@ -677,10 +677,10 @@ impl ObjectPageLookup {
         &mut self,
         model_id: &Arc<str>,
         object_key: &Arc<str>,
-    ) -> &mut ObjectPageRefs {
+    ) -> &mut ObjectBlockRefs {
         let objects = self.by_model.entry(Arc::clone(model_id)).or_default();
         if !objects.contains_key(object_key.as_ref()) {
-            objects.insert(Arc::clone(object_key), ObjectPageRefs::default());
+            objects.insert(Arc::clone(object_key), ObjectBlockRefs::default());
         }
         objects
             .get_mut(object_key.as_ref())
@@ -696,7 +696,7 @@ impl ObjectPageLookup {
         Some(stored.as_ptr())
     }
 
-    pub(super) fn remove(&mut self, model_id: &str, object_key: &str) -> Option<ObjectPageRefs> {
+    pub(super) fn remove(&mut self, model_id: &str, object_key: &str) -> Option<ObjectBlockRefs> {
         let objects = self.by_model.get_mut(model_id)?;
         let removed = objects.remove(object_key);
         if objects.is_empty() {
@@ -718,12 +718,12 @@ impl ObjectPageLookup {
         self.by_model.clear();
     }
 
-    pub(super) fn values(&self) -> impl Iterator<Item = &ObjectPageRefs> {
+    pub(super) fn values(&self) -> impl Iterator<Item = &ObjectBlockRefs> {
         self.by_model.values().flat_map(BTreeMap::values)
     }
 
     /// Model and object for every entry, for the places that used to read the composite key.
-    pub(super) fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Arc<str>, &ObjectPageRefs)> {
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &Arc<str>, &ObjectBlockRefs)> {
         self.by_model.iter().flat_map(|(model, objects)| {
             objects.iter().map(move |(object, refs)| (model, object, refs))
         })
@@ -743,9 +743,9 @@ fn take_lookup_part(input: &str) -> Option<(&str, &str)> {
     Some((&input[start..end], &input[end + 1..]))
 }
 
-impl From<BTreeMap<String, ObjectPageRefs>> for ObjectPageLookup {
-    fn from(flat: BTreeMap<String, ObjectPageRefs>) -> Self {
-        let mut nested: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectPageRefs>> = BTreeMap::new();
+impl From<BTreeMap<String, ObjectBlockRefs>> for ObjectBlockLookup {
+    fn from(flat: BTreeMap<String, ObjectBlockRefs>) -> Self {
+        let mut nested: BTreeMap<Arc<str>, BTreeMap<Arc<str>, ObjectBlockRefs>> = BTreeMap::new();
         for (key, refs) in flat {
             // A key that does not parse is skipped rather than guessed at: inventing a model for
             // it would file the object somewhere no lookup would ever look.
@@ -767,8 +767,8 @@ impl From<BTreeMap<String, ObjectPageRefs>> for ObjectPageLookup {
     }
 }
 
-impl From<ObjectPageLookup> for BTreeMap<String, ObjectPageRefs> {
-    fn from(nested: ObjectPageLookup) -> Self {
+impl From<ObjectBlockLookup> for BTreeMap<String, ObjectBlockRefs> {
+    fn from(nested: ObjectBlockLookup) -> Self {
         let mut flat = BTreeMap::new();
         for (model, objects) in nested.by_model {
             for (object, refs) in objects {
@@ -784,23 +784,23 @@ impl From<ObjectPageLookup> for BTreeMap<String, ObjectPageRefs> {
 /// A sorted vector rather than a map because the measured average is 1.0 components per object: a
 /// B-tree holding a single entry is a node and an allocation spent to express a list of one.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct ObjectPageRefs {
+pub(super) struct ObjectBlockRefs {
     #[serde(default)]
-    pub(super) by_component: Vec<ComponentPages>,
+    pub(super) by_component: Vec<ComponentBlocks>,
 }
 
 /// One component of one object, and the pages holding it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct ComponentPages {
+pub(super) struct ComponentBlocks {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<Arc<str>>,
     /// Sorted and deduplicated, and held inline when there is only one -- which is all of them.
-    /// Insertion goes through `PageRefs::insert`, which keeps both invariants.
+    /// Insertion goes through `BlockRefs::insert`, which keeps both invariants.
     #[serde(default)]
-    pub(super) refs: PageRefs,
+    pub(super) refs: BlockRefs,
 }
 
-impl ObjectPageRefs {
+impl ObjectBlockRefs {
     /// Where this component sits, or where it would be inserted. `None` sorts first, matching
     /// `Option`'s own ordering, so the vector's order is the order a caller would expect.
     pub(super) fn position(&self, component: Option<&str>) -> Result<usize, usize> {
@@ -808,14 +808,14 @@ impl ObjectPageRefs {
             .binary_search_by(|entry| entry.component.as_deref().cmp(&component))
     }
 
-    pub(super) fn refs_for(&self, component: Option<&str>) -> Option<&[PageLookupRef]> {
+    pub(super) fn refs_for(&self, component: Option<&str>) -> Option<&[BlockLookupRef]> {
         self.position(component)
             .ok()
             .map(|at| self.by_component[at].refs.as_slice())
     }
 
     /// Every page ref of this object, across every component, in component order.
-    pub(super) fn all_refs(&self) -> impl Iterator<Item = &PageLookupRef> {
+    pub(super) fn all_refs(&self) -> impl Iterator<Item = &BlockLookupRef> {
         self.by_component.iter().flat_map(|entry| entry.refs.iter())
     }
 
@@ -857,14 +857,14 @@ pub(super) fn intern_shared(pool: &mut std::collections::HashSet<Arc<str>>, kind
 ///
 /// Serializes as a sequence exactly as the vector did, so the on-disk index is unchanged.
 #[derive(Debug, Clone, Eq, Serialize, Deserialize)]
-#[serde(from = "Vec<PageLookupRef>", into = "Vec<PageLookupRef>")]
-pub(super) enum PageRefs {
-    One(PageLookupRef),
-    Many(Vec<PageLookupRef>),
+#[serde(from = "Vec<BlockLookupRef>", into = "Vec<BlockLookupRef>")]
+pub(super) enum BlockRefs {
+    One(BlockLookupRef),
+    Many(Vec<BlockLookupRef>),
 }
 
-impl PageRefs {
-    pub(super) fn as_slice(&self) -> &[PageLookupRef] {
+impl BlockRefs {
+    pub(super) fn as_slice(&self) -> &[BlockLookupRef] {
         match self {
             Self::One(value) => std::slice::from_ref(value),
             Self::Many(values) => values.as_slice(),
@@ -878,13 +878,13 @@ impl PageRefs {
         }
     }
 
-    pub(super) fn iter(&self) -> std::slice::Iter<'_, PageLookupRef> {
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, BlockLookupRef> {
         self.as_slice().iter()
     }
 
     /// Insert keeping the refs sorted and free of duplicates, which is what the set this replaced
     /// did. Reports whether anything was added, which is what the ref counter is kept from.
-    pub(super) fn insert(&mut self, value: PageLookupRef) -> bool {
+    pub(super) fn insert(&mut self, value: BlockLookupRef) -> bool {
         match self {
             Self::One(existing) => match value.cmp(existing) {
                 std::cmp::Ordering::Equal => false,
@@ -908,7 +908,7 @@ impl PageRefs {
     }
 }
 
-impl Default for PageRefs {
+impl Default for BlockRefs {
     fn default() -> Self {
         Self::Many(Vec::new())
     }
@@ -917,14 +917,14 @@ impl Default for PageRefs {
 /// Compared by contents, so a one-element spilled arm and an inline one are the same refs. Without
 /// this, a value read back from an index written before this change could compare unequal to the
 /// identical value built in memory.
-impl PartialEq for PageRefs {
+impl PartialEq for BlockRefs {
     fn eq(&self, other: &Self) -> bool {
         self.as_slice() == other.as_slice()
     }
 }
 
-impl From<Vec<PageLookupRef>> for PageRefs {
-    fn from(mut refs: Vec<PageLookupRef>) -> Self {
+impl From<Vec<BlockLookupRef>> for BlockRefs {
+    fn from(mut refs: Vec<BlockLookupRef>) -> Self {
         if refs.len() == 1 {
             Self::One(refs.pop().expect("length just checked"))
         } else {
@@ -933,24 +933,24 @@ impl From<Vec<PageLookupRef>> for PageRefs {
     }
 }
 
-impl From<PageRefs> for Vec<PageLookupRef> {
-    fn from(refs: PageRefs) -> Self {
+impl From<BlockRefs> for Vec<BlockLookupRef> {
+    fn from(refs: BlockRefs) -> Self {
         match refs {
-            PageRefs::One(value) => vec![value],
-            PageRefs::Many(values) => values,
+            BlockRefs::One(value) => vec![value],
+            BlockRefs::Many(values) => values,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub(super) struct PageLookupRef {
+pub(super) struct BlockLookupRef {
     #[serde(rename = "routing_slot")]
     pub(super) routing_bucket: u32,
     pub(super) page_ref_key: u64,
 }
 
 /// Rust-native core index mirroring the shape:
-/// Index -> BucketMap -> BucketNode -> PageIndex/ObjectIndex.
+/// Index -> BucketMap -> BucketNode -> BlockIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct BucketNode {
     #[serde(rename = "routing_slot")]
@@ -971,7 +971,7 @@ pub(super) struct BucketNode {
     #[serde(default, alias = "deleted_object_ids")]
     pub(super) deleted_object_index: ObjectIndex,
     #[serde(default, alias = "page_refs")]
-    pub(super) page_index: PageIndexMap,
+    pub(super) page_index: BlockIndexMap,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -985,7 +985,7 @@ pub(super) enum BucketLayoutState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PageIndex {
+pub(super) struct BlockIndex {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: Arc<str>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -996,7 +996,7 @@ pub(super) struct PageIndex {
     pub(super) log_backed: bool,
 }
 
-impl PageIndex {
+impl BlockIndex {
     /// The object this page belongs to.
     ///
     /// Held once, in the address, rather than beside it. The entry used to carry its own copy and
@@ -1035,7 +1035,7 @@ impl CoreIndex {
         &mut self,
         routing_bucket: u32,
         page_ref_key: u64,
-        page: &PageIndex,
+        page: &BlockIndex,
     ) {
         if page.deleted {
             return;
@@ -1044,7 +1044,7 @@ impl CoreIndex {
             let entry = self
                 .object_page_lookup
                 .entry(&page.model_id, &page.object_key);
-            let value = PageLookupRef {
+            let value = BlockLookupRef {
                 routing_bucket,
                 page_ref_key,
             };
@@ -1055,9 +1055,9 @@ impl CoreIndex {
                     // case never allocates and there is no empty state in between.
                     entry.by_component.insert(
                         at,
-                        ComponentPages {
+                        ComponentBlocks {
                             component: page.component.clone(),
-                            refs: PageRefs::One(value),
+                            refs: BlockRefs::One(value),
                         },
                     );
                     true
@@ -1077,7 +1077,7 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
         component: Option<&str>,
-    ) -> Option<&[PageLookupRef]> {
+    ) -> Option<&[BlockLookupRef]> {
         self.object_page_lookup
             .get(model_id, object_key)
             .and_then(|entry| entry.refs_for(component))
@@ -1088,7 +1088,7 @@ impl CoreIndex {
         &self,
         model_id: &str,
         object_key: &str,
-    ) -> Option<&ObjectPageRefs> {
+    ) -> Option<&ObjectBlockRefs> {
         self.object_page_lookup.get(model_id, object_key)
     }
 
@@ -1291,8 +1291,8 @@ mod component_lookup_tests {
     use super::*;
 
     /// A page carrying nothing but the identity the lookup keys on.
-    fn page(object: &str, component: Option<&str>) -> PageIndex {
-        PageIndex {
+    fn page(object: &str, component: Option<&str>) -> BlockIndex {
+        BlockIndex {
             object_key: Arc::from(object.to_string()),
             model_id: Arc::from("hash".to_string()),
             component: component.map(str::to_string).map(Arc::from),

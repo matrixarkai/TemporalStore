@@ -3856,7 +3856,7 @@ fn bucket_runtime_flags_match_full_sweep() {
 /// ingest never releases. It is also the set whose per-entry iteration made the heartbeat
 /// shard-sized.
 ///
-/// Each `PageIndex` already carries `dirty`. If the two agree, the set is derivable from the
+/// Each `BlockIndex` already carries `dirty`. If the two agree, the set is derivable from the
 /// pages and its per-record String is duplicated state. If they disagree, it is carrying
 /// something the flags cannot express, and this test says exactly what -- which is the part worth
 /// knowing before anyone tries to remove it.
@@ -4060,7 +4060,7 @@ fn components_of_one_object_stay_separate() {
 /// from the outside and cost an allocation each, so the arm is asserted directly.
 #[test]
 fn single_page_components_are_held_inline() {
-    use crate::engine::state::{PageLookupRef, PageRefs};
+    use crate::engine::state::{BlockLookupRef, BlockRefs};
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -4087,8 +4087,8 @@ fn single_page_components_are_held_inline() {
     for entry in shard.bucket_index.object_page_lookup.values() {
         for component in &entry.by_component {
             match component.refs {
-                PageRefs::One(_) => inline += 1,
-                PageRefs::Many(_) => spilled += 1,
+                BlockRefs::One(_) => inline += 1,
+                BlockRefs::Many(_) => spilled += 1,
             }
         }
     }
@@ -4100,9 +4100,9 @@ fn single_page_components_are_held_inline() {
     );
 
     // The spilled arm has to keep working: sorted, deduplicated, and reporting what it added.
-    let first = PageLookupRef { routing_bucket: 7, page_ref_key: 2 };
-    let second = PageLookupRef { routing_bucket: 7, page_ref_key: 1 };
-    let mut refs = PageRefs::One(first.clone());
+    let first = BlockLookupRef { routing_bucket: 7, page_ref_key: 2 };
+    let second = BlockLookupRef { routing_bucket: 7, page_ref_key: 1 };
+    let mut refs = BlockRefs::One(first.clone());
     assert!(!refs.insert(first.clone()), "re-inserting the same ref adds nothing");
     assert_eq!(refs.len(), 1);
     assert!(refs.insert(second.clone()), "a second ref is an addition");
@@ -4121,9 +4121,9 @@ fn single_page_components_are_held_inline() {
 /// back as an inline one.
 #[test]
 fn page_refs_serialize_as_a_sequence() {
-    use crate::engine::state::{PageLookupRef, PageRefs};
+    use crate::engine::state::{BlockLookupRef, BlockRefs};
 
-    let single = PageRefs::One(PageLookupRef {
+    let single = BlockRefs::One(BlockLookupRef {
         routing_bucket: 3,
         page_ref_key: 1,
     });
@@ -4133,19 +4133,19 @@ fn page_refs_serialize_as_a_sequence() {
     assert_eq!(json[0]["routing_slot"], 3);
 
     // A one-element sequence written by the previous shape comes back inline, not spilled.
-    let restored: PageRefs = serde_json::from_value(json).unwrap();
+    let restored: BlockRefs = serde_json::from_value(json).unwrap();
     assert!(
-        matches!(restored, PageRefs::One(_)),
+        matches!(restored, BlockRefs::One(_)),
         "a one-element sequence should load into the inline arm"
     );
     assert_eq!(restored, single);
 
     let mut pair = single.clone();
-    pair.insert(PageLookupRef {
+    pair.insert(BlockLookupRef {
         routing_bucket: 4,
         page_ref_key: 2,
     });
-    let round_tripped: PageRefs = serde_json::from_value(serde_json::to_value(&pair).unwrap()).unwrap();
+    let round_tripped: BlockRefs = serde_json::from_value(serde_json::to_value(&pair).unwrap()).unwrap();
     assert_eq!(round_tripped, pair);
     assert_eq!(round_tripped.len(), 2);
 }
@@ -4463,7 +4463,7 @@ fn the_nested_lookup_still_serializes_as_the_flat_composite() {
     );
 
     // And a document in that shape loads back into the nested form.
-    let restored: crate::engine::state::ObjectPageLookup =
+    let restored: crate::engine::state::ObjectBlockLookup =
         serde_json::from_value(json).unwrap();
     assert!(
         restored.get("string", "nested-key").is_some(),
@@ -4735,7 +4735,7 @@ fn rewriting_a_page_does_not_reuse_its_index_key() {
 /// number; this one states the reason.
 #[test]
 fn installing_the_same_page_twice_replaces_it() {
-    let page = || crate::engine::state::PageIndex {
+    let page = || crate::engine::state::BlockIndex {
         object_key: Arc::from("twice".to_string()),
         model_id: Arc::from("string".to_string()),
         component: None,
@@ -4745,7 +4745,7 @@ fn installing_the_same_page_twice_replaces_it() {
         log_backed: true,
     };
 
-    let mut map = crate::engine::state::PageIndexMap::default();
+    let mut map = crate::engine::state::BlockIndexMap::default();
     let first = map.insert(page());
     let second = map.insert(page());
 
@@ -4957,7 +4957,7 @@ fn the_page_index_still_writes_string_keys() {
     // On the wire: the same rendered key it always wrote, rebuilt from the page.
     let json = serde_json::to_value(&bucket.page_index).unwrap();
     let written = json.as_object().expect("the wire form is a map of string keys");
-    let expected = crate::engine::state::page_index_written_key(page);
+    let expected = crate::engine::state::block_index_written_key(page);
     assert!(
         written.contains_key(&expected),
         "the dump must carry the rendered key {expected:?}, got {:?}",
@@ -4969,7 +4969,7 @@ fn the_page_index_still_writes_string_keys() {
     );
 
     // And a document in that shape loads back, with handles assigned afresh.
-    let restored: crate::engine::state::PageIndexMap = serde_json::from_value(json).unwrap();
+    let restored: crate::engine::state::BlockIndexMap = serde_json::from_value(json).unwrap();
     assert_eq!(restored.len(), bucket.page_index.len());
     assert!(
         restored.iter().all(|(handle, _)| *handle > 0),
@@ -5394,6 +5394,103 @@ fn does_writing_scale_with_the_store() {
     );
 }
 
+/// Every key the shard index writes, listed.
+///
+/// A guard for renaming Rust identifiers without moving the format under the data. Most of these
+/// fields carry no `serde` attribute, so their Rust name IS their wire name -- renaming one
+/// changes what is written, and an index written by the new code would not be read by the old.
+/// Listing them makes that visible in a diff instead of silent.
+#[test]
+fn the_index_wire_keys_are_what_they_were() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet { key: "wire".to_string(), value: vec![b'v'; 32] },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "wire-hash".to_string(),
+            field: "f".to_string(),
+            value: vec![b'v'; 32],
+        },
+    });
+
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 loaded");
+    let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
+
+    // Every object key that appears anywhere in the document, deduplicated.
+    fn collect(value: &serde_json::Value, into: &mut std::collections::BTreeSet<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    into.insert(key.clone());
+                    collect(child, into);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect(item, into);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut keys = std::collections::BTreeSet::new();
+    collect(&value, &mut keys);
+
+    // The rendered page keys are data, not field names: they are built from the object's own
+    // identity, so they vary with the test's keys rather than with the format.
+    keys.retain(|key| !key.contains(':') && !key.chars().all(|c| c.is_ascii_digit()));
+
+    let listed: Vec<&str> = keys.iter().map(String::as_str).collect();
+    assert_eq!(
+        listed,
+        vec![
+            "address",
+            "b",
+            "by_component",
+            "component",
+            "deleted",
+            "deleted_object_index",
+            "dirty",
+            "dirty_generation",
+            "g",
+            "in_memory",
+            "l",
+            "last_dump_sequence",
+            "layout",
+            "loading",
+            "log_backed",
+            "meta_loaded",
+            "model_id",
+            "o",
+            "object_index",
+            "object_key",
+            "object_page_lookup",
+            "oi",
+            "page_index",
+            "page_ref_key",
+            "pi",
+            "ps",
+            "refs",
+            "routing_slot",
+            "rs",
+            "slot_map",
+            "ttl_ms",
+        ],
+        "the index writes different keys than it did; a rename reached the format"
+    );
+}
+
 /// What a key costs the index in live heap.
 ///
 /// Measured as allocated-minus-freed rather than as a struct size, because the cost this bounds
@@ -5449,7 +5546,7 @@ fn what_a_key_costs_the_index_in_live_heap() {
 /// would not show up as a failure anywhere else.
 #[test]
 fn a_bucket_holding_one_page_holds_no_node() {
-    use crate::engine::state::PageIndexMap;
+    use crate::engine::state::BlockIndexMap;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -5478,7 +5575,7 @@ fn a_bucket_holding_one_page_holds_no_node() {
             .find(|bucket| bucket.page_index.len() == 1)
             .expect("the write must produce a bucket holding one page");
         assert!(
-            matches!(bucket.page_index, PageIndexMap::One(..)),
+            matches!(bucket.page_index, BlockIndexMap::One(..)),
             "a bucket holding one page must hold it inline"
         );
     }
@@ -5504,7 +5601,7 @@ fn a_bucket_holding_one_page_holds_no_node() {
             .find(|bucket| bucket.page_index.len() > 1)
             .expect("three fields must share a bucket");
         assert!(
-            matches!(bucket.page_index, PageIndexMap::Many(_)),
+            matches!(bucket.page_index, BlockIndexMap::Many(_)),
             "several pages belong in a map"
         );
     }
@@ -5535,7 +5632,7 @@ fn a_bucket_holding_one_page_holds_no_node() {
             .expect("the remaining field must still be filed");
         assert_eq!(bucket.page_index.len(), 1, "two of three fields were removed");
         assert!(
-            matches!(bucket.page_index, PageIndexMap::One(..)),
+            matches!(bucket.page_index, BlockIndexMap::One(..)),
             "a map that drops back to one page must give up its node"
         );
     }
@@ -5643,7 +5740,7 @@ fn page_index_identity_string_cardinality() {
     component   {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
     object_key  {:>5} distinct, {:>6} copies  ({:>7.1} copies each, {:>6} B held)
 
-    PageIndex is {} B before its heap strings
+    BlockIndex is {} B before its heap strings
 ",
         distinct_models.len(), pages, share(distinct_models.len(), pages),
         model_allocations.len(), model_bytes,
@@ -5651,7 +5748,7 @@ fn page_index_identity_string_cardinality() {
         share(distinct_components.len(), components_present),
         component_allocations.len(), component_bytes,
         distinct_keys.len(), pages, share(distinct_keys.len(), pages), key_bytes,
-        std::mem::size_of::<crate::engine::state::PageIndex>(),
+        std::mem::size_of::<crate::engine::state::BlockIndex>(),
     );
 }
 
@@ -5748,7 +5845,7 @@ fn object_page_lookup_occupancy_census() {
     components holding exactly one ref  {single_ref_components:>6}  ({:>5.1}%)
     components holding more             {multi_ref_components:>6}  ({:>5.1}%)
 
-    sizes: ObjectPageRefs {:>3} B, ComponentPages {:>3} B, PageRefs {:>3} B, PageLookupRef {:>3} B
+    sizes: ObjectBlockRefs {:>3} B, ComponentBlocks {:>3} B, BlockRefs {:>3} B, BlockLookupRef {:>3} B
     a one-component one-ref object: {:>3} B inline + {:>3} B for the component vector,
     and the ref itself rides inside the component rather than in an allocation of its own
 ",
@@ -5756,12 +5853,12 @@ fn object_page_lookup_occupancy_census() {
         pct(multi_component, objects),
         pct(single_ref_components, components_total),
         pct(multi_ref_components, components_total),
-        std::mem::size_of::<crate::engine::state::ObjectPageRefs>(),
-        std::mem::size_of::<crate::engine::state::ComponentPages>(),
-        std::mem::size_of::<crate::engine::state::PageRefs>(),
-        std::mem::size_of::<crate::engine::state::PageLookupRef>(),
-        std::mem::size_of::<crate::engine::state::ObjectPageRefs>(),
-        std::mem::size_of::<crate::engine::state::ComponentPages>(),
+        std::mem::size_of::<crate::engine::state::ObjectBlockRefs>(),
+        std::mem::size_of::<crate::engine::state::ComponentBlocks>(),
+        std::mem::size_of::<crate::engine::state::BlockRefs>(),
+        std::mem::size_of::<crate::engine::state::BlockLookupRef>(),
+        std::mem::size_of::<crate::engine::state::ObjectBlockRefs>(),
+        std::mem::size_of::<crate::engine::state::ComponentBlocks>(),
     );
 }
 
@@ -5769,7 +5866,7 @@ fn object_page_lookup_occupancy_census() {
 ///
 /// Resident memory is ~2.8-3.9 KB per record depending on key length, and a key byte costs 14.1
 /// bytes of it -- the same string is held by `strings`, by the composite keys of
-/// `object_page_lookup` and `object_component_lookup`, and again inside each `PageIndex`.
+/// `object_page_lookup` and `object_component_lookup`, and again inside each `BlockIndex`.
 /// Extrapolating to a zero-length key still leaves ~2581 B per record, so most of the bill is
 /// fixed per-record structure rather than the key.
 ///
@@ -5834,7 +5931,7 @@ fn per_record_structure_census() {
         .bucket_index
         .object_page_lookup
         .values()
-        .map(crate::engine::state::ObjectPageRefs::total_refs)
+        .map(crate::engine::state::ObjectBlockRefs::total_refs)
         .sum();
     let component_lookup_keys: usize = shard
         .bucket_index
@@ -6121,7 +6218,7 @@ fn maintained_component_page_ref_total_matches_the_walk() {
         .bucket_index
         .object_page_lookup
         .values()
-        .map(crate::engine::state::ObjectPageRefs::total_refs)
+        .map(crate::engine::state::ObjectBlockRefs::total_refs)
         .sum();
     let maintained = shard
         .bucket_index
@@ -11598,9 +11695,9 @@ fn whether_a_context_page_reaches_the_bucket_index() {
 /// undercounts a struct whose fields are `String`.
 #[test]
 fn what_one_page_costs_to_index() {
-    use crate::engine::state::PageIndex;
+    use crate::engine::state::BlockIndex;
 
-    let inline = std::mem::size_of::<PageIndex>();
+    let inline = std::mem::size_of::<BlockIndex>();
     let address_inline = std::mem::size_of::<crate::block_store::BlockAddress>();
     let string_inline = std::mem::size_of::<String>();
     let option_string_inline = std::mem::size_of::<Option<String>>();

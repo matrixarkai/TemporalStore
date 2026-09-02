@@ -148,7 +148,7 @@ impl Default for IndexItemKind {
 /// field set is the native Rust page-index projection -- `routing_bucket`/`page_ref_key`
 /// locate the entry in the bucket map, and `address`/`size`/`in_log`/`deleted`/`model_id`/
 /// `object_id`/`page_id` mirror the durable page metadata so replay reconstructs the same
-/// `PageIndex` the whole-index serialization would have produced. `deleted` is a
+/// `BlockIndex` the whole-index serialization would have produced. `deleted` is a
 /// tombstone: replaying it removes the entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndexItem {

@@ -198,7 +198,7 @@ impl StorageManagerPhaseExecutor {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct LivePageEntry {
+pub(super) struct LiveBlockEntry {
     pub(super) object_key: Arc<str>,
     pub(super) kind: Arc<str>,
     pub(super) component: Option<Arc<str>>,
@@ -219,8 +219,8 @@ pub(super) fn live_page_entry(
     kind: impl Into<String>,
     component: Option<String>,
     address: BlockAddress,
-) -> LivePageEntry {
-    LivePageEntry {
+) -> LiveBlockEntry {
+    LiveBlockEntry {
         object_key: Arc::from(object_key.into()),
         kind: Arc::from(kind.into()),
         component: component.map(Arc::from),
@@ -358,7 +358,7 @@ pub(super) fn storage_index_snapshot_with_samples(
     snapshot
 }
 
-pub(super) fn storage_gc_ref(entry: &LivePageEntry) -> String {
+pub(super) fn storage_gc_ref(entry: &LiveBlockEntry) -> String {
     match entry.component.as_deref() {
         Some(component) if !component.is_empty() => {
             format!("{}:{}:{}", entry.kind, entry.object_key, component)
@@ -811,7 +811,7 @@ fn note_site(site: &std::sync::atomic::AtomicU64, count: usize) {
     note_bucket_page_visits(count);
 }
 
-pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+pub(super) fn collect_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let entries = if !shard.bucket_index.bucket_map.is_empty() {
         collect_bucket_index_live_page_entries(shard)
     } else {
@@ -901,7 +901,7 @@ pub(super) fn rebuild_bucket_page_ownership(
             });
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
-            PageIndex {
+            BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
@@ -981,11 +981,11 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     }
 }
 
-pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+pub(super) fn collect_bucket_index_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.page_index.values() {
-            entries.push(LivePageEntry {
+            entries.push(LiveBlockEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
                 // Both sides are `Option<Arc<str>>`; going through a String allocated the text
@@ -1174,7 +1174,7 @@ pub(super) fn sync_context_pages_for_object(
     true
 }
 
-pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+pub(super) fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
     entries.extend(
         shard
@@ -1371,7 +1371,7 @@ pub(super) fn upsert_bucket_index_page_with(
             meta: false,
         });
     }
-    let entry = LivePageEntry {
+    let entry = LiveBlockEntry {
         // One allocation of this object's identity, shared by the page entry and the lookup.
         object_key: Arc::from(object_key),
         kind: crate::engine::state::intern_shared(&mut shard.bucket_index.kind_pool, kind),
@@ -1390,7 +1390,7 @@ pub(super) fn upsert_bucket_index_page_with(
         shard
             .bucket_index
             .page_refs_for(&entry.kind, &entry.object_key, entry.component.as_deref())
-            .map(<[crate::engine::state::PageLookupRef]>::to_vec)
+            .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
     } else {
         None
     };
@@ -1445,7 +1445,7 @@ pub(super) fn upsert_bucket_index_page_with(
     // computed for it.
     let mut address = entry.address;
     address.set_object_id(Some(object_id));
-    let page_index = PageIndex {
+    let page_index = BlockIndex {
         object_key: entry.object_key,
         model_id: entry.kind,
         component: entry.component.clone(),
@@ -1584,7 +1584,7 @@ pub(super) fn sync_bucket_index_object_pages(
         let object_id = address
             .object_id()
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
-        let entry = LivePageEntry {
+        let entry = LiveBlockEntry {
             object_key: Arc::from(object_key.to_string()),
             kind: Arc::from(kind.to_string()),
             component: None,
@@ -1614,7 +1614,7 @@ pub(super) fn sync_bucket_index_object_pages(
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
         let mut page_ref_key: u64 = 0;
-        let page = PageIndex {
+        let page = BlockIndex {
             object_key: entry.object_key,
             model_id: entry.kind,
             component: entry.component.clone(),
@@ -2001,7 +2001,7 @@ pub(super) fn rebuild_bucket_first_index(
         bucket.in_memory |= true;
         bucket.object_index.insert(object_id);
         bucket.page_index.insert(
-            PageIndex {
+            BlockIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component.clone(),
@@ -2526,7 +2526,7 @@ pub(super) fn insert_context_event_views(
     }
 }
 
-pub(super) fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEntry) -> u64 {
+pub(super) fn expected_live_page_object_id(shard_id: ShardId, entry: &LiveBlockEntry) -> u64 {
     stable_page_object_id(
         shard_id,
         &entry.kind,

@@ -2372,7 +2372,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             object_index: [30].into_iter().collect(),
             page_index: [(
                 "string:k::1:0".to_string(),
-                PageIndex {
+                BlockIndex {
                     object_key: Arc::from("k".to_string()),
                     model_id: Arc::from("string".to_string()),
                     component: None,
@@ -2383,7 +2383,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 },
             )]
             .into_iter()
-            .map(|(_key, page): (String, PageIndex)| page)
+            .map(|(_key, page): (String, BlockIndex)| page)
             .collect(),
             ..BucketNode::default()
         },
@@ -2400,7 +2400,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             page_index: [
                 (
                     "feature:k::2:0".to_string(),
-                    PageIndex {
+                    BlockIndex {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: Arc::from("feature".to_string()),
                         component: None,
@@ -2412,7 +2412,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
                 (
                     "feature:k::2:4".to_string(),
-                    PageIndex {
+                    BlockIndex {
                         object_key: Arc::from("feature-key".to_string()),
                         model_id: Arc::from("feature".to_string()),
                         component: None,
@@ -2424,7 +2424,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
-            .map(|(_key, page): (String, PageIndex)| page)
+            .map(|(_key, page): (String, BlockIndex)| page)
             .collect(),
             ..BucketNode::default()
         },
@@ -2440,7 +2440,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             page_index: [
                 (
                     "hash:k:a:3:0".to_string(),
-                    PageIndex {
+                    BlockIndex {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: Arc::from("hash".to_string()),
                         component: Some(Arc::from("a".to_string())),
@@ -2452,7 +2452,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
                 (
                     "hash:k:b:3:1".to_string(),
-                    PageIndex {
+                    BlockIndex {
                         object_key: Arc::from("hash-key".to_string()),
                         model_id: Arc::from("hash".to_string()),
                         component: Some(Arc::from("b".to_string())),
@@ -2464,7 +2464,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
                 ),
             ]
             .into_iter()
-            .map(|(_key, page): (String, PageIndex)| page)
+            .map(|(_key, page): (String, BlockIndex)| page)
             .collect(),
             ..BucketNode::default()
         },
