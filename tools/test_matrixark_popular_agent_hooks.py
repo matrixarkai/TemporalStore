@@ -18,6 +18,27 @@ import matrixark_agent_config
 import matrixark_agent_hook
 import matrixark_mcp_local_adapter
 
+DEFAULT_RUST_PROXY = "/opt/github-services/TemporalStore/target/release/matrixark_rust_proxy"
+
+
+def require_rust_proxy() -> str:
+    """The native proxy these hook tests drive, or a SKIP if it has not been built.
+
+    These tests run an agent hook end to end against the native backend, which refuses to fall back
+    to the Python path when it is serving. Without the binary the hook cannot start, and the test
+    reported a failure that said nothing about the code -- on a suite gate that is already red.
+
+    The path is a machine-specific absolute one and the job that runs this suite builds no Rust, so
+    the honest report there is "not exercised", not "broken". Set MATRIXARK_TEST_RUST_PROXY to run
+    them against a proxy kept elsewhere.
+    """
+    path = os.environ.get("MATRIXARK_TEST_RUST_PROXY", DEFAULT_RUST_PROXY)
+    if not os.path.exists(path):
+        raise unittest.SkipTest(
+            "no native proxy at %s, so an end-to-end agent hook cannot be driven; set "
+            "MATRIXARK_TEST_RUST_PROXY to point at one" % path)
+    return path
+
 
 class MatrixArkPopularAgentHooksTest(unittest.TestCase):
     def run_agent_hook(self, *, agent: str, event: str, payload: dict, rust_root: Path, extra: list[str] | None = None) -> dict:
@@ -38,10 +59,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             "--table",
             "deploy_table",
             "--rust-proxy",
-            os.environ.get(
-                "MATRIXARK_TEST_RUST_PROXY",
-                "/opt/github-services/TemporalStore/target/release/matrixark_rust_proxy",
-            ),
+            require_rust_proxy(),
             "--storage-prefix",
             f"matrixark:test-agent-hook:{agent}",
             "--account-id",
@@ -375,10 +393,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
                 "--table",
                 "deploy_table",
                 "--rust-proxy",
-                os.environ.get(
-                    "MATRIXARK_TEST_RUST_PROXY",
-                    "/opt/github-services/TemporalStore/target/release/matrixark_rust_proxy",
-                ),
+                require_rust_proxy(),
                 "--storage-prefix",
                 "matrixark:test-retrieval-coverage-gap",
                 "--account-id",
