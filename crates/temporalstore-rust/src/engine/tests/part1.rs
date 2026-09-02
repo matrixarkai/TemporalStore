@@ -7299,3 +7299,104 @@ fn what_a_bounded_slot_range_saves() {
     assert_eq!(wide_objects, RECORDS, "every record should be indexed either way");
     assert_eq!(narrow_objects, RECORDS, "every record should be indexed either way");
 }
+
+/// Does a bounded slot range make writes CHEAPER, or only smaller?
+///
+/// Bounding a one-box shard's routing-slot range saves 244 B/record of live memory
+/// (`what_a_bounded_slot_range_saves`) by collapsing four per-record homes into two. Whether it
+/// also makes a write faster is a separate question: fewer live entries does not by itself mean
+/// less work per write, and the two arms could allocate identically and just retain differently.
+///
+/// Counted rather than timed, because a count says the same thing on a loaded machine and this
+/// box swings by 5-30% run to run.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_bounded_slot_range_make_writes_cheaper -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn does_a_bounded_slot_range_make_writes_cheaper() {
+    const RECORDS: u64 = 40_000;
+
+    // Interleaved would be better still, but these two arms cannot share a process without
+    // sharing an engine, so they run in sequence with the SAME corpus and the same key shape.
+    let arm = |end_routing_bucket: u32| -> (f64, f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        let load = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: Some(1),
+            shard_uri: "local://shard/1".to_string(),
+            start_routing_bucket: 0,
+            end_routing_bucket,
+            readonly: false,
+            table_name: String::new(),
+        });
+        assert!(load.status.ok, "load: {:?}", load.status);
+
+        // Measure the STEADY state: the first writes build fixed structure, so counting from
+        // empty would charge one arm for setup the other also pays.
+        for index in 0..RECORDS / 4 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("warm-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "warm {index}: {:?}", response.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..RECORDS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("cost-{index:08}"),
+                    value: vec![b'v'; 512],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        let n = RECORDS as f64;
+        (
+            counts.allocs as f64 / n,
+            counts.alloc_bytes as f64 / n,
+            counts.alloc_bytes.saturating_sub(counts.free_bytes) as f64 / n,
+        )
+    };
+
+    let (wide_ops, wide_bytes, wide_live) = arm(u32::MAX);
+    let (narrow_ops, narrow_bytes, narrow_live) = arm(1023);
+
+    println!();
+    println!("  steady-state cost of one write, {RECORDS} writes after a warm-up");
+    println!("  slot range        allocations   allocated B   live B");
+    println!("  0..u32::MAX      {wide_ops:>12.1} {wide_bytes:>13.0} {wide_live:>8.0}");
+    println!("  0..1023          {narrow_ops:>12.1} {narrow_bytes:>13.0} {narrow_live:>8.0}");
+    println!();
+    println!("  bounding the range changes a write by {:+.1} allocations ({:+.1}%)",
+             narrow_ops - wide_ops, 100.0 * (narrow_ops - wide_ops) / wide_ops);
+    println!("  and {:+.0} allocated bytes ({:+.1}%)",
+             narrow_bytes - wide_bytes, 100.0 * (narrow_bytes - wide_bytes) / wide_bytes);
+    println!();
+    if narrow_ops < wide_ops * 0.97 {
+        println!("  So it is a LATENCY win as well as a footprint one: the per-slot work a write");
+        println!("  does is real work, not just retained bytes.");
+    } else if narrow_ops > wide_ops * 1.03 {
+        println!("  Writes cost MORE with a bounded range -- slots now hold many objects each, so");
+        println!("  the per-slot structures a write touches are bigger. That is a real trade and");
+        println!("  the footprint saving is not free.");
+    } else {
+        println!("  Writes cost the SAME. The saving is purely retained memory, so it raises the");
+        println!("  ceiling without moving latency either way -- worth taking, but do not expect");
+        println!("  it to show up in a latency chart.");
+    }
+
+    assert!(wide_ops > 0.0 && narrow_ops > 0.0, "measured nothing");
+}
