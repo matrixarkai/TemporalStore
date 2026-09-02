@@ -2939,6 +2939,70 @@ mod tests {
         );
     }
 
+    /// Every field of the options document must move the config version.
+    ///
+    /// Whether a pushed config is applied at all is decided by comparing this version to the
+    /// running one, so a field the version does not cover is a field an operator cannot change:
+    /// the push is answered "unchanged" and dropped, and the report says so in a way that reads
+    /// like success. `proxy_config_version` hashes the whole document for exactly that reason --
+    /// a hand-listed hash was already five fields behind when that was found, and nothing said so.
+    ///
+    /// The field list here is DERIVED from the serialized document rather than written out, so
+    /// this fails if the hash ever goes back to covering a subset, and it fails for a field added
+    /// later without anyone remembering this test exists. A list would only cover the fields
+    /// whoever wrote it happened to think of.
+    #[test]
+    fn every_option_field_moves_the_config_version() {
+        let base = ProxyOptions::default();
+        let baseline = proxy_config_version(&base);
+        let serde_json::Value::Object(document) =
+            serde_json::to_value(&base).expect("options serialize")
+        else {
+            panic!("the options document must be a JSON object");
+        };
+
+        let mut checked = 0;
+        for (field, value) in &document {
+            // This function's answer, not an input to it.
+            if field == "config_version" {
+                continue;
+            }
+            let mutated = match value {
+                serde_json::Value::Bool(flag) => serde_json::Value::Bool(!flag),
+                serde_json::Value::Number(number) => {
+                    serde_json::json!(number.as_u64().unwrap_or(0) + 1)
+                }
+                // An enum takes a different variant; appending to it would not deserialize.
+                serde_json::Value::String(_) if field == "serving_mode" => {
+                    serde_json::to_value(ProxyServingMode::Readonly).expect("mode serializes")
+                }
+                serde_json::Value::String(text) => serde_json::json!(format!("{text}x")),
+                other => panic!(
+                    "`{field}` serializes as {other:?}, a shape this test does not know how to                      change -- teach it that shape rather than skipping the field"
+                ),
+            };
+            let mut candidate = document.clone();
+            candidate.insert(field.clone(), mutated);
+            let options: ProxyOptions =
+                serde_json::from_value(serde_json::Value::Object(candidate)).unwrap_or_else(
+                    |error| panic!("changing `{field}` produced an invalid document: {error}"),
+                );
+            assert_ne!(
+                proxy_config_version(&options),
+                baseline,
+                "changing `{field}` left the config version unchanged, so a push that changes                  only this field is answered \"unchanged\" and silently dropped"
+            );
+            checked += 1;
+        }
+
+        // The loop is only as good as its reach: a document that serialized to nothing would
+        // pass every assertion above while checking no field at all.
+        assert!(
+            checked >= 20,
+            "expected to check every option field, but only reached {checked} -- if the document              shrank this test stopped covering what it claims to"
+        );
+    }
+
     /// Per-request bookkeeping under CONCURRENCY, measured per function.
     ///
     /// Single-threaded this work is ~110ns against a request whose real cost is a network
