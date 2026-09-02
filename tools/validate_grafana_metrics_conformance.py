@@ -281,6 +281,29 @@ DECLARATION = re.compile(r"#\s*(?:HELP|TYPE)\s+((?:temporalstore|matrixark)_[A-Z
 DECLARED_FAMILY_FLOOR = 150
 
 
+TYPE_LINE = re.compile(r"#\s*TYPE\s+((?:temporalstore|matrixark)_[A-Za-z0-9_]+)\s+(\w+)")
+
+# Prometheus renders a histogram as three series -- `_bucket`, `_sum`, `_count` -- from ONE
+# declaration of the base name. Same for a summary. Comparing raw names would report every correct
+# use of a histogram as undeclared, and the natural way to "fix" that failure is to delete the
+# panel, which is the opposite of what this file is for.
+COMPONENT_SUFFIXES = ("_bucket", "_sum", "_count")
+
+
+def declared_kinds(text: str) -> dict:
+    """family -> declared type, from `# TYPE` lines."""
+    return {name: kind for name, kind in TYPE_LINE.findall(text)}
+
+
+def expand_component_series(declared: set, kinds: dict) -> set:
+    """`declared`, plus the component series each histogram or summary actually publishes."""
+    expanded = set(declared)
+    for name, kind in kinds.items():
+        if kind in ("histogram", "summary"):
+            expanded.update(name + suffix for suffix in COMPONENT_SUFFIXES)
+    return expanded
+
+
 def declared_metric_names(text: str) -> set:
     """Families the engine actually DECLARES, via a `# HELP` or `# TYPE` line.
 
@@ -336,6 +359,8 @@ def check_alert_metric_names(alerts_text: str, declared: set) -> list:
 
 
 def check_declaration_extent(declared: set) -> list:
+    # Counted on the EXPANDED set, which is what callers pass. The floor stays far below the real
+    # figure either way; it catches a scan that has broken, not a release that trimmed metrics.
     """This guard is worthless if the declaration scan comes back empty.
 
     The checks above pass when `declared` is large AND when it is empty -- in the empty case nothing
@@ -452,7 +477,8 @@ def main() -> int:
     if fixed_but_listed:
         print("These are listed as known-unemitted but now resolve: %s. Remove them from "
               "KNOWN_UNEMITTED." % ", ".join(fixed_but_listed), file=sys.stderr)
-    declared = declared_metric_names(rust)
+    declared = expand_component_series(declared_metric_names(rust),
+                                      declared_kinds(rust))
     alert_failures = (check_declaration_extent(declared)
                       + check_dashboard_extent()
                       + check_dashboard_metrics_are_emitted(declared)
