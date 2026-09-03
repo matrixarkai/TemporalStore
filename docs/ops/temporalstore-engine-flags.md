@@ -19,8 +19,9 @@ whether a customer can set it at all.
 |---|---|
 | total | 98 |
 | offered on the portal | 16 |
-| documented as keeping an older path alive | 11 |
+| documented as keeping an older path alive | 6 |
 | reaching more than two files | 3 |
+| whose doc comment is really about another flag | 0 |
 
 ## topology (33)
 
@@ -68,7 +69,7 @@ Secrets. Never a form field, never in a launch artifact.
 
 | flag | files | portal | keeps an older path |
 |---|---|---|---|
-| `TS_META_ADMIN_TOKEN` | 1 | — | yes |
+| `TS_META_ADMIN_TOKEN` | 1 | — | — |
 
 ## durability (25)
 
@@ -77,7 +78,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | flag | files | portal | keeps an older path |
 |---|---|---|---|
 | `TS_WAL_BINARY_FRAME` | 2 | — | — |
-| `TS_WAL_LEGACY_RECOVERY` | 2 | — | yes |
+| `TS_WAL_LEGACY_RECOVERY` | 2 | — | — |
 | `TS_BARRIER_PROFILE_WRITES` | 1 | — | — |
 | `TS_BLOCK_IN_WAL` | 1 | — | — |
 | `TS_CROSS_SHARD_RECLAIM_GUARD` | 1 | — | yes |
@@ -98,7 +99,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_PREALLOCATE_CHUNK` | 1 | — | — |
 | `TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS` | 1 | — | yes |
 | `TS_WAL_RECLAIM_MIN_COPY_BYTES` | 1 | — | — |
-| `TS_WAL_RECLAIM_MIN_FREED_PERCENT` | 1 | — | yes |
+| `TS_WAL_RECLAIM_MIN_FREED_PERCENT` | 1 | — | — |
 | `TS_WAL_RESIDENT_PAGES` | 1 | — | — |
 | `TS_WAL_SEGMENT_BYTES` | 1 | — | — |
 
@@ -112,7 +113,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_INDEX_CODEC` | 1 | — | — |
 | `TS_INDEX_LOG_BINARY` | 1 | — | — |
 | `TS_LEGACY_ARRAY_BYTES` | 1 | — | yes |
-| `TS_NODE_SUMMARY_VECTOR` | 1 | yes | yes |
+| `TS_NODE_SUMMARY_VECTOR` | 1 | yes | — |
 | `TS_PROXY_BINARY_VERSION` | 1 | — | — |
 | `TS_RAFT_BINARY_REPLICATION` | 1 | — | — |
 | `TS_VECTOR_INT8` | 1 | yes | — |
@@ -159,7 +160,7 @@ Everything else that changes what the engine does.
 | `TS_COLD_SCAN_NO_CACHE_FILL` | 1 | yes | — |
 | `TS_DATA_RAFT_READ_MODE` | 1 | — | — |
 | `TS_HOT_PAGE_SPILL` | 1 | — | — |
-| `TS_MALLOC_TRIM` | 1 | yes | yes |
+| `TS_MALLOC_TRIM` | 1 | yes | — |
 | `TS_META_FD_PHI_THRESHOLD` | 1 | — | — |
 | `TS_META_MUTATION_LOG` | 1 | — | — |
 | `TS_PROXY_INGESTION_ACCOUNT` | 1 | — | — |

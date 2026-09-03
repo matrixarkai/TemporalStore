@@ -29,9 +29,62 @@ CLASS_RULES = [
     ("diagnostic", re.compile(r"TRACE|DEBUG|PROFILE|SCALE|METRICS|REPORT")),
 ]
 
-LEGACY = re.compile(r"\b(legacy|escape hatch|rollback|previous|as they were|before|superseded)\w*",
-                    re.I)
+# A legacy path is one the flag RESTORES. That verb is the evidence; the mood is not.
+#
+# The previous pattern accepted "before", "previous" and "escape hatch" anywhere in the doc. Those
+# appear in ordinary prose about any bound or any toggle -- "how many entries the queue may hold
+# BEFORE a write stops deferring" is a bound, not a legacy path -- and on that basis it classified
+# an admin token and an allocator knob as older code paths kept alive.
+LEGACY = re.compile(
+    r"(restor\w+|roll(s|ed)? back|rollback|revert\w*|falls? back to)\s+"
+    r"(the\s+|a\s+)?(?:\w+[\s-]+){0,3}?"
+    r"(legacy|previous|older|old|growing|full-log|per-shard|array)"
+    r"|as they were written before"
+    r"|superseded",
+    re.I)
 
+
+NEWLINE = chr(10)
+
+FLAG_READ = re.compile(r'(?:std::)?env::var(?:_os)?\(\s*"(TS_[A-Z0-9_]+)"')
+
+
+def function_end(lines, fn_line):
+    """Last line of the function opening at `fn_line`, by brace matching.
+
+    Needed because "which flags does this function read" is what decides whether its doc comment
+    can be attributed to any single one of them.
+    """
+    depth = 0
+    started = False
+    for i in range(fn_line, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if "{" in lines[i]:
+            started = True
+        if started and depth <= 0:
+            return i + 1
+    return len(lines)
+
+
+def doc_for_flag(name, doc, lines, fn_line):
+    """The doc comment to credit to `name`, and the flags it would otherwise be shared with.
+
+    A function reading several flags has one doc comment above it, written about one of them.
+    Crediting it to all of them files words under flags they were never written about, and the
+    inventory then reports those words as the reason a flag exists.
+
+    **This changes nothing today.** Nine functions read more than one flag; none of them carries a
+    doc comment, so this returns an empty shared list every time and the count it feeds is zero.
+    It is here because the failure it prevents is silent -- the first documented multi-flag
+    function would produce a confidently wrong row with nothing to notice -- and because a zero
+    that is measured is worth more than a zero that is assumed.
+    """
+    if not doc or name in doc or fn_line is None:
+        return doc, []
+    shared = set(FLAG_READ.findall(NEWLINE.join(lines[fn_line:function_end(lines, fn_line)])))
+    if len(shared) <= 1:
+        return doc, []
+    return "", sorted(shared - {name})
 
 def classify(name: str) -> str:
     for label, pattern in CLASS_RULES:
@@ -69,7 +122,10 @@ for rel, text in prod.items():
                 doc.append(lines[i].strip()[3:].strip())
                 i -= 1
             doc.reverse()
-        entry["doc"] = " ".join(doc)
+        text_doc, shared_with = doc_for_flag(name, " ".join(doc), lines, fn_line)
+        if shared_with:
+            entry["doc_shared_with"] = shared_with
+        entry["doc"] = text_doc
 
 # knobs named by a constant, which no env::var scan sees
 for rel, text in prod.items():
@@ -97,6 +153,7 @@ for name in sorted(flags):
         "legacy": legacy,
         "offered": name in offered,
         "doc": doc,
+        "shared_with": entry.get("doc_shared_with", []),
     })
 
 by_group = {}
@@ -128,6 +185,9 @@ lines = [
     "| offered on the portal | %d |" % sum(1 for r in rows if r["offered"]),
     "| documented as keeping an older path alive | %d |" % sum(1 for r in rows if r["legacy"]),
     "| reaching more than two files | %d |" % sum(1 for r in rows if r["sites"] > 2),
+    # Zero today, and measured rather than assumed: see doc_for_flag.
+    "| whose doc comment is really about another flag | %d |"
+    % sum(1 for r in rows if r["shared_with"]),
     "",
 ]
 
