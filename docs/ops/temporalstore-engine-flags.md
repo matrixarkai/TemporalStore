@@ -7,7 +7,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 98 of them, and **none is dead**: all 55 accessor functions that read one have a
+There are 97 of them, and **none is dead**: all 55 accessor functions that read one have a
 non-test caller. So the length of this list is not a cleanup backlog -- every flag changes
 behaviour, and retiring one is a decision about behaviour rather than tidying.
 
@@ -17,9 +17,9 @@ whether a customer can set it at all.
 
 | flags | count |
 |---|---|
-| total | 98 |
+| total | 97 |
 | offered on the portal | 16 |
-| documented as keeping an older path alive | 6 |
+| documented as keeping an older path alive | 5 |
 | reaching more than two files | 3 |
 | whose doc comment is really about another flag | 0 |
 
@@ -103,7 +103,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RESIDENT_PAGES` | 1 | — | — |
 | `TS_WAL_SEGMENT_BYTES` | 1 | — | — |
 
-## format (9)
+## format (8)
 
 The shape of what is written. Readers generally accept both shapes, which is what makes these safe to flip and hard to retire.
 
@@ -112,7 +112,6 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_INDEX_CATALOG_FOLD` | 1 | — | yes |
 | `TS_INDEX_CODEC` | 1 | — | — |
 | `TS_INDEX_LOG_BINARY` | 1 | — | — |
-| `TS_LEGACY_ARRAY_BYTES` | 1 | — | yes |
 | `TS_NODE_SUMMARY_VECTOR` | 1 | yes | — |
 | `TS_PROXY_BINARY_VERSION` | 1 | — | — |
 | `TS_RAFT_BINARY_REPLICATION` | 1 | — | — |

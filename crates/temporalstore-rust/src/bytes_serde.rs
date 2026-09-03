@@ -10,7 +10,6 @@
 //! Both shapes decode. Anything written before this still loads, and a client that sends the array
 //! shape is still understood.
 
-use std::cell::Cell;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -19,41 +18,6 @@ use serde::ser::SerializeSeq;
 use serde::Serializer;
 
 thread_local! {
-    /// 0 = not yet resolved, 1 = encoded, 2 = the array shape.
-    ///
-    /// Per thread, not per process. Serialization happens on the thread doing the work, so this is
-    /// the right scope -- and it means a test that drives the shape cannot change what every other
-    /// test in the process writes while it runs.
-    static SHAPE: Cell<u8> = const { Cell::new(0) };
-}
-
-/// TS_LEGACY_ARRAY_BYTES: write byte payloads as an array of numbers, as they were written before.
-///
-/// Default off. The array shape costs three to four characters per byte; the escape hatch exists
-/// for a consumer that reads records directly and has not moved to the encoded shape.
-fn writes_the_array_shape() -> bool {
-    SHAPE.with(|shape| match shape.get() {
-        1 => false,
-        2 => true,
-        _ => {
-            let legacy = matches!(
-                std::env::var("TS_LEGACY_ARRAY_BYTES")
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str(),
-                "1" | "true" | "yes" | "on"
-            );
-            shape.set(if legacy { 2 } else { 1 });
-            legacy
-        }
-    })
-}
-
-/// Choose the shape for THIS THREAD. Exists so the two can be compared in one run; the
-/// environment variable is the supported way to set it.
-pub fn set_array_shape_for_measurement(array_shape: bool) {
-    SHAPE.with(|shape| shape.set(if array_shape { 2 } else { 1 }));
 }
 
 thread_local! {
@@ -139,14 +103,24 @@ pub(crate) fn unescape_payload(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Write a byte payload in the encoded shape.
+///
+/// There used to be a second shape -- an array of JSON numbers, three to four characters per
+/// byte -- behind TS_LEGACY_ARRAY_BYTES, for a consumer reading records directly that had not
+/// moved across. It was measured against this one at 200 records per size, both shapes in one
+/// process, alternating so a busy machine landed on both:
+///
+/// | value | array | encoded | smaller | faster |
+/// |---|---|---|---|---|
+/// | 64 B | 72,892 B (5.69x user) | 35,892 B (2.80x user) | 2.03x | 1.03x |
+/// | 256 B | 227,377 B (4.44x user) | 74,492 B (1.45x user) | 3.05x | 1.43x |
+/// | 1024 B | 845,367 B (4.13x user) | 229,284 B (1.12x user) | 3.69x | 2.95x |
+/// | 4096 B | 3,705,054 B (4.52x user) | 845,493 B (1.03x user) | 4.38x | 3.83x |
+///
+/// The flag is retired and only this shape is written. Decoding never consulted it and accepts
+/// either shape by inspection, so a store written with the array shape still reads back -- what
+/// is gone is the ability to produce more of it.
 pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-    if writes_the_array_shape() {
-        let mut seq = serializer.serialize_seq(Some(bytes.len()))?;
-        for byte in bytes {
-            seq.serialize_element(byte)?;
-        }
-        return seq.end();
-    }
     // Carried beside the document when that is smaller. Escaping costs whatever newlines weigh in
     // these particular bytes -- about 1% for most payloads -- against base64's flat third. A
     // payload that is mostly newlines would grow, so it stays encoded.
@@ -239,11 +213,7 @@ pub mod pairs {
     ) -> Result<S::Ok, S::Error> {
         let mut seq = serializer.serialize_seq(Some(pairs.len()))?;
         for (name, bytes) in pairs {
-            if super::writes_the_array_shape() {
-                seq.serialize_element(&(name, bytes))?;
-            } else {
-                seq.serialize_element(&(name, STANDARD.encode(bytes)))?;
-            }
+            seq.serialize_element(&(name, STANDARD.encode(bytes)))?;
         }
         seq.end()
     }
@@ -315,36 +285,6 @@ mod tests {
             let encoded = serde_json::to_vec(&command).unwrap();
             let decoded: Command = serde_json::from_slice(&encoded).unwrap();
             assert_eq!(decoded, command, "payload changed across the round trip");
-        }
-    }
-
-    /// The escape hatch really does restore the old shape, and it still reads back.
-    #[test]
-    fn the_escape_hatch_restores_the_array_shape() {
-        let command = Command::StringSet {
-            key: "k".to_string(),
-            value: b"hi".to_vec(),
-        };
-        super::set_array_shape_for_measurement(true);
-        let as_array = serde_json::to_string(&command).unwrap();
-        super::set_array_shape_for_measurement(false);
-        let as_encoded = serde_json::to_string(&command).unwrap();
-
-        assert!(
-            as_array.contains("[104,105]"),
-            "the escape hatch should write the array shape, got {as_array}"
-        );
-        assert!(
-            !as_encoded.contains("[104,105]"),
-            "the default should not write the array shape, got {as_encoded}"
-        );
-        assert!(
-            as_encoded.len() < as_array.len(),
-            "the default should be the smaller of the two"
-        );
-        for shape in [as_array, as_encoded] {
-            let decoded: Command = serde_json::from_str(&shape).unwrap();
-            assert_eq!(decoded, command);
         }
     }
 }
