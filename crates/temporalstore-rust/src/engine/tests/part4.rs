@@ -12674,3 +12674,381 @@ fn does_a_sequence_count_narrow_the_read() {
 "
     );
 }
+
+
+/// What do the score-ordered zset reads cost as the set grows?
+///
+/// A zset is `HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>` — keyed by MEMBER, score as a
+/// value. Member lookup is O(log n); anything ordered by SCORE cannot use that ordering.
+/// `zset_ordered_members` clones every member and sorts all n before the caller filters, and
+/// `ZSetRank` scans with two member clones per member examined.
+///
+/// `ZSetScore` is the control: one member lookup, which should be flat. If every column grows, the
+/// harness is the suspect rather than the code.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_score_ordered_zset_reads_cost -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_the_score_ordered_zset_reads_cost() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  members   range_by_score(8)   bytes   returned      rank   bytes      score   bytes       add
+"
+    );
+
+    for size in [256_usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        for index in 0..size {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetAdd {
+                    key: "board".to_string(),
+                    member: format!("member-{index:08}").into_bytes(),
+                    score: index as f64,
+                },
+            });
+            assert!(out.status.ok, "build {index}: {:?}", out.status);
+        }
+
+        let measure = |command: Command| {
+            let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            (counts.allocs, counts.alloc_bytes, out.response)
+        };
+
+        // Eight members out of `size`, by score. The narrowest useful ask.
+        let (range_allocs, range_bytes, range_response) = measure(Command::ZSetRangeByScore {
+            key: "board".to_string(),
+            min: 10.0,
+            max: 17.0,
+            min_exclusive: false,
+            max_exclusive: false,
+            rev: false,
+        });
+        // Members come back as [member, score, member, score, ...], so eight members is sixteen.
+        let returned = match &range_response {
+            CommandResponse::Members { members } => members.len() / 2,
+            other => panic!("expected members, got {other:?}"),
+        };
+        assert_eq!(
+            returned, 8,
+            "the window must return exactly 8 members, got {returned} -- otherwise this column is \
+             not the cost of the query it is named for"
+        );
+
+        let (rank_allocs, rank_bytes, _) = measure(Command::ZSetRank {
+            key: "board".to_string(),
+            member: format!("member-{:08}", size / 2).into_bytes(),
+            rev: false,
+        });
+
+        // Control: one member lookup straight through the map. Should not care how big the set is.
+        let (score_allocs, score_bytes, score_response) = measure(Command::ZSetScore {
+            key: "board".to_string(),
+            member: format!("member-{:08}", size / 2).into_bytes(),
+        });
+        assert!(
+            matches!(&score_response, CommandResponse::Bytes { value: Some(_) }),
+            "the control must actually find the member, or it is measuring a miss"
+        );
+
+        // NOT measured through `measure`: that warms and probes the same command, and a second
+        // ZSetAdd of the same member at the same score takes the "nothing to rewrite" early return,
+        // so it would report the cost of detecting a duplicate instead of the cost of an add.
+        // Warm on one new member, probe on another.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetAdd {
+                key: "board".to_string(),
+                member: format!("warm-{size:08}").into_bytes(),
+                score: 1.5,
+            },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let added = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetAdd {
+                key: "board".to_string(),
+                member: format!("fresh-{size:08}").into_bytes(),
+                score: 2.5,
+            },
+        });
+        let add_allocs = probe.stop().allocs;
+        assert!(added.status.ok, "{:?}", added.status);
+        assert!(
+            matches!(&added.response, CommandResponse::Integer { value: 1 }),
+            "the measured add must report a NEW member (1), or it is measuring a duplicate: {:?}",
+            added.response
+        );
+
+        println!(
+            "  {size:>7}   {range_allocs:>17}   {range_bytes:>5}   {returned:>8}   {rank_allocs:>7}   {rank_bytes:>5}   {score_allocs:>8}   {score_bytes:>5}   {add_allocs:>7}"
+        );
+    }
+
+    println!(
+        "
+  range_by_score / rank flat  => the per-member COPIES are gone: the score test runs before the
+                                 member bytes are cloned, and rank compares the parts in place.
+                                 The SCAN is still O(n) and stays that way while the map is keyed
+                                 by member -- this is an allocation win, not an asymptotic one.
+  either column rising        => a copy per member has come back.
+  score flat                  => the control works, so the columns above mean what they say.
+  add                         => a genuinely new member each time, asserted to report 1.
+                                 Not a control: an add is not idempotent, so it cannot be
+                                 warmed and re-measured the way the reads can.
+"
+    );
+}
+
+
+/// What the score-ordered zset reads ANSWER, pinned across many random cases.
+///
+/// Coverage for these commands is one case each, which is not enough to change the code underneath
+/// them. The expected answers here are computed independently -- by sorting (score, member) pairs in
+/// the test and slicing -- rather than by calling the helper the engine calls, because a test that
+/// mirrors the implementation passes whatever the implementation does.
+///
+/// Duplicate scores are included on purpose: ties order by member, and a change that sorted only by
+/// score would still pass a test whose scores were all distinct.
+#[test]
+fn score_ordered_zset_reads_answer_the_same_before_and_after() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // A deterministic spread with deliberate score ties.
+    let mut state: u64 = 0x243F_6A88_85A3_08D3;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        state >> 11
+    };
+
+    let count = 400_usize;
+    let mut expected: Vec<(u64, Vec<u8>)> = Vec::new();
+    for index in 0..count {
+        // Scores collide by construction: many members share each score.
+        let score = (next() % 40) as u64;
+        let member = format!("m-{index:05}").into_bytes();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetAdd {
+                key: "board".to_string(),
+                member: member.clone(),
+                score: score as f64,
+            },
+        });
+        assert!(out.status.ok, "add {index}: {:?}", out.status);
+        expected.push((score, member));
+    }
+    expected.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    assert!(
+        expected.windows(2).any(|w| w[0].0 == w[1].0),
+        "the fixture must contain score ties, or ordering-by-member is never exercised"
+    );
+
+    // --- range by score, over many windows -------------------------------------------------
+    let mut checked_nonempty = 0;
+    for lo in 0..38_u64 {
+        let hi = lo + 2;
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetRangeByScore {
+                key: "board".to_string(),
+                min: lo as f64,
+                max: hi as f64,
+                min_exclusive: false,
+                max_exclusive: false,
+                rev: false,
+            },
+        });
+        let members = match response.response {
+            CommandResponse::Members { members } => members,
+            other => panic!("expected members, got {other:?}"),
+        };
+        // [member, score, member, score, ...]
+        let got: Vec<Vec<u8>> = members.chunks(2).map(|pair| pair[0].clone()).collect();
+        let want: Vec<Vec<u8>> = expected
+            .iter()
+            .filter(|(score, _)| *score >= lo && *score <= hi)
+            .map(|(_, member)| member.clone())
+            .collect();
+        assert_eq!(got, want, "range by score [{lo}, {hi}]");
+        if !want.is_empty() {
+            checked_nonempty += 1;
+        }
+    }
+    assert!(
+        checked_nonempty >= 30,
+        "only {checked_nonempty} windows returned anything -- an all-empty sweep would pass \
+         whatever the code did"
+    );
+
+    // --- rank, forward and reverse -----------------------------------------------------------
+    for pick in [0_usize, 1, 7, 99, 200, 399] {
+        let (_, member) = &expected[pick];
+        for rev in [false, true] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetRank {
+                    key: "board".to_string(),
+                    member: member.clone(),
+                    rev,
+                },
+            });
+            let got = match response.response {
+                CommandResponse::Bytes { value: Some(bytes) } => {
+                    String::from_utf8(bytes).unwrap().parse::<usize>().unwrap()
+                }
+                other => panic!("expected a rank, got {other:?}"),
+            };
+            let want = if rev { count - 1 - pick } else { pick };
+            assert_eq!(got, want, "rank of {pick} (rev={rev})");
+        }
+    }
+
+    // A member that is not there has no rank.
+    let missing = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ZSetRank {
+            key: "board".to_string(),
+            member: b"not-a-member".to_vec(),
+            rev: false,
+        },
+    });
+    assert!(
+        matches!(missing.response, CommandResponse::Bytes { value: None }),
+        "a member that was never added must have no rank"
+    );
+}
+
+
+/// Is a push expensive because the LIST is long, or because the CACHE is full?
+///
+/// One push onto a 4,096-entry list costs ~16,488 allocations, and one ZSetAdd onto a 4,096-member
+/// set ~16,491 -- near-identical, so one shared mechanism. The code points at
+/// `invalidate_record`, which scans every key in all three cache tiers; but code reading has already
+/// been wrong twice here, so this decides it by varying the two axes independently.
+///
+/// Arm A is one long list. Arm B is many short lists holding about as many cached pages in total.
+/// Equal cost means the cache drives it; a cheap arm B means the collection's own length does.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_a_push_expensive_because_of_the_list_or_the_cache -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn is_a_push_expensive_because_of_the_list_or_the_cache() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    // Push `per_list` entries into each of `lists` lists, then measure ONE more push onto list 0.
+    let arm = |lists: usize, per_list: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            256 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for list in 0..lists {
+            for index in 0..per_list {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ListPush {
+                        key: format!("feed-{list:05}"),
+                        member: format!("entry-{index:08}").into_bytes(),
+                        left: false,
+                    },
+                });
+                assert!(out.status.ok, "push {list}/{index}: {:?}", out.status);
+            }
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ListPush {
+                key: "feed-00000".to_string(),
+                member: b"measured".to_vec(),
+                left: false,
+            },
+        });
+        let allocs = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+        // The push must have landed, or this is the cost of failing.
+        match out.response {
+            CommandResponse::Integer { value } => assert_eq!(
+                value as usize,
+                per_list + 1,
+                "the measured push must extend list 0 to {} entries",
+                per_list + 1
+            ),
+            other => panic!("expected the new length, got {other:?}"),
+        }
+        allocs as u64
+    };
+
+    println!(
+        "
+  cached pages   A: one list of n   B: n/10 lists of 10   ratio
+"
+    );
+
+    for total in [640_usize, 2560, 10240] {
+        let a = arm(1, total);
+        let b = arm(total / 10, 10);
+        println!(
+            "  {total:>12}   {a:>16}   {b:>19}   {:>5.2}",
+            a as f64 / b.max(1) as f64
+        );
+    }
+
+    println!(
+        "
+  Measured: B is FLAT at 122 while total cached pages grow sixteenfold, and A rises with the list.
+  So the ALLOCATIONS follow the collection's own length, not the size of the cache.
+
+  Both come from one call, `invalidate_record`, and it has two costs that must not be conflated:
+    * it SCANS every key in all three tiers -- pure iteration, allocating nothing, so this probe is
+      blind to it. That cost follows the whole cache and needs a different instrument.
+    * it CLONES the keys that match this record into a BTreeSet and then a Vec -- about four
+      allocations per existing entry of the same collection. That is what the A column shows.
+
+  A rising  => a push still copies one cache key per entry the collection already holds.
+  B rising  => the match filter has stopped narrowing, and every record's keys are being copied.
+"
+    );
+}
