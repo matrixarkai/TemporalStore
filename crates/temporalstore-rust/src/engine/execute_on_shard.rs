@@ -1222,12 +1222,11 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            let addresses: Vec<BlockAddress> = shard
-                .lists
-                .get(&key)
-                .map(|list| list.values().cloned().collect())
-                .unwrap_or_default();
-            let length = addresses.len() as i64;
+            // The length comes from the map itself -- `ListLen` below takes the same number the
+            // same way. Copying every address to obtain it, and to index a slice of it, meant a
+            // ten-entry page of a four-thousand-entry list copied four thousand addresses.
+            let list = shard.lists.get(&key);
+            let length = list.map_or(0, |list| list.len()) as i64;
             let resolve = |index: i64| -> i64 {
                 if index < 0 {
                     length + index
@@ -1240,10 +1239,19 @@ pub(crate) fn execute_on_shard(
             let members = if from > to || length == 0 {
                 Vec::new()
             } else {
-                addresses[from as usize..=to as usize]
-                    .iter()
-                    .filter_map(|address| read_page_bytes(cache, page_store, shard_id, address))
-                    .collect()
+                // A BTreeMap iterates in key order, which is the list's order -- the same order the
+                // materialised Vec had. Only the requested span is visited.
+                let wanted = (to - from + 1) as usize;
+                list.map(|list| {
+                    list.values()
+                        .skip(from as usize)
+                        .take(wanted)
+                        .filter_map(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
             };
             CommandResponse::Members { members }
         }

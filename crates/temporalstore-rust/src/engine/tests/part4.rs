@@ -13052,3 +13052,115 @@ fn is_a_push_expensive_because_of_the_list_or_the_cache() {
 "
     );
 }
+
+
+/// What does `ListRange` cost as the list grows, asked for a fixed slice?
+///
+/// The arm clones EVERY address in the list into a fresh Vec, purely to learn `length` and index a
+/// slice; only the slice is then read from pages. `ListLen` beside it takes the same length from
+/// `BTreeMap::len` for free, which is what shows the materialisation buys nothing.
+///
+/// `ListLen` is the control here: flat by construction, so if it moves the harness is the suspect.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_fixed_list_slice_costs_as_the_list_grows -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_a_fixed_list_slice_costs_as_the_list_grows() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  entries   range(first 10)   bytes   returned      len   bytes     push
+"
+    );
+
+    for size in [256_usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        for index in 0..size {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ListPush {
+                    key: "feed".to_string(),
+                    member: format!("entry-{index:08}").into_bytes(),
+                    left: false,
+                },
+            });
+            assert!(out.status.ok, "push {index}: {:?}", out.status);
+        }
+
+        let measure = |command: Command| {
+            let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            (counts.allocs, counts.alloc_bytes, out.response)
+        };
+
+        // Ten entries out of `size` -- the shape a caller paging a feed actually asks for.
+        let (range_allocs, range_bytes, range_response) = measure(Command::ListRange {
+            key: "feed".to_string(),
+            start: 0,
+            stop: 9,
+        });
+        let returned = match &range_response {
+            CommandResponse::Members { members } => members.len(),
+            other => panic!("expected members, got {other:?}"),
+        };
+        assert_eq!(
+            returned, 10,
+            "the slice must return exactly 10 entries, got {returned} -- otherwise this column is \
+             not the cost of the query it is named for"
+        );
+
+        // Control: the length, which comes straight from BTreeMap::len.
+        let (len_allocs, len_bytes, len_response) = measure(Command::ListLen {
+            key: "feed".to_string(),
+        });
+        match &len_response {
+            CommandResponse::Integer { value } => assert_eq!(
+                *value as usize, size,
+                "the control must report the whole list, or it is measuring the wrong list"
+            ),
+            other => panic!("expected an integer, got {other:?}"),
+        }
+
+        let (push_allocs, _, _) = measure(Command::ListPush {
+            key: "feed".to_string(),
+            member: b"one-more".to_vec(),
+            left: false,
+        });
+
+        println!(
+            "  {size:>7}   {range_allocs:>15}   {range_bytes:>5}   {returned:>8}   {len_allocs:>6}   {len_bytes:>5}   {push_allocs:>6}"
+        );
+    }
+
+    println!(
+        "
+  range BYTES flat  => the slice costs the slice. Watch the bytes, not the count: the whole-list
+                       copy was ONE Vec, so the allocation count was already flat at ~41 while the
+                       bytes ran 17,926 -> 263,686. A count-only probe would have called this clean.
+  range bytes rising => the whole list is being copied again before the slice is taken.
+  len flat           => the control works, so the columns above mean what they say.
+  push rising        => expected here, and NOT this arm's doing: a push clones one cache key per
+                       entry the list already holds, inside invalidate_record. Separate finding.
+"
+    );
+}
