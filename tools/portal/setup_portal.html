@@ -164,6 +164,11 @@
   .portalnav a[aria-current=page]{color:var(--accent);border-bottom-color:var(--accent)}
   .livestrip{display:flex;gap:14px;align-items:center;margin-left:auto;padding-bottom:7px;
              flex-wrap:wrap}
+  .subhead{font-size:13px;font-weight:650;margin:18px 0 0;letter-spacing:.01em}
+  .status-chip{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:11px;
+      padding:0 5px;border-radius:4px;background:var(--card);margin-right:4px;
+      font-variant-numeric:tabular-nums}
+  .status-chip.bad{background:var(--danger-bg);color:var(--danger)}
   .live-seg{display:inline-flex;gap:5px;align-items:baseline;font-size:12.5px;color:var(--muted);
             text-decoration:none;border-bottom:0;padding:0;font-weight:400;
             font-variant-numeric:tabular-nums}
@@ -569,6 +574,12 @@
   <section>
     <h2>Traffic <span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></h2>
     <div id="traffic"><div class="empty">Loading…</div></div>
+    <h3 class="subhead">Recent failures</h3>
+    <p class="hint" style="margin-top:0">The last few requests this worker answered with an error,
+      newest first. Route, method and status only &mdash; no key, no tenant, nothing about who
+      asked. Counters tell you seven requests failed; this tells you whether that was a minute ago
+      or last Tuesday.</p>
+    <div id="failures"><div class="empty">Nothing yet.</div></div>
   </section>
   </section>
 
@@ -2198,12 +2209,17 @@ function liveStream(options) {
       },
       onFrame: function (frame) {
         renderLiveTraffic(frame.traffic);
+        renderFailures((frame.traffic || {}).recent_failures);
         if (frame.embedding) { renderEncoding(frame.embedding); }
         if (window.__matrixarkLiveFrame) { window.__matrixarkLiveFrame(frame); }
       }
     });
   }
 
+  /* Mean AND p95: a mean is the one latency figure that cannot describe the requests people
+     complain about -- nineteen at 3 ms and one at nine seconds average to 453 ms, which
+     describes neither. The p95 is a bucket edge, so it is shown with a tilde rather than
+     claiming a precision the histogram does not have. */
   /* The same table the scrape used to draw, from the frame instead of a /v1/metrics parse. */
   function renderLiveTraffic(traffic) {
     var routes = (traffic || {}).routes || {};
@@ -2214,12 +2230,50 @@ function liveStream(options) {
       $("traffic").innerHTML = '<div class="empty">No requests recorded yet on this worker.</div>';
       return;
     }
-    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Errors</th>" +
-      "<th>Mean latency</th></tr></thead><tbody>" + names.map(function (name) {
+    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Answers</th>" +
+      "<th>Errors</th><th>Mean</th><th>95% within</th></tr></thead><tbody>" + names.map(function (name) {
         var row = routes[name];
         return "<tr><td><span class='mono'>" + esc(name) + "</span></td><td class='num'>" +
-          row.requests + "</td><td class='num'>" + (row.errors || 0) + "</td><td class='num'>" +
-          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td></tr>";
+          row.requests + "</td><td>" + statusChips(row.statuses) + "</td><td class='num'>" +
+          (row.errors || 0) + "</td><td class='num'>" +
+          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td><td class='num'>" +
+          (row.p95_ms == null ? "—" : "~" + row.p95_ms + " ms") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
+  /* What a route actually answered, in order. One "errors" count cannot tell a customer holding the
+     wrong key (401) from a backend that fell over (500), and those want different things done. */
+  function statusChips(statuses) {
+    var codes = Object.keys(statuses || {}).sort(function (a, b) { return Number(a) - Number(b); });
+    if (!codes.length) { return "<span class='hint'>—</span>"; }
+    return codes.map(function (code) {
+      return "<span class='status-chip" + (Number(code) >= 400 ? " bad" : "") + "'>" +
+        esc(code) + "×" + esc(String(statuses[code])) + "</span>";
+    }).join("");
+  }
+
+  /* Seconds, not a clock time: "14s ago" is read at a glance, a timestamp has to be subtracted from
+     now in your head first. */
+  function agoText(at) {
+    var seconds = Math.max(0, Math.round(Date.now() / 1000 - Number(at || 0)));
+    if (seconds < 60) { return seconds + "s ago"; }
+    if (seconds < 3600) { return Math.round(seconds / 60) + "m ago"; }
+    return Math.round(seconds / 3600) + "h ago";
+  }
+
+  function renderFailures(list) {
+    var rows = list || [];
+    if (!rows.length) {
+      /* Said plainly: an empty panel and one that never loaded look identical otherwise. */
+      $("failures").innerHTML = '<div class="empty">No failures recorded on this worker.</div>';
+      return;
+    }
+    $("failures").innerHTML =
+      "<table><thead><tr><th>When</th><th>Status</th><th>Method</th><th>Route</th></tr></thead>" +
+      "<tbody>" + rows.map(function (row) {
+        return "<tr><td>" + esc(agoText(row.at)) + "</td><td><span class='status-chip bad'>" +
+          esc(String(row.status)) + "</span></td><td class='mono'>" + esc(row.method || "") +
+          "</td><td class='mono'>" + esc(row.route || "") + "</td></tr>";
       }).join("") + "</tbody></table>";
   }
   /* Leaving with unsaved edits loses them silently otherwise; on a form this long that is a

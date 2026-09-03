@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import deque
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Deque, Any, Dict, List, Optional, Tuple
 import sys
 
 Json = Dict[str, Any]
@@ -36,6 +37,10 @@ Json = Dict[str, Any]
 # ingest fast-acks in single-digit milliseconds and a retrieve is tens of milliseconds, so the
 # resolution has to be low down; the long tail matters because a silent extraction timeout shows up
 # as a ~30s request.
+# How many recent failures to keep. Enough to see a burst and its shape; small enough that
+# the memory is a rounding error on a process that lives for weeks.
+RECENT_FAILURES = 50
+
 _BUCKETS: Tuple[float, ...] = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
 
 # Route templates the gateway serves. Longest-prefix wins, so /v1/memories is not swallowed by the
@@ -75,6 +80,11 @@ _EXACT_ROUTES = frozenset({
 STREAMING_ROUTES = frozenset({"/v1/admin/events"})
 
 
+def _as_ms(seconds: Optional[float]) -> Optional[float]:
+    """Seconds to milliseconds, keeping None as None: unmeasured is not zero."""
+    return None if seconds is None else round(seconds * 1000.0, 2)
+
+
 def route_label(path: str) -> str:
     """Collapse a request path to a bounded route template (see the cardinality note above)."""
     if path in _EXACT_ROUTES:
@@ -83,6 +93,34 @@ def route_label(path: str) -> str:
         if path.startswith(prefix):
             return template
     return "other"
+
+
+def bucket_quantile(buckets: List[float], quantile: float, observed_max_s: float) -> Optional[float]:
+    """The bucket edge at or below which `quantile` of the observations fell, in seconds.
+
+    A bucket edge, not an exact quantile. A histogram supports "95% finished within 250 ms"; it
+    does not support "the 95th percentile was 212 ms", and a precise-looking number derived from
+    bucketed counts is a claim the data cannot make.
+
+    The last bucket is the overflow one and has no upper edge, so when the quantile lands there the
+    observed maximum is returned: "slower than the largest bucket" and "unbounded" are different
+    statements and only the first is true.
+
+    None when nothing has been observed -- an empty histogram has no tail, and a zero here would
+    read as a route that is very fast rather than one nobody has called.
+    """
+    total = sum(buckets)
+    if total <= 0:
+        return None
+    target = total * quantile
+    seen = 0.0
+    for index, count in enumerate(buckets):
+        seen += count
+        if seen >= target:
+            if index < len(_BUCKETS):
+                return _BUCKETS[index]
+            return observed_max_s
+    return observed_max_s
 
 
 class GatewayMetrics:
@@ -102,6 +140,14 @@ class GatewayMetrics:
         self._req_bytes: Dict[str, int] = {}
         self._resp_bytes: Dict[str, int] = {}
         self._in_flight = 0
+        # The last few failures, newest last. Bounded because this is a process-lifetime structure
+        # on a hot path: an unbounded list of every failure is a memory leak that only shows up on
+        # the deployments having the worst day.
+        #
+        # Route label, method, status, time. Nothing that identifies who made the request: the
+        # portal shows this to anyone who can read it, and identity added here would be invisible
+        # in the panel and permanent in the process.
+        self._failures: Deque[Tuple[float, str, str, int]] = deque(maxlen=RECENT_FAILURES)
 
     # ---- recording -----------------------------------------------------------------------------
     def begin(self) -> None:
@@ -150,6 +196,8 @@ class GatewayMetrics:
                 self._req_bytes[route] = self._req_bytes.get(route, 0) + int(request_bytes)
             if response_bytes:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
+            if status >= 400:
+                self._failures.append((time.time(), route, method, status))
 
     # ---- reading -------------------------------------------------------------------------------
     def snapshot(self) -> Json:
@@ -162,12 +210,24 @@ class GatewayMetrics:
                     "requests": count,
                     "avg_ms": round(self._sum.get(route, 0.0) / total * 1000.0, 2),
                     "max_ms": round(self._max.get(route, 0.0) * 1000.0, 2),
+                    # The tail, which the mean cannot show: fifty requests at 3 ms and one at nine
+                    # seconds average out to something describing neither.
+                    "p95_ms": _as_ms(bucket_quantile(self._latency.get(route, []), 0.95,
+                                                     self._max.get(route, 0.0))),
                     "request_bytes": self._req_bytes.get(route, 0),
                     "response_bytes": self._resp_bytes.get(route, 0),
                     "errors": 0,
+                    # What this route actually answers. Summed into one "errors" figure, a route
+                    # returning 401 to a customer with the wrong key was indistinguishable from one
+                    # returning 500, and both read as the gateway being broken.
+                    "statuses": {},
                 }
             for (route, _method, status), count in self._requests.items():
-                if status >= 400 and route in routes:
+                if route not in routes:
+                    continue
+                statuses = routes[route]["statuses"]
+                statuses[str(status)] = statuses.get(str(status), 0) + count
+                if status >= 400:
                     routes[route]["errors"] += count
             return {
                 "uptime_s": round(time.time() - self._start, 1),
@@ -175,6 +235,12 @@ class GatewayMetrics:
                 "routes": routes,
                 "total_requests": sum(self._count.values()),
                 "total_errors": sum(c for (_r, _m, s), c in self._requests.items() if s >= 400),
+                # Newest first, because a panel reads top-down and the useful one is the last thing
+                # that happened.
+                "recent_failures": [
+                    {"at": round(at, 3), "route": route, "method": method, "status": status}
+                    for at, route, method, status in reversed(self._failures)
+                ],
             }
 
     def prometheus_lines(self) -> List[str]:

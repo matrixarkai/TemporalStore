@@ -1764,6 +1764,10 @@ ROUTE_DOCS: List[Json] = [
 # How often a live frame is sent. Two seconds is a compromise: an import moving at tens of
 # documents a second visibly advances, and a forgotten tab costs one small frame every two seconds
 # rather than three HTTP requests.
+# How many recent failures ride the live frame. The edge keeps more; this is what a panel
+# shows before someone goes looking properly.
+LIVE_FAILURES = 10
+
 EVENT_TICK_S = 2.0
 # The embedding count walks the record log, so it rides the stream at its own much slower cadence
 # rather than every tick. Everything else in a frame is read from memory.
@@ -1846,6 +1850,9 @@ def _shared_live_parts() -> Json:
             "total_errors": traffic.get("total_errors", 0),
             "in_flight": traffic.get("in_flight", 0),
             "routes": traffic.get("routes", {}),
+            # The newest few, not all fifty. This rides every frame to every viewer; the whole ring
+            # would roughly double a frame to carry a scroll-back nobody reads in a strip.
+            "recent_failures": (traffic.get("recent_failures") or [])[:LIVE_FAILURES],
         },
         "imports": imports,
         "warnings": warnings,
