@@ -882,6 +882,15 @@ pub type LocalWalStore = LocalWriteAheadLogStore;
 #[derive(Debug)]
 struct WriteAheadLogInner {
     root: PathBuf,
+    /// The append lock file, held open per shard.
+    ///
+    /// It used to be opened and closed on every append: a `format!`, a `PathBuf`, an open and a
+    /// close, for a file whose name never changes. The lock itself is `flock`, still taken and
+    /// released per append -- this only stops re-opening the thing being locked.
+    ///
+    /// Safe to hold open: `flock` guards against OTHER PROCESSES, and threads inside this one are
+    /// already serialised by the mutex around this struct.
+    append_lock_by_shard: HashMap<ShardId, std::sync::Arc<File>>,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
@@ -943,6 +952,7 @@ impl LocalWriteAheadLogStore {
         Self {
             inner: Arc::new(Mutex::new(WriteAheadLogInner {
                 root,
+                append_lock_by_shard: HashMap::new(),
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
@@ -1041,8 +1051,9 @@ impl LocalWriteAheadLogStore {
         let log_id;
         {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            fs::create_dir_all(&inner.root)?;
-            let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            // Acquiring the append lock creates the directory the first time it opens the lock
+            // file; doing it again on every append was a syscall to learn something unchanged.
+            let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
             ensure_active_wal_segment(&mut inner, shard_id)?;
             let (last_sequence, on_disk_len) =
                 resolve_last_sequence_for_append(&mut inner, shard_id)?;
@@ -1125,8 +1136,9 @@ impl LocalWriteAheadLogStore {
         outcomes: Vec<WalOutcomeItem>,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+        // Acquiring the append lock creates the directory the first time it opens the lock
+        // file; doing it again on every append was a syscall to learn something unchanged.
+        let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
         // Start a piece if a crash left none, exactly as the single-record path does. Without it
         // the record creates the file with no base header, so it reads as starting at log id zero
         // -- an address the sealed pieces already own.
@@ -1215,7 +1227,7 @@ impl LocalWriteAheadLogStore {
         sync: bool,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+        let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
         let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
         let seq = last_sequence.saturating_add(1);
         let record = WriteAheadLogRecord {
@@ -1258,8 +1270,9 @@ impl LocalWriteAheadLogStore {
         let mut batch_end: Option<u64> = None;
         {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-            fs::create_dir_all(&inner.root)?;
-            let _append_lock = WalAppendLock::acquire(&inner.root, shard_id)?;
+            // Acquiring the append lock creates the directory the first time it opens the lock
+            // file; doing it again on every append was a syscall to learn something unchanged.
+            let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
             // Start a piece if a crash left none. Without this the first record of the batch
             // creates the file with no base header, so it reads as starting at log id zero -- an
             // address the sealed pieces already own. The single-record path has always done this;
@@ -2497,20 +2510,57 @@ fn locate_log_id(
     Ok(None)
 }
 
+/// Whether a handle still refers to a file that exists under some name.
+///
+/// A descriptor outlives the unlinking of its file, and `flock` on an unlinked inode succeeds --
+/// so a cached lock handle whose file has been removed would grant a lock nobody else contends
+/// for. Checked per acquisition; a link count of zero means re-open.
+#[cfg(unix)]
+fn still_linked(file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().map(|meta| meta.nlink() > 0).unwrap_or(false)
+}
+
+/// Locks are advisory no-ops off unix, so a stale handle costs nothing there.
+#[cfg(not(unix))]
+fn still_linked(_file: &File) -> bool {
+    true
+}
+
 struct WalAppendLock {
-    #[allow(dead_code)]
-    file: File,
+    file: std::sync::Arc<File>,
 }
 
 impl WalAppendLock {
-    fn acquire(root: &Path, shard_id: ShardId) -> Result<Self, WriteAheadLogError> {
-        fs::create_dir_all(root)?;
-        let path = root.join(format!("shard-{shard_id}.wal.lock"));
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(path)?;
+    /// Take the append lock, opening the lock file only the first time this shard needs it.
+    ///
+    /// An `Arc` clone is a refcount bump, so taking the lock allocates nothing once the handle
+    /// exists. What still happens every time is the `flock` and its release -- that is the lock.
+    fn acquire(
+        inner: &mut WriteAheadLogInner,
+        shard_id: ShardId,
+    ) -> Result<Self, WriteAheadLogError> {
+        let file = match inner.append_lock_by_shard.get(&shard_id) {
+            // Only if the handle still names a file. A cached descriptor on an UNLINKED inode
+            // would still lock successfully while another process, opening the path afresh, locked
+            // a different inode -- both would think they held the append lock. Re-opening by path
+            // every time made that impossible; this restores the guarantee for the cost of one
+            // fstat, which is still cheaper than the open and close it replaces.
+            Some(file) if still_linked(file) => file.clone(),
+            _ => {
+                fs::create_dir_all(&inner.root)?;
+                let path = inner.root.join(format!("shard-{shard_id}.wal.lock"));
+                let file = std::sync::Arc::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .read(true)
+                        .write(true)
+                        .open(path)?,
+                );
+                inner.append_lock_by_shard.insert(shard_id, file.clone());
+                file
+            }
+        };
         lock_file_exclusive(&file)?;
         Ok(Self { file })
     }
@@ -4477,6 +4527,166 @@ mod tests {
             "rolling added {extra} syncs over {} pieces -- the roll debt is not being deferred",
             rolled_pieces
         );
+    }
+
+    /// Which part of an append allocates. Encoding, framing, and everything else.
+    ///
+    /// A whole-append figure says a write costs 34 allocations and about nine kilobytes for a
+    /// 64-byte value, but not which step to look at. This prices the steps that are callable on
+    /// their own, and infers the rest by subtraction rather than by reading the code and guessing.
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    #[ignore]
+    fn where_an_appends_allocations_go() {
+        for value_len in [64usize, 4096] {
+            let record = WriteAheadLogRecord {
+                shard_id: 1,
+                sequence: 7,
+                metadata: Some(WriteAheadLogRecordMetadata {
+                    version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                    timestamp_ms: 1_787_270_070_192,
+                    items: Vec::new(),
+                    batch_id: None,
+                    batch_size: None,
+                    batch_index: None,
+                }),
+                command: Some(Command::StringSet {
+                    key: "tenant/7/object/000000123".to_string(),
+                    value: vec![118u8; value_len],
+                }),
+                staged_pages: Vec::new(),
+                outcomes: Vec::new(),
+            };
+
+            let runs = 200usize;
+
+            let probe = crate::alloc_probe::Probe::start();
+            for _ in 0..runs {
+                let payload = encode_wal_payload(&record).expect("encode");
+                std::hint::black_box(&payload);
+            }
+            let encode = probe.stop();
+
+            let probe = crate::alloc_probe::Probe::start();
+            for _ in 0..runs {
+                let payload = encode_wal_payload(&record).expect("encode");
+                let framed = crate::log_framing::encode_record(&payload);
+                std::hint::black_box(&framed);
+            }
+            let encode_and_frame = probe.stop();
+
+            println!(
+                "  STEP value {value_len:>5}B | encode {:>5.1} allocs {:>7.0} B |                  +frame {:>5.1} allocs {:>7.0} B (frame alone {:>5.1} / {:>7.0} B)",
+                encode.allocs as f64 / runs as f64,
+                encode.alloc_bytes as f64 / runs as f64,
+                encode_and_frame.allocs as f64 / runs as f64,
+                encode_and_frame.alloc_bytes as f64 / runs as f64,
+                (encode_and_frame.allocs as f64 - encode.allocs as f64) / runs as f64,
+                (encode_and_frame.alloc_bytes as f64 - encode.alloc_bytes as f64) / runs as f64,
+            );
+
+            // A bound passes most easily when nothing was measured.
+            assert!(encode.allocs > 0, "the probe must observe the encode");
+        }
+    }
+
+    /// A lock file that was removed gets opened again, rather than locked as a ghost.
+    ///
+    /// The append lock handle is kept open per shard now, instead of being opened and closed on
+    /// every append. That is safe only while the handle still names a file: a descriptor outlives
+    /// the unlinking of its file, and `flock` on an unlinked inode SUCCEEDS -- so a stale handle
+    /// would hand out a lock that another process, opening the path afresh, could hold at the same
+    /// time. Two writers, both certain they held the append lock.
+    ///
+    /// Removing the file is the observable form of that: if the handle were reused blindly, the
+    /// file would never come back.
+    #[test]
+    fn a_removed_lock_file_is_opened_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let write = |index: usize| {
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index}"),
+                        value: b"v".to_vec(),
+                    },
+                )
+                .unwrap()
+        };
+
+        write(0);
+        let lock_path = dir.path().join("shard-1.wal.lock");
+        assert!(lock_path.exists(), "the first append must create the lock file");
+
+        // Someone removes it out from under the running store.
+        std::fs::remove_file(&lock_path).expect("remove the lock file");
+        assert!(!lock_path.exists(), "the probe must actually remove it");
+
+        let record = write(1);
+        assert_eq!(record.sequence, 2, "the append must still succeed");
+        assert!(
+            lock_path.exists(),
+            "the lock file must be opened again, not locked as an unlinked ghost"
+        );
+
+        // And the log itself is intact across it.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 2, "both records must be readable: {scanned:?}");
+    }
+
+    /// What one append allocates, and how much of it is the value it carries.
+    ///
+    /// Allocation count is latency and allocation bytes are memory; both are deterministic, unlike
+    /// a timing on a shared machine. Reported per append across value sizes, so a cost that scales
+    /// with the payload can be told apart from a fixed one -- a fixed cost is the one worth
+    /// attacking, since it is paid by every write however small.
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    #[ignore]
+    fn what_one_append_allocates() {
+        for value_len in [64usize, 256, 1024, 4096] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let value = vec![118u8; value_len];
+
+            // Warm: the first append pays for the file, the header and any lazy setup.
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: "warm".to_string(),
+                        value: value.clone(),
+                    },
+                )
+                .unwrap();
+
+            let runs = 200usize;
+            let probe = crate::alloc_probe::Probe::start();
+            for index in 0..runs {
+                store
+                    .append(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: value.clone(),
+                        },
+                    )
+                    .unwrap();
+            }
+            let counts = probe.stop();
+
+            println!(
+                "  APPEND value {value_len:>5}B -> {:>6.1} allocs, {:>8.0} B allocated                  ({:>5.2}x the value)",
+                counts.allocs as f64 / runs as f64,
+                counts.alloc_bytes as f64 / runs as f64,
+                counts.alloc_bytes as f64 / runs as f64 / value_len as f64,
+            );
+
+            // A bound passes most easily when nothing was measured.
+            assert!(counts.allocs > 0, "the probe must observe the appends");
+        }
     }
 
     /// Sweep: what each rolling threshold costs and saves. Ignored -- a measurement, not a bound.
