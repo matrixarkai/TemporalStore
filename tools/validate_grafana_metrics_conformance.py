@@ -18,7 +18,17 @@ DASHBOARD = ROOT / "docs" / "ops" / "temporalstore-dashboard.json"
 DASHBOARDS = (
     ROOT / "docs" / "ops" / "temporalstore-dashboard.json",
     ROOT / "docs" / "ops" / "temporalstore-cluster-dashboard.json",
+    # The two a customer is most likely to import first, and until now checked by nothing: their
+    # panels query `matrixark_*` families emitted by the Python gateway, and every check here read
+    # only the Rust sources. Their metrics happen to be fine -- all 19 resolve -- which is exactly
+    # why this is worth wiring before something breaks rather than after.
+    ROOT / "docs" / "ops" / "matrixark-gateway-dashboard.json",
+    ROOT / "docs" / "ops" / "matrixark-ingestion-dashboard.json",
 )
+
+# Python modules that publish Prometheus text. Same declaration rule as the engine: a family counts
+# as emitted where a `# HELP` or `# TYPE` line declares it, not merely where its name appears.
+PY_SOURCE_ROOT = ROOT / "tools"
 ALERTS = ROOT / "docs" / "ops" / "temporalstore-alerts.yml"
 # The coverage doc this is checked against. The previous path named a file that has never
 # existed, and `DOC.exists()` turned that into ten separate "family is undocumented" failures
@@ -304,6 +314,24 @@ def expand_component_series(declared: set, kinds: dict) -> set:
     return expanded
 
 
+def python_metric_text() -> str:
+    """Every Python module under tools/ that could publish metrics, tests excluded.
+
+    Read whole rather than from a list: the eight ingestion families are declared in
+    `matrixark_ingestion_jobs.py`, not in the two modules named "gateway", and a hand-kept list
+    would have missed them exactly as my first scan did.
+    """
+    chunks = []
+    for path in sorted(PY_SOURCE_ROOT.glob("*.py")):
+        if path.name.startswith(("test_", "run_")):
+            continue
+        try:
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
 def declared_metric_names(text: str) -> set:
     """Families the engine actually DECLARES, via a `# HELP` or `# TYPE` line.
 
@@ -515,12 +543,13 @@ def main() -> int:
     if fixed_but_listed:
         print("These are listed as known-unemitted but now resolve: %s. Remove them from "
               "KNOWN_UNEMITTED." % ", ".join(fixed_but_listed), file=sys.stderr)
-    declared = expand_component_series(declared_metric_names(rust),
-                                      declared_kinds(rust))
+    engine_and_gateway = rust + "\n" + python_metric_text()
+    declared = expand_component_series(declared_metric_names(engine_and_gateway),
+                                      declared_kinds(engine_and_gateway))
     alert_failures = (check_declaration_extent(declared)
                       + check_dashboard_extent()
                       + check_dashboard_metrics_are_emitted(declared)
-                      + check_no_bare_histogram_targets(declared_kinds(rust))
+                      + check_no_bare_histogram_targets(declared_kinds(engine_and_gateway))
                       + check_families_state_their_emission(METRIC_FAMILIES)
                       + check_alert_expressions_are_emitted(alerts, declared)
                       + check_alert_metric_names(alerts, declared))
