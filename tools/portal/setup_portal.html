@@ -384,6 +384,9 @@
   .verb.PUT{background:var(--warn-soft);color:var(--warn)}
   .route-path{font-family:"IBM Plex Mono",monospace;font-size:13.5px;font-weight:600;
               overflow-wrap:anywhere}
+  .route-live{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .route-live.bad{color:var(--danger)}
+  .route-live.quiet{opacity:.6}
   .route-scope{margin-left:auto;font-size:11.5px;font-family:"IBM Plex Mono",monospace;
                color:var(--faint);white-space:nowrap}
   .route p{margin:6px 0 0;font-size:13.5px;color:var(--muted);line-height:1.55;max-width:78ch}
@@ -2255,6 +2258,16 @@ function liveStream(options) {
   window.__matrixarkOnFrame = function (callback) {
     if (typeof callback === "function") { watchers.push(callback); }
   };
+  /* This script is emitted AFTER the page's own -- deliberately, so a page running its own stream
+     can claim it before this one decides whether to open a second. The cost of that ordering was
+     that a page registering at its top level called a function that did not exist yet, and two
+     did: the catalog stopped re-listing when the store grew, and nothing looked wrong.
+
+     So pages push to a queue. Whatever is waiting is drained here, and the queue is then replaced
+     by an object whose `push` IS the registration, so a page loading later goes through the same
+     call and nothing has to know which script ran first. */
+  (window.__matrixarkFrameQueue || []).forEach(window.__matrixarkOnFrame);
+  window.__matrixarkFrameQueue = { push: window.__matrixarkOnFrame };
 
   function n(value) {
     return Number(value || 0).toLocaleString();
