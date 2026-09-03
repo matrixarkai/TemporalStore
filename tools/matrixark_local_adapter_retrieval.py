@@ -206,7 +206,9 @@ class _LocalAdapterRetrievalMixin:
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
-        scope_key = canonical_scope_key(scope)
+        # cache_scope_key, not canonical_scope_key: the canonical one is "" for an unnormalised
+        # scope, and every tenant would then share one cache entry.
+        scope_key = cache_scope_key(scope)
         secondary_key = tuple(sorted(tuple(sorted(group)) for group in (secondary_index_groups or [])))
         selected_key = tuple(sorted(int(item) for item in (selected_node_hashes or set())))
         cache_key = (

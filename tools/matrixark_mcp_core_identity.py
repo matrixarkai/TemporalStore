@@ -403,6 +403,36 @@ def canonical_scope_key(scope: Json) -> str:
     )
 
 
+def cache_scope_key(scope: Json) -> tuple:
+    """A scope key safe to put in a CACHE key, which canonical_scope_key is not.
+
+    canonical_scope_key returns "" for a scope carrying neither scope_key nor tenant_hash -- which
+    is exactly the shape of the documented public scope, {tenant_id, user_id, session_id}. Empty
+    is a fine answer to "what is this scope's canonical name"; it is a dangerous one for a cache
+    key, because every tenant then shares one entry and the second to ask a question is served the
+    first one's answer.
+
+    Reproduced against a shared adapter called with raw scopes: tenant B asked for its own data
+    and was given tenant A's, from both the retrieval-records cache and the context-pack cache.
+    The MCP entry point normalises the scope first, so the served paths are not affected today --
+    but nothing here said so, and a caller that skips normalisation gets cross-tenant answers with
+    no error to notice.
+
+    So this falls back to the raw identifiers rather than to "". It returns a tuple so the two
+    cases can never collide with each other.
+    """
+    canonical = canonical_scope_key(scope)
+    if canonical:
+        return ("k", canonical)
+    return (
+        "raw",
+        str(scope.get("tenant_id") or ""),
+        str(scope.get("user_id") or ""),
+        str(scope.get("session_id") or ""),
+        str(scope.get("agent_id") or ""),
+    )
+
+
 def serving_scope_ref(scope: Json) -> Json:
     key = canonical_scope_key(scope)
     return {"scope_key": key} if key else {}
