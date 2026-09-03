@@ -471,6 +471,23 @@ INTERN_METADATA_FIELDS = (
     # identity fields (model_kind, model_ref, model_name, model_hash, provider, execution_mode --
     # _seed_model_registry_seen_locked reads them off the unexpanded log), and the bundle's own
     # token key, which cannot be part of what it names.
+    # Measured on a corpus of 1 MB documents: `access_scope` is 9.6% of the durable log and
+    # `deployment_scope` a further 1.2%, and BOTH carry exactly one distinct value across the
+    # whole store -- 5,940 rows, one value each. They are the two largest constants on the wire.
+    #
+    # They are safe here on the criterion this list already uses. The exclusions above are fields
+    # some path reads off the UNEXPANDED log, where an interned value is invisible. Every raw
+    # reader was checked: of the six functions that iterate log lines, three expand first
+    # (`_load_durable_read_cache`, `_read_all_compacted`, `_read_raw_records`) and the three that
+    # do not -- `_seed_intern_tokens_locked`, `_seed_model_registry_seen_locked` and
+    # `purge_tombstones` -- read only record_type, scope_key and the model identity fields, which
+    # is exactly why those are excluded and these are not.
+    #
+    # They also cost nothing in sidecars, which is the number to watch: fields share ONE bundle,
+    # so a field that varies multiplies the tokens instead of removing bytes. At one distinct
+    # value each these add no combinations at all -- the bundle count stays where it was.
+    "access_scope",
+    "deployment_scope",
     "storage_record_kind",
     "storage_part",
     "dirty_reason",
