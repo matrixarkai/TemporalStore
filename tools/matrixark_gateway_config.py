@@ -143,6 +143,14 @@ GROUPS: Dict[str, Json] = {
         "note": "What happens to a document after it is accepted: summaries, time compression, and "
                 "the background encoder drainer.",
     },
+    "storage_engine": {
+        "title": "Storage engine", "order": 55, "advanced": True,
+        "note": "How the engine stores what it has already accepted: vector width, the memory it "
+                "returns to the operating system, and the caps that stop diagnostics growing "
+                "without bound. The engine runs in this process, so these take effect on the next "
+                "write or read rather than at the next restart. Every default here is the engine's "
+                "own, checked against its source by a test.",
+    },
     "limits": {
         "title": "Rate limits and request quotas", "order": 60, "advanced": True,
         "note": "The edge's own ceilings. All of these are read when the gateway process starts, "
@@ -320,6 +328,53 @@ SETTINGS: List[Setting] = [
     Setting("ingestion.summary_refresh_limit", "ingestion", "MATRIXARK_SUMMARY_REFRESH_LIMIT",
             "Summaries refreshed per pass", "int", "64", "restart",
             "Ceiling on how many nodes one refresh pass touches."),
+    # ---- storage engine -------------------------------------------------------------------
+    # These are TS_* knobs the engine reads directly. Seven of eighty, chosen rather than exported:
+    # directories, bind addresses, cluster identity and the metaserver admin token are set by
+    # whoever provisions a node, and knobs with no documented default have nothing truthful to show
+    # in a form. Every default below is the engine's own -- see
+    # test_matrixark_engine_settings_match_the_engine.
+    Setting("storage_engine.vector_scaled", "storage_engine",
+            "TS_VECTOR_SCALED",
+            "Store vectors in the scaled form", "bool", "1", "live",
+            "On, a vector is stored uniformly scaled, which halves its bytes and leaves ranking "
+            "identical. Reads understand both forms, so this can be turned off again without "
+            "stranding anything already written."),
+    Setting("storage_engine.vector_int8", "storage_engine",
+            "TS_VECTOR_INT8",
+            "Store vectors quantized to int8", "bool", "0", "live",
+            "Off by default. Quantizing further cuts stored bytes again, but it is a quality "
+            "decision rather than a free one: measure recall on your own corpus before turning it "
+            "on. Reads understand both forms regardless."),
+    Setting("storage_engine.node_summary_vector", "storage_engine",
+            "TS_NODE_SUMMARY_VECTOR",
+            "Nodes carry a copy of their summary vector", "bool", "1", "live",
+            "On, a node record carries a copy of its L1 summary's vector so the node can be scored "
+            "before its summary is fetched. Only writes consult this: a node either carries the "
+            "copy or it does not, and reads handle both."),
+    Setting("storage_engine.malloc_trim", "storage_engine",
+            "TS_MALLOC_TRIM",
+            "Return freed memory to the operating system", "bool", "1", "live",
+            "On, the engine asks the allocator to hand back memory it is no longer using. What is "
+            "returned is memory the process was not using, so the trade is one-sided -- the escape "
+            "hatch exists because a trim costs a walk of the allocator's free lists."),
+    Setting("storage_engine.scratch_sweep", "storage_engine",
+            "TS_SCRATCH_SWEEP",
+            "Reclaim scratch directories from dead processes", "bool", "1", "live",
+            "On, scratch directories whose owning process is gone are reclaimed. Turn it off only "
+            "to keep an abandoned directory for inspection."),
+    Setting("storage_engine.max_retained_finished_jobs", "storage_engine",
+            "TS_MAX_RETAINED_FINISHED_JOBS",
+            "Completed job statuses kept queryable", "int", "64", "live",
+            "Each retained status carries its full output, and a dump output carries a serialized "
+            "index -- so an unbounded history meant one index copy retained per dump for the life "
+            "of the node. Raise it to keep more history, at that cost per entry."),
+    Setting("storage_engine.metrics_max_slot_series", "storage_engine",
+            "TS_METRICS_MAX_SLOT_SERIES",
+            "Per-slot metric series allowed per shard", "int", "1024", "live",
+            "A routing slot is derived per key, so per-slot metrics grow with key count rather "
+            "than with anything bounded. This caps how many a single shard may emit; lower it if "
+            "your metrics backend is straining on cardinality."),
     Setting("ingestion.require_model_summaries", "ingestion",
             "MATRIXARK_REQUIRE_MODEL_SUMMARIES",
             "Fail instead of writing rule summaries", "bool", "0", "live",
