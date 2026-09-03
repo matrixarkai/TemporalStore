@@ -3711,6 +3711,21 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
 
             if method == "GET":
                 params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+                # Who in THIS tenant has an override at all. The policy endpoints answer for one
+                # identity and need its id first, so a tenant could set a user override and then
+                # have no way to find it again -- or to answer "who here has custom settings",
+                # which is the first question anyone asks after setting the second one.
+                #
+                # Scoped to the tenant from the key, like everything else on this route. The
+                # listing function can answer for every tenant and that form is not served here.
+                if (params.get("overrides") or [""])[0].strip() in ("1", "true", "yes"):
+                    listing = policy_mod.policy_overrides(only_tenant=tenant_id)
+                    return await _json(send, 200, {
+                        "tenant": tenant_id,
+                        "tenants": listing["tenants"],
+                        "users": listing["users"],
+                        "user_count": listing["user_count"],
+                    })
                 user_id = (params.get("user_id") or [""])[0].strip()
                 return await _json(send, 200,
                                    _policy_view(policy_mod, tenant_id, user_id))
