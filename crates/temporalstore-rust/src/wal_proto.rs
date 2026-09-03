@@ -89,13 +89,14 @@ fn unescape_newlines(bytes: &[u8]) -> Result<Vec<u8>, String> {
 
 /// TS_WAL_BINARY_RECORDS: write engine records as protobuf.
 ///
-/// Default OFF while it proves out. Reading never consults this -- a payload is decoded by what
-/// its first byte says it is -- so turning it on and off again leaves a log that still reads end
-/// to end.
+/// **Default ON.** The doc comment here used to say OFF while the code returned true and the
+/// comment inside the body said ON -- three statements, two of them wrong, about the encoding of
+/// the durability log.
+///
+/// Reading never consults this: a payload is decoded by what its first byte says it is, so a log
+/// written across the flip reads end to end in either direction, and turning it off again is not
+/// a one-way door.
 pub(crate) fn binary_records_enabled() -> bool {
-    // Default ON. Reading never consults this -- a payload is decoded by what its first byte says
-    // it is -- so a log written across the flip reads end to end in either direction, and turning
-    // it off again is not a one-way door.
     std::env::var("TS_WAL_BINARY_RECORDS")
         .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
         .unwrap_or(true)
