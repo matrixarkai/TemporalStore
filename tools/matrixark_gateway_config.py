@@ -52,6 +52,25 @@ _BOOT_ENV: Dict[str, str] = dict(os.environ)
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+# Floors the ENGINE applies, by variable. These are not a policy this file invents -- the accessors
+# in storage_config.rs read `parse_*(...).max(1024)`, so a smaller value is silently raised before
+# anything uses it. Documented in each setting's help as well; recorded here so a write can say so
+# at the moment it happens, which is the only time the customer is looking.
+#
+# test_matrixark_clamped_settings_say_so derives the same floors from the Rust accessor and fails if
+# this map and the engine disagree, so it cannot quietly go stale.
+_ENGINE_MINIMUMS: Dict[str, int] = {
+    "TS_CONTEXT_PAGE_TARGET_BYTES": 1024,
+    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1024,
+    "TS_STORAGE_ZONE_SIZE": 1024,
+    "TS_STREAM_MAX_BLOB_SIZE": 1024,
+}
+
+
+def engine_minimum(env_name: str) -> Optional[int]:
+    """The floor the engine raises this variable to, if it has one."""
+    return _ENGINE_MINIMUMS.get(env_name)
+
 DEFAULT_CONFIG_FILENAME = "runtime_config.json"
 
 # How many past writes the stored document keeps. Bounded because this file is read on every boot
@@ -1054,8 +1073,20 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
                 os.environ["MATRIXARK_EXTRACTION_PROVIDER"] = value
             else:
                 os.environ.pop("MATRIXARK_EXTRACTION_PROVIDER", None)
+        # A value the engine will raise is reported back with what it will really be. The
+        # write is still accepted -- the engine takes it and raises it, and refusing here would be
+        # this file inventing a stricter rule than the thing it configures.
+        raised_to = None
+        floor = engine_minimum(name) if name else None
+        if floor is not None and value not in ("", None):
+            try:
+                if int(str(value).strip()) < floor:
+                    raised_to = floor
+            except (TypeError, ValueError):
+                raised_to = None
         applied.append({
             "key": key, "env": name, "applies": setting.applies,
+            "raised_to": raised_to,
             "in_effect": setting.applies == "live",
             "secret": setting.secret,
         })

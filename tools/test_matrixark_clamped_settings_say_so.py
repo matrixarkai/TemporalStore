@@ -99,5 +99,82 @@ class AClampedSettingSaysSoTest(unittest.TestCase):
             "these promise the engine raises small values and it does not: %s" % ", ".join(wrong))
 
 
+class TheMinimumsMapMatchesTheEngineTest(unittest.TestCase):
+    """`_ENGINE_MINIMUMS` exists so a write can report a raised value at the moment it happens.
+
+    It is a transcription of what the accessor does, and a transcription drifts. Comparing it to
+    the floors derived from the Rust source is what stops that -- without this the map could keep
+    reporting 1024 long after the engine moved, and the report would be confidently wrong, which is
+    worse than the silence it replaced.
+    """
+
+    def setUp(self) -> None:
+        self.derived = {_env_for_constant(name): floor
+                        for name, floor in declared_floors().items()}
+
+    def test_the_map_and_the_engine_agree(self) -> None:
+        mapped = dict(getattr(cfgmod, "_ENGINE_MINIMUMS", {}))
+        self.assertEqual(
+            self.derived, mapped,
+            "the floors the portal reports and the floors the engine applies have diverged. "
+            "Engine: %r. Portal: %r." % (self.derived, mapped))
+
+    def test_the_map_is_not_empty(self) -> None:
+        self.assertTrue(getattr(cfgmod, "_ENGINE_MINIMUMS", {}),
+                        "no floors are recorded, so no write can report a raised value")
+
+
+class AWriteReportsARaisedValueTest(unittest.TestCase):
+
+    def setUp(self) -> None:
+        import shutil
+        import tempfile
+
+        directory = tempfile.mkdtemp(prefix="matrixark-clamp-test-")
+        path = os.path.join(directory, "runtime_config.json")
+        self._saved = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE")
+        os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = path
+        resolved = cfgmod.config_path()
+        if resolved != path:
+            raise AssertionError("config isolation failed: %r" % resolved)
+
+        def restore():
+            if self._saved is None:
+                os.environ.pop("MATRIXARK_RUNTIME_CONFIG_FILE", None)
+            else:
+                os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = self._saved
+            shutil.rmtree(directory, ignore_errors=True)
+
+        self.addCleanup(restore)
+        self.key = next(s.key for s in cfgmod.SETTINGS
+                        if s.env in getattr(cfgmod, "_ENGINE_MINIMUMS", {}))
+        self.floor = cfgmod._ENGINE_MINIMUMS[
+            next(s.env for s in cfgmod.SETTINGS if s.key == self.key)]
+
+    def _row(self, value):
+        result = cfgmod.update({self.key: value}, actor="test")
+        return next(r for r in result["applied"] if r["key"] == self.key)
+
+    def test_a_value_below_the_floor_is_reported(self) -> None:
+        row = self._row(str(self.floor // 2))
+        self.assertEqual(
+            self.floor, row.get("raised_to"),
+            "a value below the engine's floor was accepted with no indication it would be raised")
+
+    def test_a_value_at_or_above_the_floor_is_not(self) -> None:
+        self.assertIsNone(self._row(str(self.floor)).get("raised_to"))
+        self.assertIsNone(self._row(str(self.floor * 64)).get("raised_to"))
+
+    def test_the_write_is_still_accepted(self) -> None:
+        """Reporting, not refusing. The engine takes the value and raises it; this file must not
+        invent a stricter rule than the thing it configures."""
+        row = self._row(str(self.floor // 2))
+        self.assertTrue(row.get("in_effect") or row.get("applies") == "restart")
+        self.assertEqual(str(self.floor // 2),
+                         os.environ.get(row["env"]),
+                         "the value written to the environment was altered; this must report what "
+                         "the engine will do, not do it here")
+
+
 if __name__ == "__main__":
     unittest.main()
