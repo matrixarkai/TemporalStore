@@ -560,7 +560,29 @@ REQUIRED_SCALE_REPORT_CONFIG_BINDINGS = {
 
 
 
+def _scale_report_absent_message() -> str:
+    """Why this validator cannot run, in one line an operator can act on.
+
+    This compares a published contract against `tools/run_matrixark_rust_scale_report.py`, and that
+    file is not in this repository -- `git log --all` finds no trace of it ever having been here,
+    while five files still refer to it. With one side of the comparison missing there is nothing to
+    check, so the honest outcome is a stated failure rather than a traceback (which reads as a bug
+    in the validator) or a zero exit (which reads as conformance verified).
+
+    Resolving it is a decision, not a fix: either the runner belongs in this repository, or these
+    validators are describing a comparison this repository cannot make.
+    """
+    return (
+        "cannot run: %s is absent from this repository, and it is the runner this validates the "
+        "published contract against. Five files still refer to it and no version of this "
+        "repository has contained it. Either it belongs here, or this validator does not."
+        % SCALE_REPORT
+    )
+
+
 def validate_contract_and_runner() -> list[str]:
+    if not SCALE_REPORT.exists():
+        return [_scale_report_absent_message()]
     failures: list[str] = []
     contract_text = CONTRACT.read_text(encoding="utf-8")
     runner_text = SCALE_REPORT.read_text(encoding="utf-8")
