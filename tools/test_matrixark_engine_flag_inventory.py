@@ -94,5 +94,34 @@ class TheInventoryMatchesTheEngineTest(unittest.TestCase):
             % ", ".join(missing))
 
 
+class TheDefaultRootIsThisRepositoryTest(unittest.TestCase):
+    """Run with no argument, the builder must regenerate THIS checkout.
+
+    It used to default to an absolute path naming one worktree on one machine, so running it
+    anywhere else rewrote the document from a tree the caller had never heard of. Every test here
+    passes a directory explicitly, which is why the default went unexercised -- so these assert on
+    the default itself rather than through a run.
+    """
+
+    def setUp(self) -> None:
+        with io.open(BUILDER, encoding="utf-8") as handle:
+            self.source = handle.read()
+
+    def test_no_absolute_path_to_somebody_checkout(self) -> None:
+        for bad in ('"/root/', "'/root/", '"/home/', "'/home/", '"C:'):
+            self.assertNotIn(bad, self.source,
+                             "the builder names an absolute path on one machine, so it does not "
+                             "regenerate the repository it was run from")
+
+    def test_the_default_follows_the_script(self) -> None:
+        line = [l for l in self.source.splitlines() if l.startswith("ROOT = ")]
+        self.assertTrue(line, "ROOT is no longer assigned where this test can see it")
+        window = self.source[self.source.index("ROOT = "):]
+        window = window[:window.index("SRC =")]
+        self.assertIn("__file__", window,
+                      "the default root is not derived from the script location, so it depends on "
+                      "where the caller happens to be")
+
+
 if __name__ == "__main__":
     unittest.main()

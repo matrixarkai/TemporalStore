@@ -15,7 +15,12 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "/root/wt-flags")
+# Default to the repository this script lives in. It used to default to an absolute path to
+# one particular checkout on one particular machine, so running it anywhere else regenerated
+# the document from a tree the caller had never heard of -- or from nothing at all. The test
+# always passes a directory, so it never touched the default and never saw this.
+ROOT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1
+                    else pathlib.Path(__file__).resolve().parent.parent)
 SRC = ROOT / "crates" / "temporalstore-rust" / "src"
 OUT = ROOT / "docs" / "ops" / "temporalstore-engine-flags.md"
 
