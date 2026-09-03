@@ -917,6 +917,19 @@ def snapshot(include_catalog: bool = True) -> Json:
             # only exists at the deployment level. What is set here is the fallback, and a field
             # that does not say so reads as the final answer.
             "overridable_by": override_layers.get(_env_name(setting, values), []),
+            # Whether the launcher already set this variable before the process started.
+            #
+            # apply_boot deliberately does not overwrite a variable the operator's launcher set, so
+            # a change made here applies immediately and is then LOST at the next restart, when the
+            # launcher's value is used again and the stored one is skipped. That is the documented
+            # precedence and it is not wrong -- it is just invisible, and invisible at exactly the
+            # wrong moment: the "environment" source badge disappears the instant a customer
+            # overrides the value, which is when they most need to know.
+            #
+            # Reported for every setting whose variable is in the boot environment, regardless of
+            # what the value currently is or where it came from.
+            "boot_pinned": bool(_env_name(setting, values)
+                                and _env_name(setting, values) in _BOOT_ENV),
         }
         if setting.secret:
             entry["configured"] = bool(value)
