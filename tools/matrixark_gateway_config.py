@@ -334,6 +334,56 @@ SETTINGS: List[Setting] = [
     # whoever provisions a node, and knobs with no documented default have nothing truthful to show
     # in a form. Every default below is the engine's own -- see
     # test_matrixark_engine_settings_match_the_engine.
+    # ---- storage engine: page and slab geometry -------------------------------------------
+    # These are read through StorageTuningConfig::from_getter, which passes a name constant to a
+    # closure -- so they never appear beside env::var and a name-literal scan of the engine does
+    # not see them at all. Eighteen knobs hide that way; these nine are the tuning family.
+    Setting("storage_engine.context_page_target_bytes", "storage_engine",
+            "TS_CONTEXT_PAGE_TARGET_BYTES",
+            "Target size of a context page", "int", "65536", "live",
+            "How large a page grows before the engine starts another. Smaller pages read less per "
+            "lookup and cost more of them; larger pages amortise better and waste more on a partial "
+            "read. Values below 1 KiB are raised to it."),
+    Setting("storage_engine.block_slab_target_bytes", "storage_engine",
+            "TS_BLOCK_SEGMENT_TARGET_BYTES",
+            "Target size of a block segment", "int", "1073741824", "live",
+            "The unit page-slab reclaim works in. A slab is retained while any loaded shard still "
+            "references it, so larger slabs mean fewer, coarser reclaims."),
+    Setting("storage_engine.storage_zone_size", "storage_engine",
+            "TS_STORAGE_ZONE_SIZE",
+            "Storage zone size", "int", "1073741824", "live",
+            "The span the band and zone catalog accounts in. It sets the granularity of what "
+            "compaction and the catalog can talk about, not how much is stored."),
+    Setting("storage_engine.stream_max_blob_size", "storage_engine",
+            "TS_STREAM_MAX_BLOB_SIZE",
+            "Largest streamed blob", "int", "10485760", "live",
+            "The ceiling on a single streamed payload. Raising it admits larger objects and raises "
+            "the peak memory a single request can hold."),
+    Setting("storage_engine.compaction_watermark_bytes", "storage_engine",
+            "TS_COMPACTION_WATERMARK_BYTES",
+            "Compaction watermark", "int", "268435456", "live",
+            "How much uncompacted growth is tolerated before compaction is due. Lower compacts more "
+            "often for steadier size; higher defers the work and lets the store run larger."),
+    Setting("storage_engine.cold_scan_no_cache_fill", "storage_engine",
+            "TS_COLD_SCAN_NO_CACHE_FILL",
+            "Cold scans do not fill the cache", "bool", "1", "live",
+            "On, a scan that misses does not evict warm entries to make room for pages it will not "
+            "read again. Turn it off only if your workload rescans the same cold range."),
+    Setting("storage_engine.page_index_cache_bytes", "storage_engine",
+            "TS_PAGE_INDEX_CACHE_BYTES",
+            "Page index cache", "int", "67108864", "live",
+            "Memory held for page index entries. This is resident memory the process keeps, so it "
+            "is a direct trade of footprint against lookup latency."),
+    Setting("storage_engine.block_index_cache_bytes", "storage_engine",
+            "TS_BLOCK_INDEX_CACHE_BYTES",
+            "Block index cache", "int", "67108864", "live",
+            "Memory held for block index entries. Same trade as the page index cache, on the block "
+            "side."),
+    Setting("storage_engine.index_dump_wal_gap_bytes", "storage_engine",
+            "TS_INDEX_DUMP_WAL_GAP_BYTES",
+            "WAL growth before an index dump", "int", "1048576", "live",
+            "How much undumped WAL growth triggers a background index dump. A dump writes the "
+            "served index, so lowering this makes dumps more frequent and each recovery shorter."),
     Setting("storage_engine.vector_scaled", "storage_engine",
             "TS_VECTOR_SCALED",
             "Store vectors in the scaled form", "bool", "1", "live",

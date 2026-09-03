@@ -61,6 +61,51 @@ def _enclosing_body(text: str, at: int) -> str:
     return text[open_at:]
 
 
+SIZE_CONST = re.compile(r"pub const (DEFAULT_[A-Z0-9_]+)\s*:\s*\w+\s*=\s*([^;]+);")
+
+
+def _evaluate(expr: str):
+    """Evaluate a default constant's initialiser: integers, `*`, `<<`, and the two bool words.
+
+    Restricted to that character set on purpose -- these come from source this test reads, and a
+    guard that evaluates arbitrary text from a file it scans is a worse problem than the drift it
+    is trying to catch.
+    """
+    text = expr.strip()
+    if text in ("true", "false"):
+        return "1" if text == "true" else "0"
+    if not re.fullmatch(r"[0-9_ ()*<+]+", text):
+        return None
+    try:
+        return str(eval(text, {"__builtins__": {}}, {}))  # noqa: S307 - charset restricted above
+    except Exception:
+        return None
+
+
+def tuning_defaults() -> dict:
+    """Knobs read through a getter closure, whose default lives in a DEFAULT_* constant.
+
+    `StorageTuningConfig::from_getter` passes a name CONSTANT to a closure, so these knobs never
+    appear beside `env::var` and no scan that looks there can find them. Their defaults come from
+    `StorageTuningConfig::default()`, field by field, from `DEFAULT_<KNOB>`.
+    """
+    defaults = {}
+    for path in _rust_files():
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+        constants = {name: _evaluate(value) for name, value in SIZE_CONST.findall(text)}
+        # (identifier, env name it holds) -- these are not always the same, and the default
+        # constant is named after the IDENTIFIER while the portal must show the NAME.
+        declared = re.findall(
+            r'pub const (TS_[A-Z0-9_]+)\s*:\s*&(?:\'static\s+)?str\s*=\s*"(TS_[A-Z0-9_]+)"',
+            text)
+        for identifier, env_name in declared:
+            value = constants.get("DEFAULT_" + identifier[len("TS_"):])
+            if value is not None:
+                defaults[env_name] = value
+    return defaults
+
+
 def engine_defaults() -> dict:
     """env name -> the default its Rust accessor applies, as the portal would print it."""
     defaults = {}
@@ -91,7 +136,8 @@ class TheEnginesDefaultIsWhatThePortalShowsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.engine_settings = [s for s in cfgmod.SETTINGS
                                 if s.env and s.env.startswith("TS_")]
-        self.derived = engine_defaults()
+        self.derived = dict(tuning_defaults())
+        self.derived.update(engine_defaults())
 
     def test_the_portal_offers_engine_knobs_at_all(self) -> None:
         self.assertGreaterEqual(
@@ -123,12 +169,34 @@ class TheEnginesDefaultIsWhatThePortalShowsTest(unittest.TestCase):
             "only %d offered engine knobs could be matched to an accessor, so this test is close "
             "to vacuous" % checked)
 
+    def test_no_offered_engine_knob_escapes_the_derivation(self) -> None:
+        """Every knob on the page must have a default this test can check.
+
+        Without this, adding a setting whose default cannot be derived quietly reduces coverage --
+        the loop above skips it and still reports success, which is how an unverified number gets
+        onto a customer-facing page.
+        """
+        unchecked = [s.env for s in self.engine_settings if s.env not in self.derived]
+        self.assertEqual(
+            [], unchecked,
+            "these engine knobs are offered and their default cannot be derived from the source, "
+            "so nothing checks the number shown: %s" % ", ".join(unchecked))
+
     def test_every_offered_engine_knob_is_actually_read_by_the_engine(self) -> None:
+        # Two ways a knob reaches the environment, and the second is the one that matters here.
+        # A literal `env::var("TS_X")` is easy to see. The storage-tuning family is read through
+        # `StorageTuningConfig::from_getter`, which passes a name CONSTANT to a closure that calls
+        # `env::var(name)` -- so those names never appear beside `env::var` at all. A declared
+        # `pub const TS_X: &str = "TS_X"` exists to name a knob, so it counts as a read.
         read = set()
         for path in _rust_files():
             with open(path, encoding="utf-8", errors="replace") as handle:
                 text = handle.read()
             read.update(re.findall(r'(?:std::)?env::var(?:_os)?\(\s*"(TS_[A-Z0-9_]+)"', text))
+            # the NAME the constant holds, not the identifier that holds it
+            read.update(re.findall(
+                r'pub const TS_[A-Z0-9_]+\s*:\s*&(?:\'static\s+)?str\s*=\s*"(TS_[A-Z0-9_]+)"',
+                text))
         for setting in self.engine_settings:
             with self.subTest(env=setting.env):
                 self.assertIn(

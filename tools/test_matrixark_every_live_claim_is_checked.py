@@ -86,6 +86,21 @@ def _rust_per_call_env_names() -> set:
                 static_at = max(head.rfind("static "), head.rfind("const "))
                 if fn_at > static_at:
                     names.add(match.group(1))
+            # A second route this scan could not see at all. The storage-tuning family is read by
+            # `StorageTuningConfig::from_getter`, which passes a name CONSTANT to a closure calling
+            # `env::var(name)` -- so those names never appear beside `env::var`, exactly the blind
+            # spot this file was written to close on the Python side.
+            #
+            # The name a constant HOLDS is the variable an operator sets, and it is not always the
+            # identifier: `pub const TS_BLOCK_SLAB_TARGET_BYTES: &str =
+            # "TS_BLOCK_SEGMENT_TARGET_BYTES"`. Resolve by value.
+            #
+            # Counted as per-call because the accessors call `StorageTuningConfig::from_env()` on
+            # each use and nothing caches the result -- checked, not assumed. If that ever gains a
+            # OnceLock, these become restart settings and this admission is wrong.
+            names.update(re.findall(
+                r'pub const TS_[A-Z0-9_]+\s*:\s*&(?:\'static\s+)?str\s*=\s*"(TS_[A-Z0-9_]+)"',
+                text))
     return names
 
 def _resolver_environ_scopes() -> dict:
