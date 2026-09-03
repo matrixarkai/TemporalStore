@@ -12744,11 +12744,35 @@ fn what_the_score_ordered_zset_reads_cost() {
             "the control must actually find the member, or it is measuring a miss"
         );
 
-        let (add_allocs, _, _) = measure(Command::ZSetAdd {
-            key: "board".to_string(),
-            member: format!("late-{size:08}").into_bytes(),
-            score: 1.5,
+        // NOT measured through `measure`: that warms and probes the same command, and a second
+        // ZSetAdd of the same member at the same score takes the "nothing to rewrite" early return,
+        // so it would report the cost of detecting a duplicate instead of the cost of an add.
+        // Warm on one new member, probe on another.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetAdd {
+                key: "board".to_string(),
+                member: format!("warm-{size:08}").into_bytes(),
+                score: 1.5,
+            },
         });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let added = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetAdd {
+                key: "board".to_string(),
+                member: format!("fresh-{size:08}").into_bytes(),
+                score: 2.5,
+            },
+        });
+        let add_allocs = probe.stop().allocs;
+        assert!(added.status.ok, "{:?}", added.status);
+        assert!(
+            matches!(&added.response, CommandResponse::Integer { value: 1 }),
+            "the measured add must report a NEW member (1), or it is measuring a duplicate: {:?}",
+            added.response
+        );
 
         println!(
             "  {size:>7}   {range_allocs:>17}   {range_bytes:>5}   {returned:>8}   {rank_allocs:>7}   {rank_bytes:>5}   {score_allocs:>8}   {score_bytes:>5}   {add_allocs:>7}"
@@ -12762,7 +12786,10 @@ fn what_the_score_ordered_zset_reads_cost() {
                                  The SCAN is still O(n) and stays that way while the map is keyed
                                  by member -- this is an allocation win, not an asymptotic one.
   either column rising        => a copy per member has come back.
-  score / add flat            => the controls work, so the columns above mean what they say.
+  score flat                  => the control works, so the columns above mean what they say.
+  add                         => a genuinely new member each time, asserted to report 1.
+                                 Not a control: an add is not idempotent, so it cannot be
+                                 warmed and re-measured the way the reads can.
 "
     );
 }
@@ -12892,5 +12919,107 @@ fn score_ordered_zset_reads_answer_the_same_before_and_after() {
     assert!(
         matches!(missing.response, CommandResponse::Bytes { value: None }),
         "a member that was never added must have no rank"
+    );
+}
+
+
+/// Is a push expensive because the LIST is long, or because the CACHE is full?
+///
+/// One push onto a 4,096-entry list costs ~16,488 allocations, and one ZSetAdd onto a 4,096-member
+/// set ~16,491 -- near-identical, so one shared mechanism. The code points at
+/// `invalidate_record`, which scans every key in all three cache tiers; but code reading has already
+/// been wrong twice here, so this decides it by varying the two axes independently.
+///
+/// Arm A is one long list. Arm B is many short lists holding about as many cached pages in total.
+/// Equal cost means the cache drives it; a cheap arm B means the collection's own length does.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_a_push_expensive_because_of_the_list_or_the_cache -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn is_a_push_expensive_because_of_the_list_or_the_cache() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    // Push `per_list` entries into each of `lists` lists, then measure ONE more push onto list 0.
+    let arm = |lists: usize, per_list: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            256 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for list in 0..lists {
+            for index in 0..per_list {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ListPush {
+                        key: format!("feed-{list:05}"),
+                        member: format!("entry-{index:08}").into_bytes(),
+                        left: false,
+                    },
+                });
+                assert!(out.status.ok, "push {list}/{index}: {:?}", out.status);
+            }
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ListPush {
+                key: "feed-00000".to_string(),
+                member: b"measured".to_vec(),
+                left: false,
+            },
+        });
+        let allocs = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+        // The push must have landed, or this is the cost of failing.
+        match out.response {
+            CommandResponse::Integer { value } => assert_eq!(
+                value as usize,
+                per_list + 1,
+                "the measured push must extend list 0 to {} entries",
+                per_list + 1
+            ),
+            other => panic!("expected the new length, got {other:?}"),
+        }
+        allocs as u64
+    };
+
+    println!(
+        "
+  cached pages   A: one list of n   B: n/10 lists of 10   ratio
+"
+    );
+
+    for total in [640_usize, 2560, 10240] {
+        let a = arm(1, total);
+        let b = arm(total / 10, 10);
+        println!(
+            "  {total:>12}   {a:>16}   {b:>19}   {:>5.2}",
+            a as f64 / b.max(1) as f64
+        );
+    }
+
+    println!(
+        "
+  Measured: B is FLAT at 122 while total cached pages grow sixteenfold, and A rises with the list.
+  So the ALLOCATIONS follow the collection's own length, not the size of the cache.
+
+  Both come from one call, `invalidate_record`, and it has two costs that must not be conflated:
+    * it SCANS every key in all three tiers -- pure iteration, allocating nothing, so this probe is
+      blind to it. That cost follows the whole cache and needs a different instrument.
+    * it CLONES the keys that match this record into a BTreeSet and then a Vec -- about four
+      allocations per existing entry of the same collection. That is what the A column shows.
+
+  A rising  => a push still copies one cache key per entry the collection already holds.
+  B rising  => the match filter has stopped narrowing, and every record's keys are being copied.
+"
     );
 }
