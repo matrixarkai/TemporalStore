@@ -4550,6 +4550,21 @@ mod tests {
     /// Counted in bytes and pieces rather than timed. The scan saving that rolling also buys is
     /// real and larger in the drop-most shape, but it is a wall-clock number and belongs in
     /// `sweep_segment_sizes`, not in an assertion.
+    ///
+    /// **What these numbers are NOT.** They are per pass. Reclaim copies what it KEEPS, so a
+    /// bigger log means a bigger copy for the same fraction freed -- but that does not compound
+    /// over the log's life, because two things bound how big the log gets between passes:
+    /// `DEFAULT_INDEX_DUMP_WAL_GAP_BYTES` is a megabyte, so the index dumps once the log runs that
+    /// far ahead, and the storage-manager cycle that drives reclaim is wired (`bin/server.rs`
+    /// submits it). The steady-state cost is bounded write amplification. The quadratic shape
+    /// needs something to BLOCK reclaim so the log grows, and that case clamps to the floor rather
+    /// than refusing at it.
+    ///
+    /// This paragraph is here because it was written once already, as a correction to a claim that
+    /// the copy "grows with the log while the amount freed does not" -- a lifetime cost asserted
+    /// from a per-pass measurement. Rewriting this test for the new default dropped the correction
+    /// along with the test it was attached to. A cost per pass says nothing about total cost until
+    /// you know what bounds the passes.
     #[test]
     fn the_shipped_default_rolls_the_log() {
         fn run(roll: Option<u64>, keep_fraction: f64) -> (u64, usize, u64, usize) {
