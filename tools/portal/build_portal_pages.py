@@ -1080,6 +1080,10 @@ function liveStream(options) {
      point, and slowly once there is not. Deliberately NOT on /v1/metrics -- answering it walks the
      record log, and a scrape every fifteen seconds doing that is a self-inflicted load. */
   var encodeTimer = null, encodeMs = 0;
+  /* Whether the stream is delivering. The stream already carries the encoding backlog and calls
+     renderEncoding with it, so polling for the same number while it is live is a second read of
+     one answer -- and that endpoint walks the record log. */
+  var streamLive = false;
 
   function encodePace(draining) {
     var want = draining ? 5000 : 60000;
@@ -1088,6 +1092,14 @@ function liveStream(options) {
     encodeMs = want;
     encodeTimer = setInterval(function () {
       if (document.hidden || !$("key").value.trim()) { return; }
+      /* The fallback only. While the stream is live it delivers this, sooner than this timer
+         would ask for it -- 4s against 5 while draining, 30s against 60 when idle.
+
+         Gated on the connection, not on when a frame last arrived: an unchanged frame is no
+         longer republished, so a healthy stream on a quiet deployment sends nothing for minutes.
+         A clock cannot tell that apart from a dead connection, and would start polling precisely
+         when there is least reason to. */
+      if (streamLive) { return; }
       loadEncoding();
     }, want);
   }
@@ -2234,6 +2246,7 @@ function liveStream(options) {
     live = liveStream({
       headers: auth,
       onState: function (state, seconds) {
+        streamLive = (state === "live");
         if (state === "live") { conn("live", "live"); }
         else if (state === "denied") { conn("live", "connected"); }
         else if (state === "retrying") { conn("down", "reconnecting in " + seconds + "s"); }
