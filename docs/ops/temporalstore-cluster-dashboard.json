@@ -149,11 +149,26 @@
     },
     {
       "type": "timeseries",
-      "title": "Topology Query Latency And Failures",
+      "title": "Topology Query Latency (percentiles)",
       "targets": [
         {
-          "expr": "temporalstore_meta_topology_query_latency_us"
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(temporalstore_meta_topology_query_latency_us_bucket[5m])))"
         },
+        {
+          "expr": "histogram_quantile(0.90, sum by (le) (rate(temporalstore_meta_topology_query_latency_us_bucket[5m])))"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(temporalstore_meta_topology_query_latency_us_bucket[5m])))"
+        },
+        {
+          "expr": "rate(temporalstore_meta_topology_query_latency_us_sum[5m]) / rate(temporalstore_meta_topology_query_latency_us_count[5m])"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Topology Query Failures And Bytes",
+      "targets": [
         {
           "expr": "temporalstore_meta_topology_query_failed_total"
         },
