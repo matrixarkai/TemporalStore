@@ -780,6 +780,10 @@ impl TemporalEngine {
                 });
             let rebuilt_bucket_index = !maintained_bucket_index
                 && !defer_bucket_index_reconstruct()
+                // A command that writes no page cannot have changed the page index, so rebuilding it
+                // recomputes what it already held -- measured at twice the shard's page count per
+                // call for SeenCheck and the control-state change/selection writes.
+                && !command_writes_no_page(&command)
                 && (!command_updates_bucket_index_directly(&command)
                     || shard.bucket_index.bucket_map.is_empty());
             if rebuilt_bucket_index {

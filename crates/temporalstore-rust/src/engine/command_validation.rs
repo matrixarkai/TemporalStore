@@ -302,6 +302,25 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
     )
 }
 
+/// True when a command mutates only state that no page backs.
+///
+/// The seen sets, the control-state change and selection maps, and the token buckets live outside the
+/// page-backed models, and their durability rides the index-log `key_states` blobs rather than a page
+/// entry. So a rebuild of the page index after one of these can only recompute what it already held.
+///
+/// This is deliberately NOT folded into `command_updates_bucket_index_directly`: these commands do
+/// not update that index, and saying they do to skip the rebuild would make the predicate assert
+/// something false. They need their own reason.
+pub(super) fn command_writes_no_page(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::SeenCheck { .. }
+            | Command::ControlStateChangeAdd { .. }
+            | Command::ControlStateSelectionSet { .. }
+            | Command::BucketTake { .. }
+    )
+}
+
 pub(crate) fn is_write_command(command: &Command) -> bool {
     matches!(
         command,
