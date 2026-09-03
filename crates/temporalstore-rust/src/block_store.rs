@@ -2825,7 +2825,7 @@ mod tests {
         expected.extend_from_slice(&second_payload[..9]);
         assert_eq!(logical, expected);
         assert_eq!(raw[8], PAGE_RECORD_VERSION);
-        assert_eq!(raw[PAGE_RECORD_HEADER_LEN - 16], PAGE_RECORD_COMPRESSION_ZSTD);
+        assert_eq!(raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_ZSTD);
 
         let stats = store.stats();
         assert_eq!(stats.writes, 2);
@@ -3139,7 +3139,7 @@ mod tests {
             disabled_address.length,
             (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
         );
-        assert_eq!(disabled_raw[PAGE_RECORD_HEADER_LEN - 16], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(disabled_raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
         assert_eq!(disabled_store.stats().compressed_records_written, 0);
         assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
@@ -3161,7 +3161,7 @@ mod tests {
             threshold_address.length,
             (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
         );
-        assert_eq!(threshold_raw[PAGE_RECORD_HEADER_LEN - 16], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(threshold_raw[record::page_record_compression_offset()], PAGE_RECORD_COMPRESSION_NONE);
         assert_eq!(threshold_store.read(&threshold_address).unwrap(), payload);
         assert_eq!(threshold_store.stats().compressed_records_written, 0);
         assert_eq!(threshold_store.stats().compression_bytes_saved, 0);
