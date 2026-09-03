@@ -866,6 +866,24 @@ function liveStream(options) {
     return '<input type="text"' + attr + ' spellcheck="false" value="' + esc(f.value || "") + '">';
   }
 
+  /* A byte count is stored as bytes and read by a person. 1073741824 and 268435456 differ by a
+     factor of four and look the same at a glance, which is the sort of thing that gets a cache
+     sized wrong. The stored value is untouched -- this only adds a reading of it.
+
+     Applies to any setting whose variable ends in _BYTES, so it covers the two quota settings
+     that predate the engine group as well. */
+  function byteHint(f) {
+    if (!f.env || !/_BYTES$/.test(f.env)) { return ""; }
+    var raw = (f.value === "" || f.value == null) ? f.default : f.value;
+    var size = Number(raw);
+    if (!isFinite(size) || size <= 0) { return ""; }
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"], step = 0;
+    while (size >= 1024 && step < units.length - 1) { size /= 1024; step += 1; }
+    var shown = (step === 0 || size >= 10) ? String(Math.round(size))
+      : String(Math.round(size * 10) / 10);
+    return ' <span class="env">= ' + shown + " " + units[step] + "</span>";
+  }
+
   function fieldHtml(f) {
     var badges = "";
     if (f.essential) { badges += '<span class="badge essential">required</span>'; }
@@ -885,7 +903,8 @@ function liveStream(options) {
       ((f.value || "") !== (f.default == null ? "" : String(f.default)));
     var reset = resettable
       ? '<button type="button" class="link reset" data-reset="' + esc(f.key) + '">reset</button>' : "";
-    var help = esc(f.help) + (f.env ? ' <span class="env">' + esc(f.env) + "</span>" : "");
+    var help = esc(f.help) + (f.env ? ' <span class="env">' + esc(f.env) + "</span>" : "") +
+      byteHint(f);
     var longCls = f.help.length > 190 ? " long" : "";
     return '<div class="field" data-field="' + esc(f.key) + '" data-essential="' +
       (f.essential ? "1" : "0") + '" data-search="' +
