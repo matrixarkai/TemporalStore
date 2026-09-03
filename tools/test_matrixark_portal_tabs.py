@@ -28,7 +28,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 PORTAL = os.path.join(TOOLS, "portal")
 HARNESS = os.path.join(PORTAL, "tabs_harness.js")
 
-TABBED = ["setup_portal.html", "explore_portal.html"]
+TABBED = ["setup_portal.html", "explore_portal.html", "api_key_portal.html"]
 
 # Every heading the setup page carried before it was grouped into panes.
 SETUP_HEADINGS = [
@@ -145,6 +145,43 @@ class NoSentencePointsAcrossATabTest(unittest.TestCase):
         self.assertIn('showTab("settings")', self.text,
                       "the model picker writes a settings field from another tab and never "
                       "shows it, so the change and its save bar stay invisible")
+
+
+class TheHandMaintainedPagesGetTheHelperTest(unittest.TestCase):
+    """The key portal is not generated, so the builder injects the helper the way it injects nav.
+
+    Two things can go wrong with an injector that runs on every build: it can stack, defining the
+    helper once per build, or it can reach a page that has no tabs.
+    """
+
+    def test_the_key_portal_has_exactly_one_copy(self) -> None:
+        self.assertEqual(1, page("api_key_portal.html").count("window.wireTabs = function"),
+                         "the builder stacked the helper, so it is defined more than once")
+
+    def test_a_page_without_tabs_is_left_alone(self) -> None:
+        text = page("ingestion_portal.html")
+        self.assertNotIn('role="tablist"', text, "this test is about a page that has no tabs")
+        self.assertNotIn("wireTabs", text,
+                         "the helper was injected into a page with nothing to switch")
+
+    def test_the_helper_is_defined_before_it_is_called(self) -> None:
+        """Scripts run in document order. Appended last, the helper is undefined when called."""
+        for name in TABBED:
+            with self.subTest(page=name):
+                text = page(name)
+                defined = text.index("window.wireTabs = function")
+                called = text.index("window.wireTabs(")
+                self.assertLess(defined, called,
+                                "%s calls the tab helper before the block defining it, which "
+                                "throws on load and stops the rest of that script" % name)
+
+    def test_the_connection_step_is_not_behind_a_tab(self) -> None:
+        """Every pane needs a key first. A step you must take before any tab works is not a tab."""
+        text = page("api_key_portal.html")
+        above = text.split('<div class="tabs"', 1)[0]
+        self.assertIn("Connection", above,
+                      "the connection panel moved behind a tab, so the other tabs look broken "
+                      "until you find it")
 
 
 if __name__ == "__main__":

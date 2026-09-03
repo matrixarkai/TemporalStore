@@ -456,7 +456,7 @@ def nav(active):
 
 TABS_JS = r"""
 <script>
-/* Tabs, for every generated page whose body declares a tablist.
+/* Tabs, for every portal page whose body declares a tablist.
  *
  * Shared rather than per page. The explore page had the only copy and this is the second caller;
  * two copies of a behaviour that looks identical is how they stop being identical.
@@ -4534,6 +4534,7 @@ emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CA
 
 
 # ---- add the nav to the two existing pages ------------------------------------------------------
+TABS_JS_MARKER = "/* Tabs, for every portal page whose body declares a tablist."
 NAV_JS_MARKER = "/* The shared live strip."
 
 
@@ -4553,6 +4554,30 @@ def _with_nav_js(text):
     return text.replace("</body>", NAV_JS.strip() + "\n</body>", 1)
 
 
+def _with_tabs_js(text):
+    """Put the shared tab helper into a hand-maintained page that declares a tablist.
+
+    Removed and re-placed rather than replaced where it sits. The builder runs over these
+    files repeatedly, and an earlier build put the block in the wrong place -- after the
+    page's own script, so `window.wireTabs()` ran before anything defined it. Replacing in
+    place would carry that position forward for ever; taking it out and putting it back means
+    the current rule about where it goes always wins.
+
+    A page with no tablist is left exactly as it was.
+    """
+    if 'role="tablist"' not in text:
+        return text
+    if TABS_JS_MARKER in text:
+        start = text.index("<script>", text.index(TABS_JS_MARKER) - 200)
+        end = text.index("</script>", start) + len("</script>")
+        text = text[:start] + text[end:].lstrip(chr(10))
+    # Scripts run in document order, so the helper goes before the page's own.
+    if "<script>" not in text:
+        print("no <script> to place the tab helper before")
+        sys.exit(1)
+    at = text.index("<script>")
+    return text[:at] + TABS_JS.strip() + chr(10) + text[at:]
+
 def inject(filename, anchor, active):
     """Add the shared nav, or replace the one already there.
 
@@ -4568,7 +4593,7 @@ def inject(filename, anchor, active):
         if not count:
             print("nav present but unrecognised in %s" % filename)
             sys.exit(1)
-        io.open(path, "w", encoding="utf-8", newline="\n").write(_with_nav_js(replaced))
+        io.open(path, "w", encoding="utf-8", newline="\n").write(_with_tabs_js(_with_nav_js(replaced)))
         print("nav refreshed in %s" % filename)
         return
     if anchor not in text:
@@ -4576,7 +4601,7 @@ def inject(filename, anchor, active):
         sys.exit(1)
     text = text.replace("</style>", NAV_CSS + "</style>", 1)
     text = text.replace(anchor, anchor + "\n" + nav(active), 1)
-    text = _with_nav_js(text)
+    text = _with_tabs_js(_with_nav_js(text))
     io.open(path, "w", encoding="utf-8", newline="\n").write(text)
     print("nav added to %s" % filename)
 

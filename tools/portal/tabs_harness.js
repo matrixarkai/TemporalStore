@@ -75,7 +75,11 @@ const doc = {
 };
 
 /* ---------- the page's own helper ---------- */
-const src = scripts.find((s) => s.includes("window.wireTabs"));
+/* The DEFINITION, not a call. "window.wireTabs" also matches the page calling it, and which
+   block comes first differs between generated pages (helper injected before the page script)
+   and hand-maintained ones (appended before </body>), so matching loosely picks a different
+   block per page and runs the page instead of the helper. */
+const src = scripts.find((s) => s.includes("window.wireTabs = function"));
 if (!src) { console.log("FAIL the page carries no tab helper"); process.exit(1); }
 const win = {};
 new Function("window", "document", src)(win, doc);
