@@ -2214,10 +2214,32 @@ fn read_at(path: &Path, physical: u64, size: u64) -> Result<Vec<u8>, WriteAheadL
 
 /// TS_WAL_SEGMENT_BYTES: roll the log into a new piece once the one being written passes this.
 ///
-/// Zero never rolls, which is one file and the behaviour this has always had. Rolling exists so
-/// reclaim can unlink a whole earlier piece instead of copying the records it keeps into a new
-/// file -- the cost of a reclaim tracks what it KEEPS, so dropping a prefix of a large log
-/// otherwise rewrites nearly all of it.
+/// Zero never rolls, which is one file. Rolling lets reclaim unlink a whole earlier piece instead
+/// of rewriting the file to keep the survivors.
+///
+/// **Default 256 KiB**, chosen by measurement rather than by feel:
+///
+/// * It matches `wal_preallocate_chunk`, so a piece is a whole number of the units the file is
+///   already grown in and rolling costs no extra preallocation. Measured on-disk overhead against
+///   never rolling was 1,258 bytes on a 1.3 MB log.
+/// * It is the largest size that still rolls usefully inside the log the index-dump threshold
+///   leaves. That threshold is a megabyte, so 1 MiB pieces would barely roll in a steady system;
+///   256 KiB gives four or five.
+///
+/// What it buys, measured across two runs at 4,000 records:
+///
+/// | | reclaim keeping 10% | keeping 90% |
+/// |---|---|---|
+/// | never rolling | 34-68 ms, copies 119,748 B | copies 1,075,475 B |
+/// | 256 KiB | 12-15 ms, copies 119,748 B, unlinks 4 pieces | copies 144,482 B |
+///
+/// The copy is IDENTICAL in the first column: reclaim copies survivors, and when most of the log
+/// is dropped the survivors are small either way. The saving there is the SCAN -- a rolled reclaim
+/// skips the pieces it unlinks instead of reading the file to find what stays. Rolling reduces the
+/// COPY only when most of the log is kept, which is what a blocked floor produces.
+///
+/// The exposure to weigh against that is file count: pieces accumulate while reclaim is blocked,
+/// and a log that reached a gigabyte would hold four thousand of them.
 fn wal_segment_bytes() -> u64 {
     if let Some(threshold) = SEGMENT_BYTES_OVERRIDE.with(|value| value.get()) {
         return threshold;
@@ -2225,8 +2247,12 @@ fn wal_segment_bytes() -> u64 {
     std::env::var("TS_WAL_SEGMENT_BYTES")
         .ok()
         .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(DEFAULT_WAL_SEGMENT_BYTES)
 }
+
+/// Rolling threshold when nothing sets one. See [`wal_segment_bytes`] for how it was chosen.
+/// Zero is still accepted and still means "never roll".
+pub const DEFAULT_WAL_SEGMENT_BYTES: u64 = 256 * 1024;
 
 thread_local! {
     /// Per-thread override of the rolling threshold.
@@ -3834,7 +3860,8 @@ mod tests {
     #[test]
     #[ignore]
     fn what_the_log_holds_in_memory() {
-        set_wal_segment_bytes_for_test(None);
+        // Some(0) is "never roll"; None takes the default, which rolls.
+        set_wal_segment_bytes_for_test(Some(0));
         const SHARDS: u64 = 1_000;
 
         // A: one record per shard. Whatever the log keeps per shard is now resident.
@@ -3912,7 +3939,9 @@ mod tests {
     #[test]
     #[ignore]
     fn what_a_byte_of_value_costs() {
-        set_wal_segment_bytes_for_test(None);
+        // Some(0) is "never roll"; None takes the default, which rolls and would split the bytes
+        // this measures across pieces it does not stat.
+        set_wal_segment_bytes_for_test(Some(0));
         println!("  value     records      payload        wal bytes    per record   ratio");
         for value_bytes in [64usize, 256, 1024, 4096, 16384] {
             let dir = tempfile::tempdir().unwrap();
@@ -3989,7 +4018,8 @@ mod tests {
     #[test]
     fn blocks_turned_on_over_a_log_that_ends_inside_a_slot() {
         let dir = tempfile::tempdir().unwrap();
-        set_wal_segment_bytes_for_test(None);
+        // Some(0) is "never roll"; None takes the default, which rolls.
+        set_wal_segment_bytes_for_test(Some(0));
         let store = LocalWriteAheadLogStore::new(dir.path());
         let path = write_ahead_log_path(dir.path(), 1);
         // Fill until the records end inside block 0's footer slot.
@@ -4023,7 +4053,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in written..written + 50 {
             store
@@ -4084,6 +4118,10 @@ mod tests {
     /// of the log, and it is worth knowing before flipping it rather than after.
     #[test]
     fn turning_blocks_on_over_a_log_written_without_them() {
+        // Off for BOTH phases. This test writes before it configures anything, and the phase-one
+        // log has to stay one file for the boundary check below to mean what it says -- pinning
+        // only the second phase left the first rolling on the default.
+        set_wal_segment_bytes_for_test(Some(0));
         let dir = tempfile::tempdir().unwrap();
         // Phase one: no blocks. Records run straight through where slots would be.
         let written = {
@@ -4114,7 +4152,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in 600..700 {
             store
@@ -4154,7 +4196,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         let records = 2_000usize;
@@ -4198,7 +4244,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         // ~327 B a record here, so a few hundred fill ONE block. Cross several on purpose.
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
@@ -4250,7 +4300,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         // 128KiB blocks; a ~1KiB value closes several of them.
@@ -4296,7 +4350,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in 0..800 {
@@ -4332,7 +4390,11 @@ mod tests {
         // rolling is off for this test. The segment threshold is a THREAD-LOCAL override and
         // these tests share a thread, so whatever the previous test left is inherited -- and a
         // log that rolls mid-test splits across files the assertions never look at.
-        set_wal_segment_bytes_for_test(None);
+        //
+        // `Some(0)`, not `None`: None clears the override and takes the DEFAULT, and the default
+        // rolls now. These assertions are about blocks within one piece, so they say "off"
+        // explicitly instead of relying on what the default happens to be.
+        set_wal_segment_bytes_for_test(Some(0));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
         for index in 0..400 {
@@ -4358,83 +4420,206 @@ mod tests {
         );
     }
 
-    /// What reclaim copies AT THE SHIPPED DEFAULT, against what rolling would copy.
+    /// Rolling must not cost extra durability barriers per write.
     ///
-    /// `wal_segment_bytes` defaults to 0, and zero never rolls. Rolling is what lets reclaim
-    /// unlink a whole earlier piece instead of copying the records it keeps, so at the default
-    /// every reclaim pays for what it KEEPS.
+    /// A roll creates a new file, and its directory entry has to reach disk before any record in
+    /// that piece is acked -- so rolling COULD add an fsync every piece. The append path defers
+    /// that debt to the next barrier that was going to run anyway, and this checks the deferral
+    /// actually holds.
     ///
-    /// What that does NOT mean: the log growing without bound. `DEFAULT_INDEX_DUMP_WAL_GAP_BYTES`
-    /// is a megabyte, so the index dumps once the log is that far ahead, and the storage-manager
-    /// cycle that drives reclaim is wired -- `bin/server.rs` submits it. A pass therefore copies
-    /// about the dump threshold, and the steady-state cost is bounded write amplification rather
-    /// anything quadratic. The quadratic shape needs something to BLOCK reclaim so the log grows,
-    /// and the blocking case clamps to the floor now instead of refusing at it.
-    ///
-    /// What it does mean: that bounded cost is about 33x larger than it needs to be, every pass,
-    /// for want of a threshold. This measures that, and nothing stronger -- the first version of
-    /// this comment claimed the lifetime cost, which is a different quantity that was never
-    /// measured here.
-    ///
-    /// Counted in bytes copied rather than timed: the bytes ARE the cost here, and a timing
-    /// assertion in the suite would be a flake generator.
+    /// Counted, not timed. The count is the thing: a barrier either happened or it did not, and a
+    /// duration on a shared machine mostly measures what else was running.
     #[test]
-    fn what_reclaim_copies_at_the_shipped_default() {
-        fn copied_for(records: u64, roll: Option<u64>) -> (u64, u64, usize) {
+    fn rolling_adds_no_durability_barriers() {
+        fn syncs_for(roll: u64) -> (u64, u64, usize) {
+            set_wal_segment_bytes_for_test(Some(roll));
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..3_000u64 {
+                store
+                    .append_with_sync(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 256],
+                        },
+                        // Sync ON: with it off nothing syncs, the counters read zero on both
+                        // sides, and the comparison below passes on having measured nothing.
+                        true,
+                    )
+                    .unwrap();
+            }
+            let stats = store.stats(1);
+            let pieces = wal_segment_paths(dir.path(), 1).len();
+            set_wal_segment_bytes_for_test(None);
+            (stats.syncs, stats.flushes, pieces)
+        }
+
+        let (never_syncs, never_flushes, never_pieces) = syncs_for(0);
+        let (rolled_syncs, rolled_flushes, rolled_pieces) = syncs_for(DEFAULT_WAL_SEGMENT_BYTES);
+        println!(
+            "  never rolling: {never_syncs} syncs, {never_flushes} flushes, {never_pieces} piece(s)
+               at the default: {rolled_syncs} syncs, {rolled_flushes} flushes, {rolled_pieces} piece(s)"
+        );
+
+        // A bound passes most easily when nothing was measured -- and this one already did once,
+        // reading 0 syncs against 0 syncs because the appends were not asking for durability.
+        assert!(never_syncs > 0, "the probe must observe syncs: {never_syncs}");
+        assert!(rolled_syncs > 0, "the probe must observe syncs: {rolled_syncs}");
+        assert!(never_pieces == 1, "zero must still mean one piece");
+        assert!(rolled_pieces > 1, "the default must actually roll this workload");
+
+        // The deferral is the claim: rolling adds pieces without adding a barrier per piece.
+        // Allow one per piece as slack; anything beyond that means the debt is NOT being deferred.
+        let extra = rolled_syncs.saturating_sub(never_syncs);
+        assert!(
+            extra <= rolled_pieces as u64,
+            "rolling added {extra} syncs over {} pieces -- the roll debt is not being deferred",
+            rolled_pieces
+        );
+    }
+
+    /// Sweep: what each rolling threshold costs and saves. Ignored -- a measurement, not a bound.
+    ///
+    ///   cargo test -p temporalstore-rust --lib sweep_segment_sizes -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn sweep_segment_sizes() {
+        // Preallocation is ON by default and grows a file 256 KiB at a time, so a piece smaller
+        // than that still costs a full chunk on disk. That sets the floor for the candidates.
+        for (label, roll) in [
+            ("off (today)", None),
+            ("256 KiB", Some(256u64 * 1024)),
+            ("512 KiB", Some(512 * 1024)),
+            ("1 MiB", Some(1024 * 1024)),
+            ("4 MiB", Some(4 * 1024 * 1024)),
+        ] {
+            for (shape, keep_fraction) in [("trim oldest 10%", 0.10f64), ("dump-driven, keep 10%", 0.90)] {
+                set_wal_segment_bytes_for_test(roll);
+                let dir = tempfile::tempdir().unwrap();
+                let store = LocalWriteAheadLogStore::new(dir.path());
+                let records = 4000u64;
+                for index in 0..records {
+                    store
+                        .append(
+                            1,
+                            Command::StringSet {
+                                key: format!("k{index:06}"),
+                                value: vec![118u8; 256],
+                            },
+                        )
+                        .unwrap();
+                }
+                let files_before = wal_segment_paths(dir.path(), 1).len();
+                let on_disk_before: u64 = wal_segment_paths(dir.path(), 1)
+                    .iter()
+                    .filter_map(|p| p.metadata().ok().map(|m| m.len()))
+                    .sum();
+
+                // `bytes_copied` misses the read side: an unrolled reclaim reads the whole file to
+                // find survivors, a rolled one skips the pieces it unlinks. `stats().bytes_read`
+                // does NOT cover the reclaim path -- it reported a flat zero here, which is the
+                // instrument not observing rather than reads being free -- so this times the call.
+                // A timing number, reported and never asserted on.
+                let retain_from = (records as f64 * keep_fraction) as u64;
+                let started = std::time::Instant::now();
+                let report = store.gc_before_sequence_unchecked(1, retain_from).unwrap();
+                let elapsed_us = started.elapsed().as_micros();
+
+                let on_disk_after: u64 = wal_segment_paths(dir.path(), 1)
+                    .iter()
+                    .filter_map(|p| p.metadata().ok().map(|m| m.len()))
+                    .sum();
+                set_wal_segment_bytes_for_test(None);
+
+                println!(
+                    "  SWEEP {label:>11} | {shape:>21} | files {files_before:>3} |                      on-disk {on_disk_before:>8} -> {on_disk_after:>8} | copied {:>8} |                      {elapsed_us:>7} us | unlinked {:>2} / {:>8} B",
+                    report.bytes_copied, report.dropped_segments, report.dropped_segment_bytes
+                );
+            }
+        }
+    }
+
+    /// The shipped default ROLLS, and rolling is what lets reclaim unlink instead of rewrite.
+    ///
+    /// The previous version of this test claimed it would fail if rolling ever became the
+    /// default. It would not have: it wrote 2,000 records of 64 bytes, a log of about 226 KB,
+    /// which never reaches a 256 KiB threshold -- so it passed either way and proved nothing about
+    /// the default it was named for. The log here is deliberately several times the threshold.
+    ///
+    /// Counted in bytes and pieces rather than timed. The scan saving that rolling also buys is
+    /// real and larger in the drop-most shape, but it is a wall-clock number and belongs in
+    /// `sweep_segment_sizes`, not in an assertion.
+    #[test]
+    fn the_shipped_default_rolls_the_log() {
+        fn run(roll: Option<u64>, keep_fraction: f64) -> (u64, usize, u64, usize) {
             set_wal_segment_bytes_for_test(roll);
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
+            let records = 4000u64;
             for index in 0..records {
                 store
                     .append(
                         1,
                         Command::StringSet {
                             key: format!("k{index:06}"),
-                            value: vec![118u8; 64],
+                            value: vec![118u8; 256],
                         },
                     )
                     .unwrap();
             }
-            // Drop the oldest tenth, the shape a steady trim takes.
-            let retain_from = records / 10;
-            let report = store.gc_before_sequence_unchecked(1, retain_from).unwrap();
+            let files = wal_segment_paths(dir.path(), 1).len();
+            let report = store
+                .gc_before_sequence_unchecked(1, (records as f64 * keep_fraction) as u64)
+                .unwrap();
             set_wal_segment_bytes_for_test(None);
             (
                 report.bytes_copied,
-                report.dropped_segment_bytes,
                 report.dropped_segments,
+                report.dropped_segment_bytes,
+                files,
             )
         }
 
-        let mut default_copied = Vec::new();
-        for records in [500u64, 1000, 2000] {
-            let (copied, dropped, pieces) = copied_for(records, None);
-            println!(
-                "  RECLAIM default   {records:>5} records -> copied {copied:>8} B,                  unlinked {pieces} piece(s) holding {dropped} B"
-            );
-            default_copied.push(copied);
+        // `Some(0)` is the old behaviour, still reachable: zero means never roll.
+        let (never_copied, never_pieces, _, never_files) = run(Some(0), 0.90);
+        let (default_copied, default_pieces, default_bytes, default_files) = run(None, 0.90);
 
-            let (r_copied, r_dropped, r_pieces) = copied_for(records, Some(8 * 1024));
-            println!(
-                "  RECLAIM rolled 8K {records:>5} records -> copied {r_copied:>8} B,                  unlinked {r_pieces} piece(s) holding {r_dropped} B"
-            );
-        }
-
-        // A bound passes most easily when nothing was measured.
-        assert!(
-            default_copied[0] > 0,
-            "the probe must observe a reclaim: {default_copied:?}"
+        println!(
+            "  never rolling: {never_files} file(s), copied {never_copied} B, unlinked {never_pieces}
+               at the default: {default_files} file(s), copied {default_copied} B, unlinked              {default_pieces} piece(s) holding {default_bytes} B"
         );
 
-        // The point: at the default the copy tracks what is KEPT, so a bigger log means a bigger
-        // copy for the same tenth freed. That is a per-pass statement -- the dump threshold bounds how
-        // big the log gets between passes, so it does not compound over the log's life.
-        //
-        // A statement about the DEFAULT, not a regression bound: if rolling ever becomes the
-        // default this fails, and that is the good outcome.
+        // A bound passes most easily when nothing was measured.
+        assert!(never_copied > 0, "the probe must observe a reclaim");
+        assert_eq!(never_files, 1, "zero must still mean one file");
+
+        // The default rolls: the log is several pieces and reclaim drops whole ones.
         assert!(
-            default_copied[2] > default_copied[0] * 3,
-            "at the shipped default the copy should track the whole log: {default_copied:?}"
+            default_files > 1,
+            "at a {}-byte threshold this log should be several pieces, got {default_files} file(s)",
+            DEFAULT_WAL_SEGMENT_BYTES
+        );
+        assert!(
+            default_pieces > 0,
+            "reclaim should unlink whole pieces at the default, not rewrite: {default_pieces}"
+        );
+        assert!(
+            default_bytes > 0,
+            "the pieces it dropped should have held something: {default_bytes}"
+        );
+
+        // Where rolling reduces the COPY: keeping most of the log confines the rewrite to the
+        // boundary piece. Dropping most of it copies the same either way -- the survivors are
+        // small however the log is laid out -- so this shape is the one worth asserting on.
+        let (never_keep_most, _, _, _) = run(Some(0), 0.10);
+        let (default_keep_most, _, _, _) = run(None, 0.10);
+        println!(
+            "  keeping most: never rolling copied {never_keep_most} B, at the default              {default_keep_most} B"
+        );
+        assert!(
+            default_keep_most * 4 < never_keep_most,
+            "rolling should confine the rewrite to the boundary piece: {default_keep_most} vs              {never_keep_most}"
         );
     }
 
@@ -5867,10 +6052,15 @@ mod tests {
                     .unwrap();
             }
             let micros = started.elapsed().as_secs_f64() * 1e6 / records as f64;
-            let bytes = strip_reservation(
-                std::fs::read(write_ahead_log_path(dir.path(), 1)).unwrap(),
-            )
-            .len() as u64;
+            // Every piece, not just the newest file. A footprint that stats one path reports a
+            // fraction of the log the moment rolling splits it -- which read as the encoded shape
+            // getting BIGGER when the default changed, because the two shapes rolled differently.
+            // The reservation is stripped per piece: each one is preallocated in its own right.
+            let bytes: u64 = wal_segment_paths(dir.path(), 1)
+                .iter()
+                .filter_map(|path| std::fs::read(path).ok())
+                .map(|raw| strip_reservation(raw).len() as u64)
+                .sum();
             (bytes, micros)
         }
 
