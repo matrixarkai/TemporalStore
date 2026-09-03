@@ -5816,6 +5816,57 @@ fn an_object_index_costs_a_word_and_a_pointer() {
     assert!(matches!(index, ObjectIndex::One(9)), "one id is held inline again");
 }
 
+/// An object with one component holds it inline, and goes back to inline when it can.
+///
+/// The measured average is 1.0 components per object, so a `Vec` here was a heap allocation and
+/// its allocator rounding spent on every object to express a list of one.
+///
+/// The demotion matters as much as the promotion: an object that briefly held two components
+/// would otherwise keep the vector for the rest of its life, which is exactly the cost being
+/// avoided and would not show up as a failure anywhere else.
+#[test]
+fn one_component_is_held_without_a_vector() {
+    use crate::engine::state::{BlockLookupRef, BlockRefs, ComponentBlocks, ComponentList};
+
+    let entry = |name: Option<&str>| ComponentBlocks {
+        component: name.map(Arc::from),
+        refs: BlockRefs::One(BlockLookupRef {
+            routing_bucket: 1,
+            page_ref_key: 7,
+        }),
+    };
+
+    let mut list = ComponentList::default();
+    assert!(list.is_empty());
+
+    // `None` sorts first, matching Option's own ordering, so it lands at 0.
+    assert_eq!(list.binary_search_by(|e| e.component.as_deref().cmp(&None)), Err(0));
+    list.insert(0, entry(None));
+    assert!(matches!(list, ComponentList::One(_)), "one component needs no vector");
+    assert_eq!(list.len(), 1);
+    assert_eq!(list.binary_search_by(|e| e.component.as_deref().cmp(&None)), Ok(0));
+
+    // A named component sorts after `None`, so the search must place it at 1, not 0.
+    let named = Some("b");
+    assert_eq!(list.binary_search_by(|e| e.component.as_deref().cmp(&named)), Err(1));
+    list.insert(1, entry(Some("b")));
+    assert!(matches!(list, ComponentList::Many(_)), "two components need the vector");
+    assert_eq!(
+        list.iter().map(|e| e.component.as_deref().map(str::to_string)).collect::<Vec<_>>(),
+        vec![None, Some("b".to_string())],
+        "order is preserved across the promotion"
+    );
+
+    // Back down to one, the vector is given up rather than kept for the object's life.
+    let removed = list.remove(0);
+    assert_eq!(removed.component, None);
+    assert!(matches!(list, ComponentList::One(_)), "one component is held inline again");
+    assert_eq!(list[0].component.as_deref(), Some("b"));
+
+    list.remove(0);
+    assert!(list.is_empty(), "the last removal empties the list");
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
