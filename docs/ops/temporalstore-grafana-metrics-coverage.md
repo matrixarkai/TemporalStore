@@ -214,3 +214,37 @@ The panel title, the metric's HELP text and both alert descriptions now say so.
 `test_matrixark_readiness_gate_is_build_state.py` pins it: if a runtime read is ever added to that
 surface, the test fails and asks for the wording to be revisited, so the description cannot quietly
 become wrong in the other direction.
+
+
+## Storage maintenance, and the one thing these panels cannot tell you
+
+Ten `temporalstore_storage_manager_*` families are declared and, until now, none appeared on any
+dashboard. They describe the five phases that decide whether a store grows without bound:
+`reclaim_wal`, `index_gc`, `expire`, `evict`, `compact`.
+
+That matters more than a normal coverage hole, because **nothing in the node schedules the cycle**.
+`start_storage_manager_scheduler` exists and has exactly one caller, a test; the cycle is reachable
+only at `POST /server/storage/manager/cycle`. On a long-lived deployment nobody posts to, none of
+those phases has ever run.
+
+### What the alerts can and cannot see
+
+Every one of these metrics is a gauge describing the LAST cycle, so:
+
+| condition | detectable | how |
+|---|---|---|
+| never ran | yes | `absent(...phase_applied)` -- the metric does not exist until a cycle reports |
+| a phase failed | yes | `...phase_errors > 0` |
+| a phase is switched off | yes | `...phase_enabled == 0` |
+| **ran once, then stopped** | **no** | nothing records WHEN the last cycle was |
+
+The last row is the honest gap. A gauge of the last cycle's results looks identical whether that
+cycle was a minute ago or a month ago, so a node that ran maintenance once at startup and never
+again is indistinguishable from a healthy one. Closing it needs a timestamp -- a
+`..._last_run_seconds` gauge, or a counter that increases per cycle so `increase()` over a window
+means something. Both are engine changes and neither is made here.
+
+`absent()` rather than `increase() == 0` for the never-ran case is deliberate: `increase()` over a
+metric that does not exist returns no series, so a rule written that way would never fire on the
+condition it names. That is the exact defect removed from this file earlier -- an alert that reads
+as coverage and cannot fire.

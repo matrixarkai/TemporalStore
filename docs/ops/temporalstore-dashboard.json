@@ -194,6 +194,57 @@
           "expr": "matrixark_backend_ready"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage Maintenance: Work Done Per Phase",
+      "targets": [
+        {
+          "expr": "temporalstore_storage_manager_phase_work"
+        },
+        {
+          "expr": "temporalstore_storage_manager_phase_applied"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage Maintenance: Phase Enabled And Skipped",
+      "targets": [
+        {
+          "expr": "temporalstore_storage_manager_phase_enabled"
+        },
+        {
+          "expr": "temporalstore_storage_manager_phase_skipped"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage Maintenance: Errors And Duration",
+      "targets": [
+        {
+          "expr": "temporalstore_storage_manager_phase_errors"
+        },
+        {
+          "expr": "temporalstore_storage_manager_phase_duration_ms"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Storage Maintenance: Pressure And Floors",
+      "targets": [
+        {
+          "expr": "temporalstore_storage_manager_pressure"
+        },
+        {
+          "expr": "temporalstore_storage_manager_phase_pressure"
+        },
+        {
+          "expr": "temporalstore_storage_manager_phase_floors"
+        }
+      ]
     }
   ]
 }

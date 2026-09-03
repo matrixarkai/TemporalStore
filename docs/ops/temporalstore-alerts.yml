@@ -278,3 +278,31 @@ groups:
         annotations:
           summary: TemporalStore control-plane mutations are not applying
           description: "{{ $value }} recorded mutations would not apply in the last fifteen minutes. The control plane believes it made a change that did not take effect."
+  - name: temporalstore-storage-maintenance
+    rules:
+      - alert: TemporalStoreMaintenanceNeverRan
+        expr: absent(temporalstore_storage_manager_phase_applied)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore storage maintenance has not run on this node
+          description: "No storage-manager phase has reported, so reclaim, index GC, expiry, eviction and compaction have not run. These metrics describe the LAST cycle, so their absence means there has not been one. The cycle is reachable at POST /server/storage/manager/cycle and nothing in the node schedules it, so on a long-lived deployment the store grows unattended."
+
+      - alert: TemporalStoreMaintenancePhaseErrors
+        expr: temporalstore_storage_manager_phase_errors > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore storage maintenance phase is failing
+          description: "Phase {{ $labels.phase }} on shard {{ $labels.shard_id }} reported {{ $value }} errors in its last cycle. A phase that fails leaves its work undone while the cycle reports as having run."
+
+      - alert: TemporalStoreMaintenancePhaseDisabled
+        expr: temporalstore_storage_manager_phase_enabled == 0
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore storage maintenance phase is switched off
+          description: "Phase {{ $labels.phase }} on shard {{ $labels.shard_id }} is disabled. That is a supported choice and it is worth seeing: the work that phase does is not happening, and nothing else does it."
