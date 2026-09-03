@@ -473,6 +473,31 @@ SETTINGS: List[Setting] = [
             "Drainer interval (ms)", "int", "", "restart",
             "How often the drainer wakes to encode what ingest left behind."),
 
+    # ---- what the local store keeps -------------------------------------------------------------
+    # These two together are the deployment's disk ceiling and, less obviously, its ingest cost:
+    # the retained window is what a read has to hold and what compaction has to walk, so per
+    # document ingest time rises with it until rotation starts discarding. Measured on 1 MB
+    # documents, ingest cost per document climbed 2.68 s -> 4.83 s -> 7.35 s at 15, 30 and 60
+    # documents and then flattened, and it flattened because rotation had begun. An operator
+    # sizing a box needs to see both numbers, and until now neither was offered.
+    Setting("ingestion.local_log_max_bytes", "ingestion", "MATRIXARK_LOCAL_JSONL_MAX_BYTES",
+            "Event log shard size (bytes)", "int", "67108864", "restart",
+            "How large one event-log shard grows before the store rotates to a new one. This "
+            "times the retained count below is the disk the event log will occupy."),
+    Setting("ingestion.local_log_retention_count", "ingestion",
+            "MATRIXARK_LOCAL_JSONL_RETENTION_COUNT",
+            "Event log shards retained", "int", "4", "restart",
+            "How many rotated shards are kept behind the live one. Records in a dropped shard are "
+            "gone from the store, so this is a retention policy and not only a disk setting: at "
+            "the defaults the store keeps roughly 336 MB and discards the oldest records past it."),
+    Setting("ingestion.durable_read_cache", "ingestion",
+            "MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED",
+            "Durable read snapshot", "bool", "1", "restart",
+            "Keep a snapshot of the compacted read view beside the event log so a restart serves "
+            "reads without replaying it. Turning it off makes the first read after a restart "
+            "much slower and saves the disk the snapshot occupies, which is comparable to the "
+            "event log itself."),
+
     # ---- edge limits ---------------------------------------------------------------------------
     Setting("limits.ingest_rps", "limits", "MATRIXARK_RL_INGEST_RPS",
             "Ingest rate limit (req/s)", "float", "5000", "restart",
