@@ -1002,7 +1002,174 @@ impl From<ObjectBlockLookup> for BTreeMap<String, ObjectBlockRefs> {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectBlockRefs {
     #[serde(default)]
-    pub(super) by_component: Vec<ComponentBlocks>,
+    pub(super) by_component: ComponentList,
+}
+
+/// The components of one object: none, one, or a sorted vector.
+///
+/// The measured average is 1.0 components per object, and a `Vec` holding a single element is a
+/// heap allocation and its allocator rounding spent to express a list of one. The shape
+/// `BlockIndexMap`, `BlockRefs` and `ObjectIndex` already use, for the same reason.
+///
+/// It carries the slice of `Vec`'s surface the lookup actually uses, so the call sites read as
+/// they did.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) enum ComponentList {
+    #[default]
+    Empty,
+    One(ComponentBlocks),
+    Many(Vec<ComponentBlocks>),
+}
+
+impl ComponentList {
+    pub(super) fn len(&self) -> usize {
+        match self {
+            ComponentList::Empty => 0,
+            ComponentList::One(_) => 1,
+            ComponentList::Many(list) => list.len(),
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        matches!(self, ComponentList::Empty)
+    }
+
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, ComponentBlocks> {
+        match self {
+            // A const-promoted empty slice, so the iterator does not borrow a temporary.
+            ComponentList::Empty => (&[] as &[ComponentBlocks]).iter(),
+            ComponentList::One(entry) => std::slice::from_ref(entry).iter(),
+            ComponentList::Many(list) => list.iter(),
+        }
+    }
+
+    /// `Vec::binary_search_by`'s contract: `f` orders the ELEMENT against the target, `Ok` is the
+    /// position of a match and `Err` the position it would be inserted at.
+    pub(super) fn binary_search_by<F>(&self, mut f: F) -> Result<usize, usize>
+    where
+        F: FnMut(&ComponentBlocks) -> std::cmp::Ordering,
+    {
+        match self {
+            ComponentList::Empty => Err(0),
+            ComponentList::One(entry) => match f(entry) {
+                std::cmp::Ordering::Equal => Ok(0),
+                // The held entry sorts before the target, so the target goes after it.
+                std::cmp::Ordering::Less => Err(1),
+                std::cmp::Ordering::Greater => Err(0),
+            },
+            ComponentList::Many(list) => list.binary_search_by(f),
+        }
+    }
+
+    pub(super) fn insert(&mut self, at: usize, value: ComponentBlocks) {
+        match self {
+            ComponentList::Empty => {
+                assert_eq!(at, 0, "the only position in an empty list is 0");
+                *self = ComponentList::One(value);
+            }
+            ComponentList::One(_) => {
+                let held = match std::mem::replace(self, ComponentList::Empty) {
+                    ComponentList::One(held) => held,
+                    _ => unreachable!("just matched One"),
+                };
+                let mut list = Vec::with_capacity(2);
+                list.push(held);
+                list.insert(at, value);
+                *self = ComponentList::Many(list);
+            }
+            ComponentList::Many(list) => list.insert(at, value),
+        }
+    }
+
+    /// Removes and returns the entry at `at`, giving up the vector once it no longer earns one so
+    /// an object that briefly held two components does not keep it for the rest of its life.
+    pub(super) fn remove(&mut self, at: usize) -> ComponentBlocks {
+        match self {
+            ComponentList::Empty => panic!("removal from an empty component list"),
+            ComponentList::One(_) => {
+                assert_eq!(at, 0, "the only position in a list of one is 0");
+                match std::mem::replace(self, ComponentList::Empty) {
+                    ComponentList::One(held) => held,
+                    _ => unreachable!("just matched One"),
+                }
+            }
+            ComponentList::Many(list) => {
+                let removed = list.remove(at);
+                match list.len() {
+                    0 => *self = ComponentList::Empty,
+                    1 => *self = ComponentList::One(list.pop().expect("length is one")),
+                    _ => {}
+                }
+                removed
+            }
+        }
+    }
+}
+
+impl std::ops::Index<usize> for ComponentList {
+    type Output = ComponentBlocks;
+    fn index(&self, at: usize) -> &ComponentBlocks {
+        match self {
+            ComponentList::Empty => panic!("index {at} into an empty component list"),
+            ComponentList::One(entry) => {
+                assert_eq!(at, 0, "the only position in a list of one is 0");
+                entry
+            }
+            ComponentList::Many(list) => &list[at],
+        }
+    }
+}
+
+impl std::ops::IndexMut<usize> for ComponentList {
+    fn index_mut(&mut self, at: usize) -> &mut ComponentBlocks {
+        match self {
+            ComponentList::Empty => panic!("index {at} into an empty component list"),
+            ComponentList::One(entry) => {
+                assert_eq!(at, 0, "the only position in a list of one is 0");
+                entry
+            }
+            ComponentList::Many(list) => &mut list[at],
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a ComponentList {
+    type Item = &'a ComponentBlocks;
+    type IntoIter = std::slice::Iter<'a, ComponentBlocks>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl Serialize for ComponentList {
+    /// The same sequence it has always written, in the same order.
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for entry in self.iter() {
+            seq.serialize_element(entry)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ComponentList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A loaded object takes the shape a written one does: one component comes back held
+        // inline rather than in a vector.
+        let mut list = Vec::<ComponentBlocks>::deserialize(deserializer)?;
+        Ok(match list.len() {
+            0 => ComponentList::Empty,
+            1 => ComponentList::One(list.pop().expect("length is one")),
+            _ => ComponentList::Many(list),
+        })
+    }
 }
 
 /// One component of one object, and the pages holding it.
