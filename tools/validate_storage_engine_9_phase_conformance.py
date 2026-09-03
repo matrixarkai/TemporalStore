@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""Run the conformance storage-engine parity gates phase by phase.
+"""Run the conformance storage-engine gates phase by phase.
 
-This is the umbrella gate for the nine storage parity phases:
+This is the umbrella gate for the nine storage conformance phases:
 
 1. canonical public contract
 2. read/write/cold-scan sequences
@@ -11,8 +11,8 @@ This is the umbrella gate for the nine storage parity phases:
 4. page/block/slot/index behavior
 5. multi-layer cache behavior
 6. eviction, GC, compaction, and reclaim
-7. public config parity
-8. metrics/report parity
+7. public config agreement
+8. metrics/report agreement
 9. shared storage/proxy/Raft evidence
 
 It intentionally composes the focused validators instead of duplicating their
@@ -89,12 +89,12 @@ PHASES: tuple[Phase, ...] = (
     ),
     Phase(
         7,
-        "public config parity",
+        "public config agreement",
         ("validate_storage_tuning_conformance.py",),
     ),
     Phase(
         8,
-        "metrics/report parity",
+        "metrics/report agreement",
         (
             "validate_page_block_metrics_conformance.py",
             "validate_grafana_metrics_conformance.py",
@@ -125,10 +125,23 @@ PHASES: tuple[Phase, ...] = (
 )
 
 
-def run_validator(script_name: str) -> None:
+def run_validator(script_name: str) -> str:
+    """Run one validator and say what happened: "ok", "absent" or "failed".
+
+    This used to raise on the first problem, which made the gate report whichever validator it
+    reached first and nothing about the rest. Three of the validators it names have never existed
+    in this repository, so the first phase raised FileNotFoundError and the other eight phases were
+    never even attempted -- the output looked like one broken file rather than an umbrella gate
+    that cannot complete here.
+
+    Absent and failed are kept apart on purpose. A failing validator is a conformance result. An
+    absent one is a statement about which files this repository contains, and the two want
+    different decisions.
+    """
     script = TOOLS / script_name
     if not script.exists():
-        raise FileNotFoundError(f"missing validator: {script}")
+        print(f"    ABSENT: {script_name} is not in this repository")
+        return "absent"
     completed = subprocess.run(
         [sys.executable, str(script)],
         cwd=ROOT,
@@ -140,12 +153,14 @@ def run_validator(script_name: str) -> None:
     if completed.stdout:
         print(completed.stdout.rstrip())
     if completed.returncode != 0:
-        raise RuntimeError(f"{script_name} failed with exit code {completed.returncode}")
+        print(f"    FAILED: {script_name} exited {completed.returncode}")
+        return "failed"
+    return "ok"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run the nine conformance storage-engine parity phases."
+        description="Run the nine conformance storage-engine phases."
     )
     parser.add_argument(
         "--loops",
@@ -158,20 +173,36 @@ def main() -> int:
         parser.error("--loops must be at least 1")
 
     total_validator_runs = 0
+    absent: list[str] = []
+    failed: list[str] = []
     for loop in range(1, args.loops + 1):
-        print(f"storage_engine_parity_loop={loop}/{args.loops}")
+        print(f"storage_engine_loop={loop}/{args.loops}")
         for phase in PHASES:
             print(f"phase_{phase.number}: {phase.name}")
             for validator in phase.validators:
                 print(f"  validator={validator}")
-                run_validator(validator)
+                outcome = run_validator(validator)
                 total_validator_runs += 1
+                if outcome == "absent" and validator not in absent:
+                    absent.append(validator)
+                elif outcome == "failed" and validator not in failed:
+                    failed.append(validator)
 
     print(
-        "storage_engine_9_phase_parity_passed "
+        "storage_engine_9_phase_summary "
         f"loops={args.loops} phases={len(PHASES)} "
-        f"validator_runs={total_validator_runs}"
+        f"validator_runs={total_validator_runs} "
+        f"absent={len(absent)} failed={len(failed)}"
     )
+    for name in absent:
+        print(f"  absent: {name}")
+    for name in failed:
+        print(f"  failed: {name}")
+    if absent or failed:
+        # Not "passed". An umbrella gate that reports success while naming validators it could not
+        # run is worse than one that says plainly it could not complete.
+        return 1
+    print("storage_engine_9_phase_passed")
     return 0
 
 

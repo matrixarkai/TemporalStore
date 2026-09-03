@@ -44,6 +44,26 @@ REQUIRED_METRICS = [
 ]
 
 
+def _scale_report_absent_message() -> str:
+    """Why this validator cannot run, in one line an operator can act on.
+
+    This compares a published contract against `tools/run_matrixark_rust_scale_report.py`, and that
+    file is not in this repository -- `git log --all` finds no trace of it ever having been here,
+    while five files still refer to it. With one side of the comparison missing there is nothing to
+    check, so the honest outcome is a stated failure rather than a traceback (which reads as a bug
+    in the validator) or a zero exit (which reads as conformance verified).
+
+    Resolving it is a decision, not a fix: either the runner belongs in this repository, or these
+    validators are describing a comparison this repository cannot make.
+    """
+    return (
+        "cannot run: %s is absent from this repository, and it is the runner this validates the "
+        "published contract against. Five files still refer to it and no version of this "
+        "repository has contained it. Either it belongs here, or this validator does not."
+        % SCALE_REPORT
+    )
+
+
 def _extract_page_block_metric_names_from_runner() -> list[str]:
     tree = ast.parse(SCALE_REPORT.read_text(encoding="utf-8"), filename=str(SCALE_REPORT))
     for node in tree.body:
@@ -57,6 +77,9 @@ def _extract_page_block_metric_names_from_runner() -> list[str]:
 
 
 def main() -> int:
+    if not SCALE_REPORT.exists():
+        print(_scale_report_absent_message(), file=sys.stderr)
+        return 1
     contract_text = CONTRACT.read_text(encoding="utf-8")
     runner_metrics = _extract_page_block_metric_names_from_runner()
     missing = []
