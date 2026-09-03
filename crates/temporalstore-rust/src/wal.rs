@@ -891,6 +891,12 @@ struct WriteAheadLogInner {
     /// Safe to hold open: `flock` guards against OTHER PROCESSES, and threads inside this one are
     /// already serialised by the mutex around this struct.
     append_lock_by_shard: HashMap<ShardId, std::sync::Arc<File>>,
+    /// Reused to frame each record, instead of allocating a frame per append.
+    ///
+    /// The frame is the payload plus about ten bytes, so allocating one per write allocated the
+    /// whole record again every time -- four kilobytes an append at a four-kilobyte value. Kept
+    /// here so its capacity survives; a steady workload stops allocating for it entirely.
+    encode_scratch: Vec<u8>,
     // Set only by Default: the store owns its minted scratch directory, and the last
     // clone's drop removes it. Never set for a caller-supplied root.
     scratch: Option<std::sync::Arc<crate::scratch::ScratchDirGuard>>,
@@ -953,6 +959,7 @@ impl LocalWriteAheadLogStore {
             inner: Arc::new(Mutex::new(WriteAheadLogInner {
                 root,
                 append_lock_by_shard: HashMap::new(),
+                encode_scratch: Vec::new(),
                 scratch: None,
                 stats: WriteAheadLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
@@ -2895,7 +2902,11 @@ fn append_record_locked(
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
-    let bytes = crate::log_framing::encode_record(&encode_wal_payload(record)?);
+    let payload = encode_wal_payload(record)?;
+    // Taken out and returned below: framing borrows the buffer while the rest of `inner` is still
+    // needed, and `mem::take` is the cheap way to say that without splitting the struct.
+    let mut bytes = std::mem::take(&mut inner.encode_scratch);
+    crate::log_framing::encode_record_into(&payload, &mut bytes);
     // Close the block if this record will not fit in what is left of it, and start the next.
     //
     // A record is never split across the boundary: the one that does not fit moves whole into
@@ -3048,13 +3059,18 @@ fn append_record_locked(
             .or_default();
         *durable_sequence = (*durable_sequence).max(record.sequence);
     }
+    let size = bytes.len() as u64;
+    // Give the buffer back with its capacity, which is the whole reason it was borrowed. An early
+    // return above simply drops it and the next append allocates once -- correct either way, just
+    // not free that once.
+    inner.encode_scratch = bytes;
     Ok(WriteAheadLogAppendReport {
         shard_id: record.shard_id,
         requested_sequence: record.sequence,
         current_sequence: record.sequence,
         appended: true,
         offset,
-        size: bytes.len() as u64,
+        size,
         persistent_bytes,
     })
 }
