@@ -13517,3 +13517,354 @@ fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
         scores.len()
     );
 }
+
+
+/// Does the per-entry write cost track how many COMPONENTS an object has?
+///
+/// Every entry of a list or zset is filed under its own component, and both cost ~4.0 allocations per
+/// existing entry from a cause eight eliminated hypotheses have not found. `SetAdd` is a third
+/// component-per-entry collection; `StringSet` is a single value with no components, measured against
+/// a store that already holds many other keys. A rising SetAdd beside a flat StringSet says the axis
+/// is the object's own component count, not the store's size and not collections as a category.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib does_a_write_cost_track_an_objects_component_count -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn does_a_write_cost_track_an_objects_component_count() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  members   set_add(new)   per member   string_set   members()   bytes   seen_check
+"
+    );
+
+    for size in [256_usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        // One set of `size` members, and `size` separate string keys -- so both arms face a store of
+        // the same magnitude, but only the set is ONE object with many components.
+        for index in 0..size {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SetAdd {
+                    key: "tags".to_string(),
+                    member: format!("member-{index:08}").into_bytes(),
+                },
+            });
+            assert!(out.status.ok, "set add {index}: {:?}", out.status);
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("k-{index:08}"),
+                    value: b"v".to_vec(),
+                },
+            });
+            assert!(out.status.ok, "string set {index}: {:?}", out.status);
+        }
+
+        // Writes are not idempotent: warm on one new key, measure another.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetAdd {
+                key: "tags".to_string(),
+                member: format!("warm-{size:08}").into_bytes(),
+            },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetAdd {
+                key: "tags".to_string(),
+                member: format!("fresh-{size:08}").into_bytes(),
+            },
+        });
+        let set_add = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("warm-str-{size:08}"),
+                value: b"w".to_vec(),
+            },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("fresh-str-{size:08}"),
+                value: b"f".to_vec(),
+            },
+        });
+        let string_set = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+
+        let measure = |command: Command| {
+            let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            (counts.allocs, counts.alloc_bytes, out.response)
+        };
+
+        let (members_allocs, members_bytes, members_response) = measure(Command::SetMembers {
+            key: "tags".to_string(),
+        });
+        match &members_response {
+            CommandResponse::Members { members } => assert!(
+                members.len() >= size,
+                "members() must return the whole set: {} of {size}",
+                members.len()
+            ),
+            other => panic!("expected members, got {other:?}"),
+        }
+
+        let (seen_allocs, _, _) = measure(Command::SeenCheck {
+            key: "seen".to_string(),
+            member: b"probe-member".to_vec(),
+            window_ms: 60_000,
+        });
+
+        println!(
+            "  {size:>7}   {set_add:>12}   {:>10.2}   {string_set:>10}   {members_allocs:>9}   {members_bytes:>5}   {seen_allocs:>10}",
+            set_add as f64 / size as f64
+        );
+    }
+
+    println!(
+        "
+  set_add rising while string_set flat => the axis is the OBJECT's component count, not the store.
+  both rising                          => it is the store's size after all, and the arm-B result
+                                          from the push probe needs revisiting.
+  both flat                            => sets escape it, like whatever hashes do.
+"
+    );
+}
+
+
+/// Why does a membership TEST cost more than any write in the engine?
+///
+/// SeenCheck measured 16,187 / 167,967 / 2,301,586 allocations against stores of 256 / 1,024 / 4,096
+/// members -- superlinear, on a `seen` key holding one member. So the cost is the store around it.
+///
+/// Attributed with the engine's own per-site page-visit counters rather than by reading: a column
+/// tracking the store's page count names the site. StringSet is the control -- it writes a page and
+/// declares its component, so it should leave the counters alone.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib why_a_membership_test_costs_more_than_a_write -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn why_a_membership_test_costs_more_than_a_write() {
+    println!(
+        "
+  store   SeenCheck allocs   layout   refresh_flags   remove_all   |   StringSet allocs   layout
+"
+    );
+
+    for size in [256_usize, 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..size {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("k-{index:08}"),
+                    value: b"v".to_vec(),
+                },
+            });
+            assert!(out.status.ok, "fill {index}: {:?}", out.status);
+        }
+
+        // SeenCheck: warm one member, measure another, so this is a first sighting either way.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SeenCheck {
+                key: "seen".to_string(),
+                member: b"warm".to_vec(),
+                window_ms: 60_000,
+            },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        crate::engine::bucket_visit_sites::reset();
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SeenCheck {
+                key: "seen".to_string(),
+                member: b"measured".to_vec(),
+                window_ms: 60_000,
+            },
+        });
+        let seen_allocs = probe.stop().allocs;
+        let (s_layout, _, s_refresh, s_remove) =
+            crate::engine::bucket_visit_sites::snapshot();
+        assert!(out.status.ok, "{:?}", out.status);
+
+        // Control: a write that DOES produce a page and declare a component.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("warm-{size:08}"),
+                value: b"w".to_vec(),
+            },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        crate::engine::bucket_visit_sites::reset();
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("fresh-{size:08}"),
+                value: b"f".to_vec(),
+            },
+        });
+        let string_allocs = probe.stop().allocs;
+        let (t_layout, _, _, _) = crate::engine::bucket_visit_sites::snapshot();
+        assert!(out.status.ok, "{:?}", out.status);
+
+        println!(
+            "  {size:>5}   {seen_allocs:>16}   {s_layout:>6}   {s_refresh:>13}   {s_remove:>10}   |   {string_allocs:>16}   {t_layout:>6}"
+        );
+    }
+
+    println!(
+        "
+  a SeenCheck column tracking the store's page count names the site doing O(store) work per call.
+  StringSet's counters near zero => the control works, and the difference is real.
+"
+    );
+}
+
+
+/// Which commands force a full index rebuild on every call?
+///
+/// A mutating command missing from `command_updates_bucket_index_directly` takes the rebuild branch
+/// in the post-command path and walks every page in the shard. SeenCheck is missing and costs 2n page
+/// visits per call. Several real write paths are missing too.
+///
+/// The series here is held at ONE element while the store grows around it with unrelated keys, so a
+/// cost that still rises is the rebuild rather than anything about the object being written --
+/// which is the confound that would make a per-call O(store) rebuild look like series scaling.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_commands_rebuild_the_whole_index_per_call -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn which_commands_rebuild_the_whole_index_per_call() {
+    // Build a store of `size` unrelated string keys, then measure ONE call of `command`,
+    // reporting allocations and pages visited.
+    fn arm(size: usize, make: &dyn Fn(usize) -> Command) -> (u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..size {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("unrelated-{index:08}"),
+                    value: b"v".to_vec(),
+                },
+            });
+            assert!(out.status.ok, "fill {index}: {:?}", out.status);
+        }
+        // Warm with one call, measure a second on a DIFFERENT input (writes are not idempotent).
+        let warm = engine.execute(ExecuteRequest { shard_id: 1, command: make(0) });
+        assert!(warm.status.ok, "warm: {:?}", warm.status);
+        crate::engine::bucket_visit_sites::reset();
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(1) });
+        let allocs = probe.stop().allocs as u64;
+        let (layout, _, _, _) = crate::engine::bucket_visit_sites::snapshot();
+        assert!(out.status.ok, "measured: {:?}", out.status);
+        (allocs, layout)
+    }
+
+    println!(
+        "
+  command                    store=256 allocs / pages   store=1024 allocs / pages
+"
+    );
+
+    let cases: Vec<(&str, Box<dyn Fn(usize) -> Command>)> = vec![
+        ("StringSet      (listed)", Box::new(|n: usize| Command::StringSet {
+            key: format!("probe-{n}"),
+            value: b"v".to_vec(),
+        })),
+        ("ListPush       (listed)", Box::new(|n: usize| Command::ListPush {
+            key: "feed".to_string(),
+            member: format!("e-{n}").into_bytes(),
+            left: false,
+        })),
+        ("SeenCheck    (missing)", Box::new(|n: usize| Command::SeenCheck {
+            key: "seen".to_string(),
+            member: format!("m-{n}").into_bytes(),
+            window_ms: 60_000,
+        })),
+        ("FeatureAppend(missing)", Box::new(|n: usize| Command::FeatureAppend {
+            key: "rate".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 1_000 + n as u64,
+                value: b"v".to_vec(),
+            }],
+        })),
+        ("SequenceAdd  (missing)", Box::new(|n: usize| Command::SequenceAdd {
+            key: "seq".to_string(),
+            rows: vec![SequenceFeatureRow {
+                timestamp_ms: 1_000 + n as u64,
+                gid: 1,
+                action_type: 1,
+                duration: 1,
+                author_id: 1,
+            }],
+        })),
+        ("ControlChange(missing)", Box::new(|n: usize| Command::ControlStateChangeAdd {
+            key: "visitors".to_string(),
+            timestamp_ms: 1_000 + n as u64,
+            value: format!("v-{n}").into_bytes(),
+            precision_ms: None,
+            ttl_ms: None,
+        })),
+    ];
+
+    for (name, make) in &cases {
+        let (a256, p256) = arm(256, make.as_ref());
+        let (a1024, p1024) = arm(1024, make.as_ref());
+        println!("  {name:<24}   {a256:>8} / {p256:<8}   {a1024:>10} / {p1024:<8}");
+    }
+
+    println!(
+        "
+  pages tracking the store => that command rebuilds the whole index on every call.
+  pages 0                  => it is on the maintained path, as the listed controls are.
+"
+    );
+}
