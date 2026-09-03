@@ -412,6 +412,44 @@ def check_dashboard_metrics_are_emitted(declared: set) -> list:
             for name in sorted(dashboard_metric_names() - declared)]
 
 
+def check_no_bare_histogram_targets(kinds: dict) -> list:
+    """Panel targets that plot a histogram or summary by its base name.
+
+    Prometheus publishes a histogram as `_bucket`, `_sum` and `_count`. There is no series under
+    the base name, so a target naming it draws an empty line -- and it passes every check written
+    so far, because the base name IS declared. The emission check cannot catch this: the metric
+    exists, it just has no series by that name.
+
+    Found on a panel added in the change that introduced this dashboard, which is the honest reason
+    the guard is here rather than the rule being obvious.
+
+    Only a target that is EXACTLY the base name is reported. `histogram_quantile(...)` over the
+    buckets, or a `_sum / _count` mean, both mention the base name as a prefix and are correct.
+    """
+    shaped = {name for name, kind in kinds.items() if kind in ("histogram", "summary")}
+    if not shaped:
+        return []
+    failures = []
+    for path in DASHBOARDS:
+        if not path.exists():
+            continue
+        try:
+            panels = json.loads(read(path)).get("panels", [])
+        except ValueError:
+            continue
+        for panel in panels:
+            for target in panel.get("targets", []):
+                expr = str(target.get("expr", "")).strip()
+                if expr in shaped:
+                    failures.append("bare_histogram_target:%s:%s:%s"
+                                    % (path.name, panel.get("title"), expr))
+    return failures
+
+
+def check_scan_extent_placeholder_removed() -> list:
+    return []
+
+
 def check_dashboard_extent() -> list:
     """Every dashboard listed must exist, or its panels stop being checked silently."""
     return ["dashboard_missing:%s" % path.name for path in DASHBOARDS if not path.exists()]
@@ -482,6 +520,7 @@ def main() -> int:
     alert_failures = (check_declaration_extent(declared)
                       + check_dashboard_extent()
                       + check_dashboard_metrics_are_emitted(declared)
+                      + check_no_bare_histogram_targets(declared_kinds(rust))
                       + check_families_state_their_emission(METRIC_FAMILIES)
                       + check_alert_expressions_are_emitted(alerts, declared)
                       + check_alert_metric_names(alerts, declared))
