@@ -4358,6 +4358,72 @@ mod tests {
         );
     }
 
+    /// What reclaim copies AT THE SHIPPED DEFAULT, as the log grows.
+    ///
+    /// `wal_segment_bytes` defaults to 0, and zero never rolls. Rolling is what lets reclaim
+    /// unlink a whole earlier piece instead of copying the records it keeps, so at the default
+    /// every reclaim pays for what it KEEPS -- which grows with the log while the amount freed
+    /// does not.
+    ///
+    /// Counted in bytes copied rather than timed: the bytes ARE the cost here, and a timing
+    /// assertion in the suite would be a flake generator.
+    #[test]
+    fn what_reclaim_copies_at_the_shipped_default() {
+        fn copied_for(records: u64, roll: Option<u64>) -> (u64, u64, usize) {
+            set_wal_segment_bytes_for_test(roll);
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..records {
+                store
+                    .append(
+                        1,
+                        Command::StringSet {
+                            key: format!("k{index:06}"),
+                            value: vec![118u8; 64],
+                        },
+                    )
+                    .unwrap();
+            }
+            // Drop the oldest tenth, the shape a steady trim takes.
+            let retain_from = records / 10;
+            let report = store.gc_before_sequence_unchecked(1, retain_from).unwrap();
+            set_wal_segment_bytes_for_test(None);
+            (
+                report.bytes_copied,
+                report.dropped_segment_bytes,
+                report.dropped_segments,
+            )
+        }
+
+        let mut default_copied = Vec::new();
+        for records in [500u64, 1000, 2000] {
+            let (copied, dropped, pieces) = copied_for(records, None);
+            println!(
+                "  RECLAIM default   {records:>5} records -> copied {copied:>8} B,                  unlinked {pieces} piece(s) holding {dropped} B"
+            );
+            default_copied.push(copied);
+
+            let (r_copied, r_dropped, r_pieces) = copied_for(records, Some(8 * 1024));
+            println!(
+                "  RECLAIM rolled 8K {records:>5} records -> copied {r_copied:>8} B,                  unlinked {r_pieces} piece(s) holding {r_dropped} B"
+            );
+        }
+
+        // A bound passes most easily when nothing was measured.
+        assert!(
+            default_copied[0] > 0,
+            "the probe must observe a reclaim: {default_copied:?}"
+        );
+
+        // The point: at the default the copy tracks the log, so doubling the log doubles the work
+        // done to free the same tenth. This is a statement about the DEFAULT, not a regression
+        // bound -- if rolling ever becomes the default this fails, and that is the good outcome.
+        assert!(
+            default_copied[2] > default_copied[0] * 3,
+            "at the shipped default the copy should track the whole log: {default_copied:?}"
+        );
+    }
+
     /// What a record actually costs on disk AT THE DEFAULTS.
     ///
     /// The neighbouring size analysis builds its "today" baseline by hand, as JSON. Both encoding
