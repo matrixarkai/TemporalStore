@@ -14012,28 +14012,28 @@ fn which_commands_rebuild_the_whole_index_per_call() {
     );
 
     let cases: Vec<(&str, Box<dyn Fn(usize) -> Command>)> = vec![
-        ("StringSet      (listed)", Box::new(|n: usize| Command::StringSet {
+        ("StringSet     (files pages)", Box::new(|n: usize| Command::StringSet {
             key: format!("probe-{n}"),
             value: b"v".to_vec(),
         })),
-        ("ListPush       (listed)", Box::new(|n: usize| Command::ListPush {
+        ("ListPush      (files pages)", Box::new(|n: usize| Command::ListPush {
             key: "feed".to_string(),
             member: format!("e-{n}").into_bytes(),
             left: false,
         })),
-        ("SeenCheck    (missing)", Box::new(|n: usize| Command::SeenCheck {
+        ("SeenCheck      (no page)", Box::new(|n: usize| Command::SeenCheck {
             key: "seen".to_string(),
             member: format!("m-{n}").into_bytes(),
             window_ms: 60_000,
         })),
-        ("FeatureAppend(missing)", Box::new(|n: usize| Command::FeatureAppend {
+        ("FeatureAppend (maintains)", Box::new(|n: usize| Command::FeatureAppend {
             key: "rate".to_string(),
             points: vec![FeaturePoint {
                 timestamp_ms: 1_000 + n as u64,
                 value: b"v".to_vec(),
             }],
         })),
-        ("SequenceAdd  (missing)", Box::new(|n: usize| Command::SequenceAdd {
+        ("SequenceAdd   (maintains)", Box::new(|n: usize| Command::SequenceAdd {
             key: "seq".to_string(),
             rows: vec![SequenceFeatureRow {
                 timestamp_ms: 1_000 + n as u64,
@@ -14043,7 +14043,7 @@ fn which_commands_rebuild_the_whole_index_per_call() {
                 author_id: 1,
             }],
         })),
-        ("ControlChange(missing)", Box::new(|n: usize| Command::ControlStateChangeAdd {
+        ("ControlChange  (no page)", Box::new(|n: usize| Command::ControlStateChangeAdd {
             key: "visitors".to_string(),
             timestamp_ms: 1_000 + n as u64,
             value: format!("v-{n}").into_bytes(),
@@ -14060,8 +14060,112 @@ fn which_commands_rebuild_the_whole_index_per_call() {
 
     println!(
         "
-  pages tracking the store => that command rebuilds the whole index on every call.
-  pages 0                  => it is on the maintained path, as the listed controls are.
+  Every row should read 0 pages. Three reasons, and the labels say which applies:
+    files pages -- the command files its page through upsert_bucket_index_page
+    maintains   -- it files through sync_bucket_index_object_pages, which maintains the same thing
+    no page     -- it writes no page at all, so there is nothing for a rebuild to recompute
+
+  ANY row whose pages stop being zero has started rebuilding the whole index on every call again --
+  which cost 12,646 allocations and 2,048 page visits at a 1,024-key store before these were fixed.
 "
+    );
+}
+
+
+/// A command exempted from the rebuild must leave the index matching a rebuilt one.
+///
+/// `command_writes_no_page` exempts SeenCheck and the control-state change/selection writes from the
+/// post-command index rebuild, on the grounds that they mutate only non-page state. That holds today
+/// -- none of their arms appends a value or files a bucket-index page -- but it is exactly the kind
+/// of fact a later change can quietly break, and a stale index would not announce itself.
+///
+/// So this asserts the property the exemption rests on: run each exempted command against a store
+/// with real page-backed content, then compare the live index against a from-scratch rebuild.
+#[test]
+fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Page-backed content, so a rebuild has something real to reconstruct.
+    for index in 0..64_usize {
+        for command in [
+            Command::StringSet {
+                key: format!("s-{index:04}"),
+                value: format!("v-{index}").into_bytes(),
+            },
+            Command::HashSet {
+                key: "h".to_string(),
+                field: format!("f-{index:04}"),
+                value: b"v".to_vec(),
+            },
+            Command::ListPush {
+                key: "l".to_string(),
+                member: format!("e-{index:04}").into_bytes(),
+                left: false,
+            },
+        ] {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(out.status.ok, "seed {index}: {:?}", out.status);
+        }
+    }
+
+    let snapshot = |engine: &TemporalEngine| -> Vec<String> {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let mut rows: Vec<String> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket.page_index.values().map(move |page| {
+                    format!(
+                        "{routing_bucket}|{}|{}|{}",
+                        page.model_id,
+                        page.object_key,
+                        page.component.as_deref().unwrap_or("-")
+                    )
+                })
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+
+    let before = snapshot(&engine);
+    assert!(
+        before.len() >= 64,
+        "the fixture must leave real pages to reconstruct, found {}",
+        before.len()
+    );
+
+    for command in [
+        Command::SeenCheck {
+            key: "seen".to_string(),
+            member: b"m".to_vec(),
+            window_ms: 60_000,
+        },
+        Command::ControlStateChangeAdd {
+            key: "visitors".to_string(),
+            timestamp_ms: 1_000,
+            value: b"v".to_vec(),
+            precision_ms: None,
+            ttl_ms: None,
+        },
+    ] {
+        let out = engine.execute(ExecuteRequest { shard_id: 1, command });
+        assert!(out.status.ok, "exempted command: {:?}", out.status);
+    }
+
+    let after = snapshot(&engine);
+    assert_eq!(
+        before, after,
+        "an exempted command changed the page index -- the rebuild exemption in \
+         `command_writes_no_page` is no longer safe for it"
     );
 }
