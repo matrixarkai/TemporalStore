@@ -13215,3 +13215,305 @@ fn what_a_fixed_list_slice_costs_as_the_list_grows() {
 "
     );
 }
+
+
+/// The hash family's cost as a hash grows -- and whether the open push cost reaches hashes too.
+///
+/// `ListPush` and `ZSetAdd` both cost ~4.0 allocations per existing entry from a mechanism that eight
+/// eliminated hypotheses have not explained. A hash is the third collection and takes the same
+/// post-command path, so `HashSet` discriminates: if it is also ~4/field the cause lives in the shared
+/// path; if it is flat, hashes escape it and what they do differently is the clue.
+///
+/// `HashLen` is the control. `HashMultiGet` asserts it returns exactly the fields asked for, because a
+/// per-item figure from a query that quietly returned something else is worse than no figure --
+/// which is how the embeddings batch hid a cap at 100.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_hash_family_costs_as_a_hash_grows -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+fn what_the_hash_family_costs_as_a_hash_grows() {
+    let canary = crate::alloc_probe::Probe::start();
+    let sink: Vec<u8> = Vec::with_capacity(8192);
+    assert!(
+        canary.stop().allocs > 0,
+        "counting allocator not installed -- rerun with `--features alloc-probe`"
+    );
+    drop(sink);
+
+    println!(
+        "
+  fields   set(new field)   per field   multiget(8)   bytes   get_all   bytes    len
+"
+    );
+
+    for size in [256_usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        for index in 0..size {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "profile".to_string(),
+                    field: format!("field-{index:08}"),
+                    value: format!("value-{index:08}").into_bytes(),
+                },
+            });
+            assert!(out.status.ok, "set {index}: {:?}", out.status);
+        }
+
+        // A write is not idempotent, so it cannot be warmed and re-measured the way a read can --
+        // warming on the same field would measure an overwrite. Warm one NEW field, measure another.
+        let warm = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "profile".to_string(),
+                field: format!("warm-{size:08}"),
+                value: b"w".to_vec(),
+            },
+        });
+        assert!(warm.status.ok, "{:?}", warm.status);
+        let probe = crate::alloc_probe::Probe::start();
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "profile".to_string(),
+                field: format!("fresh-{size:08}"),
+                value: b"f".to_vec(),
+            },
+        });
+        let set_allocs = probe.stop().allocs;
+        assert!(out.status.ok, "{:?}", out.status);
+
+        let measure = |command: Command| {
+            let request = || ExecuteRequest { shard_id: 1, command: command.clone() };
+            let warm = engine.execute(request());
+            assert!(warm.status.ok, "{:?}", warm.status);
+            let probe = crate::alloc_probe::Probe::start();
+            let out = engine.execute(request());
+            let counts = probe.stop();
+            assert!(out.status.ok, "{:?}", out.status);
+            (counts.allocs, counts.alloc_bytes, out.response)
+        };
+
+        // Eight fields out of `size`.
+        let wanted: Vec<String> = (0..8).map(|index| format!("field-{index:08}")).collect();
+        let (multi_allocs, multi_bytes, multi_response) = measure(Command::HashMultiGet {
+            key: "profile".to_string(),
+            fields: wanted.clone(),
+        });
+        let answered = match &multi_response {
+            CommandResponse::Values { values } => values.iter().filter(|v| v.is_some()).count(),
+            other => panic!("expected values, got {other:?}"),
+        };
+        assert_eq!(
+            answered, 8,
+            "multiget must answer for all 8 fields, got {answered} -- otherwise this column is not \
+             the cost of the query it is named for"
+        );
+
+        let (all_allocs, all_bytes, all_response) = measure(Command::HashGetAll {
+            key: "profile".to_string(),
+        });
+        match &all_response {
+            CommandResponse::HashEntries { entries } => assert!(
+                entries.len() >= size,
+                "get_all must return every field: {} of {size}",
+                entries.len()
+            ),
+            other => panic!("expected hash entries, got {other:?}"),
+        }
+
+        let (len_allocs, _, len_response) = measure(Command::HashLen {
+            key: "profile".to_string(),
+        });
+        match &len_response {
+            CommandResponse::Integer { value } => assert!(
+                *value as usize >= size,
+                "the control must report the whole hash"
+            ),
+            other => panic!("expected an integer, got {other:?}"),
+        }
+
+        println!(
+            "  {size:>6}   {set_allocs:>14}   {:>9.2}   {multi_allocs:>11}   {multi_bytes:>5}   {all_allocs:>7}   {all_bytes:>5}   {len_allocs:>4}",
+            set_allocs as f64 / size as f64
+        );
+    }
+
+    println!(
+        "
+  set ~4 per field   => the open ListPush/ZSetAdd cost reaches hashes too: it is in the shared
+                        post-command path, not in anything lists and zsets do.
+  set flat           => hashes escape it, and what they do differently is the clue.
+  multiget flat while get_all rises => asking for a few costs a few.
+  len flat           => the control works.
+"
+    );
+}
+
+
+/// What a zset must still answer after a restart.
+///
+/// Pinned before changing how zset writes are indexed: declaring the written component flips the
+/// index-log record's `upsert` flag, and that flag decides whether replay wipes-then-restores each
+/// covered object or replaces one component in place. A wrong component would file a page under the
+/// wrong identity, and the damage would only appear after a reload.
+///
+/// Verified by SERVING READS after the restart, not by comparing internal maps.
+#[test]
+fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+
+    let members: Vec<(String, f64)> = (0..64)
+        .map(|index| (format!("m-{index:04}"), ((index * 7) % 23) as f64))
+        .collect();
+
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    {
+        for (member, score) in &members {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetAdd {
+                    key: "board".to_string(),
+                    member: member.clone().into_bytes(),
+                    score: *score,
+                },
+            });
+            assert!(out.status.ok, "add {member}: {:?}", out.status);
+        }
+        // One member re-scored: only the NEW score may survive.
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetAdd {
+                key: "board".to_string(),
+                member: b"m-0000".to_vec(),
+                score: 99.0,
+            },
+        });
+        assert!(out.status.ok, "{:?}", out.status);
+        // One member removed: it must NOT come back -- this is what the covered-key wipe is for.
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetRemove {
+                key: "board".to_string(),
+                member: b"m-0001".to_vec(),
+            },
+        });
+        assert!(out.status.ok, "{:?}", out.status);
+    }
+
+    // Materialise the base index, which is what a reload recovers from -- `load_shard_with` takes
+    // the base snapshot plus the WAL tail, and the base is written at the last dump/unload. Without
+    // this the second engine reports `shard_not_loaded`, which is a missing checkpoint rather than
+    // lost data.
+    engine.unload_shard(1);
+
+    // Opened against the same page and index dirs -- the idiom the other restart tests here use.
+    let restarted = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+    // If the shard did not come back, say THAT -- not "a member is missing".
+    let probe = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ZSetCard {
+            key: "board".to_string(),
+        },
+    });
+    assert!(
+        probe.status.ok,
+        "the restarted engine did not load the shard: {:?}",
+        probe.status
+    );
+
+    let score_of = |member: &str| -> Option<String> {
+        let out = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetScore {
+                key: "board".to_string(),
+                member: member.as_bytes().to_vec(),
+            },
+        });
+        // Check the STATUS first: ZSetScore's arm always answers `Bytes`, so anything else means the
+        // command never reached it, and the status says why.
+        assert!(
+            out.status.ok,
+            "ZSetScore for {member} was refused after the restart: {:?}",
+            out.status
+        );
+        match out.response {
+            CommandResponse::Bytes { value } => value.map(|v| String::from_utf8(v).unwrap()),
+            other => panic!("expected a score for {member}, got {other:?}"),
+        }
+    };
+
+    // The re-scored member carries the new score, not the old one.
+    let rescored = score_of("m-0000").expect("the re-scored member must survive the restart");
+    assert!(
+        rescored.starts_with("99"),
+        "expected the NEW score after restart, got {rescored}"
+    );
+    // The removed member stays removed.
+    assert!(
+        score_of("m-0001").is_none(),
+        "a removed member came back after the restart"
+    );
+    // Everything else is present with its original score.
+    for (member, score) in members.iter().skip(2) {
+        let got = score_of(member)
+            .unwrap_or_else(|| panic!("{member} did not survive the restart"));
+        let got: f64 = got.parse().unwrap_or_else(|_| panic!("unparsable score {got}"));
+        assert!(
+            (got - score).abs() < 1e-9,
+            "{member}: expected {score}, got {got}"
+        );
+    }
+
+    // Score ORDER survives -- a page filed under a wrong component would show up here.
+    let response = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ZSetRangeByScore {
+            key: "board".to_string(),
+            min: 0.0,
+            max: 22.0,
+            min_exclusive: false,
+            max_exclusive: false,
+            rev: false,
+        },
+    });
+    let returned = match response.response {
+        CommandResponse::Members { members } => members,
+        other => panic!("expected members, got {other:?}"),
+    };
+    let scores: Vec<f64> = returned
+        .chunks(2)
+        .map(|pair| String::from_utf8(pair[1].clone()).unwrap().parse().unwrap())
+        .collect();
+    assert!(
+        scores.windows(2).all(|w| w[0] <= w[1]),
+        "score order was not preserved across the restart: {scores:?}"
+    );
+    assert!(
+        scores.len() >= 60,
+        "expected most members back in range, got {}",
+        scores.len()
+    );
+}

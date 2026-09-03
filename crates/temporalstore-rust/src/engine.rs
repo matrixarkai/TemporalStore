@@ -2123,6 +2123,17 @@ fn command_upsert_components(
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
         Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
+        // A zset add writes exactly one component, and it is derivable from the command. Declaring
+        // it takes the O(1) delta path; without it the record snapshots every page of the object,
+        // which cost 4 allocations per member already present.
+        Command::ZSetAdd { key, member, score } => Some(vec![(
+            "zset",
+            key.clone(),
+            Some(crate::engine::execute_on_shard::zset_component(
+                crate::engine::execute_on_shard::zset_score_bits(*score),
+                member,
+            )),
+        )]),
         _ => None,
     }
 }
@@ -2147,6 +2158,18 @@ fn collect_upsert_index_items(
                 .and_then(|fields| fields.get(field))
                 .cloned(),
             ("string", None) => shard.strings.get(object_key).cloned(),
+            // `zset_component` is `{biased:016x}` followed by hex(member), so the member the map is
+            // keyed by is recoverable from the component it was filed under.
+            ("zset", Some(component)) => component
+                .get(16..)
+                .and_then(|member_hex| hex::decode(member_hex).ok())
+                .and_then(|member| {
+                    shard
+                        .zsets
+                        .get(object_key)
+                        .and_then(|members| members.get(&member))
+                        .map(|(_, address)| address.clone())
+                }),
             _ => None,
         };
         let Some(address) = address else { continue };
