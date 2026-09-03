@@ -289,6 +289,16 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::ControlStateSet { .. }
             | Command::ControlStateSetAndGet { .. }
             | Command::ControlStateSetAndGetWithOptions { .. }
+            // These file their pages through `sync_bucket_index_object_pages`, which maintains
+            // exactly what a rebuild would recompute. Without them here the post-command path took
+            // the rebuild branch on EVERY call: measured at twice the shard's page count per call,
+            // so a one-point feature append into a 1,024-key store cost 12,717 allocations, none of
+            // it about the point being appended.
+            | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithPolicy { .. }
+            | Command::FeatureReplace { .. }
+            | Command::FeatureDelete { .. }
+            | Command::SequenceAdd { .. }
     )
 }
 
