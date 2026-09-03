@@ -3069,6 +3069,27 @@ def _parse_prom_labels(line: str) -> Json:
     return out
 
 
+def _configured_engine_settings() -> list:
+    """Engine variables this deployment has explicitly set, for the plan to disclose.
+
+    Only names, never values: the plan and the artifact it produces travel, and a tuning value is
+    the least of what could ride along if this returned the settings themselves.
+    """
+    try:
+        import matrixark_gateway_config as gwconfig
+
+        snapshot = gwconfig.snapshot()
+    except Exception:  # pragma: no cover - the plan is still worth producing without this
+        return []
+    names = []
+    for items in (snapshot.get("groups") or {}).values():
+        for item in items:
+            env = item.get("env") or ""
+            if env.startswith("TS_") and item.get("source") in ("portal", "environment"):
+                names.append(env)
+    return sorted(set(names))
+
+
 def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
     """Which storage backend the datanode actually resolved. None => could not determine.
 
@@ -3436,6 +3457,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                     key_envs=list((payload or {}).get("key_envs", []) or []),
                     matrixobject_available=bool(
                         (payload or {}).get("matrixobject_available", True)),
+                    configured_engine_settings=_configured_engine_settings(),
                 )
             except (TypeError, ValueError) as exc:
                 return await _json(send, 400, {"error": "invalid_plan", "detail": str(exc)})
