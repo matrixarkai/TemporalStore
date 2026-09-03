@@ -21,6 +21,7 @@ OFFERED = {
     "ingestion.local_log_max_bytes": "MATRIXARK_LOCAL_JSONL_MAX_BYTES",
     "ingestion.local_log_retention_count": "MATRIXARK_LOCAL_JSONL_RETENTION_COUNT",
     "ingestion.durable_read_cache": "MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED",
+    "ingestion.share_repeated_values": "MATRIXARK_SHARE_REPEATED_VALUES",
 }
 
 
@@ -75,6 +76,25 @@ class ThePortalShowsWhatTheStoreKeeps(unittest.TestCase):
                 "%s is offered with no help text; a knob that bounds retention needs to say so"
                 % key,
             )
+
+
+    def test_the_sharing_knob_says_what_it_trades(self):
+        """It is the sharpest memory/latency trade in the store, so the help must carry both sides.
+
+        Measured on a 100,105-record store, warm read: sharing on gives 8.00 s, 2,305 B/record and
+        761 MB resident; off gives 4.58 s, 4,173 B/record and 1,041 MB. A knob offered without
+        both numbers invites the operator to guess.
+        """
+        help_text = self.by_key["ingestion.share_repeated_values"].help
+        for token in ("2,305", "4,173"):
+            self.assertIn(
+                token, help_text,
+                "the help does not give the memory it buys, so the trade cannot be judged",
+            )
+        self.assertRegex(
+            help_text, r"second",
+            "the help does not give the latency it costs, so it reads as free",
+        )
 
 
 if __name__ == "__main__":

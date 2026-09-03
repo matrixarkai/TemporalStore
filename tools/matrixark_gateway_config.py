@@ -490,6 +490,20 @@ SETTINGS: List[Setting] = [
             "How many rotated shards are kept behind the live one. Records in a dropped shard are "
             "gone from the store, so this is a retention policy and not only a disk setting: at "
             "the defaults the store keeps roughly 336 MB and discards the oldest records past it."),
+    # The sharpest memory/latency trade in the local store, and it was not offered at all.
+    # Measured on a 100,105-record store, warm read, three alternating runs each:
+    #   sharing on : 8.00 s, 2,305 B/record, 761 MB resident
+    #   sharing off: 4.58 s, 4,173 B/record, 1,041 MB resident
+    # So it costs ~3.4 s on the read that loads the cache and returns ~45% of the cache. Which way
+    # that should go depends on the deployment, which is exactly why it belongs on the page.
+    Setting("ingestion.share_repeated_values", "ingestion",
+            "MATRIXARK_SHARE_REPEATED_VALUES",
+            "Share repeated values in the read cache", "bool", "1", "restart",
+            "Give every record carrying the same value one shared object instead of a private "
+            "copy. On a 100,105-record store this held the cache at 2,305 bytes per record "
+            "instead of 4,173, and resident memory at 761 MB instead of 1,041 MB, for about 3.4 "
+            "seconds more on the read that loads the cache. Turn it off if that load latency "
+            "matters more than the memory."),
     Setting("ingestion.durable_read_cache", "ingestion",
             "MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED",
             "Durable read snapshot", "bool", "1", "restart",
