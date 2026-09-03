@@ -748,11 +748,70 @@ def _shared_interned_value(value: Any) -> Any:
     return _copy_interned_value(value)
 
 
-#: Beyond this many distinct values a field is not repetitive enough to be worth a table entry,
-#: and the table itself would start to cost more than it saves. Measured on an attachment corpus
-#: the busiest field held 11 distinct values, so this is a runaway guard, not a working limit.
 SHARE_REPEATED_VALUES = bool_env("MATRIXARK_SHARE_REPEATED_VALUES", True)
-_SHARED_VALUE_TABLE_LIMIT = 4096
+
+#: A last-resort ceiling on the shared table, not a working limit.
+#:
+#: It used to be 4096, chosen when "the busiest field held 11 distinct values" on a 60-attachment
+#: corpus -- a runaway guard that could not plausibly bind. At 100,105 records it binds hard: the
+#: corpus holds 29,657 distinct ``vector`` values, so the table filled and every value after the
+#: 4,096th was handed back unshared. The measured cost of that one constant was 66.8 MB of
+#: duplicate vectors, 20.9% of a 320 MB cache, and nothing reported it -- the table simply stopped
+#: sharing.
+#:
+#: What keeps the table honest now is :data:`_CONTAINER_FIELD_MIN_HIT_RATE` below, which drops a
+#: field that is not actually repeating. A field still in the table is saving more than its
+#: entries cost, so growth here is self-justifying and the ceiling only has to stop something
+#: nobody foresaw.
+#:
+#: Worth knowing before raising it further: the table holds strong entries and never shrinks, so
+#: it pins its shared values for the life of the process even after the read cache that needed
+#: them is dropped. That is bounded by this ceiling -- ~118 MB at the sizes measured here -- and
+#: it tracks the process-wide read cache closely enough in practice, but a table that outlives its
+#: records is the reason not to treat this number as free.
+#:
+#: Holding the entries weakly would remove the ceiling entirely, and it is close but not free:
+#: both shared types declare ``__slots__ = ()``, which suppresses ``__weakref__``, so they reject
+#: a weak reference today and would need the slot declared back before a weak table could hold
+#: them. That is 8 bytes on each shared object -- ~250 KB across the 31,549 measured here -- and
+#: it is left for whoever needs the ceiling gone rather than folded in here.
+_SHARED_VALUE_TABLE_LIMIT = 262144
+
+#: Lookups to watch before judging a field, and the hit rate it has to clear.
+#:
+#: The string table (:func:`_shared_string`) abandons below 0.10, and containers need a HIGHER bar
+#: for a reason worth stating: a string is its own table key, so a hit at any rate is free money,
+#: but a container's key is a second copy of its spine -- ``(field, tuple(value))``. Sharing pays
+#: when ``hits * value_size > misses * key_size``, i.e. above ``key/(value + key)``. Measured here
+#: a shared vector saves ~1,015 B against a ~450 B key, so break-even is ~0.31.
+#:
+#: The bar is set just above that rather than comfortably above it, because the repetition this
+#: exists to catch sits at 0.50 EXACTLY: a chunk body is stored once as a skill_section and once
+#: as a resource_chunk, so a perfectly duplicated corpus hits every other lookup and nothing more.
+#: A bar of 0.50 would admit that case only by the width of a rounding error and would drop any
+#: corpus that is partly unique -- 2x over 70% of its rows and singletons elsewhere hits 0.35 and
+#: is still comfortably profitable. So: 0.35, above break-even and below the structural case.
+#:
+#: Break-even falls as vectors get wider -- the key spine grows with the element count while the
+#: floats it points at are shared -- so this bar gets safer at production width, not tighter.
+_CONTAINER_FIELD_WARMUP_LOOKUPS = 512
+_CONTAINER_FIELD_MIN_HIT_RATE = 0.35
+
+#: Lookups an abandoned field waits before it is judged again.
+#:
+#: The verdict must not be permanent, because it is made on the FIRST 512 lookups and a corpus can
+#: put a field's repeats after them. A store holding one vector per document followed by a second
+#: pass of duplicates would show a 0.00 hit rate throughout the warmup and be written off for the
+#: life of the process -- the same silent cliff as the fixed 4,096 ceiling this replaced, just
+#: reached a different way. Re-arming costs one increment per lookup on a field already being
+#: skipped, and bounds the damage of a wrong verdict to one window instead of the whole run.
+_CONTAINER_FIELD_REARM_LOOKUPS = 8192
+
+#: Fields that lost the test, and fields that passed it and no longer need counting.
+_SHARED_CONTAINERS_ABANDONED: dict = {}
+_SHARED_CONTAINERS_EARNED: set = set()
+#: field -> [lookups, hits], kept only until the field has earned its place or lost it.
+_SHARED_CONTAINER_STATS: dict = {}
 #: Only a value whose every entry is one of these can be keyed by its contents.
 _SHAREABLE_SCALARS = frozenset({str, int, float, bool, type(None)})
 #: flat value -> the one object every record carrying it holds. Process-wide, so two adapters
@@ -768,10 +827,40 @@ _SHARE_MAX_DEPTH = 3
 
 
 def _lookup_shared(field, key, value, table, shared_type):
-    """Return the one object held for this value, creating it if the table has room."""
+    """Return the one object held for this value, if the field is worth holding a table for."""
     entry = table.get(key)
-    if entry is not None:
+    if field in _SHARED_CONTAINERS_EARNED:
+        if entry is not None:
+            return entry
+        if len(table) >= _SHARED_VALUE_TABLE_LIMIT:
+            return value
+        entry = table[key] = shared_type(value)
         return entry
+    skipped = _SHARED_CONTAINERS_ABANDONED.get(field)
+    if skipped is not None:
+        if skipped[0] < _CONTAINER_FIELD_REARM_LOOKUPS:
+            skipped[0] += 1
+            return value
+        # Its window is up. Judge it again on fresh evidence rather than on a verdict reached
+        # before the corpus had shown what it holds.
+        del _SHARED_CONTAINERS_ABANDONED[field]
+    stats = _SHARED_CONTAINER_STATS.get(field)
+    if stats is None:
+        stats = _SHARED_CONTAINER_STATS[field] = [0, 0]
+    stats[0] += 1
+    if entry is not None:
+        stats[1] += 1
+        return entry
+    if stats[0] >= _CONTAINER_FIELD_WARMUP_LOOKUPS:
+        if stats[1] < stats[0] * _CONTAINER_FIELD_MIN_HIT_RATE:
+            # Its values are distinct, not repeated, so every entry is a key with no copy behind
+            # it to pay for. Stop, and leave the entries already made -- they are bounded by the
+            # warmup and re-deriving which ones to drop would cost more than they hold.
+            _SHARED_CONTAINERS_ABANDONED[field] = [0]
+            _SHARED_CONTAINER_STATS.pop(field, None)
+            return value
+        _SHARED_CONTAINERS_EARNED.add(field)
+        _SHARED_CONTAINER_STATS.pop(field, None)
     if len(table) >= _SHARED_VALUE_TABLE_LIMIT:
         return value
     entry = table[key] = shared_type(value)
@@ -4567,7 +4656,21 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
                 head = json.load(handle)
             with self._durable_read_cache_path().open("r", encoding="utf-8") as handle:
-                payload = json.load(handle)
+                # Decode the snapshot exactly as the log is decoded. Both paths return the same
+                # records, so they have to return them at the same cost, and a bare json.load
+                # here does not: it gives every record a private copy of every repeated VALUE.
+                # Key names are not the problem on this path -- the whole snapshot is one decode
+                # call and the decoder memoises key strings within a call -- which is exactly why
+                # this went unnoticed. Values get no such treatment, and they are the larger half:
+                # a chunk body is stored once as a skill_section and once as a resource_chunk, so
+                # the text of a chunked document arrives twice and was held twice.
+                #
+                # Measured on a 217 MB snapshot of 100,105 records: 4,233 B/record bare against
+                # 3,196 B/record through the hook -- 24.5%, for 0.8 s of decode paid once per
+                # process. The delta tail below already used the hook, so until now a store served
+                # from its snapshot held a cache a third larger than the same store served from
+                # its log, for byte-identical content.
+                payload = json.load(handle, object_pairs_hook=_interned_pairs)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return None
         if not isinstance(head, dict) or not isinstance(payload, dict):
