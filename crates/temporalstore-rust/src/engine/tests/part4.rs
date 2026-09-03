@@ -8159,7 +8159,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
         Command::ContextWriteExtractedEvent {
             tenant_hash: 41,
             node_hash: 42,
-            event: crate::types::ContextEvent {
+            event: Box::new(crate::types::ContextEvent {
                 event_id_hash: 445,
                 event_time_ms: 1_787_270_075_000,
                 ingestion_time_ms: 1_787_270_075_000,
@@ -8175,7 +8175,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
                 related_node_hashes: vec![42],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
-            },
+            }),
             indexes: crate::types::ContextExtractedEventIndexes {
                 scope_hash: 3001,
                 entity_hashes: vec![501],
@@ -9570,7 +9570,7 @@ fn a_numeric_component_travels_as_a_number_and_returns_intact() {
         Command::ContextWriteExtractedEvent {
             tenant_hash: 41,
             node_hash: 42,
-            event: crate::types::ContextEvent {
+            event: Box::new(crate::types::ContextEvent {
                 event_id_hash: 445,
                 event_time_ms: 1_787_270_075_000,
                 ingestion_time_ms: 1_787_270_075_000,
@@ -9586,7 +9586,7 @@ fn a_numeric_component_travels_as_a_number_and_returns_intact() {
                 related_node_hashes: vec![42],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
-            },
+            }),
             indexes: crate::types::ContextExtractedEventIndexes {
                 scope_hash: 3001,
                 entity_hashes: vec![501],

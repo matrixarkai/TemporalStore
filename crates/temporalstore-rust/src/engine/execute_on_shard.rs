@@ -2615,7 +2615,9 @@ pub(crate) fn execute_on_shard(
             // never fed the time index, so every extracted event was invisible to time-ranged
             // queries while its write reported success.
             if !(first_write_only && event_series.contains_key(&event_id_hash)) {
-                let value = context_bytes(&event);
+                // `event` is boxed on this variant; the wire encoder takes the value.
+                let event_value = &*event;
+                let value = context_bytes(event_value);
                 let routing_bucket = page_routing_bucket(
                     &event_object_key,
                     start_routing_bucket,

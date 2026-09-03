@@ -70,7 +70,7 @@ fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
         command: Command::ContextWriteExtractedEvent {
             tenant_hash: TENANT,
             node_hash: NODE,
-            event: cold_event(9001, START + 30, "cold extracted"),
+            event: Box::new(cold_event(9001, START + 30, "cold extracted")),
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 77,
                 entity_hashes: vec![901, 902],

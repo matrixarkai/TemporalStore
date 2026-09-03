@@ -1746,7 +1746,15 @@ pub enum Command {
     ContextWriteExtractedEvent {
         tenant_hash: u64,
         node_hash: u64,
-        event: ContextEvent,
+        /// Boxed because this field decides how wide EVERY command is.
+        ///
+        /// `Command` is as wide as its widest variant, and this variant was the widest at 288
+        /// bytes -- 184 of them this field. Every command everywhere paid for it, including a
+        /// `StringSet` carrying eight bytes. Behind a box the variant is about 112 and the enum
+        /// drops to 216, which is the next widest (`ContextUpsertNode`).
+        ///
+        /// `Box<T>` serialises exactly as `T`, so nothing on disk or on the wire changes.
+        event: Box<ContextEvent>,
         #[serde(default)]
         indexes: ContextExtractedEventIndexes,
         #[serde(default)]
