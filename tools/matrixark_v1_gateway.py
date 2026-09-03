@@ -2138,6 +2138,35 @@ def monitoring_catalogue(datanode_url: str = "") -> Json:
     }
 
 
+def documented_routes() -> list:
+    """The route catalogue, each entry saying which edge counter it is counted under.
+
+    Served rather than derived in the page. The label comes from `route_label`, which collapses a
+    path to a bounded template; re-implementing that rule in JavaScript would put a second copy of
+    it in the tree, and the failure when the two drift is silent -- a number rendered against the
+    wrong route reads exactly like a number rendered against the right one.
+
+    `metric_shared_with` names the other documented paths counted under the same label. Eight
+    labels cover more than one: a row that showed the shared figure as its own would overstate
+    itself by however much the neighbour is used.
+    """
+    labels: dict = {}
+    for entry in ROUTE_DOCS:
+        path = str(entry.get("path", ""))
+        labels.setdefault(_gwmetrics.route_label(path), set()).add(path)
+
+    out = []
+    for entry in ROUTE_DOCS:
+        path = str(entry.get("path", ""))
+        label = _gwmetrics.route_label(path)
+        shared = sorted(labels.get(label, set()) - {path})
+        row = dict(entry)
+        row["metric"] = label
+        if shared:
+            row["metric_shared_with"] = shared
+        out.append(row)
+    return out
+
 def _grafana_asset(name: str) -> Tuple[Optional[bytes], str]:
     """One monitoring asset, or (None, "") when this deployment does not bundle it."""
     entry = _GRAFANA_ASSETS.get(name)
@@ -3487,7 +3516,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # Served rather than written down separately so what a customer reads is what this process
         # serves. No credentials: this is documentation, and every route it names enforces its own.
         if method == "GET" and path == "/v1/admin/routes":
-            return await _json(send, 200, {"status": "ok", "routes": ROUTE_DOCS})
+            return await _json(send, 200, {"status": "ok", "routes": documented_routes()})
         if method == "GET" and path == "/v1/admin/setup":
             return await _html(send, 200, _setup_portal_html_bytes())
         if method == "GET" and path == "/v1/admin/catalog":

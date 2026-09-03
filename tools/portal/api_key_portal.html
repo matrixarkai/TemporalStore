@@ -837,6 +837,16 @@
   window.__matrixarkOnFrame = function (callback) {
     if (typeof callback === "function") { watchers.push(callback); }
   };
+  /* This script is emitted AFTER the page's own -- deliberately, so a page running its own stream
+     can claim it before this one decides whether to open a second. The cost of that ordering was
+     that a page registering at its top level called a function that did not exist yet, and two
+     did: the catalog stopped re-listing when the store grew, and nothing looked wrong.
+
+     So pages push to a queue. Whatever is waiting is drained here, and the queue is then replaced
+     by an object whose `push` IS the registration, so a page loading later goes through the same
+     call and nothing has to know which script ran first. */
+  (window.__matrixarkFrameQueue || []).forEach(window.__matrixarkOnFrame);
+  window.__matrixarkFrameQueue = { push: window.__matrixarkOnFrame };
 
   function n(value) {
     return Number(value || 0).toLocaleString();

@@ -63,6 +63,10 @@ _EXACT_ROUTES = frozenset({
     "/v1/admin/events",
     "/v1/admin/config/export",
     "/v1/admin/api", "/v1/admin/routes",
+    # Documented and served, and until now unmeasured: both fell through to "other", so the
+    # traffic a customer generates composing a deployment was indistinguishable from every
+    # other unmatched path.
+    "/v1/admin/deployment", "/v1/admin/deployment/plan",
     "/v1/admin/api_key_usage", "/v1/admin/ingestion/jobs",
 })
 

@@ -25,6 +25,10 @@ function makeEl() {
 }
 
 const registered = [];
+/* Held by reference. The nav script drains this and then REPLACES window.__matrixarkFrameQueue
+   with its own pusher, so reading that property afterwards finds the replacement and not what
+   the page put in. The array itself still holds it. */
+const queued = [];
 const win = {
   document: {
     getElementById: () => makeEl(),
@@ -54,7 +58,19 @@ const win = {
   Blob: function () {},
   URL: { createObjectURL: () => "", revokeObjectURL() {} },
   fetch: () => new Promise(() => {}),          /* never resolves: nothing here needs a response */
-  __matrixarkOnFrame(callback) { registered.push(callback); }
+  __matrixarkOnFrame(callback) { registered.push(callback); },
+  /* Pages register by pushing here, not by calling __matrixarkOnFrame directly: the nav script
+     that defines that function is emitted after the page's own, so calling it at page-script time
+     registered nothing at all. Counting only direct calls made this harness report a watcher for
+     pages that had none -- it defines the function up front, so the ordering bug it would have
+     caught cannot happen here. frame_registration_harness runs the scripts in document order and
+     is what actually proves delivery; this one counts intent, and now counts both ways of
+     expressing it. */
+  /* A plain array, because the nav script drains it with forEach. An object with only a
+     push() satisfied the pages and threw in the nav block -- the harness has to be the
+     shape both halves of the protocol expect. Pages push here; the nav drains it through
+     __matrixarkOnFrame above, so a queued watcher lands in the same count as a direct one. */
+  __matrixarkFrameQueue: queued
 };
 win.window = win;
 
@@ -76,5 +92,5 @@ scripts.forEach((body, index) => {
 process.stdout.write(JSON.stringify({
   scripts: scripts.length,
   threwAtLoad: failures,
-  frameWatchers: registered.length
+  frameWatchers: registered.length + queued.length
 }, null, 2));

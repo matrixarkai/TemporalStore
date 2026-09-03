@@ -264,6 +264,9 @@ EXTRA_CSS = """
   .verb.PUT{background:var(--warn-soft);color:var(--warn)}
   .route-path{font-family:"IBM Plex Mono",monospace;font-size:13.5px;font-weight:600;
               overflow-wrap:anywhere}
+  .route-live{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .route-live.bad{color:var(--danger)}
+  .route-live.quiet{opacity:.6}
   .route-scope{margin-left:auto;font-size:11.5px;font-family:"IBM Plex Mono",monospace;
                color:var(--faint);white-space:nowrap}
   .route p{margin:6px 0 0;font-size:13.5px;color:var(--muted);line-height:1.55;max-width:78ch}
@@ -297,6 +300,16 @@ NAV_JS = r'''<script>
   window.__matrixarkOnFrame = function (callback) {
     if (typeof callback === "function") { watchers.push(callback); }
   };
+  /* This script is emitted AFTER the page's own -- deliberately, so a page running its own stream
+     can claim it before this one decides whether to open a second. The cost of that ordering was
+     that a page registering at its top level called a function that did not exist yet, and two
+     did: the catalog stopped re-listing when the store grew, and nothing looked wrong.
+
+     So pages push to a queue. Whatever is waiting is drained here, and the queue is then replaced
+     by an object whose `push` IS the registration, so a page loading later goes through the same
+     call and nothing has to know which script ran first. */
+  (window.__matrixarkFrameQueue || []).forEach(window.__matrixarkOnFrame);
+  window.__matrixarkFrameQueue = { push: window.__matrixarkOnFrame };
 
   function n(value) {
     return Number(value || 0).toLocaleString();
@@ -2582,8 +2595,10 @@ CATALOG_JS = r"""
     return originalLoad(keepMessage);
   };
 
-  if (window.__matrixarkOnFrame) {
-    window.__matrixarkOnFrame(function (frame) {
+  /* Through the queue. This script runs before the nav block defines the register function,
+     so calling it directly registered nothing at all -- the watcher below never ran. */
+  (window.__matrixarkFrameQueue = window.__matrixarkFrameQueue || []).push(
+    function (frame) {
       var total = (frame.embedding || {}).total;
       if (total == null) { return; }
       if (lastStoredTotal === null) { lastStoredTotal = total; return; }
@@ -2601,7 +2616,6 @@ CATALOG_JS = r"""
         ? "The store changed — this list has been refreshed."
         : "Items were removed from the store — this list has been refreshed.", "info");
     });
-  }
 
   $("filter").addEventListener("input", function () { load(); });
   $("rtype").addEventListener("change", function () { load(); });
@@ -4165,8 +4179,10 @@ EXPLORE_JS = r"""
       .catch(function () { watchedJob = null; });
   }
 
-  if (window.__matrixarkOnFrame) {
-    window.__matrixarkOnFrame(function (frame) {
+  /* Through the queue. This script runs before the nav block defines the register function,
+     so calling it directly registered nothing at all -- the watcher below never ran. */
+  (window.__matrixarkFrameQueue = window.__matrixarkFrameQueue || []).push(
+    function (frame) {
       if (!watchedJob) { return; }
       var active = ((frame.imports || {}).active || []).filter(function (j) {
         return j.job_id === watchedJob.id;
@@ -4176,7 +4192,6 @@ EXPLORE_JS = r"""
          Only conclude it ended once it has actually been seen running. */
       if (watchedJob.seen) { finishBatchJob(); }
     });
-  }
 
   $("batchPreview").addEventListener("click", function () { submitBatch(true); });
   $("batchRun").addEventListener("click", function () { submitBatch(false); });
@@ -4459,12 +4474,56 @@ API_JS = r"""
            route.summary).toLowerCase()) + '">' +
       '<div class="route-head"><span class="verb ' + esc(route.method) + '">' +
       esc(route.method) + '</span><span class="route-path">' + esc(route.path) + "</span>" +
+      '<span class="route-live" data-metric="' + esc(route.metric || "") + '"' +
+      (route.metric_shared_with
+        ? ' title="Counted together with ' + esc(route.metric_shared_with.join(", ")) + '"'
+        : "") + "></span>" +
       '<span class="route-scope">' + esc(route.scope || "no auth") + "</span></div>" +
       "<p>" + esc(route.summary) +
       (route.needs ? " Needs " + esc(route.needs) + " configured." : "") + "</p>" +
       '<button type="button" class="link curl" data-curl="' + index + '">show curl</button>' +
       "<pre>" + esc(curlFor(route)) + "</pre></div>";
   }
+
+  /* The last traffic seen, so a re-render (filtering, mostly) can repaint rather than blank the
+     counters until the next frame two seconds later. */
+  var lastTraffic = null;
+
+  /* This page defines esc() and not n(). Reaching for the strip's helper compiled fine, threw a
+     ReferenceError on the first frame, and the strip catches each watcher's error so that one
+     panel cannot break the rest -- so it failed in total silence. */
+  function num(value) {
+    return Number(value || 0).toLocaleString();
+  }
+
+  function paintTraffic(traffic) {
+    lastTraffic = traffic || lastTraffic;
+    var routes = (lastTraffic || {}).routes || {};
+    Array.prototype.forEach.call(document.querySelectorAll(".route-live"), function (cell) {
+      var label = cell.getAttribute("data-metric");
+      if (!label) { cell.textContent = ""; return; }
+      var seen = routes[label];
+      if (!seen) {
+        /* The frame arrived and this route is not in it, which means nothing has been recorded
+           against it -- that is a fact, not a gap. Before any frame arrives this function has not
+           run at all, so the cell stays empty rather than claiming a zero nobody reported. */
+        cell.className = "route-live quiet";
+        cell.textContent = "no requests yet";
+        return;
+      }
+      var bits = [num(seen.requests) + (Number(seen.requests) === 1 ? " request" : " requests")];
+      if (seen.errors) {
+        bits.push(num(seen.errors) + (Number(seen.errors) === 1 ? " error" : " errors"));
+      }
+      if (seen.avg_ms) { bits.push(seen.avg_ms + " ms avg"); }
+      cell.className = "route-live" + (seen.errors ? " bad" : "");
+      cell.textContent = bits.join(" \u00b7 ");
+    });
+  }
+
+  /* Through the queue: this script runs before the nav block defines the register function. */
+  (window.__matrixarkFrameQueue = window.__matrixarkFrameQueue || []).push(
+    function (frame) { paintTraffic((frame || {}).traffic); });
 
   function render() {
     var query = $("filter").value.trim().toLowerCase();
@@ -4486,6 +4545,11 @@ API_JS = r"""
     $("routes").innerHTML = html ||
       '<section><div class="empty">Nothing matches that.</div></section>';
   }
+
+  /* A re-render replaces every cell, so the counters have to go back on. Without this, filtering
+     blanks them until the next frame. */
+  var renderRoutes = render;
+  render = function () { renderRoutes(); if (lastTraffic) { paintTraffic(null); } };
 
   $("routes").addEventListener("click", function (ev) {
     var button = ev.target.closest ? ev.target.closest("[data-curl]") : null;
