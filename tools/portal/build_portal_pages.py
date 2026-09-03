@@ -182,6 +182,9 @@ EXTRA_CSS = """
                padding:8px 12px;font-weight:550;font-size:13.5px;margin-bottom:-1px;
                border-radius:0}
   .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  .tabs button[data-badge]:not([data-badge=""])::after{content:attr(data-badge);
+      margin-left:6px;background:var(--accent);color:var(--bg);border-radius:9px;
+      padding:0 6px;font-size:11px;font-weight:650;vertical-align:1px}
   .pane[hidden]{display:none}
   .polrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
           padding:9px 0;border-bottom:1px solid var(--line)}
@@ -451,6 +454,77 @@ def nav(active):
     return ('  <nav class="portalnav">\n' + "\n".join(parts) + LIVE_STRIP + "\n  </nav>")
 
 
+TABS_JS = r"""
+<script>
+/* Tabs, for every portal page whose body declares a tablist.
+ *
+ * Shared rather than per page. The explore page had the only copy and this is the second caller;
+ * two copies of a behaviour that looks identical is how they stop being identical.
+ *
+ * Click alone is not enough for role="tablist". Someone arriving on the selected tab expects the
+ * arrow keys to move between them -- that is what the role announces -- and roving tabindex is
+ * what makes those arrows the way through rather than one more thing to tab past.
+ */
+(function () {
+  "use strict";
+
+  window.wireTabs = function (onShow) {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll(".tabs button"));
+    if (!tabs.length) { return; }
+
+    function show(button) {
+      tabs.forEach(function (b) {
+        var selected = b === button;
+        b.setAttribute("aria-selected", String(selected));
+        b.tabIndex = selected ? 0 : -1;
+      });
+      Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
+        pane.hidden = pane.id !== "pane-" + button.dataset.pane;
+      });
+      if (typeof onShow === "function") { onShow(button.dataset.pane); }
+    }
+
+    tabs.forEach(function (button, index) {
+      button.addEventListener("click", function () { show(button); });
+      button.addEventListener("keydown", function (event) {
+        var next = null;
+        if (event.key === "ArrowRight") { next = tabs[(index + 1) % tabs.length]; }
+        else if (event.key === "ArrowLeft") { next = tabs[(index - 1 + tabs.length) % tabs.length]; }
+        else if (event.key === "Home") { next = tabs[0]; }
+        else if (event.key === "End") { next = tabs[tabs.length - 1]; }
+        if (!next) { return; }
+        event.preventDefault();
+        show(next);
+        next.focus();
+      });
+    });
+
+    var already = tabs.filter(function (b) {
+      return b.getAttribute("aria-selected") === "true";
+    });
+    show(already[0] || tabs[0]);
+  };
+
+  /* Show a pane from code. Needed whenever one pane's control writes into another's: without
+     it the change lands somewhere the person cannot see, and any instruction about what to do
+     next refers to a part of the page that is not on screen. */
+  window.showTab = function (pane) {
+    var button = document.getElementById("tab-" + pane);
+    if (button) { button.click(); }
+  };
+
+  /* Put a count on a tab. A pane that is hidden cannot report anything itself, and the case that
+     matters is a form with unsaved changes in it. */
+  window.markTab = function (pane, badge) {
+    var button = document.getElementById("tab-" + pane);
+    if (!button) { return; }
+    button.setAttribute("data-badge", badge ? String(badge) : "");
+  };
+}());
+</script>
+"""
+
+
 HEAD = """<!doctype html>
 <html lang="en">
 <head>
@@ -478,6 +552,19 @@ SETUP_BODY = """
 
   <div class="summary" id="summary"></div>
 
+
+  <div class="tabs" role="tablist" aria-label="Setup sections">
+    <button type="button" role="tab" id="tab-access" aria-controls="pane-access"
+            data-pane="access" aria-selected="true">Access</button>
+    <button type="button" role="tab" id="tab-settings" aria-controls="pane-settings"
+            data-pane="settings" aria-selected="false" tabindex="-1">Settings</button>
+    <button type="button" role="tab" id="tab-health" aria-controls="pane-health"
+            data-pane="health" aria-selected="false" tabindex="-1">Checks</button>
+    <button type="button" role="tab" id="tab-deployment" aria-controls="pane-deployment"
+            data-pane="deployment" aria-selected="false" tabindex="-1">Deployment</button>
+  </div>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-access" id="pane-access">
   <section>
     <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
     <label for="key">Admin API key</label>
@@ -505,6 +592,9 @@ SETUP_BODY = """
       its own list. Choosing here fills the field below — nothing is written until you save.</p>
     <div id="models"><div class="empty">Enter an admin key to choose models.</div></div>
   </section>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-settings" id="pane-settings" hidden>
 
   <form id="settingsForm">
     <div class="toolbar">
@@ -588,6 +678,9 @@ SETUP_BODY = """
       reads as bad retrieval rather than unfinished retrieval.</p>
     <div id="encoding"><div class="empty">Enter an admin key to read the encoding state.</div></div>
   </section>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-health" id="pane-health" hidden>
 
   <section>
     <h2>Endpoint test</h2>
@@ -602,9 +695,12 @@ SETUP_BODY = """
     <h2>Traffic <span class="aux"><label class="check"><input type="checkbox" id="auto" checked> auto-refresh</label></span></h2>
     <div id="traffic"><div class="empty">Loading…</div></div>
   </section>
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-deployment" id="pane-deployment" hidden>
 
   <section>
-    <h2>Deployment</h2>
+    <h2>Where this deployment lives</h2>
     <p class="hint" style="margin-top:0">Where this deployment lives and how it is reached. Read
       only, deliberately: repointing a storage directory or a cluster address from a browser form
       does not reconfigure a running deployment, it strands its data. Change these where the process
@@ -613,9 +709,9 @@ SETUP_BODY = """
   </section>
 
   <section>
-    <h2>Deployment <span class="aux"><button class="link" id="copyEnv" type="button">copy env file</button></span></h2>
+    <h2>Launch a deployment <span class="aux"><button class="link" id="copyEnv" type="button">copy env file</button></span></h2>
     <p class="hint" style="margin-top:0">The storage directories, the metaserver address and the
-      topology are not editable above, and that is deliberate — repointing a running deployment's
+      topology are not editable on the Settings tab, and that is deliberate — repointing a running deployment's
       storage from a browser does not reconfigure it, it strands its data. They are chosen when a
       deployment is <em>launched</em>, which is what this composes.</p>
     <div id="liveShape" class="hint"></div>
@@ -643,7 +739,7 @@ SETUP_BODY = """
       </label>
       <label class="field"><span>Key variables</span>
         <input id="depKeys" type="text" placeholder="DEEPSEEK_API_KEY, OPENAI_API_KEY">
-        <span class="hint">Names only. Values are entered above and never appear in a plan.</span>
+        <span class="hint">Names only. Values are entered on the Settings tab and never appear in a plan.</span>
       </label>
     </div>
     <div id="depMsg" role="status" aria-live="polite"></div>
@@ -694,6 +790,7 @@ SETUP_BODY = """
     </table>
     <pre id="scrape"></pre>
   </section>
+  </section>
 """
 
 SETUP_JS = r"""
@@ -701,6 +798,8 @@ SETUP_JS = r"""
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+
+  window.wireTabs();
 
   /* Claimed before the strip's own script runs, so it feeds from this connection instead of
      opening a second one to the same endpoint. */
@@ -1298,6 +1397,10 @@ function liveStream(options) {
     renderModels();
     var group = el.closest("details");
     if (group) { group.open = true; }
+    /* This control is on the Access tab and the field it just set is on the Settings tab. Without
+       moving there, the scroll below is a no-op on a hidden pane and the "save it" message points
+       at a save bar the person cannot see. */
+    window.showTab("settings");
     el.scrollIntoView({ block: "center" });
     /* Deliberately not saved here. A model change is worth seeing next to whatever else is
        pending -- a key that has not been filled in yet, most of all. */
@@ -1534,6 +1637,9 @@ function liveStream(options) {
     $("dirtyCount").innerHTML = keys.length
       ? "<b>" + keys.length + "</b> unsaved change" + (keys.length === 1 ? "" : "s")
       : "No unsaved changes";
+    /* The save bar lives inside a pane now, so it is invisible from any other tab. Without this
+       a field can be edited, a tab switched, and nothing on screen says the change is unsaved. */
+    window.markTab("settings", keys.length);
     $("save").disabled = !keys.length;
   }
 
@@ -1589,7 +1695,7 @@ function liveStream(options) {
       .catch(function (e) {
         if (e === 401 || e === 403) {
           conn("live", "connected");
-          $("groups").innerHTML = '<section><div class="empty">Enter an admin-scoped key above to ' +
+          $("groups").innerHTML = '<section><div class="empty">Enter an admin-scoped key on the Access tab to ' +
             "load and change this deployment’s configuration.</div></section>";
           $("presets").innerHTML = '<div class="empty">Enter an admin key to see the presets.</div>';
           $("models").innerHTML = '<div class="empty">Enter an admin key to choose models.</div>';
@@ -3175,17 +3281,7 @@ EXPLORE_JS = r"""
   }
 
   /* ---------- tabs ---------- */
-  Array.prototype.forEach.call(document.querySelectorAll(".tabs button"), function (button) {
-    button.addEventListener("click", function () {
-      Array.prototype.forEach.call(document.querySelectorAll(".tabs button"), function (b) {
-        b.setAttribute("aria-selected", String(b === button));
-      });
-      Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
-        pane.hidden = pane.id !== "pane-" + button.dataset.pane;
-      });
-      if (button.dataset.pane === "browse") { loadBrowse(); }
-    });
-  });
+  window.wireTabs(function (pane) { if (pane === "browse") { loadBrowse(); } });
 
   /* ---------- ask ---------- */
   /* The response shape differs between backends and versions; pick the first list of items that
@@ -4415,9 +4511,15 @@ TAIL = """
 
 def emit(filename, title, body, js, active):
     css = BASE_CSS + NAV_CSS + EXTRA_CSS
+    rendered = body % {"nav": nav(active)}
+    # Only pages that declare a tablist carry the helper, so a page without tabs is byte for byte
+    # what it was and a page that grows tabs picks it up without anyone remembering to wire it.
+    page_js = js.strip()
+    if 'role="tablist"' in rendered:
+        page_js = TABS_JS.strip() + "\n" + page_js
     html = (HEAD % {"title": title, "css": css}
-            + (body % {"nav": nav(active)})
-            + (TAIL % {"js": js.strip(), "navjs": NAV_JS.strip()}))
+            + rendered
+            + (TAIL % {"js": page_js, "navjs": NAV_JS.strip()}))
     path = os.path.join(PORTAL, filename)
     io.open(path, "w", encoding="utf-8", newline="\n").write(html)
     print("wrote %s (%d bytes)" % (path, len(html)))
@@ -4432,6 +4534,7 @@ emit("catalog_portal.html", "MatrixArk — Skills & Resources", CATALOG_BODY, CA
 
 
 # ---- add the nav to the two existing pages ------------------------------------------------------
+TABS_JS_MARKER = "/* Tabs, for every portal page whose body declares a tablist."
 NAV_JS_MARKER = "/* The shared live strip."
 
 
@@ -4451,6 +4554,30 @@ def _with_nav_js(text):
     return text.replace("</body>", NAV_JS.strip() + "\n</body>", 1)
 
 
+def _with_tabs_js(text):
+    """Put the shared tab helper into a hand-maintained page that declares a tablist.
+
+    Removed and re-placed rather than replaced where it sits. The builder runs over these
+    files repeatedly, and an earlier build put the block in the wrong place -- after the
+    page's own script, so `window.wireTabs()` ran before anything defined it. Replacing in
+    place would carry that position forward for ever; taking it out and putting it back means
+    the current rule about where it goes always wins.
+
+    A page with no tablist is left exactly as it was.
+    """
+    if 'role="tablist"' not in text:
+        return text
+    if TABS_JS_MARKER in text:
+        start = text.index("<script>", text.index(TABS_JS_MARKER) - 200)
+        end = text.index("</script>", start) + len("</script>")
+        text = text[:start] + text[end:].lstrip(chr(10))
+    # Scripts run in document order, so the helper goes before the page's own.
+    if "<script>" not in text:
+        print("no <script> to place the tab helper before")
+        sys.exit(1)
+    at = text.index("<script>")
+    return text[:at] + TABS_JS.strip() + chr(10) + text[at:]
+
 def inject(filename, anchor, active):
     """Add the shared nav, or replace the one already there.
 
@@ -4466,7 +4593,7 @@ def inject(filename, anchor, active):
         if not count:
             print("nav present but unrecognised in %s" % filename)
             sys.exit(1)
-        io.open(path, "w", encoding="utf-8", newline="\n").write(_with_nav_js(replaced))
+        io.open(path, "w", encoding="utf-8", newline="\n").write(_with_tabs_js(_with_nav_js(replaced)))
         print("nav refreshed in %s" % filename)
         return
     if anchor not in text:
@@ -4474,7 +4601,7 @@ def inject(filename, anchor, active):
         sys.exit(1)
     text = text.replace("</style>", NAV_CSS + "</style>", 1)
     text = text.replace(anchor, anchor + "\n" + nav(active), 1)
-    text = _with_nav_js(text)
+    text = _with_tabs_js(_with_nav_js(text))
     io.open(path, "w", encoding="utf-8", newline="\n").write(text)
     print("nav added to %s" % filename)
 

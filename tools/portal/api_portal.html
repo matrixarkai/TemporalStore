@@ -302,6 +302,9 @@
                padding:8px 12px;font-weight:550;font-size:13.5px;margin-bottom:-1px;
                border-radius:0}
   .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  .tabs button[data-badge]:not([data-badge=""])::after{content:attr(data-badge);
+      margin-left:6px;background:var(--accent);color:var(--bg);border-radius:9px;
+      padding:0 6px;font-size:11px;font-weight:650;vertical-align:1px}
   .pane[hidden]{display:none}
   .polrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
           padding:9px 0;border-bottom:1px solid var(--line)}

@@ -302,6 +302,9 @@
                padding:8px 12px;font-weight:550;font-size:13.5px;margin-bottom:-1px;
                border-radius:0}
   .tabs button[aria-selected=true]{color:var(--accent);border-bottom-color:var(--accent)}
+  .tabs button[data-badge]:not([data-badge=""])::after{content:attr(data-badge);
+      margin-left:6px;background:var(--accent);color:var(--bg);border-radius:9px;
+      padding:0 6px;font-size:11px;font-weight:650;vertical-align:1px}
   .pane[hidden]{display:none}
   .polrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
           padding:9px 0;border-bottom:1px solid var(--line)}
@@ -577,6 +580,73 @@
 
 </div>
 <script>
+/* Tabs, for every portal page whose body declares a tablist.
+ *
+ * Shared rather than per page. The explore page had the only copy and this is the second caller;
+ * two copies of a behaviour that looks identical is how they stop being identical.
+ *
+ * Click alone is not enough for role="tablist". Someone arriving on the selected tab expects the
+ * arrow keys to move between them -- that is what the role announces -- and roving tabindex is
+ * what makes those arrows the way through rather than one more thing to tab past.
+ */
+(function () {
+  "use strict";
+
+  window.wireTabs = function (onShow) {
+    var tabs = Array.prototype.slice.call(document.querySelectorAll(".tabs button"));
+    if (!tabs.length) { return; }
+
+    function show(button) {
+      tabs.forEach(function (b) {
+        var selected = b === button;
+        b.setAttribute("aria-selected", String(selected));
+        b.tabIndex = selected ? 0 : -1;
+      });
+      Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
+        pane.hidden = pane.id !== "pane-" + button.dataset.pane;
+      });
+      if (typeof onShow === "function") { onShow(button.dataset.pane); }
+    }
+
+    tabs.forEach(function (button, index) {
+      button.addEventListener("click", function () { show(button); });
+      button.addEventListener("keydown", function (event) {
+        var next = null;
+        if (event.key === "ArrowRight") { next = tabs[(index + 1) % tabs.length]; }
+        else if (event.key === "ArrowLeft") { next = tabs[(index - 1 + tabs.length) % tabs.length]; }
+        else if (event.key === "Home") { next = tabs[0]; }
+        else if (event.key === "End") { next = tabs[tabs.length - 1]; }
+        if (!next) { return; }
+        event.preventDefault();
+        show(next);
+        next.focus();
+      });
+    });
+
+    var already = tabs.filter(function (b) {
+      return b.getAttribute("aria-selected") === "true";
+    });
+    show(already[0] || tabs[0]);
+  };
+
+  /* Show a pane from code. Needed whenever one pane's control writes into another's: without
+     it the change lands somewhere the person cannot see, and any instruction about what to do
+     next refers to a part of the page that is not on screen. */
+  window.showTab = function (pane) {
+    var button = document.getElementById("tab-" + pane);
+    if (button) { button.click(); }
+  };
+
+  /* Put a count on a tab. A pane that is hidden cannot report anything itself, and the case that
+     matters is a form with unsaved changes in it. */
+  window.markTab = function (pane, badge) {
+    var button = document.getElementById("tab-" + pane);
+    if (!button) { return; }
+    button.setAttribute("data-badge", badge ? String(badge) : "");
+  };
+}());
+</script>
+<script>
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
@@ -629,17 +699,7 @@
   }
 
   /* ---------- tabs ---------- */
-  Array.prototype.forEach.call(document.querySelectorAll(".tabs button"), function (button) {
-    button.addEventListener("click", function () {
-      Array.prototype.forEach.call(document.querySelectorAll(".tabs button"), function (b) {
-        b.setAttribute("aria-selected", String(b === button));
-      });
-      Array.prototype.forEach.call(document.querySelectorAll(".pane"), function (pane) {
-        pane.hidden = pane.id !== "pane-" + button.dataset.pane;
-      });
-      if (button.dataset.pane === "browse") { loadBrowse(); }
-    });
-  });
+  window.wireTabs(function (pane) { if (pane === "browse") { loadBrowse(); } });
 
   /* ---------- ask ---------- */
   /* The response shape differs between backends and versions; pick the first list of items that
