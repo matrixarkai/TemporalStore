@@ -145,7 +145,21 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
             continue
         path = os.path.join(TOOLS, entry)
         try:
-            tree = ast.parse(open(path, encoding="utf-8", errors="replace").read(), filename=entry)
+            source = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        # A file that never touches the environment cannot be capturing a setting from it. This
+        # scan collects string CONSTANTS equal to a setting's variable name, which is a good proxy
+        # inside a module that reads config and a false positive inside one that merely lists names
+        # -- the storage conformance validators name 24 and 8 knobs between them and call
+        # os.environ zero times, and every one of those names was reported as captured at import.
+        #
+        # A rule rather than another exclusion entry: the list would need a line per validator, and
+        # would go stale the moment someone adds the next one.
+        if "os.environ" not in source and "getenv" not in source:
+            continue
+        try:
+            tree = ast.parse(source, filename=entry)
         except SyntaxError:
             continue
         visitor = _Sites(wanted)
@@ -168,8 +182,21 @@ def _scan() -> Dict[str, List[Tuple[str, str, int]]]:
 
 SITES = _scan()
 
+# How many settings the scan found a site for when this floor was set. It guards the skip rule
+# above: if that rule ever excludes too much, every label test below passes by comparing nothing.
+SCAN_COVERAGE_FLOOR = 40
+
 
 class AppliesLabelTest(unittest.TestCase):
+    def test_the_scan_still_reaches_the_readers(self) -> None:
+        """Both label tests skip a setting with no sites, so a narrowed scan reads as success."""
+        with_sites = sum(1 for name in SITES if SITES[name])
+        self.assertGreaterEqual(
+            with_sites, SCAN_COVERAGE_FLOOR,
+            "the audit found readers for only %d settings; it reached at least %d when this floor "
+            "was set, so the skip rule in _scan is excluding too much"
+            % (with_sites, SCAN_COVERAGE_FLOOR))
+
     def test_every_import_time_reader_is_labelled_restart(self) -> None:
         """The direction that misleads a customer: claiming a change is live when it cannot be."""
         wrong: List[str] = []
