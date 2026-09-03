@@ -306,3 +306,45 @@ groups:
         annotations:
           summary: TemporalStore storage maintenance phase is switched off
           description: "Phase {{ $labels.phase }} on shard {{ $labels.shard_id }} is disabled. That is a supported choice and it is worth seeing: the work that phase does is not happening, and nothing else does it."
+  - name: temporalstore-raft-runtime-faults
+    rules:
+      - alert: TemporalStoreRaftMinorityPartitionRejections
+        expr: increase(temporalstore_raft_matrixraft_minority_partition_write_rejections[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: TemporalStore raft is rejecting writes from a minority partition
+          description: "{{ $value }} writes were rejected in the last ten minutes because this node is in a minority partition. The rejection is correct -- accepting them would risk divergence -- and it means part of the cluster cannot serve writes. Check majority and peer liveness."
+
+      - alert: TemporalStoreRaftSnapshotSendFailing
+        expr: increase(temporalstore_raft_matrixraft_peer_snapshot_send_failed[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore raft snapshot sends are failing
+          description: "{{ $value }} snapshot sends failed in the last thirty minutes. A follower that cannot receive a snapshot cannot catch up, and a follower that never catches up eventually pins log reclaim."
+
+      - alert: TemporalStoreRaftPeerOffline
+        expr: temporalstore_raft_matrixraft_peer_offline_timeout_reached == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: TemporalStore raft peer has crossed its offline timeout
+          description: "A peer has been past its configured offline timeout for ten minutes. Unlike the stale-read gauges next to it on the dashboard, this one reading 1 is a fault rather than a protection being enforced."
+
+      - alert: TemporalStoreRaftLeaderTransferTimeouts
+        expr: increase(temporalstore_raft_matrixraft_peer_transfer_leader_timeouts[30m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore raft leader transfer is timing out
+          description: "{{ $value }} leader transfers timed out in the last thirty minutes. A transfer that cannot complete leaves leadership where it is, so a planned drain or upgrade will not move off this node."
+
+      - alert: TemporalStoreRaftLaggingFollowerReads
+        expr: increase(temporalstore_raft_matrixraft_lagging_follower_read_rejections[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore raft is rejecting reads from a lagging follower
+          description: "{{ $value }} follower reads were rejected for lag in the last fifteen minutes. Reads are being served correctly by refusing stale data; the follower behind them is not keeping up."

@@ -245,6 +245,15 @@
           "expr": "temporalstore_storage_manager_phase_floors"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Shard Rate Limit: Allowed And Refused",
+      "targets": [
+        {
+          "expr": "temporalstore_shard_rate_limit_total"
+        }
+      ]
     }
   ]
 }

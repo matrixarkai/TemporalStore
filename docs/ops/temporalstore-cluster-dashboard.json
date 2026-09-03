@@ -233,6 +233,129 @@
           "expr": "temporalstore_meta_mutation_apply_failed_total"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Raft: Partition Rejections",
+      "targets": [
+        {
+          "expr": "temporalstore_raft_matrixraft_minority_partition_read_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_minority_partition_write_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_lagging_follower_read_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_stale_leader_lease_rejections"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Raft: Read Path Rejections",
+      "targets": [
+        {
+          "expr": "temporalstore_raft_matrixraft_read_index_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_lease_read_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_bounded_stale_read_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_bounded_stale_read_accepted"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_bounded_stale_read_requests"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Raft: Snapshot Transfer Faults",
+      "targets": [
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_snapshot_send_failed"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_snapshot_send_timeouts"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_snapshot_install_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_snapshot_backpressure_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_snapshot_retry_count"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Raft: Peer Append And Reorder",
+      "targets": [
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_append_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_stale_term_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_reorder_entries_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_reorder_entry_timeouts"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_offline_timeout_rejections"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Raft: Elections And Leader Transfer",
+      "targets": [
+        {
+          "expr": "temporalstore_raft_matrixraft_local_peer_election_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_local_peer_pre_vote_rejections"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_pre_vote_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_transfer_leader_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_transfer_leader_timeouts"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Raft: Protections On (1 = enforcing) And Faults Present",
+      "targets": [
+        {
+          "expr": "temporalstore_raft_matrixraft_stale_follower_read_rejected"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_stale_follower_write_rejected"
+        },
+        {
+          "expr": "temporalstore_proxy_account_enforcement"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_peer_offline_timeout_reached"
+        },
+        {
+          "expr": "temporalstore_raft_matrixraft_snapshot_send_timeout_present"
+        }
+      ]
     }
   ]
 }
