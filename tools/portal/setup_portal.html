@@ -830,6 +830,15 @@ function liveStream(options) {
     var badges = "";
     if (f.essential) { badges += '<span class="badge essential">required</span>'; }
     if (f.applies === "restart") { badges += '<span class="badge restart">needs restart</span>'; }
+    /* The launcher set this variable before the process started. A change here takes effect now
+       and is dropped at the next restart, because boot values keep precedence over stored ones.
+       Without this the field looks exactly like any other live setting. */
+    if (f.boot_pinned) {
+      badges += '<span class="badge restart" title="Your launcher sets this variable, and a ' +
+        'launcher value wins at startup. A change here applies immediately and will be replaced ' +
+        'by the launcher value the next time this process restarts. Change it where the launcher ' +
+        'sets it to make it stick.">launcher sets this</span>';
+    }
     /* What is set here is the fallback. Without this the field reads as the final answer, and a
        customer whose tenant or user override says otherwise has no way to know from this screen. */
     if ((f.overridable_by || []).length) {
