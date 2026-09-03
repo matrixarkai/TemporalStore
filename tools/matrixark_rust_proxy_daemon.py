@@ -296,9 +296,25 @@ class RustProxyDaemon:
         self._log_file.flush()
 
 
+def ping_timeout_seconds() -> float:
+    """How long a health check waits before calling the daemon dead.
+
+    Callers treat a failed ping as "no daemon": they then start one, and a second daemon
+    unlinks the first one's socket on bind, so the loser spawns its own proxy and reloads
+    the store per invocation. A fixed 2 s made that happen on a merely busy box -- a ping
+    measured 2.4 s under load with the daemon perfectly healthy. Bounded, but generous
+    enough that "busy" is not read as "dead".
+    """
+    raw = os.environ.get("MATRIXARK_RUST_PROXY_PING_TIMEOUT_MS", "10000")
+    try:
+        return max(0.5, int(str(raw).strip()) / 1000.0)
+    except ValueError:
+        return 10.0
+
+
 def ping(socket_path: Path) -> Json:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(2.0)
+        client.settimeout(ping_timeout_seconds())
         client.connect(str(socket_path))
         client.sendall(b'{"op":"__daemon_health"}\n')
         return json.loads(client.makefile("rb").readline().decode("utf-8"))
