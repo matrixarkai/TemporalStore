@@ -22,6 +22,7 @@ logic, so a failing phase points back to the exact lower-level gate to fix.
 from __future__ import annotations
 
 import argparse
+import json
 import pathlib
 import subprocess
 import sys
@@ -125,6 +126,49 @@ PHASES: tuple[Phase, ...] = (
 )
 
 
+def _coverage_state_note() -> str:
+    """What the case corpus says about its own wiring, quoted rather than paraphrased.
+
+    Without this the summary above reads as decay -- eight validators absent, eight failing, as
+    though something rotted. It is the opposite: these gates were written ahead of the runner they
+    check against, and `compat/unified_temporalstore_cases.json` records that per family, in a
+    `status` of `temporary_static_surface_gate` and a `blocker` naming the missing piece.
+
+    Printed from the corpus rather than restated here, so it cannot drift out of step with what the
+    corpus actually claims.
+    """
+    corpus = ROOT / "compat" / "unified_temporalstore_cases.json"
+    if not corpus.exists():
+        return ""
+    try:
+        rows = json.loads(corpus.read_text(encoding="utf-8"))["coverage"]["native_adapter_coverage"]
+    except (KeyError, ValueError, OSError):
+        return ""
+    counts: dict[str, int] = {}
+    blocker = ""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        counts[str(row.get("status"))] = counts.get(str(row.get("status")), 0) + 1
+        if not blocker and row.get("blocker"):
+            blocker = str(row["blocker"])
+    if not counts:
+        return ""
+    tally = ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
+    lines = [
+        "",
+        "coverage state, from compat/unified_temporalstore_cases.json:",
+        f"  families by status: {tally}",
+    ]
+    if blocker:
+        lines.append(f"  blocker: {blocker}")
+    lines.append(
+        "  These gates are ahead of the runner they check against, not decayed. An absent "
+        "validator here is work not yet wired, which the corpus records per family."
+    )
+    return "\n".join(lines)
+
+
 def run_validator(script_name: str) -> str:
     """Run one validator and say what happened: "ok", "absent" or "failed".
 
@@ -198,6 +242,9 @@ def main() -> int:
         print(f"  absent: {name}")
     for name in failed:
         print(f"  failed: {name}")
+    note = _coverage_state_note()
+    if note:
+        print(note)
     if absent or failed:
         # Not "passed". An umbrella gate that reports success while naming validators it could not
         # run is worse than one that says plainly it could not complete.
