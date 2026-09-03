@@ -447,6 +447,30 @@ def _already_folded_postings(records: list[Json]) -> list[Json] | None:
     )
 
 
+def _identity_values(record: Json, singular: str, plural: str) -> list:
+    """The identities a row carries under either spelling, in order and without duplicates.
+
+    A row on its way in carries the singular; a row that is already a posting carries the plural,
+    and carries the singular ONLY when it holds exactly one. Reading both is what makes folding a
+    posting a second time give the same answer as folding it once.
+    """
+    values = []
+    seen = set()
+    listed = record.get(plural)
+    if isinstance(listed, list):
+        for value in listed:
+            if value is None:
+                continue
+            key = str(value)
+            if key not in seen:
+                seen.add(key)
+                values.append(value)
+    single = record.get(singular)
+    if single is not None and str(single) not in seen:
+        values.append(single)
+    return values
+
+
 def compact_context_index_postings(records: list[Json]) -> list[Json]:
     """Group ContextIndex writes into Feature-style timestamped posting rows."""
     unchanged = _already_folded_postings(records)
@@ -528,12 +552,24 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             for value in values:
                 if value not in (None, "", [], {}) and str(value) not in {str(item) for item in grouped_list_values[key][field]}:
                     grouped_list_values[key][field].append(value)
-        node_hash = record.get("node_hash")
-        if node_hash is not None and str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
-            posting["node_hashes"].append(node_hash)
-        batch_id_hash = record.get("batch_id_hash")
-        if batch_id_hash is not None and str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
-            posting["batch_id_hashes"].append(batch_id_hash)
+        # Read the LIST as well as the singular. The emission below writes `node_hash` only when
+        # the bucket holds exactly one, and pops it otherwise -- so a posting for a bucket with
+        # several nodes carries `node_hashes` and no `node_hash` at all. Accumulating from the
+        # singular alone meant a genuine re-fold of that posting found nothing to carry over and
+        # dropped the list:
+        #
+        #     after one fold   node_hashes=[200, 201, 202, 203]
+        #     after two folds  node_hashes=None
+        #
+        # It has not been losing data in practice only because the skip-when-already-folded path
+        # returns such a list untouched. That path stops firing the moment a fresh row is
+        # appended, which is every ingest, so the loss was one multi-node bucket away.
+        for node_hash in _identity_values(record, "node_hash", "node_hashes"):
+            if str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
+                posting["node_hashes"].append(node_hash)
+        for batch_id_hash in _identity_values(record, "batch_id_hash", "batch_id_hashes"):
+            if str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
+                posting["batch_id_hashes"].append(batch_id_hash)
         existing = {str(ref) for ref in posting.get("ref_hashes", [])}
         for ref in context_index_record_ref_hashes(record):
             if ref is None or str(ref) in existing:
