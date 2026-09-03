@@ -29,5 +29,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
+      # Nothing was installed here, so `import yaml` raised and the two ShippedStackTest cases
+      # that read the shipped prometheus.yml errored on every run -- the monitoring config went
+      # unchecked while the job that checks it reported the failure as pre-existing. It is the
+      # only third-party import in the suite; everything else runs on the standard library.
+      - name: Install what the suite imports
+        run: python3 -m pip install --disable-pip-version-check pyyaml==6.0.2
       - name: Run the suite against the recorded baseline
         run: python3 tools/run_python_suite_ratchet.py
