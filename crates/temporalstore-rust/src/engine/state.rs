@@ -329,7 +329,13 @@ pub(super) enum ObjectIndex {
     #[default]
     Empty,
     One(u64),
-    Many(BTreeSet<u64>),
+    /// Boxed: this is the rare arm, and an enum is as wide as its widest.
+    ///
+    /// Held inline, the set made every `ObjectIndex` 32 bytes whether or not a set existed, and a
+    /// `BucketNode` carries two of them -- one of which, `deleted_object_index`, is Empty for the
+    /// whole life of almost every bucket. Behind a box the enum is 16, and the box is only
+    /// allocated by the buckets that actually hold more than one object.
+    Many(Box<BTreeSet<u64>>),
 }
 
 pub(super) enum ObjectIndexIter<'a> {
@@ -384,7 +390,7 @@ impl ObjectIndex {
                 let mut set = BTreeSet::new();
                 set.insert(first);
                 set.insert(id);
-                *self = ObjectIndex::Many(set);
+                *self = ObjectIndex::Many(Box::new(set));
                 true
             }
             ObjectIndex::Many(set) => set.insert(id),
@@ -423,7 +429,7 @@ impl ObjectIndex {
                     ObjectIndex::Many(set) => set,
                     _ => unreachable!("just matched Many"),
                 };
-                *self = ObjectIndex::One(set.into_iter().next().expect("length is one"));
+                *self = ObjectIndex::One((*set).into_iter().next().expect("length is one"));
             }
             _ => {}
         }
@@ -465,7 +471,7 @@ impl IntoIterator for ObjectIndex {
         match self {
             ObjectIndex::Empty => Vec::new().into_iter(),
             ObjectIndex::One(id) => vec![id].into_iter(),
-            ObjectIndex::Many(set) => set.into_iter().collect::<Vec<_>>().into_iter(),
+            ObjectIndex::Many(set) => (*set).into_iter().collect::<Vec<_>>().into_iter(),
         }
     }
 }

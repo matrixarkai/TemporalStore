@@ -5787,6 +5787,35 @@ fn a_bucket_holding_one_page_holds_no_node() {
 
 
 
+/// An `ObjectIndex` is two words, so the set arm cannot widen the bucket that almost never uses it.
+///
+/// A `BucketNode` carries two of these, and one of them -- `deleted_object_index` -- is Empty for
+/// the whole life of almost every bucket. Held inline, a `BTreeSet` made both of them as wide as
+/// the arm neither was using. The number here is what stops that from silently coming back: a
+/// future arm holding anything larger than a pointer widens every bucket in the shard.
+#[test]
+fn an_object_index_costs_a_word_and_a_pointer() {
+    use crate::engine::state::ObjectIndex;
+    assert_eq!(
+        std::mem::size_of::<ObjectIndex>(),
+        2 * std::mem::size_of::<usize>(),
+        "ObjectIndex should be a discriminant and one pointer-sized payload"
+    );
+
+    // And the shape it takes is still the shape the bucket needs: one id inline, two in a set.
+    let mut index = ObjectIndex::default();
+    assert!(index.is_empty());
+    assert!(index.insert(7));
+    assert_eq!(index.len(), 1);
+    assert!(index.contains(&7));
+    assert!(index.insert(9));
+    assert_eq!(index.len(), 2);
+    assert_eq!(index.iter().copied().collect::<Vec<_>>(), vec![7, 9]);
+    // Back down to one id, the set is given up rather than kept for the bucket's life.
+    assert!(index.remove(&7));
+    assert!(matches!(index, ObjectIndex::One(9)), "one id is held inline again");
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
