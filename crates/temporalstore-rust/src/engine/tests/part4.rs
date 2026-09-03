@@ -5867,6 +5867,203 @@ fn one_component_is_held_without_a_vector() {
     assert!(list.is_empty(), "the last removal empties the list");
 }
 
+/// A dump manifest written in the old array shape still loads.
+///
+/// `index_bytes` carries the index image and is written encoded now, because the array shape costs
+/// three to four characters per byte and this field holds the whole image. That is only safe
+/// because the reader takes either shape -- which is a claim in a doc comment until something
+/// feeds it an array-shaped document and checks the bytes come back.
+#[test]
+fn a_manifest_written_as_an_array_of_numbers_still_loads() {
+    use crate::engine::reports::BucketDumpManifest;
+
+    let image: Vec<u8> = (0..=255u8).collect();
+    let as_numbers = image
+        .iter()
+        .map(|byte| byte.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let document = format!(
+        r#"{{"version":1,"shard_id":1,"manifest_id":"m-1","created_unix_ms":0,"slot_ids":[7],"page_slab_ids":[],"wal_sequence":3,"index_log_sequence":4,"live_page_refs":0,"logical_bytes":0,"physical_bytes":0,"slot_summaries":[],"index_bytes":[{as_numbers}],"index_sha256":"","checksum":""}}"#
+    );
+
+    let loaded: BucketDumpManifest =
+        serde_json::from_str(&document).expect("an array-shaped manifest must still deserialize");
+    assert_eq!(loaded.index_bytes, image, "every byte must survive the old shape");
+    assert_eq!(loaded.bucket_ids, vec![7], "the rest of the document must load too");
+
+    // And what it writes now is the compact shape, which the reader also takes.
+    let rewritten = serde_json::to_string(&loaded).expect("serialize");
+    assert!(
+        !rewritten.contains("\"index_bytes\":[1,2,3"),
+        "the encoded shape must not be an array of numbers: {}",
+        &rewritten[..rewritten.len().min(200)]
+    );
+    let round_tripped: BucketDumpManifest =
+        serde_json::from_str(&rewritten).expect("the shape it writes must be readable");
+    assert_eq!(round_tripped.index_bytes, image, "round trip must preserve the image");
+
+    // The encoded document must actually be smaller, or the change bought nothing.
+    assert!(
+        rewritten.len() < document.len(),
+        "encoded {} should be smaller than array {}",
+        rewritten.len(),
+        document.len()
+    );
+    println!(
+        "  MANIFEST array {} B -> encoded {} B ({:.2}x smaller)",
+        document.len(),
+        rewritten.len(),
+        document.len() as f64 / rewritten.len() as f64
+    );
+}
+
+/// End-to-end write amplification: every durable byte a write causes, over the bytes it carries.
+///
+/// The WAL record format is field-for-field the operation-log message, and the block geometry is
+/// the same 128 KiB block with a 128 B footer, so the log itself should already be at the size the
+/// design intends. This asks the question the log alone cannot: what does a write cost across the
+/// log, the pages and the index together.
+///
+/// Traps this avoids, each of which produced a confident wrong number before:
+///   * the log preallocates in 256 KiB steps, so file size is not bytes written -- ingest enough
+///     that the step is amortised, and report it separately
+///   * pieces and subdirectories both hold bytes, so walk the tree rather than stat one file
+///   * a payload of one repeated byte compresses to nothing and flatters every ratio
+#[test]
+#[ignore]
+fn what_a_write_costs_across_every_subsystem() {
+    fn tree_bytes(root: &std::path::Path) -> u64 {
+        let mut total = 0;
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.is_dir() {
+                    stack.push(entry.path());
+                } else {
+                    total += meta.len();
+                }
+            }
+        }
+        total
+    }
+
+    // Deterministic but genuinely incompressible. An arithmetic sequence mod 256 has a period of
+    // 256 bytes, so a 4 KiB value would be sixteen copies of one block and compress to nothing --
+    // the same trap as a repeated byte, just less obvious. This is xorshift64*, seeded per record.
+    let spread = |len: usize, salt: usize| -> Vec<u8> {
+        let mut state = 0x9E3779B97F4A7C15u64 ^ (salt as u64).wrapping_mul(0xD1B54A32D192ED03);
+        if state == 0 {
+            state = 0x1234_5678_9ABC_DEF0;
+        }
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 33) as u8
+            })
+            .collect()
+    };
+
+    for value_len in [64usize, 256, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let wal_dir = dir.path().join("wal");
+        let pages_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        std::fs::create_dir_all(&wal_dir).unwrap();
+
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            pages_dir.clone(),
+            index_dir.clone(),
+        );
+        engine.load_shard(1);
+
+        let records = 4_000usize;
+        let mut user_bytes = 0u64;
+        for index in 0..records {
+            let key = format!("tenant/7/object/{index:09}");
+            let value = spread(value_len, index);
+            user_bytes += (key.len() + value.len()) as u64;
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key, value },
+            });
+        }
+        engine.flush_shard_index(1);
+
+        let pages = tree_bytes(&pages_dir);
+        let indexes = tree_bytes(&index_dir);
+        let total = pages + indexes;
+
+        // What is on disk before maintenance runs is the transient shape: the index log has every
+        // append in it and nothing has been reclaimed. Steady state is after a cycle, which is
+        // what the design this is measured against reaches by truncating its log behind each dump.
+        // One cycle is not steady state: a dump writes a fresh base, and the old log can only be
+        // reclaimed once that dump is durable, which is a later cycle's job. Watch it converge
+        // rather than reading one pass as the answer.
+        let mut trail = Vec::new();
+        for _ in 0..4 {
+            engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                index_gc_index_log_bytes_threshold: 0,
+                index_gc_usage_ratio_trigger_basis_points: 0,
+                index_gc_max_entries_per_round: usize::MAX,
+                min_undumped_wal_records: 0,
+                ..StorageManagerCycleRequest::default()
+            });
+            trail.push(tree_bytes(&index_dir));
+        }
+        let settled = *trail.last().expect("four cycles ran");
+
+        // Which files hold it: a snapshot that got bigger and a log that was reclaimed is a very
+        // different story from a log that was never reclaimed at all.
+        let mut listing: Vec<(String, u64)> = Vec::new();
+        let mut stack = vec![index_dir.clone()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            for entry in entries.flatten() {
+                let Ok(meta) = entry.metadata() else { continue };
+                if meta.is_dir() {
+                    stack.push(entry.path());
+                } else {
+                    let rel = entry
+                        .path()
+                        .strip_prefix(&index_dir)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| entry.path().display().to_string());
+                    listing.push((rel, meta.len()));
+                }
+            }
+        }
+        listing.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, size) in listing.iter().take(6) {
+            println!("    INDEXFILE {value_len:>5}B  {size:>9} B  {name}");
+        }
+        println!(
+            "  AMP-STEADY value {value_len:>5}B | index before {indexes:>9} -> {trail:?}              | settled {settled:>9} ({:>5.2}x) | pages {:>9} ({:>5.2}x)",
+            settled as f64 / user_bytes as f64,
+            tree_bytes(&pages_dir),
+            tree_bytes(&pages_dir) as f64 / user_bytes as f64,
+        );
+
+        println!(
+            "  AMP value {value_len:>5}B | user {user_bytes:>9} B | pages {pages:>9} B ({:>5.2}x) \
+             | index {indexes:>9} B ({:>5.2}x) | total {total:>9} B ({:>5.2}x)",
+            pages as f64 / user_bytes as f64,
+            indexes as f64 / user_bytes as f64,
+            total as f64 / user_bytes as f64,
+        );
+
+        // A bound passes most easily when nothing was measured.
+        assert!(user_bytes > 0 && total > 0, "the probe must observe writes");
+    }
+}
+
 /// How many distinct identity strings the page index holds, against how many copies of each.
 ///
 /// Interning pays only where cardinality is low relative to the number of holders. The object key
