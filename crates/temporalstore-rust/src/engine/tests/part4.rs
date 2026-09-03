@@ -5867,6 +5867,53 @@ fn one_component_is_held_without_a_vector() {
     assert!(list.is_empty(), "the last removal empties the list");
 }
 
+/// A bucket summary reads the short field names, and still writes the long ones.
+///
+/// This is the first half of a two-step change. A dump manifest crosses engines during install,
+/// and these fields carry no serde default, so a writer that switched to short names before every
+/// reader knew them would hand over a document the reader cannot parse at all. Readers learn
+/// first; writers switch later, if someone decides to.
+///
+/// So the property to pin is exactly this: short names parse, long names parse, and what gets
+/// written is still long.
+#[test]
+fn a_bucket_summary_reads_short_field_names_too() {
+    use crate::engine::reports::BucketStorageSummary;
+
+    let long = r#"{"routing_slot":7,"object_count":1,"page_ref_count":2,"logical_bytes":3,
+        "physical_bytes":4,"dirty_object_count":5,"dirty_generation":6,"last_dump_sequence":8,
+        "page_slab_ids":[9]}"#;
+    let short = r#"{"rs":7,"oc":1,"prc":2,"lb":3,"pb":4,"doc":5,"dg":6,"lds":8,"psi":[9]}"#;
+
+    let from_long: BucketStorageSummary =
+        serde_json::from_str(long).expect("the long names must still parse");
+    let from_short: BucketStorageSummary =
+        serde_json::from_str(short).expect("the short names must parse");
+    assert_eq!(from_long, from_short, "both spellings must mean the same summary");
+    assert_eq!(from_long.routing_bucket, 7);
+    assert_eq!(from_long.page_slab_ids, vec![9]);
+
+    // And writing is unchanged: the long names still go out, so a reader that has NOT learned the
+    // short names is unaffected by this landing.
+    let written = serde_json::to_string(&from_long).expect("serialize");
+    assert!(
+        written.contains("\"object_count\""),
+        "writing must still use the long names until every reader knows the short ones: {written}"
+    );
+    assert!(
+        !written.contains("\"oc\""),
+        "nothing should be writing short names yet: {written}"
+    );
+
+    // What the second step would be worth, on this one summary.
+    println!(
+        "  ALIASES long {} B, short {} B ({:.2}x smaller if writers ever switch)",
+        written.len(),
+        short.len(),
+        written.len() as f64 / short.len() as f64
+    );
+}
+
 /// A dump manifest written in the old array shape still loads.
 ///
 /// `index_bytes` carries the index image and is written encoded now, because the array shape costs

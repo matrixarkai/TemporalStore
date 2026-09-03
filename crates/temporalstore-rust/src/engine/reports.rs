@@ -431,21 +431,39 @@ pub struct StorageSlabIntegrityReport {
     pub integrity_ok: bool,
 }
 
+/// One summary a bucket, and a dump manifest carries one per bucket.
+///
+/// The short aliases below are the first half of a two-step change, and they do nothing yet: this
+/// still WRITES the long names. A dump manifest is read by other engines during install, so a
+/// writer that emitted short names today would hand a document to a reader that has never heard of
+/// them -- and these fields carry no serde default, so that reader fails rather than degrades.
+///
+/// Teaching every reader the short names first makes the second step safe whenever it is taken.
+/// Measured on a 4,000-bucket manifest: the nine field names are 592,046 bytes of a 1,367,875-byte
+/// document -- 43% of it, once the whitespace came out. Shortening them is worth about a third of
+/// the file, and costs nothing but the wait between the two deploys.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BucketStorageSummary {
-    #[serde(rename = "routing_slot")]
+    #[serde(rename = "routing_slot", alias = "rs")]
     pub routing_bucket: u32,
+    #[serde(alias = "oc")]
     pub object_count: u64,
+    #[serde(alias = "prc")]
     pub page_ref_count: u64,
+    #[serde(alias = "lb")]
     pub logical_bytes: u64,
+    #[serde(alias = "pb")]
     pub physical_bytes: u64,
+    #[serde(alias = "doc")]
     pub dirty_object_count: u64,
+    #[serde(alias = "dg")]
     pub dirty_generation: u64,
+    #[serde(alias = "lds")]
     pub last_dump_sequence: u64,
     #[serde(default)]
-    #[serde(alias = "page_segment_ids")]
+    #[serde(alias = "page_segment_ids", alias = "psi")]
     pub page_slab_ids: Vec<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "lcz")]
     pub last_compacted_zone: Option<u64>,
 }
 
