@@ -129,5 +129,62 @@ class TheProbeNamesItsStatesTest(unittest.TestCase):
             blob_connection_factory=_factory_for(_FakeResponse(404)))))
 
 
+class MonitoringCanSeeItTooTest(unittest.TestCase):
+    """The orchestrator acts on the status code. Nobody else could see the probe at all.
+
+    Without a series, a deployment cannot alert on "the backend has been unreachable for two
+    minutes" -- only notice later that instances were being cycled.
+    """
+
+    def setUp(self) -> None:
+        import matrixark_gateway_metrics as gwm
+        self.gwm = gwm
+        self.metrics = gwm.GatewayMetrics()
+
+    def _series(self, name):
+        return [l for l in self.metrics.prometheus_lines()
+                if l.startswith(name) and not l.startswith("#")]
+
+    def test_the_family_is_declared_before_anything_has_looked(self) -> None:
+        """An alert on a series nothing declares is an alert that can never fire."""
+        declared = [l for l in self.metrics.prometheus_lines()
+                    if l.startswith("# TYPE matrixark_gateway_datanode")]
+        self.assertEqual(2, len(declared), declared)
+
+    def test_there_is_no_sample_before_anything_has_looked(self) -> None:
+        """A 0 would say the datanode is down when the truth is that nobody has asked."""
+        self.assertEqual([], self._series("matrixark_gateway_datanode_reachable"))
+
+    def test_a_healthy_probe_reads_one(self) -> None:
+        self.metrics.note_datanode("ok")
+        self.assertEqual(["matrixark_gateway_datanode_reachable 1"],
+                         self._series("matrixark_gateway_datanode_reachable"))
+
+    def test_either_failure_reads_zero(self) -> None:
+        for state in ("erroring", "unreachable"):
+            metrics = self.gwm.GatewayMetrics()
+            metrics.note_datanode(state)
+            got = [l for l in metrics.prometheus_lines()
+                   if l.startswith("matrixark_gateway_datanode_reachable")]
+            self.assertEqual(["matrixark_gateway_datanode_reachable 0"], got, state)
+
+    def test_the_answer_comes_with_its_age(self) -> None:
+        """A gauge with no age reads as current, and a stale 1 says fine for ever."""
+        self.metrics.note_datanode("ok")
+        age = self._series("matrixark_gateway_datanode_probe_age_seconds")
+        self.assertEqual(1, len(age), age)
+        self.assertLess(float(age[0].split()[-1]), 5.0)
+
+    def test_calling_readiness_records_it(self) -> None:
+        """The route is what writes the gauge; if it does not, the series never moves."""
+        self.gwm.METRICS.note_datanode("ok")
+        app = gw.make_v1_app(_FakeServer(), _cfg(blob_connection_factory=_refusing))
+        drive(app, method="GET", path="/v1/readyz")
+        got = [l for l in self.gwm.METRICS.prometheus_lines()
+               if l.startswith("matrixark_gateway_datanode_reachable")]
+        self.assertEqual(["matrixark_gateway_datanode_reachable 0"], got,
+                         "readiness found an unreachable datanode and the gauge still says 1")
+
+
 if __name__ == "__main__":
     unittest.main()

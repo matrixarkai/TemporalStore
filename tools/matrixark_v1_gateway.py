@@ -3520,6 +3520,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             # liveness probe that fails on a dependency gets the container restarted, which fixes
             # nothing and loses whatever it was doing.
             datanode = await asyncio.to_thread(_probe_datanode, cfg)
+            # Recorded so monitoring can see it too. The orchestrator acts on the status code;
+            # without a series nobody can alert on a backend that has been down for two minutes.
+            _gwmetrics.METRICS.note_datanode(datanode)
             ready = datanode == "ok"
             return await _json(send, 200 if ready else 503,
                                {"ready": ready, "datanode": datanode})

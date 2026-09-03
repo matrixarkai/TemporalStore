@@ -74,6 +74,22 @@ groups:
             5xx only -- 4xx is the caller's to fix and is deliberately excluded so an expired
             customer key cannot page the operator.
 
+      - alert: MatrixArkGatewayDatanodeUnreachable
+        expr: >-
+          matrixark_gateway_datanode_reachable == 0
+            and matrixark_gateway_datanode_probe_age_seconds < 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The gateway cannot reach its datanode ({{ $labels.instance }})"
+          description: >-
+            The readiness probe found the datanode erroring or unreachable, so this worker is
+            answering /v1/readyz with 503 and should already be out of rotation. Paired with
+            the probe age deliberately: the gauge is written by the readiness route, so if
+            nothing calls readiness the last answer sits there unchanged -- and a stale 0 would
+            page somebody about a backend that recovered an hour ago.
+
       - alert: MatrixArkGatewayBackendTimeouts
         expr: sum by (instance) (rate(matrixark_gateway_requests_total{status="504"}[5m])) > 0
         for: 10m

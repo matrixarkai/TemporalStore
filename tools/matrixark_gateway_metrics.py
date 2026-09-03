@@ -149,6 +149,12 @@ class GatewayMetrics:
         # in the panel and permanent in the process.
         self._failures: Deque[Tuple[float, str, str, int]] = deque(maxlen=RECENT_FAILURES)
 
+        # The last datanode probe: (state, when). Set by the readiness route, published on scrape.
+        # Not probed here -- a metrics endpoint that opens an outbound connection is one that can
+        # hang, and scraping would put the datanode's health check on Prometheus's cadence times
+        # every worker.
+        self._datanode: Optional[Tuple[str, float]] = None
+
     # ---- recording -----------------------------------------------------------------------------
     def begin(self) -> None:
         with self._lock:
@@ -198,6 +204,11 @@ class GatewayMetrics:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
             if status >= 400:
                 self._failures.append((time.time(), route, method, status))
+
+    def note_datanode(self, state: str) -> None:
+        """Record what the readiness probe just found."""
+        with self._lock:
+            self._datanode = (str(state), time.time())
 
     # ---- reading -------------------------------------------------------------------------------
     def snapshot(self) -> Json:
@@ -303,6 +314,36 @@ class GatewayMetrics:
         for route in sorted(resp_bytes):
             lines.append('matrixark_gateway_response_bytes_total{route="%s"} %g'
                          % (route, resp_bytes[route]))
+        with self._lock:
+            probed = self._datanode
+
+        # The families are DECLARED always and SAMPLED only once something has looked.
+        #
+        # Those are different claims and both matter. A 0 before any probe would say the datanode
+        # is down when the truth is that nobody has asked, and an alert cannot tell those apart. But
+        # a family that appears only after the first probe is a family the conformance check cannot
+        # find, and an alert on a series nothing declares is an alert that can never fire -- which
+        # is exactly what that check refused, correctly, when this was written the other way.
+        #
+        # Prometheus allows HELP and TYPE with no samples, which says precisely this: the metric
+        # exists and has no value yet.
+        lines += [
+            "# HELP matrixark_gateway_datanode_reachable Whether the datanode answered the last "
+            "readiness probe (1) or could not serve (0). No sample until readiness has run.",
+            "# TYPE matrixark_gateway_datanode_reachable gauge",
+        ]
+        if probed is not None:
+            lines.append("matrixark_gateway_datanode_reachable %d"
+                         % (1 if probed[0] == "ok" else 0))
+        lines += [
+            "# HELP matrixark_gateway_datanode_probe_age_seconds Age of that answer. A gauge with "
+            "no age reads as current, and a stale 1 would say fine for ever.",
+            "# TYPE matrixark_gateway_datanode_probe_age_seconds gauge",
+        ]
+        if probed is not None:
+            lines.append("matrixark_gateway_datanode_probe_age_seconds %.3f"
+                         % max(0.0, time.time() - probed[1]))
+
         return lines
 
 
