@@ -26,7 +26,10 @@ EXPECTED_KNOBS = {
 EXPECTED_DEFAULTS = {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
     "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
-    "TS_STORAGE_ZONE_SIZE": 10485760,
+    # 1 GiB. Was recorded here as 10 MiB, which never matched the engine: DEFAULT_STORAGE_ZONE_SIZE
+    # has a single commit in this repository and has been `1 << 30` since it landed. The old figure
+    # came from the launcher script this validator used to cross-check, and outlived it.
+    "TS_STORAGE_ZONE_SIZE": 1073741824,
     "TS_STREAM_MAX_BLOB_SIZE": 10485760,
     "TS_COMPACTION_WATERMARK_BYTES": 268435456,
     "TS_COLD_SCAN_NO_CACHE_FILL": True,
@@ -66,7 +69,10 @@ def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     constant_map = {
         "TS_CONTEXT_PAGE_TARGET_BYTES": "DEFAULT_CONTEXT_PAGE_TARGET_BYTES",
-        "TS_BLOCK_SEGMENT_TARGET_BYTES": "DEFAULT_BLOCK_SEGMENT_TARGET_BYTES",
+        # The identifier does not match the variable name for this one: the engine declares
+        # `pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES"`, and its
+        # default constant is named after the identifier, not the variable.
+        "TS_BLOCK_SEGMENT_TARGET_BYTES": "DEFAULT_BLOCK_SLAB_TARGET_BYTES",
         "TS_STORAGE_ZONE_SIZE": "DEFAULT_STORAGE_ZONE_SIZE",
         "TS_STREAM_MAX_BLOB_SIZE": "DEFAULT_STREAM_MAX_BLOB_SIZE",
         "TS_COMPACTION_WATERMARK_BYTES": "DEFAULT_COMPACTION_WATERMARK_BYTES",
@@ -99,8 +105,11 @@ def main() -> int:
         if absent:
             missing.append(f"{label} ({path}) missing: {', '.join(absent)}")
 
+    # One source, deliberately. This once cross-checked a launcher script that set each knob
+    # with a shell default; that script no longer exists, and reading a missing key raised
+    # KeyError on every run -- so this validator has not reported anything, correct or otherwise,
+    # since the entry was removed.
     default_sources = {
-        "native_runtime": extract_runtime_defaults(files["native_runtime"]),
         "rust_config": extract_rust_defaults(files["rust_config"]),
     }
     for label, defaults in default_sources.items():
@@ -116,7 +125,7 @@ def main() -> int:
             print(line, file=sys.stderr)
         return 1
 
-    print("storage tuning parity knobs present:")
+    print("storage tuning knobs agreeing with the engine:")
     for name in sorted(EXPECTED_KNOBS):
         print(f"- {name}={EXPECTED_DEFAULTS[name]}")
     return 0

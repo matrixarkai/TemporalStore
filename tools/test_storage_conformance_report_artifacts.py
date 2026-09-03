@@ -307,12 +307,17 @@ class StorageParityReportArtifactTest(unittest.TestCase):
             scanned, failures = validate_artifacts(root)
 
         self.assertEqual(scanned, 1)
+        # Read from EXPECTED_DEFAULTS rather than written out: this assertion carried 10485760,
+        # a value the engine has never used, so correcting the expectation broke a test that was
+        # only ever checking the literal it had been given.
+        expected = EXPECTED_DEFAULTS["TS_STORAGE_ZONE_SIZE"]
         self.assertTrue(
             any(
-                "effective storage tuning `TS_STORAGE_ZONE_SIZE` drift: expected 10485760 got 123"
+                f"effective storage tuning `TS_STORAGE_ZONE_SIZE` drift: expected {expected} got 123"
                 in item
                 for item in failures
-            )
+            ),
+            f"no drift failure naming the expected value {expected}: {failures}",
         )
 
 
