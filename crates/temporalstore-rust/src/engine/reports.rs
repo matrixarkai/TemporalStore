@@ -614,7 +614,10 @@ pub struct BucketDumpManifest {
         skip_serializing_if = "StorageObjectLifecycleReport::is_empty"
     )]
     pub object_lifecycle: StorageObjectLifecycleReport,
-    #[serde(default)]
+    /// The index image itself. Encoded, not written as an array of numbers: the array shape costs
+    /// three to four characters per byte, and this field carries the whole image. The reader
+    /// accepts either shape, so a manifest written before this still loads.
+    #[serde(default, with = "crate::bytes_serde")]
     pub index_bytes: Vec<u8>,
     #[serde(default)]
     pub index_sha256: String,
