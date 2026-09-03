@@ -166,7 +166,11 @@ require `admin:*` — so a data-only key is `403 insufficient_scope` on `matrixa
 `session_id` are also checked against the key's `allowed_user_ids` / `allowed_session_ids`.
 
 ### `GET /v1/healthz` · `GET /v1/readyz` — probes (no auth)
-`/healthz` → `{"status":"ok"}`. `/readyz` → `{"ready":true,"datanode":"ok|unknown|unreachable"}`.
+`/healthz` → `200 {"status":"ok"}` whenever the process is alive; it does not consult the
+datanode, because a liveness probe that fails on a dependency gets the container restarted and
+that fixes nothing. `/readyz` → `{"ready":<bool>,"datanode":"ok|erroring|unreachable"}`, with
+**200 only when the datanode can serve** and **503 otherwise** -- a gateway whose backend is
+down takes itself out of rotation rather than accepting requests it cannot fulfil.
 
 > **Back-compat:** any non-`/v1` path is delegated to the legacy front (`/api/ingest`, `/api/retrieve`,
 > `/api/session_commit`, `/mcp`, `/healthz`).
