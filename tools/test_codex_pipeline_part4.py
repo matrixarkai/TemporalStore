@@ -1642,16 +1642,21 @@ class _CodexPipelinePart4:
                 ),
                 records,
             )
+            # Postings are folded onto the batch commit that wrote them, so filtering for
+            # data_model "context_profile_entity" now matches nothing; the entity's own postings
+            # are still there under the commit. What the entity carries itself -- its roles and
+            # its codex events -- is asserted directly above, and #562 stopped writing a posting
+            # whose term the record already carries, so `source_role:` and `codex_event:` names
+            # are gone rather than merely relabelled.
             index_names = {
                 str(record.get("index_name") or "")
                 for record in records
                 if record.get("record_type") == "context_index"
-                and record.get("data_model") == "context_profile_entity"
             }
             self.assertIn("entity_type:assistant_decision", index_names)
-            self.assertIn("source_role:assistant", index_names)
-            self.assertIn("codex_event:previousassistantbackfill", index_names)
-            self.assertIn("codex_event:userpromptsubmit:previous_assistant_backfill", index_names)
+            self.assertNotIn("source_role:assistant", index_names)
+            self.assertNotIn("codex_event:previousassistantbackfill", index_names)
+            self.assertNotIn("codex_event:userpromptsubmit:previous_assistant_backfill", index_names)
 
             pack = adapter.retrieve(
                 {
@@ -2034,15 +2039,18 @@ class _CodexPipelinePart4:
                 ),
                 records,
             )
+            # Same shape as the idle-preflush test above: postings are folded onto the batch
+            # commit that wrote them, so the "context_profile_entity" data_model matches
+            # nothing, and #562 stopped writing a posting whose term the record already
+            # carries -- which is what `source_role:` and `codex_event:` were.
             index_names = {
                 str(record.get("index_name") or "")
                 for record in records
                 if record.get("record_type") == "context_index"
-                and record.get("data_model") == "context_profile_entity"
             }
             self.assertIn("entity_type:tool_evidence", index_names)
-            self.assertIn("source_role:tool", index_names)
-            self.assertIn("codex_event:previoustooloutputbackfill", index_names)
+            self.assertNotIn("source_role:tool", index_names)
+            self.assertNotIn("codex_event:previoustooloutputbackfill", index_names)
 
             pack = adapter.retrieve(
                 {
@@ -2903,6 +2911,12 @@ class _CodexPipelinePart4:
                 prefiltered["records"],
             )
 
+    # The inventory below counts context_segment rows, and segments are OFF by default
+    # (tenant knob extract_segments / MATRIXARK_EXTRACT_SEGMENTS, default False), so without
+    # this the count is 0. Patched per test rather than at module scope, for the same reason
+    # the sibling tests give: the suite is one process, and setting it wider would flip the
+    # knob for the tests that assert it is off.
+    @mock.patch.dict(os.environ, {"MATRIXARK_EXTRACT_SEGMENTS": "1"})
     def test_retrieve_serving_pack_hides_inventory_until_metrics_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)

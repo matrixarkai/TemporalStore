@@ -1920,9 +1920,23 @@ class _CodexPipelinePart5:
                 if record.get("record_type") == "context_index"
                 and record.get("data_model") == "context_profile_entity"
             }
-            self.assertIn("source_role:assistant", index_names)
+            # The llm/model -> assistant normalisation is proven above, on the records: the
+            # events carry source_role "assistant" with original_source_role in {llm, model},
+            # and the profile decision carries source_roles ["assistant", "user"]. This block
+            # re-checked the same thing through a posting, and #562 stopped writing a posting
+            # whose term the record it points at already carries -- `source_role` is exactly
+            # such a field, so all three of these names are gone rather than just the aliases.
+            self.assertNotIn("source_role:assistant", index_names)
             self.assertNotIn("source_role:llm", index_names)
             self.assertNotIn("source_role:model", index_names)
+            # ...and the entity really was indexed, so the three checks above cannot pass just
+            # because nothing was written at all.
+            indexed = {
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index"
+            }
+            self.assertIn("entity_type:assistant_decision", indexed)
 
             pack = adapter.retrieve(
                 {
