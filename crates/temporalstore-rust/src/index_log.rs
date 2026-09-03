@@ -156,7 +156,21 @@ pub struct IndexItem {
     pub kind: IndexItemKind,
     #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
     pub routing_bucket: u32,
-    #[serde(rename = "pk", alias = "page_ref_key", default)]
+    /// The page handle, carried as text.
+    ///
+    /// It is a `u64` everywhere else -- `BlockLookupRef::page_ref_key` is one, and the write path
+    /// stringifies it on the way in. As decimal text it is 20 bytes of a 161-byte item, 12.4%;
+    /// as a number it would be about nine.
+    ///
+    /// The reader takes either shape as of this change, which is the half that has to land first:
+    /// a writer that emitted a number today would hand it to a reader expecting a string, and
+    /// msgpack would refuse the type outright rather than degrade. Nothing writes a number yet.
+    #[serde(
+        rename = "pk",
+        alias = "page_ref_key",
+        default,
+        deserialize_with = "page_ref_key_either_shape"
+    )]
     pub page_ref_key: String,
     #[serde(rename = "ok", alias = "object_key", default)]
     pub object_key: String,
@@ -176,6 +190,43 @@ pub struct IndexItem {
     pub in_log: bool,
     #[serde(rename = "d", alias = "deleted", default)]
     pub deleted: bool,
+}
+
+/// Accept a page handle written either as text or as a number.
+///
+/// The handle is a `u64`; it has been carried as decimal text. This lets a reader consume a log
+/// whose writer has moved to the number, so the writer can move whenever every reader has this.
+fn page_ref_key_either_shape<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct EitherShape;
+
+    impl serde::de::Visitor<'_> for EitherShape {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a page handle, as a string or an unsigned integer")
+        }
+
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
+            Ok(value.to_string())
+        }
+
+        fn visit_string<E: serde::de::Error>(self, value: String) -> Result<String, E> {
+            Ok(value)
+        }
+
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<String, E> {
+            Ok(value.to_string())
+        }
+
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<String, E> {
+            Ok(value.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(EitherShape)
 }
 
 /// Band/zone lifecycle state folded into the index-log MetaItem. 1:1 with
@@ -2177,6 +2228,151 @@ mod tests {
         // A truncated container (magic, no codec byte) is refused the same way.
         let result: Result<IndexDeltaRecord, _> = decode_index_payload(INDEX_LOG_CONTAINER_MAGIC);
         assert!(matches!(result, Err(IndexLogError::Encoding(_))));
+    }
+
+    /// A page handle reads whether it was written as a number or as text.
+    ///
+    /// The handle is a `u64` everywhere but the log, where it is stringified -- 20 bytes of a
+    /// 161-byte item. Moving the writer to the number cannot come first: msgpack refuses a type it
+    /// was not expecting rather than degrading, so a reader that only knows the string shape fails
+    /// outright on a log the new writer produced.
+    ///
+    /// This pins the half that lands first. Readers take both; the writer still emits text.
+    #[test]
+    fn a_page_handle_reads_as_a_number_or_a_string() {
+        // The same field names the item uses, with the handle as a NUMBER -- what a future writer
+        // would produce.
+        #[derive(serde::Serialize)]
+        struct NumericHandle {
+            #[serde(rename = "k")]
+            kind: IndexItemKind,
+            #[serde(rename = "rb")]
+            routing_bucket: u32,
+            #[serde(rename = "pk")]
+            page_ref_key: u64,
+            #[serde(rename = "ok")]
+            object_key: String,
+            #[serde(rename = "mi")]
+            model_id: String,
+            #[serde(rename = "oi")]
+            object_id: u64,
+            #[serde(rename = "pi")]
+            page_id: u64,
+            #[serde(rename = "sz")]
+            size: u64,
+            #[serde(rename = "il")]
+            in_log: bool,
+            #[serde(rename = "d")]
+            deleted: bool,
+        }
+
+        let handle = 17_665_223_918_442_101_733u64;
+        let numeric = NumericHandle {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            page_ref_key: handle,
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            object_id: 12_345,
+            page_id: 7,
+            size: 4096,
+            in_log: false,
+            deleted: false,
+        };
+        let as_number = encode_index_payload(&numeric).expect("encode the numeric shape");
+        let decoded: IndexItem =
+            decode_index_payload(&as_number).expect("a numeric handle must decode");
+        assert_eq!(
+            decoded.page_ref_key,
+            handle.to_string(),
+            "a handle written as a number must come back as the same handle"
+        );
+        assert_eq!(decoded.routing_bucket, 8539, "the rest of the item must survive too");
+
+        // The text shape still reads, and is still what gets written.
+        let textual = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            page_ref_key: handle.to_string(),
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            component: None,
+            object_id: 12_345,
+            page_id: 7,
+            address: None,
+            size: 4096,
+            in_log: false,
+            deleted: false,
+        };
+        let as_text = encode_index_payload(&textual).expect("encode the text shape");
+        let round_tripped: IndexItem = decode_index_payload(&as_text).expect("text must decode");
+        assert_eq!(round_tripped.page_ref_key, handle.to_string());
+
+        // Nothing writes the number yet: that is the second step, and it needs every reader to
+        // have this one first.
+        assert!(
+            as_text.len() > as_number.len(),
+            "the numeric shape should be the smaller one: text {} vs number {}",
+            as_text.len(),
+            as_number.len()
+        );
+        println!(
+            "  HANDLE text {} B vs number {} B ({} B a record if the writer ever moves)",
+            as_text.len(),
+            as_number.len(),
+            as_text.len().saturating_sub(as_number.len())
+        );
+    }
+
+    /// What an index-log item is actually made of, field by field.
+    ///
+    /// The whole record measures 233 bytes on a real ingest. Before proposing to narrow anything,
+    /// find out which field is paying for it -- a guess about which one dominates is how the last
+    /// three measurements in this area went wrong.
+    ///
+    /// Measured by encoding the item, then encoding it again with one field cleared, and taking
+    /// the difference. That prices each field in the SHAPE THE LOG ACTUALLY WRITES rather than in
+    /// the size of the Rust type.
+    #[test]
+    #[ignore]
+    fn what_an_index_item_is_made_of() {
+        let full = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            page_ref_key: 17_665_223_918_442_101_733u64.to_string(),
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            component: None,
+            object_id: 12_345_678_901_234_567u64,
+            page_id: 7,
+            address: Some(crate::block_store::BlockAddress::from_parts(
+                42, 1_048_576, 4096, Some(7), Some(12_345_678_901_234_567), Some(8539),
+                Some(3), Some(9),
+            )),
+            size: 4096,
+            in_log: false,
+            deleted: false,
+        };
+
+        let whole = encode_index_payload(&full).expect("encode").len();
+        let price = |label: &str, mut cleared: IndexItem| {
+            let without = encode_index_payload(&cleared).expect("encode").len();
+            let _ = &mut cleared;
+            println!(
+                "    ITEMFIELD {label:<14} {:>4} B ({:>4.1}% of {whole})",
+                whole.saturating_sub(without),
+                100.0 * whole.saturating_sub(without) as f64 / whole as f64
+            );
+        };
+
+        println!("  ITEM whole record {whole} B");
+        price("address", IndexItem { address: None, ..full.clone() });
+        price("object_key", IndexItem { object_key: String::new(), ..full.clone() });
+        price("page_ref_key", IndexItem { page_ref_key: String::new(), ..full.clone() });
+        price("model_id", IndexItem { model_id: String::new(), ..full.clone() });
+        price("object_id", IndexItem { object_id: 0, ..full.clone() });
+
+        assert!(whole > 0, "the probe must encode something");
     }
 
     /// The writer is on, and every reader has been able to decode a container since the step
