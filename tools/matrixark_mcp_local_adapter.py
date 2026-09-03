@@ -275,7 +275,16 @@ def retrieval_memory_inventory(records: list[Json], retrieval_scope: Json) -> Js
                 and session_continuity == "cross_session"
             )
         )
-        is_session = memory_scope in {"session", "session_memory"} or session_continuity == "same_session"
+        # An index posting carries neither a memory scope nor a session continuity -- it is a
+        # derived row pointing at one -- so on those two tests alone it belonged to no layer and
+        # was skipped: twenty postings on a log, context_indexes 0 in all three layers. The
+        # profile clause above already reads data_model for exactly this reason; the session
+        # layer needs the same, for the models the session's own postings are attributed to.
+        is_session = (
+            memory_scope in {"session", "session_memory"}
+            or session_continuity == "same_session"
+            or data_model in {"context_event", "context_batch_commit", "context_segment"}
+        )
 
         if is_shared:
             # A folded owner counts as the embedding it carries -- the separate record it

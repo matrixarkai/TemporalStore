@@ -2889,6 +2889,14 @@ class _CodexPipelinePart4:
             self.assertTrue(all("source_role_counts" not in record for record in event_embeddings))
             self.assertGreaterEqual(result["event_indexes_written"], 3)
 
+            # Every term this used to look for -- the event types and the roles -- is one the
+            # context_event row it points at carries itself, and #562 stops writing a posting
+            # whose owner carries a vector and can derive the term. All twenty-one are dropped on
+            # the way to the log, so this set is empty rather than differently spelled.
+            #
+            # Asserting emptiness proves nothing on its own, so the batch's own postings are
+            # asserted present alongside it: those point at the commit, which derives nothing, and
+            # they are still written.
             event_index_names = {
                 record.get("index_name")
                 for record in records
@@ -2896,12 +2904,15 @@ class _CodexPipelinePart4:
                 and record.get("data_model") == "context_event"
                 and record.get("batch_id_hash") == result["batch_id_hash"]
             }
-            self.assertIn("event_type:user_prompt", event_index_names)
-            self.assertIn("event_type:assistant_response", event_index_names)
-            self.assertIn("event_type:tool_evidence", event_index_names)
-            self.assertIn("source_role:user", event_index_names)
-            self.assertIn("source_role:assistant", event_index_names)
-            self.assertIn("source_role:tool", event_index_names)
+            batch_index_names = {
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index"
+                and record.get("data_model") == "context_batch_commit"
+                and record.get("batch_id_hash") == result["batch_id_hash"]
+            }
+            self.assertEqual(set(), event_index_names, batch_index_names)
+            self.assertIn("classification:batch_memory", batch_index_names)
 
             prefiltered = adapter.retrieval_records(
                 scope={
@@ -2915,7 +2926,16 @@ class _CodexPipelinePart4:
                 secondary_index_groups=[{"event_type:tool_evidence"}],
             )
             self.assertTrue(prefiltered["scan_stats"]["secondary_index_prefilter_enabled"], prefiltered)
-            self.assertGreaterEqual(prefiltered["scan_stats"]["index_postings_read"], 1)
+            # index_postings_read is 0 because no posting was stored to read. The match now comes
+            # from the owner branch -- the same branch dropping those postings is gated on -- and
+            # that is the count that carries it.
+            stats = prefiltered["scan_stats"]
+            self.assertEqual(0, stats["index_postings_read"], stats)
+            self.assertGreaterEqual(stats["secondary_embedding_matched_posting_count"], 1, stats)
+            # And it NARROWED. Falling back to a broad scan would return these same records while
+            # proving nothing about the prefilter, so the answer below needs this next to it.
+            self.assertFalse(stats["broad_scan_used"], stats)
+            self.assertLess(stats["returned_records"], stats["scanned_records"], stats)
             self.assertTrue(
                 any(
                     record.get("record_type") == "context_event"
@@ -3013,7 +3033,13 @@ class _CodexPipelinePart4:
             self.assertGreaterEqual(inventory["session"]["context_segments"], 1)
             self.assertGreaterEqual(inventory["profile"]["context_entities"], 1)
             self.assertGreaterEqual(inventory["profile"]["context_embeddings"], 1)
-            self.assertGreaterEqual(inventory["profile"]["context_indexes"], 1)
+            # The postings this used to find under "profile" are attributed to the batch commit
+            # that wrote them, not to the profile entity they point at, so the profile layer has
+            # none and the session layer holds them. Counting them at all is what was fixed
+            # alongside this: a posting carries neither a memory scope nor a session continuity,
+            # so before, every layer reported 0 while twenty postings sat on the log.
+            self.assertEqual(0, inventory["profile"]["context_indexes"], inventory["profile"])
+            self.assertGreaterEqual(inventory["session"]["context_indexes"], 1, inventory["session"])
             self.assertGreaterEqual(inventory["shared"]["resource_chunks"], 1)
             self.assertEqual("prefer", inventory["query_scope"]["session_scope"])
             self.assertNotIn("source_event_ids", json.dumps(inventory, sort_keys=True))
