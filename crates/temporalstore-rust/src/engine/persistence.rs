@@ -43,7 +43,12 @@ impl TemporalEngine {
     ) -> Result<(), std::io::Error> {
         let path =
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
-        let bytes = serde_json::to_vec_pretty(manifest)
+        // Compact, not pretty. This document carries one summary per bucket -- thousands of them
+        // -- and pretty-printing spends a newline and an indent on every field of every one. It is
+        // machine-read on load and on install preflight; nobody reads it by eye at this size.
+        // Whitespace is not semantic in JSON, so every reader that could parse the pretty form
+        // parses this one, which is why this needs no version gate.
+        let bytes = serde_json::to_vec(manifest)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
         // The manifest is the durable reclaim watermark (wal_sequence) + recovery
         // index; WAL reclaim durably truncates the WAL based on it. It MUST be written
