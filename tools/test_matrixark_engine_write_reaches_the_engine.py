@@ -17,6 +17,7 @@ Python-side knobs are covered by the behavioural tests next door, which assert w
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import unittest
 
@@ -25,9 +26,48 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrixark_gateway_config as cfgmod  # noqa: E402
 
 
+def _isolate_config(case) -> None:
+    """Point this test at a throwaway config file, and prove it landed there.
+
+    `cfgmod.config_path()` resolves to ~/.matrixark/runtime_config.json unless
+    MATRIXARK_RUNTIME_CONFIG_FILE says otherwise, and `update()` PERSISTS. Without this a test that
+    writes a setting rewrites the config of whatever deployment shares that home directory -- which
+    is exactly what happened when this file was first written: sixteen engine keys with probe
+    values landed in a live config on a shared machine.
+
+    The assertion is the point. Setting the variable is easy to do and easy to get wrong; checking
+    that `config_path()` actually moved is what makes the isolation real rather than intended.
+    """
+    import tempfile
+
+    directory = tempfile.mkdtemp(prefix="matrixark-config-test-")
+    path = os.path.join(directory, "runtime_config.json")
+    case._saved_config = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE")
+    os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = path
+    resolved = cfgmod.config_path()
+    if resolved != path:
+        raise AssertionError(
+            "config isolation failed: config_path() is %r, not the temporary file %r. Refusing to "
+            "run, because this test writes settings and would rewrite a real deployment's config."
+            % (resolved, path))
+    home = os.path.join(os.path.expanduser("~"), ".matrixark")
+    if resolved.startswith(home):
+        raise AssertionError("config isolation resolved inside %s" % home)
+
+    def restore():
+        if case._saved_config is None:
+            os.environ.pop("MATRIXARK_RUNTIME_CONFIG_FILE", None)
+        else:
+            os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = case._saved_config
+        shutil.rmtree(directory, ignore_errors=True)
+
+    case.addCleanup(restore)
+
+
 class APortalWriteReachesTheEngineTest(unittest.TestCase):
 
     def setUp(self) -> None:
+        _isolate_config(self)
         self.engine = [s for s in cfgmod.SETTINGS if s.env and s.env.startswith("TS_")]
         self.assertGreaterEqual(len(self.engine), 10,
                                 "almost no engine settings are offered, so this proves little")
