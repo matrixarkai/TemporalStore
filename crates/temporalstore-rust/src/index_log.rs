@@ -180,16 +180,30 @@ pub struct IndexItem {
     pub component: Option<String>,
     #[serde(rename = "oi", alias = "object_id", default)]
     pub object_id: u64,
-    #[serde(rename = "pi", alias = "page_id", default)]
+    #[serde(rename = "pi", alias = "page_id", default, skip_serializing_if = "is_zero_u64")]
     pub page_id: u64,
     #[serde(rename = "a", alias = "address", default, skip_serializing_if = "Option::is_none")]
     pub address: Option<BlockAddress>,
-    #[serde(rename = "sz", alias = "size", default)]
+    #[serde(rename = "sz", alias = "size", default, skip_serializing_if = "is_zero_u64")]
     pub size: u64,
-    #[serde(rename = "il", alias = "in_log", default)]
+    #[serde(rename = "il", alias = "in_log", default, skip_serializing_if = "is_false")]
     pub in_log: bool,
-    #[serde(rename = "d", alias = "deleted", default)]
+    #[serde(rename = "d", alias = "deleted", default, skip_serializing_if = "is_false")]
     pub deleted: bool,
+}
+
+/// A field whose value is its default says nothing, and every field here carries
+/// `#[serde(default)]` -- so a reader that meets an absent one fills in the same value it would
+/// have read. That is what makes omitting them safe in a single step, with no ordering between
+/// writers and readers: unlike a renamed field or a changed type, an absent field with a default
+/// is exactly what an older reader already handles.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// See [`is_false`].
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Accept a page handle written either as text or as a number.
@@ -2228,6 +2242,78 @@ mod tests {
         // A truncated container (magic, no codec byte) is refused the same way.
         let result: Result<IndexDeltaRecord, _> = decode_index_payload(INDEX_LOG_CONTAINER_MAGIC);
         assert!(matches!(result, Err(IndexLogError::Encoding(_))));
+    }
+
+    /// An item that omits its default-valued fields still decodes, with those defaults.
+    ///
+    /// This is what makes omitting them safe in ONE step, with no ordering between writers and
+    /// readers. A renamed field or a changed type breaks an old reader -- it meets a name it does
+    /// not know, or a type it refuses. An ABSENT field with `#[serde(default)]` is a case every
+    /// reader already handles, including ones deployed long before this.
+    ///
+    /// So the property to pin is that the fields really do carry defaults, and that a record
+    /// written without them comes back saying the same thing.
+    #[test]
+    fn an_item_missing_its_default_fields_still_decodes() {
+        // A record from a writer that omits everything default-valued.
+        #[derive(serde::Serialize)]
+        struct Sparse {
+            #[serde(rename = "k")]
+            kind: IndexItemKind,
+            #[serde(rename = "rb")]
+            routing_bucket: u32,
+            #[serde(rename = "pk")]
+            page_ref_key: String,
+            #[serde(rename = "ok")]
+            object_key: String,
+            #[serde(rename = "mi")]
+            model_id: String,
+            #[serde(rename = "oi")]
+            object_id: u64,
+        }
+
+        let sparse = Sparse {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            page_ref_key: "17665223918442101733".to_string(),
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            object_id: 12_345,
+        };
+        let encoded = encode_index_payload(&sparse).expect("encode the sparse shape");
+        let decoded: IndexItem =
+            decode_index_payload(&encoded).expect("an item missing defaults must decode");
+
+        assert!(!decoded.in_log, "in_log must default to false when absent");
+        assert!(!decoded.deleted, "deleted must default to false when absent");
+        assert_eq!(decoded.page_id, 0, "page_id must default to zero when absent");
+        assert_eq!(decoded.size, 0, "size must default to zero when absent");
+        assert_eq!(decoded.routing_bucket, 8539, "what WAS written must survive");
+        assert_eq!(decoded.object_key, "tenant/7/object/000000123");
+
+        // And a full item still round-trips: skipping is about what is written, not what is meant.
+        let full = IndexItem {
+            kind: IndexItemKind::Page,
+            routing_bucket: 8539,
+            page_ref_key: "17665223918442101733".to_string(),
+            object_key: "tenant/7/object/000000123".to_string(),
+            model_id: "string".to_string(),
+            component: None,
+            object_id: 12_345,
+            page_id: 7,
+            address: None,
+            size: 4096,
+            in_log: true,
+            deleted: true,
+        };
+        let round_tripped: IndexItem = decode_index_payload(
+            &encode_index_payload(&full).expect("encode"),
+        )
+        .expect("decode");
+        assert_eq!(round_tripped.page_id, 7, "a set page_id must still be written");
+        assert_eq!(round_tripped.size, 4096, "a set size must still be written");
+        assert!(round_tripped.in_log, "a true in_log must still be written");
+        assert!(round_tripped.deleted, "a true deleted must still be written");
     }
 
     /// A page handle reads whether it was written as a number or as text.
