@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import deque
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Deque, Any, Dict, List, Optional, Tuple
 import sys
 
 Json = Dict[str, Any]
@@ -36,6 +37,10 @@ Json = Dict[str, Any]
 # ingest fast-acks in single-digit milliseconds and a retrieve is tens of milliseconds, so the
 # resolution has to be low down; the long tail matters because a silent extraction timeout shows up
 # as a ~30s request.
+# How many recent failures to keep. Enough to see a burst and its shape; small enough that
+# the memory is a rounding error on a process that lives for weeks.
+RECENT_FAILURES = 50
+
 _BUCKETS: Tuple[float, ...] = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
 
 # Route templates the gateway serves. Longest-prefix wins, so /v1/memories is not swallowed by the
@@ -98,6 +103,14 @@ class GatewayMetrics:
         self._req_bytes: Dict[str, int] = {}
         self._resp_bytes: Dict[str, int] = {}
         self._in_flight = 0
+        # The last few failures, newest last. Bounded because this is a process-lifetime structure
+        # on a hot path: an unbounded list of every failure is a memory leak that only shows up on
+        # the deployments having the worst day.
+        #
+        # Route label, method, status, time. Nothing that identifies who made the request: the
+        # portal shows this to anyone who can read it, and identity added here would be invisible
+        # in the panel and permanent in the process.
+        self._failures: Deque[Tuple[float, str, str, int]] = deque(maxlen=RECENT_FAILURES)
 
     # ---- recording -----------------------------------------------------------------------------
     def begin(self) -> None:
@@ -146,6 +159,8 @@ class GatewayMetrics:
                 self._req_bytes[route] = self._req_bytes.get(route, 0) + int(request_bytes)
             if response_bytes:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
+            if status >= 400:
+                self._failures.append((time.time(), route, method, status))
 
     # ---- reading -------------------------------------------------------------------------------
     def snapshot(self) -> Json:
@@ -161,9 +176,17 @@ class GatewayMetrics:
                     "request_bytes": self._req_bytes.get(route, 0),
                     "response_bytes": self._resp_bytes.get(route, 0),
                     "errors": 0,
+                    # What this route actually answers. Summed into one "errors" figure, a route
+                    # returning 401 to a customer with the wrong key was indistinguishable from one
+                    # returning 500, and both read as the gateway being broken.
+                    "statuses": {},
                 }
             for (route, _method, status), count in self._requests.items():
-                if status >= 400 and route in routes:
+                if route not in routes:
+                    continue
+                statuses = routes[route]["statuses"]
+                statuses[str(status)] = statuses.get(str(status), 0) + count
+                if status >= 400:
                     routes[route]["errors"] += count
             return {
                 "uptime_s": round(time.time() - self._start, 1),
@@ -171,6 +194,12 @@ class GatewayMetrics:
                 "routes": routes,
                 "total_requests": sum(self._count.values()),
                 "total_errors": sum(c for (_r, _m, s), c in self._requests.items() if s >= 400),
+                # Newest first, because a panel reads top-down and the useful one is the last thing
+                # that happened.
+                "recent_failures": [
+                    {"at": round(at, 3), "route": route, "method": method, "status": status}
+                    for at, route, method, status in reversed(self._failures)
+                ],
             }
 
     def prometheus_lines(self) -> List[str]:
