@@ -633,7 +633,9 @@ class _LocalAdapterRetrieveMixin:
         )
         pack_cache_key = (
             self._retrieval_records_cache_generation,
-            canonical_scope_key(scope),
+            # See cache_scope_key: canonical_scope_key is "" for an unnormalised scope, which
+            # would put every tenant on one cache entry.
+            cache_scope_key(scope),
             query,
             question_type,
             retrieval_session_scope,
