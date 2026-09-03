@@ -1809,6 +1809,7 @@ def _reset_live_cache() -> None:
     _LIVE_SHARED_AT = 0.0
     _LIVE_EMBEDDING.clear()
     _LIVE_EMBEDDING_INFLIGHT.clear()
+    _LIVE_SIGNATURE.clear()
 
 
 def _shared_live_parts() -> Json:
@@ -1851,6 +1852,28 @@ def _shared_live_parts() -> Json:
     }
     _LIVE_SHARED_AT = now
     return _LIVE_SHARED
+
+
+# identity -> (built at, signature). The signature is what a frame SAYS, with the clock left out,
+# so two viewers on one key do not each serialise the same answer to find out it has not changed.
+_LIVE_SIGNATURE: dict = {}
+
+
+def _frame_signature(identity: tuple, frame: Json) -> bytes:
+    """What this frame says, ignoring when it said it.
+
+    The timestamp is excluded deliberately. It changes every tick by definition, so a comparison
+    that included it would never find two frames equal -- the check would run, cost something, and
+    never once skip a send.
+    """
+    cached = _LIVE_SIGNATURE.get(identity)
+    now = time.time()
+    if cached is not None and (now - cached[0]) < EVENT_TICK_S:
+        return cached[1]
+    signature = json.dumps({field: value for field, value in frame.items() if field != "ts"},
+                           default=str, sort_keys=True).encode("utf-8")
+    _LIVE_SIGNATURE[identity] = (now, signature)
+    return signature
 
 
 async def _embedding_for(server: Any, cfg: GatewayConfig, key: Optional[str],
@@ -1973,6 +1996,9 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
     # enough to break that up without making the lifetime unpredictable to anyone reading it.
     max_age = EVENT_STREAM_MAX_S * (0.9 + random.random() * 0.2)
     embedding: Optional[Json] = None
+    # Per connection, not shared: a viewer that has just arrived has nothing on screen, so its
+    # first frame must always be sent, however long the deployment has been quiet.
+    last_signature: Optional[bytes] = None
 
     async def emit(payload: bytes) -> None:
         await send({"type": "http.response.body", "body": payload, "more_body": True})
@@ -1986,8 +2012,16 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
             # backend the same question twice on every refresh.
             embedding = await _embedding_for(server, cfg, key, tenant, account)
             frame = await _event_frame(server, cfg, key, tenant, account, embedding)
-            body = json.dumps(frame, default=str).encode("utf-8")
-            await emit(b"event: status\ndata: " + body + b"\n\n")
+            signature = _frame_signature((key, tenant, account), frame)
+            if signature == last_signature:
+                # Nothing has changed since the last frame, so there is nothing to say. The comment
+                # keeps the connection alive through an idle proxy; the browser's parser drops
+                # every line that is not `data:`, so it costs the page nothing to receive.
+                await emit(b": keepalive\n\n")
+            else:
+                body = json.dumps(frame, default=str).encode("utf-8")
+                await emit(b"event: status\ndata: " + body + b"\n\n")
+                last_signature = signature
 
             if (time.time() - started) >= max_age:
                 # Say why before going, so a reconnect is not mistaken for a fault.

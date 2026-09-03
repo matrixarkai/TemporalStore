@@ -50,7 +50,10 @@ async def _viewer(app, headers, frames=3):
         return {"type": "http.disconnect"}
 
     async def send(message):
-        if message.get("type") == "http.response.body" and b"data:" in (message.get("body") or b""):
+        body = message.get("body") or b""
+        # Emissions, not data frames: a tick with nothing new to say sends a keepalive, so a driver
+        # counting frames would wait for something deliberately not sent.
+        if body.startswith(b"event: status") or body.startswith(b": keepalive"):
             seen["count"] += 1
             if seen["count"] >= frames:
                 disconnect.set()
