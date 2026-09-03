@@ -447,6 +447,30 @@ def _already_folded_postings(records: list[Json]) -> list[Json] | None:
     )
 
 
+def _identity_values(record: Json, singular: str, plural: str) -> list:
+    """The identities a row carries under either spelling, in order and without duplicates.
+
+    A row on its way in carries the singular; a row that is already a posting carries the plural,
+    and carries the singular ONLY when it holds exactly one. Reading both is what makes folding a
+    posting a second time give the same answer as folding it once.
+    """
+    values = []
+    seen = set()
+    listed = record.get(plural)
+    if isinstance(listed, list):
+        for value in listed:
+            if value is None:
+                continue
+            key = str(value)
+            if key not in seen:
+                seen.add(key)
+                values.append(value)
+    single = record.get(singular)
+    if single is not None and str(single) not in seen:
+        values.append(single)
+    return values
+
+
 def compact_context_index_postings(records: list[Json]) -> list[Json]:
     """Group ContextIndex writes into Feature-style timestamped posting rows."""
     unchanged = _already_folded_postings(records)
@@ -471,6 +495,9 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
         "source_profile_memory_classes",
         "source_profile_memory_kinds",
     ]
+    #: bucket key -> the already-folded row its state was adopted from, while nothing else has
+    #: joined that bucket. Such a bucket is emitted unchanged.
+    adopted: dict[tuple[Any, ...], Json] = {}
     grouped: dict[tuple[Any, ...], Json] = {}
     grouped_scalar_values: dict[tuple[Any, ...], dict[str, set[str]]] = {}
     grouped_list_values: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
@@ -495,6 +522,21 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             str(record.get("ref_type") or ""),
             bucket_ms,
         )
+        if key not in grouped and is_fold_output(
+            record, POSTING_POLICY_BUCKETED,
+            ("index_hash", "storage_record_kind", "storage_part")
+        ):
+            # This row IS the fold's own output for its bucket: its ref_hashes, node_hashes and
+            # lineage fields are already the accumulated state. Adopt it whole rather than
+            # rebuilding it field by field, and emit it untouched if nothing joins the bucket.
+            # On a 2,123-row cache with 37 fresh rows the rebuild was 23.755 ms against 3.255 ms
+            # for the same list with nothing new in it.
+            grouped[key] = dict(record)
+            grouped_scalar_values[key] = {field: set() for field in scalar_lineage_fields}
+            grouped_list_values[key] = {field: [] for field in list_lineage_fields}
+            adopted[key] = record
+            order.append(key)
+            continue
         if key not in grouped:
             grouped[key] = {
                 "record_type": "context_index",
@@ -516,6 +558,35 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             grouped_list_values[key] = {field: [] for field in list_lineage_fields}
             order.append(key)
         posting = grouped[key]
+        if key in adopted and adopted[key] is not record:
+            # Something else has joined a bucket whose state was adopted wholesale. Rebuild that
+            # bucket's accumulators from the row it was adopted from, then carry on normally.
+            #
+            # A scalar field is written by this pass only when its bucket saw exactly ONE distinct
+            # value, and omitted for two or more -- so an ABSENT field on the adopted row cannot be
+            # told apart from "saw several". Measured over 334 folds on a real corpus that never
+            # happened (123 of 123 bucket-fields had exactly one value), but "never observed" is
+            # not "cannot", so a row that would ADD a value to an absent field gives up and lets
+            # the full pass run.
+            source = adopted.pop(key)
+            # An adopted row's list values may be shared with every other record carrying them --
+            # the read cache holds one object per distinct value and refuses mutation. Take our own
+            # copies now that this bucket is going to grow. Deferred to here on purpose: a bucket
+            # nothing joins never pays for it, and most buckets are never joined.
+            for field in ("ref_hashes", "node_hashes", "batch_id_hashes"):
+                value = posting.get(field)
+                if isinstance(value, list):
+                    posting[field] = list(value)
+            for field in scalar_lineage_fields:
+                value = source.get(field)
+                if value not in (None, "", [], {}):
+                    grouped_scalar_values[key][field].add(str(value))
+                elif record.get(field) not in (None, "", [], {}):
+                    return None
+            for field in list_lineage_fields:
+                values = source.get(field)
+                if isinstance(values, list):
+                    grouped_list_values[key][field].extend(values)
         for field in scalar_lineage_fields:
             value = record.get(field)
             if value not in (None, "", [], {}):
@@ -528,12 +599,24 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             for value in values:
                 if value not in (None, "", [], {}) and str(value) not in {str(item) for item in grouped_list_values[key][field]}:
                     grouped_list_values[key][field].append(value)
-        node_hash = record.get("node_hash")
-        if node_hash is not None and str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
-            posting["node_hashes"].append(node_hash)
-        batch_id_hash = record.get("batch_id_hash")
-        if batch_id_hash is not None and str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
-            posting["batch_id_hashes"].append(batch_id_hash)
+        # Read the LIST as well as the singular. The emission below writes `node_hash` only when
+        # the bucket holds exactly one, and pops it otherwise -- so a posting for a bucket with
+        # several nodes carries `node_hashes` and no `node_hash` at all. Accumulating from the
+        # singular alone meant a genuine re-fold of that posting found nothing to carry over and
+        # dropped the list:
+        #
+        #     after one fold   node_hashes=[200, 201, 202, 203]
+        #     after two folds  node_hashes=None
+        #
+        # It has not been losing data in practice only because the skip-when-already-folded path
+        # returns such a list untouched. That path stops firing the moment a fresh row is
+        # appended, which is every ingest, so the loss was one multi-node bucket away.
+        for node_hash in _identity_values(record, "node_hash", "node_hashes"):
+            if str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
+                posting["node_hashes"].append(node_hash)
+        for batch_id_hash in _identity_values(record, "batch_id_hash", "batch_id_hashes"):
+            if str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
+                posting["batch_id_hashes"].append(batch_id_hash)
         existing = {str(ref) for ref in posting.get("ref_hashes", [])}
         for ref in context_index_record_ref_hashes(record):
             if ref is None or str(ref) in existing:
@@ -548,6 +631,14 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             posting["posting_count"] += 1
     compacted_indexes: list[Json] = []
     for key in order:
+        untouched = adopted.get(key)
+        if untouched is not None:
+            # Nothing joined this bucket, so the fold's answer for it is the row it already had.
+            # Emitting it unchanged skips the scalar and list write-back, the ref dedupe, the
+            # re-chunking and the identity hash -- and hands back the SAME object, so a caller
+            # holding the previous output keeps it.
+            compacted_indexes.append(untouched)
+            continue
         base = grouped[key]
         for field, values in grouped_scalar_values.get(key, {}).items():
             if len(values) == 1:
