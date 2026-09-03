@@ -4780,6 +4780,32 @@ mod tests {
         assert!(whole > 0);
     }
 
+    /// What their item SHAPE costs us, since we already have the type.
+    ///
+    /// `WalItem` mirrors their operation-log item field for field -- the field numbers match
+    /// one-for-one and a test pins that. It is one flat message with optional fields, where
+    /// `Command` is a 99-variant sum type as wide as its widest arm. That difference, not any
+    /// individual field, is why our record is bigger than theirs.
+    ///
+    /// If the record carried the flat item the way theirs does, this is what it would occupy.
+    #[test]
+    #[ignore]
+    fn what_their_item_shape_would_cost() {
+        use std::mem::size_of;
+        let wal_item = size_of::<crate::wal_record::WalItem>();
+        let command = size_of::<Option<Command>>();
+        let record = size_of::<WriteAheadLogRecord>();
+        println!("  SHAPE WalItem (their item, our type)  {wal_item:>4} B");
+        println!("  SHAPE Option<Command> (a sum type)    {command:>4} B");
+        println!("  SHAPE record as it stands             {record:>4} B");
+        println!(
+            "  SHAPE record with the flat item instead {:>4} B  (record - command + item)",
+            record - command + wal_item
+        );
+        println!("  their item is ~20 B of scalars plus the message, held by value");
+        assert!(wal_item > 0);
+    }
+
     /// What one append allocates, and how much of it is the value it carries.
     ///
     /// Allocation count is latency and allocation bytes are memory; both are deterministic, unlike
