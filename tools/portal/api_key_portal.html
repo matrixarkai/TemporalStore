@@ -248,6 +248,28 @@
     </div>
   </section>
 
+  <!-- ======================= Policy overrides ======================= -->
+  <section class="card">
+    <h2>Policy overrides</h2>
+    <p class="hint">Who in this tenant has settings of their own. Calls
+      <code>GET /v1/admin/policy?overrides=1</code>. The tenant comes from your key, so this lists
+      your tenant and nobody else&#39;s. A row means that identity resolves some knob differently
+      from the deployment default &mdash; the thing you cannot otherwise find without already
+      knowing which id to ask about.</p>
+    <div class="actions">
+      <button id="overridesBtn" class="secondary">Refresh overrides</button>
+    </div>
+    <div id="overridesMsg" class="msg" role="status" aria-live="polite"></div>
+    <div class="tablewrap">
+      <table id="overridesTable">
+        <thead>
+          <tr><th>identity</th><th>level</th><th>settings</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- ============================ Usage ============================ -->
   <section class="card">
     <h2>Live edge usage</h2>
@@ -523,6 +545,7 @@
 
   // ---- wire up ---------------------------------------------------------------------------------
   $("saveConn").onclick = saveConn;
+  $("overridesBtn").onclick = loadOverrides;
   $("clearKey").onclick = function () { SS.removeItem("mtx_admin_key"); $("adminKey").value = ""; reflectStatus(); setInlineMsg("connMsg", "Key cleared."); };
   $("adminKey").addEventListener("change", function () { SS.setItem("mtx_admin_key", $("adminKey").value.trim()); reflectStatus(); });
   $("createBtn").onclick = createKey;
@@ -531,6 +554,70 @@
   $("usageBtn").onclick = loadUsage;
   loadConn();
 })();
+
+  /* ---------- policy overrides ---------- */
+  /* Per-tenant telemetry deliberately does not exist: /v1/metrics carries no tenant identity, so
+     that it stays safe to scrape without credentials. That is why this view lives on this
+     admin-gated page rather than a dashboard panel -- the same reason per-key usage does. */
+  function renderOverrides(payload) {
+    var tb = $("overridesTable").querySelector("tbody");
+    tb.innerHTML = "";
+    var rows = [];
+    (payload.tenants || []).forEach(function (t) {
+      rows.push({ id: t.tenant, level: "tenant", settings: t.settings || {} });
+    });
+    (payload.users || []).forEach(function (u) {
+      rows.push({ id: u.key, level: "user", settings: u.settings || {} });
+    });
+    if (!rows.length) {
+      tb.innerHTML = "<tr><td colspan='3' class='hint'>No overrides. Every identity in this " +
+        "tenant resolves the deployment defaults.</td></tr>";
+      return;
+    }
+    rows.forEach(function (row) {
+      var names = Object.keys(row.settings).sort();
+      var shown = names.map(function (n) {
+        return escapeHtml(n) + "=" + escapeHtml(String(row.settings[n]));
+      }).join(", ");
+      var tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td class='mono'>" + escapeHtml(row.id || "") + "</td>" +
+        "<td>" + escapeHtml(row.level) + "</td>" +
+        "<td class='mono'>" + shown + "</td>";
+      tb.appendChild(tr);
+    });
+  }
+
+  function loadOverrides() {
+    var msg = $("overridesMsg");
+    msg.textContent = "Loading...";
+    /* A GATEWAY endpoint, so it takes the gateway base and the admin key from the Connection
+       panel, the same way loadCatalog does. apiFetch() targets the management base and would send
+       this to the wrong host. */
+    var key = ($("adminKey") || {}).value || "";
+    var base = ($("gwBase") || {}).value || "";
+    if (!key.trim()) {
+      msg.textContent = "Paste an admin API key in the Connection panel first.";
+      return;
+    }
+    fetch((base || "") + "/v1/admin/policy?overrides=1",
+          { headers: { Authorization: "Bearer " + key.trim() } })
+      .then(function (r) {
+        if (!r.ok) { throw new Error("HTTP " + r.status); }
+        return r.json();
+      })
+      .then(function (payload) {
+        renderOverrides(payload);
+        var n = (payload.tenants || []).length + (payload.users || []).length;
+        msg.textContent = n
+          ? (n + (n === 1 ? " identity" : " identities") + " with settings of their own")
+          : "No overrides in this tenant.";
+      })
+      .catch(function (err) {
+        msg.textContent = "Could not read overrides: " + err.message;
+      });
+  }
+
 </script>
 <script>
 /* ---------- scope catalogue ---------- */

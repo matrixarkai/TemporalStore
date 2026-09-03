@@ -497,6 +497,82 @@ def tenant_policy_record(tenant_id: str, policy: Json) -> Json:
     }
 
 
+def policy_overrides(only_tenant: str = "") -> Json:
+    """Every tenant and user that has an override, and which knobs each one sets.
+
+    The policy API reads and writes one identity at a time and needs its id first, so an operator
+    could set a tenant override and then had no way to find it again -- or to answer "which of my
+    tenants have custom settings", which is the first question anyone asks of a multi-tenant
+    deployment.
+
+    Deduplicated by canonical identity. A policy is stored under every alias it should answer to --
+    the id AND its scope hash -- so walking the maps directly reports the same tenant two or three
+    times, which reads as more configuration than exists. Aliases are folded back here, and the id
+    is preferred over the hash when both are present because the id is what an operator typed.
+
+    Values are included: these knobs are booleans, integers and one choice, and none is a
+    credential. If a secret-shaped knob is ever added to the registry, this must start omitting it.
+
+    `only_tenant` restricts the answer to one tenant and everything under it. The route that serves
+    this passes the tenant derived from the API KEY, never one named in the request, because the
+    policy endpoints already hold that line: a caller must not be able to read another tenant\'s
+    settings by naming it. An unrestricted listing is available in-process for an operator tool;
+    it is deliberately not reachable over HTTP.
+    """
+    wanted = {alias for alias in _tenant_aliases(only_tenant)} if only_tenant else set()
+    with _LOCK:
+        file_tenants = dict(_FILE_CACHE.get("tenants") or {})
+        record_tenants = dict(_RECORD_POLICIES)
+        user_policies = dict(_USER_POLICIES)
+
+    def _fold(raw: dict, source: str, out: dict) -> None:
+        for key, policy in raw.items():
+            if not policy:
+                continue
+            if wanted and str(key) not in wanted:
+                continue
+            canonical = _canonical_tenant(key, raw)
+            entry = out.setdefault(canonical, {"tenant": canonical, "settings": {}, "sources": []})
+            entry["settings"].update({k: v for k, v in policy.items()})
+            if source not in entry["sources"]:
+                entry["sources"].append(source)
+
+    tenants: Json = {}
+    _fold(file_tenants, "file", tenants)
+    _fold(record_tenants, "store", tenants)
+
+    users: Json = {}
+    for key, policy in user_policies.items():
+        if not policy:
+            continue
+        tenant, _, user = str(key).partition("/")
+        if wanted and tenant not in wanted:
+            continue
+        canonical = "%s/%s" % (tenant, user) if user else str(key)
+        entry = users.setdefault(canonical, {"key": canonical, "settings": {}})
+        entry["settings"].update({k: v for k, v in policy.items()})
+
+    return {
+        "tenants": [tenants[k] for k in sorted(tenants)],
+        "users": [users[k] for k in sorted(users)],
+        "tenant_count": len(tenants),
+        "user_count": len(users),
+    }
+
+
+def _canonical_tenant(key: str, pool: dict) -> str:
+    """Prefer the readable id over its hash when a policy is stored under both."""
+    key = str(key)
+    for candidate in pool:
+        candidate = str(candidate)
+        if candidate == key:
+            continue
+        if key in _tenant_aliases(candidate):
+            # `candidate` is an id whose alias list contains `key`, so `key` is the hash form.
+            return candidate
+    return key
+
+
 def clear_tenant_policy_cache() -> None:
     """Drop every cached policy (tests, and after a control-plane rewrite)."""
     with _LOCK:
