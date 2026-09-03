@@ -185,12 +185,18 @@ _KEY_NAME = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
 def plan(shape: str, storage: str = "", nodes: int = 0, root: str = "",
          shared_dir: str = "", key_envs: Optional[List[str]] = None,
-         matrixobject_available: bool = True, endpoint_reachable: bool = False) -> Json:
+         matrixobject_available: bool = True, endpoint_reachable: bool = False,
+         configured_engine_settings: Optional[List[str]] = None) -> Json:
     """Compose one deployment. Returns the environment, plus what it will really resolve to.
 
     `blocking` is for choices that cannot produce the deployment asked for at all; `warnings` is for
     ones that produce a working deployment that differs from the request. They are separate because
     they need different answers -- a block is a mistake to fix, a warning is a fact to accept.
+
+    `configured_engine_settings` are engine variables this deployment has set locally. They are
+    passed in rather than read here on purpose: this function composes a plan from its arguments and
+    nothing else, so it stays testable and cannot pick up whatever the machine running it happens to
+    have configured.
     """
     blocking: List[str] = []
     warnings: List[str] = []
@@ -200,6 +206,18 @@ def plan(shape: str, storage: str = "", nodes: int = 0, root: str = "",
     if spec is None:
         return {"ok": False, "env": {}, "blocking": ["Unknown deployment shape %r." % shape],
                 "warnings": [], "notes": [], "shape": shape}
+
+    # A new deployment starts from the engine's own defaults. The environment this plan composes
+    # is topology and credentials -- shape, storage, key NAMES -- and carries none of the storage
+    # tuning a customer set on this deployment's Setup page. That is the right default (tuning is
+    # sized for the box it was measured on, and copying it blind would move a cache figure onto
+    # different hardware), and it is a surprise if nobody says it: the customer tuned a store, asked
+    # this page for a box, and got one that ignores every value they chose.
+    for name in sorted(set(configured_engine_settings or [])):
+        notes.append(
+            "%s is set on this deployment and is NOT carried into the launch artifact; the new "
+            "node starts at the engine default. Set it on the new node after it comes up, or add "
+            "it to the launcher that starts it." % name)
 
     count = int(nodes or spec["nodes"])
     env: Json = {}
