@@ -42,11 +42,28 @@ def _emit(coalesced, chunk_count=40):
         # filter has its own tests in test_matrixark_index_consultable_terms.
         "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS": "0",
     })
-    for name in [m for m in list(sys.modules) if m.startswith("matrixark_")]:
+    # Rebuild the three modules below so they re-read the flags just set -- and put every
+    # other module's identity back afterwards.
+    #
+    # Evicting the whole `matrixark_` tree and leaving it evicted is not free: a module that
+    # another test file already holds by name keeps pointing at the OLD object, while the next
+    # `import` anywhere rebuilds a NEW one. For a module whose state is a process-wide
+    # singleton that splits it in two. `matrixark_ingestion_jobs.REGISTRY` is one: the retry
+    # tests register a job in the registry they hold, the gateway route reads the rebuilt
+    # module's empty registry, and the route answers 404 for a job created a line earlier.
+    # Those tests pass alone and fail under discovery, which is what that looks like from
+    # outside.
+    saved = {n: m for n, m in list(sys.modules.items()) if n.startswith("matrixark_")}
+    for name in saved:
         del sys.modules[name]
-    parser = importlib.import_module("matrixark_resource_parser")
-    emitter = importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
-    core = importlib.import_module("matrixark_mcp_core")
+    try:
+        parser = importlib.import_module("matrixark_resource_parser")
+        emitter = importlib.import_module("matrixark_mcp_ingest_resource_chunk_records")
+        core = importlib.import_module("matrixark_mcp_core")
+    finally:
+        # The locals above keep the freshly built modules, which is what this function needs;
+        # sys.modules goes back to what the rest of the suite already has bound.
+        sys.modules.update(saved)
 
     newline = chr(10)
     body = (newline * 2).join(
