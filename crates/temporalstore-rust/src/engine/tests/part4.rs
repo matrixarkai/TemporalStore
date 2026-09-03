@@ -5573,7 +5573,7 @@ fn writing_a_message_does_not_cost_its_nodes_history() {
                 node_hash: 42,
                 first_write_only: false,
                 cold_storage: false,
-                event: ContextEvent {
+                event: Box::new(ContextEvent {
                     event_id_hash: 1_000 + i as u64,
                     event_time_ms: 1_700_000_000_000 + i as u64,
                     ingestion_time_ms: 1_700_000_000_000,
@@ -5591,7 +5591,7 @@ fn writing_a_message_does_not_cost_its_nodes_history() {
                     related_node_hashes: vec![42],
                     compact_attrs: Vec::new(),
                     vector,
-                },
+                }),
             },
         });
     };
@@ -8987,7 +8987,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
             Vec::new(),
             Command::ContextUpsertNode {
                 tenant_hash: 41,
-                node: crate::types::ContextNode {
+                node: Box::new(crate::types::ContextNode {
                     node_hash: 9,
                     parent_hash: 0,
                     kind: 1,
@@ -9003,7 +9003,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         ),
     ];

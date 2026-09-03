@@ -315,7 +315,7 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
         shard_id: SHARD_ID,
         command: Command::ContextUpsertNode {
             tenant_hash: TENANT,
-            node,
+            node: Box::new(node),
         },
     }));
 
@@ -325,7 +325,7 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
             command: Command::ContextWriteEvent {
                 tenant_hash: TENANT,
                 node_hash: NODE,
-                event: ContextEvent {
+                event: Box::new(ContextEvent {
                     event_id_hash: 10_000 + index,
                     event_time_ms: 1_000 + index,
                     ingestion_time_ms: 2_000 + index,
@@ -342,7 +342,7 @@ fn write_context_records(engine: &TemporalEngine) -> usize {
                     compact_attrs: Vec::new(),
                     // No vector on this fixture; empty is what a record without one holds.
                     vector: Vec::new(),
-                },
+                }),
                 first_write_only: true,
                 cold_storage: false,
             },
@@ -412,7 +412,7 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
             command: Command::ContextWriteEvent {
                 tenant_hash: TENANT,
                 node_hash: NODE,
-                event: ContextEvent {
+                event: Box::new(ContextEvent {
                     event_id_hash: 20_000 + index,
                     event_time_ms: 2_100 + index,
                     ingestion_time_ms: 3_100 + index,
@@ -429,7 +429,7 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
                     compact_attrs: Vec::new(),
                     // No vector on this fixture; empty is what a record without one holds.
                     vector: Vec::new(),
-                },
+                }),
                 first_write_only: true,
                 cold_storage: false,
             },
@@ -466,7 +466,7 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
         shard_id: SHARD_ID,
         command: Command::ContextUpsertNode {
             tenant_hash: TENANT,
-            node: ContextNode {
+            node: Box::new(ContextNode {
                 node_hash: APPEND_EMBEDDING_REF,
                 parent_hash: NODE,
                 kind: 1,
@@ -482,7 +482,7 @@ fn append_context_records_after_restart(engine: &TemporalEngine) -> usize {
                 summary_vector: Vec::new(),
                 summary_vector_valid_from_ms: 0,
                 summary_vector_model_hash: 0,
-            },
+            }),
         },
     }));
     assert_ok(engine.execute(ExecuteRequest {

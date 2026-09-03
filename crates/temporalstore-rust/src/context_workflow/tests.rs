@@ -40,7 +40,7 @@ fn context_get_nodes_batches_summary_lookup_for_retrieval() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 0,
@@ -56,7 +56,7 @@ fn context_get_nodes_batches_summary_lookup_for_retrieval() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         });
         assert!(response.status.ok, "{:?}", response.status);
@@ -2090,7 +2090,7 @@ fn upsert_raw_context_node(
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 0,
@@ -2106,7 +2106,7 @@ fn upsert_raw_context_node(
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         })
         .status
@@ -2118,7 +2118,7 @@ fn upsert_raw_context_node(
             command: Command::ContextWriteEvent {
                 tenant_hash,
                 node_hash,
-                event: ContextEvent {
+                event: Box::new(ContextEvent {
                     event_id_hash: node_hash.wrapping_mul(11).max(1),
                     event_time_ms,
                     ingestion_time_ms: event_time_ms,
@@ -2134,7 +2134,7 @@ fn upsert_raw_context_node(
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
-                },
+                }),
                 first_write_only: false,
                 cold_storage: false,
             },
@@ -3121,7 +3121,7 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 1,
@@ -3137,7 +3137,7 @@ fn a_vector_from_another_embedding_space_cannot_win_a_summary_slot() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         });
         assert!(response.status.ok);
@@ -3243,7 +3243,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 1,
@@ -3259,7 +3259,7 @@ fn retrieval_ranks_by_vectors_that_live_only_on_the_nodes() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         });
         assert!(response.status.ok);
@@ -3423,7 +3423,7 @@ fn what_the_discarded_node_text_costs() {
                 shard_id: 1,
                 command: Command::ContextUpsertNode {
                     tenant_hash: TENANT,
-                    node: ContextNode {
+                    node: Box::new(ContextNode {
                         node_hash: *node_hash,
                         parent_hash: 0,
                         kind: 1,
@@ -3441,7 +3441,7 @@ fn what_the_discarded_node_text_costs() {
                         summary_vector: vec![0.5_f32; 16],
                         summary_vector_valid_from_ms: 1_781_700_000_000,
                         summary_vector_model_hash: 7,
-                    },
+                    }),
                 },
             });
             assert!(response.status.ok, "{:?}", response.status);
@@ -3586,7 +3586,7 @@ fn which_ingest_write_grows_with_the_store() {
 
     let node = |hash: u64| Command::ContextUpsertNode {
         tenant_hash: TENANT,
-        node: crate::types::ContextNode {
+        node: Box::new(crate::types::ContextNode {
             node_hash: hash,
             parent_hash: 0,
             kind: 1,
@@ -3602,7 +3602,7 @@ fn which_ingest_write_grows_with_the_store() {
             summary_vector: vec![0.5_f32; 16],
             summary_vector_valid_from_ms: 1_781_700_000_000,
             summary_vector_model_hash: 7,
-        },
+        }),
     };
     let summary = |hash: u64| Command::ContextUpsertSummary {
         tenant_hash: TENANT,
@@ -3822,14 +3822,14 @@ fn where_does_an_adds_corpus_proportional_cost_live() {
         // Warm: the first write of a session touches one-off structures.
         let warm = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: 7701, node: node.clone() },
+            command: Command::ContextUpsertNode { tenant_hash: 7701, node: Box::new(node.clone()) },
         });
         assert!(warm.status.ok, "{:?}", warm.status);
 
         let probe = crate::alloc_probe::Probe::start();
         let out = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: 7701, node },
+            command: Command::ContextUpsertNode { tenant_hash: 7701, node: Box::new(node) },
         });
         assert!(out.status.ok, "{:?}", out.status);
         let counts = probe.stop();
@@ -4412,7 +4412,7 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 1,
@@ -4428,7 +4428,7 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         });
         assert!(response.status.ok);
@@ -4519,7 +4519,7 @@ fn seed_summary_only_vector_node(
         shard_id: 1,
         command: Command::ContextUpsertNode {
             tenant_hash,
-            node: ContextNode {
+            node: Box::new(ContextNode {
                 node_hash,
                 parent_hash: 0,
                 kind: 1,
@@ -4536,7 +4536,7 @@ fn seed_summary_only_vector_node(
                 summary_vector: Vec::new(),
                 summary_vector_valid_from_ms: 0,
                 summary_vector_model_hash: 0,
-            },
+            }),
         },
     });
     assert!(response.status.ok, "{:?}", response.status);
@@ -4996,7 +4996,7 @@ fn an_older_summary_write_does_not_displace_a_newer_copy() {
         shard_id: 1,
         command: Command::ContextUpsertNode {
             tenant_hash: TENANT,
-            node: ContextNode {
+            node: Box::new(ContextNode {
                 node_hash: NODE,
                 parent_hash: 0,
                 kind: 1,
@@ -5012,7 +5012,7 @@ fn an_older_summary_write_does_not_displace_a_newer_copy() {
                 summary_vector: Vec::new(),
                 summary_vector_valid_from_ms: 0,
                 summary_vector_model_hash: 0,
-            },
+            }),
         },
     });
     assert!(response.status.ok);
@@ -5152,7 +5152,7 @@ fn does_a_summary_write_rebuild_the_whole_index() {
 
     let node = |hash: u64| Command::ContextUpsertNode {
         tenant_hash: TENANT,
-        node: crate::types::ContextNode {
+        node: Box::new(crate::types::ContextNode {
             node_hash: hash,
             parent_hash: 0,
             kind: 1,
@@ -5168,7 +5168,7 @@ fn does_a_summary_write_rebuild_the_whole_index() {
             summary_vector: vec![0.5_f32; 16],
             summary_vector_valid_from_ms: 1_781_700_000_000,
             summary_vector_model_hash: 7,
-        },
+        }),
     };
     let summary = |hash: u64| Command::ContextUpsertSummary {
         tenant_hash: TENANT,
@@ -5446,7 +5446,7 @@ fn what_every_api_costs_on_the_same_store() {
                     shard_id: 1,
                     command: Command::ContextUpsertNode {
                         tenant_hash: TENANT,
-                        node: crate::types::ContextNode {
+                        node: Box::new(crate::types::ContextNode {
                             node_hash: hash,
                             parent_hash: 0,
                             kind: 1,
@@ -5462,7 +5462,7 @@ fn what_every_api_costs_on_the_same_store() {
                             summary_vector: vec![0.5_f32; 384],
                             summary_vector_valid_from_ms: 1_781_700_000_000 + turn,
                             summary_vector_model_hash: 7,
-                        },
+                        }),
                     },
                 });
                 assert!(out.status.ok, "{:?}", out.status);

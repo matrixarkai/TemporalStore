@@ -59,7 +59,7 @@ fn write_event(engine: &TemporalEngine, node: u64, ts: u64) {
             command: Command::ContextWriteEvent {
                 tenant_hash: TENANT,
                 node_hash: node,
-                event,
+                event: Box::new(event),
                 first_write_only: false,
                 cold_storage: false,
             },

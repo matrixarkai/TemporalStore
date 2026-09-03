@@ -555,7 +555,7 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                 command: Command::ContextWriteEvent {
                     tenant_hash: 44,
                     node_hash: 55,
-                    event: ContextEvent {
+                    event: Box::new(ContextEvent {
                         event_id_hash: 66,
                         event_time_ms: 4_000,
                         ingestion_time_ms: 4_000,
@@ -571,7 +571,7 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                         related_node_hashes: vec![55],
                         compact_attrs: vec![1, 2, 3],
                         vector: Vec::new(),
-                    },
+                    }),
                     first_write_only: false,
                     cold_storage: false,
                 },

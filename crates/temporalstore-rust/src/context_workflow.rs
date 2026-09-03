@@ -1804,12 +1804,12 @@ pub(crate) fn extract_context_gated(
     let mut commands = vec![
         Command::ContextUpsertNode {
             tenant_hash: request.tenant_hash,
-            node: node.clone(),
+            node: Box::new(node.clone()),
         },
         Command::ContextWriteEvent {
             tenant_hash: request.tenant_hash,
             node_hash,
-            event: event.clone(),
+            event: Box::new(event.clone()),
             first_write_only: false,
             cold_storage: false,
         },

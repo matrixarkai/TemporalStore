@@ -11,7 +11,7 @@ impl TemporalStoreTable {
         node: ContextNode,
     ) -> Result<String, ClientError> {
         match self
-            .execute(Command::ContextUpsertNode { tenant_hash, node })?
+            .execute(Command::ContextUpsertNode { tenant_hash, node: Box::new(node) })?
             .response
         {
             CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
@@ -53,7 +53,7 @@ impl TemporalStoreTable {
             .execute(Command::ContextWriteEvent {
                 tenant_hash,
                 node_hash,
-                event,
+                event: Box::new(event),
                 first_write_only,
                 cold_storage: false,
             })?
