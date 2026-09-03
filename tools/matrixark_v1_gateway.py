@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import os
+import random
 import sys
 import tempfile
 import threading
@@ -1790,10 +1791,40 @@ def _embedding_refresh_interval(embedding: Optional[Json]) -> float:
 EVENT_STREAM_MAX_S = 600.0
 
 
-async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
-                       tenant: Optional[str], account: Optional[str],
-                       embedding: Optional[Json]) -> Json:
-    """One frame of live state. Everything here is read from memory except `embedding`."""
+# ---- live frames, built once per tick for the deployment rather than once per viewer ------------
+# Everything in a frame used to be built inside each connection's own loop, so a second browser tab
+# cost a second copy of all of it, exactly linear to sixteen viewers when measured. What a frame
+# carries is one deployment's state; the number of people looking at it is not part of the answer.
+_LIVE_SHARED: Optional[Json] = None
+_LIVE_SHARED_AT = 0.0
+_LIVE_EMBEDDING: dict = {}
+# identity -> (event loop, task). One backend read in flight per identity; the rest wait.
+_LIVE_EMBEDDING_INFLIGHT: dict = {}
+
+
+def _reset_live_cache() -> None:
+    """Drop both caches. For tests, which need a frame to reflect what they just changed."""
+    global _LIVE_SHARED, _LIVE_SHARED_AT
+    _LIVE_SHARED = None
+    _LIVE_SHARED_AT = 0.0
+    _LIVE_EMBEDDING.clear()
+    _LIVE_EMBEDDING_INFLIGHT.clear()
+
+
+def _shared_live_parts() -> Json:
+    """Traffic, imports and the warning count: identical for every viewer, so built once.
+
+    Synchronous on purpose. Nothing here awaits, so nothing can interleave between the staleness
+    check and the fill, and no lock is needed to keep two viewers from building it twice.
+
+    Held for one tick. That is the cadence the state is published at anyway, so a viewer whose tick
+    lands just after a rebuild sees at most one tick of age -- the same age it would have seen from
+    a frame built for it alone.
+    """
+    global _LIVE_SHARED, _LIVE_SHARED_AT
+    now = time.time()
+    if _LIVE_SHARED is not None and (now - _LIVE_SHARED_AT) < EVENT_TICK_S:
+        return _LIVE_SHARED
     try:
         traffic = _gwmetrics.METRICS.snapshot()
     except Exception:
@@ -1803,11 +1834,12 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
     except Exception:
         imports = {}
     try:
+        # 68.6% of a frame, to take one integer out of a redacted configuration document that
+        # reads about thirty environment variables to build.
         warnings = len(_model_config_snapshot().get("warnings") or [])
     except Exception:
         warnings = 0
-    return {
-        "ts": time.time(),
+    _LIVE_SHARED = {
         "traffic": {
             "total_requests": traffic.get("total_requests", 0),
             "total_errors": traffic.get("total_errors", 0),
@@ -1816,6 +1848,68 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
         },
         "imports": imports,
         "warnings": warnings,
+    }
+    _LIVE_SHARED_AT = now
+    return _LIVE_SHARED
+
+
+async def _embedding_for(server: Any, cfg: GatewayConfig, key: Optional[str],
+                         tenant: Optional[str], account: Optional[str]) -> Optional[Json]:
+    """The embedding backlog for ONE identity, reused by that identity's other viewers.
+
+    Keyed on the whole identity triple rather than on the tenant. The read applies identity to the
+    backend call, so a coarser key would let one identity be served another's backlog -- the sort
+    of sharing that is invisible until it is a disclosure.
+    """
+    identity = (key, tenant, account)
+    cached = _LIVE_EMBEDDING.get(identity)
+    if cached is not None:
+        at, value = cached
+        if (time.time() - at) < _embedding_refresh_interval(value):
+            return value
+
+    loop = asyncio.get_event_loop()
+    pending = _LIVE_EMBEDDING_INFLIGHT.get(identity)
+    if pending is not None:
+        # Only if it belongs to THIS loop. A task outlives its loop, and awaiting one whose loop
+        # has closed raises rather than returning an answer.
+        pending_loop, pending_task = pending
+        if pending_loop is loop and not pending_task.done():
+            return await asyncio.shield(pending_task)
+
+    async def _read_and_cache() -> Optional[Json]:
+        # The task caches, not the awaiter: a viewer that disconnects mid-read still leaves the
+        # answer behind for everyone else waiting on it.
+        value = await _read_embedding(server, cfg, key, tenant, account)
+        _LIVE_EMBEDDING[identity] = (time.time(), value)
+        return value
+
+    task = loop.create_task(_read_and_cache())
+    _LIVE_EMBEDDING_INFLIGHT[identity] = (loop, task)
+    try:
+        # Shielded, so this viewer going away does not cancel the read the others are waiting on.
+        return await asyncio.shield(task)
+    finally:
+        current = _LIVE_EMBEDDING_INFLIGHT.get(identity)
+        if current is not None and current[1] is task and task.done():
+            _LIVE_EMBEDDING_INFLIGHT.pop(identity, None)
+
+
+async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
+                       tenant: Optional[str], account: Optional[str],
+                       embedding: Optional[Json]) -> Json:
+    """One frame of live state.
+
+    The deployment-wide parts come from `_shared_live_parts`, which builds them once per tick for
+    everyone watching; `embedding` is passed in already resolved for this viewer's identity. The
+    timestamp is this frame's, not the shared part's, so a viewer can still tell frames apart.
+    """
+    shared = _shared_live_parts()
+    return {
+        "ts": time.time(),
+        "traffic": shared["traffic"],
+        "imports": shared["imports"],
+        "warnings": shared["warnings"],
         "embedding": embedding,
     }
 
@@ -1873,8 +1967,12 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
 
     watcher = asyncio.ensure_future(watch_for_disconnect())
     started = time.time()
+    # Spread the age limit. A fixed ceiling means every stream opened together also ends together,
+    # and the client is told to retry after a fixed 3s -- so the reconnects arrive as a herd, and
+    # keep re-forming every ten minutes for as long as the tabs are open. A tenth either way is
+    # enough to break that up without making the lifetime unpredictable to anyone reading it.
+    max_age = EVENT_STREAM_MAX_S * (0.9 + random.random() * 0.2)
     embedding: Optional[Json] = None
-    embedding_at = 0.0
 
     async def emit(payload: bytes) -> None:
         await send({"type": "http.response.body", "body": payload, "more_body": True})
@@ -1884,15 +1982,14 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
         # our cadence rather than its default.
         await emit(b"retry: 3000\n\n")
         while not disconnected.is_set():
-            now = time.time()
-            if embedding is None or (now - embedding_at) >= _embedding_refresh_interval(embedding):
-                embedding = await _read_embedding(server, cfg, key, tenant, account)
-                embedding_at = now
+            # Per identity rather than per connection: two tabs open on the same key asked the
+            # backend the same question twice on every refresh.
+            embedding = await _embedding_for(server, cfg, key, tenant, account)
             frame = await _event_frame(server, cfg, key, tenant, account, embedding)
             body = json.dumps(frame, default=str).encode("utf-8")
             await emit(b"event: status\ndata: " + body + b"\n\n")
 
-            if (time.time() - started) >= EVENT_STREAM_MAX_S:
+            if (time.time() - started) >= max_age:
                 # Say why before going, so a reconnect is not mistaken for a fault.
                 await emit(b"event: bye\ndata: {\"reason\": \"stream_max_age\"}\n\n")
                 break

@@ -75,6 +75,11 @@ class EventStreamTest(unittest.TestCase):
         self.app = gw.make_v1_app(self.server, _cfg())
         self._tick = gw.EVENT_TICK_S
         gw.EVENT_TICK_S = 0.05  # the cadence is not what is under test
+        # The live caches are process-wide and outlive a connection, which is the point of them --
+        # a new tab reuses a recent read rather than asking again. A test that counts backend work
+        # therefore has to say where it is starting from, or it measures the previous test.
+        gw._reset_live_cache()
+        self.addCleanup(gw._reset_live_cache)
 
     def tearDown(self) -> None:
         gw.EVENT_TICK_S = self._tick
