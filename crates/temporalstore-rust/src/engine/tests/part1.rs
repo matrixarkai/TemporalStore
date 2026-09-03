@@ -153,7 +153,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         shard_id: 1,
         command: Command::ContextUpsertNode {
             tenant_hash: 11,
-            node: node.clone(),
+            node: Box::new(node.clone()),
         },
     });
     assert!(upsert.status.ok);
@@ -273,7 +273,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
             command: Command::ContextWriteEvent {
                 tenant_hash: 11,
                 node_hash: 42,
-                event,
+                event: Box::new(event),
                 first_write_only: true,
                 cold_storage: false,
             },
@@ -290,10 +290,10 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         command: Command::ContextWriteEvent {
             tenant_hash: 11,
             node_hash: 42,
-            event: ContextEvent {
+            event: Box::new(ContextEvent {
                 text: "ignored".to_string(),
                 ..event_a.clone()
-            },
+            }),
             first_write_only: true,
             cold_storage: false,
         },
@@ -635,7 +635,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
             command: Command::ContextWriteEvent {
                 tenant_hash: 11,
                 node_hash: 42,
-                event,
+                event: Box::new(event),
                 first_write_only: false,
                 cold_storage: false,
             },
@@ -653,7 +653,7 @@ fn context_query_events_applies_limit_after_filter_like_native() {
             command: Command::ContextWriteEvent {
                 tenant_hash: 11,
                 node_hash: 42,
-                event,
+                event: Box::new(event),
                 first_write_only: false,
                 cold_storage: false,
             },
@@ -744,7 +744,7 @@ fn context_tree_embedding_summary_and_compression_match_round_trip() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node,
+                node: Box::new(node),
             },
         });
         assert!(response.status.ok);
@@ -951,7 +951,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
             command: Command::ContextWriteEvent {
                 tenant_hash: TENANT,
                 node_hash: NODE,
-                event: ContextEvent {
+                event: Box::new(ContextEvent {
                     event_id_hash: event_id,
                     event_time_ms: START + offset_ms,
                     ingestion_time_ms: START + offset_ms,
@@ -967,7 +967,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
-                },
+                }),
                 first_write_only: false,
                 cold_storage: false,
             },
@@ -1047,7 +1047,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
             command: Command::ContextWriteEvent {
                 tenant_hash: TENANT,
                 node_hash: NODE,
-                event: ContextEvent {
+                event: Box::new(ContextEvent {
                     event_id_hash: 8000 + idx,
                     event_time_ms: START + idx * 10,
                     ingestion_time_ms: START + idx * 10,
@@ -1063,7 +1063,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
                     related_node_hashes: Vec::new(),
                     compact_attrs: Vec::new(),
                     vector: Vec::new(),
-                },
+                }),
                 first_write_only: false,
                 cold_storage: true,
             },
@@ -1344,7 +1344,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         Command::ContextWriteEvent {
             tenant_hash: 7,
             node_hash: 9,
-            event: ContextEvent {
+            event: Box::new(ContextEvent {
                 event_id_hash: 50,
                 event_time_ms: 50,
                 ingestion_time_ms: 50,
@@ -1360,7 +1360,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 related_node_hashes: Vec::new(),
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
-            },
+            }),
             first_write_only: false,
             cold_storage: false,
         },
@@ -2758,7 +2758,7 @@ fn a_node_embedding_lands_on_the_node_itself() {
         shard_id: 1,
         command: Command::ContextUpsertNode {
             tenant_hash: TENANT,
-            node,
+            node: Box::new(node),
         },
     });
 
@@ -2811,7 +2811,7 @@ fn re_embedding_a_node_replaces_the_vector_rather_than_accumulating() {
         shard_id: 1,
         command: Command::ContextUpsertNode {
             tenant_hash: TENANT,
-            node: ContextNode {
+            node: Box::new(ContextNode {
                 node_hash: NODE,
                 parent_hash: 0,
                 kind: 1,
@@ -2827,7 +2827,7 @@ fn re_embedding_a_node_replaces_the_vector_rather_than_accumulating() {
                 summary_vector: Vec::new(),
                 summary_vector_valid_from_ms: 0,
                 summary_vector_model_hash: 0,
-            },
+            }),
         },
     });
     for (model, vector, at) in [
@@ -2924,7 +2924,7 @@ fn node_vectors_can_be_asked_for_by_owner() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 1,
@@ -2940,7 +2940,7 @@ fn node_vectors_can_be_asked_for_by_owner() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         });
         if !vector.is_empty() {
@@ -3005,7 +3005,7 @@ fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: ContextNode {
+                node: Box::new(ContextNode {
                     node_hash,
                     parent_hash: if node_hash == ROOT { 0 } else { ROOT },
                     kind: 1,
@@ -3021,7 +3021,7 @@ fn traversal_scores_a_child_whose_only_vector_is_on_the_node() {
                     summary_vector: Vec::new(),
                     summary_vector_valid_from_ms: 0,
                     summary_vector_model_hash: 0,
-                },
+                }),
             },
         });
         assert!(response.status.ok);
@@ -3461,7 +3461,7 @@ fn how_many_pages_do_a_retrieves_candidates_span() {
                 shard_id: 1,
                 command: Command::ContextUpsertNode {
                     tenant_hash: tenant,
-                    node: crate::types::ContextNode {
+                    node: Box::new(crate::types::ContextNode {
                         node_hash,
                         parent_hash: 0,
                         kind: 1,
@@ -3478,7 +3478,7 @@ fn how_many_pages_do_a_retrieves_candidates_span() {
                         summary_vector: vec![0.5_f32; 16],
                         summary_vector_valid_from_ms: 1_781_700_000_000,
                         summary_vector_model_hash: 7,
-                    },
+                    }),
                 },
             });
             assert!(response.status.ok, "upsert {node_hash}: {:?}", response.status);
@@ -3797,7 +3797,7 @@ fn does_the_per_ingest_reconstruct_change_anything() {
         };
         let wrote = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: 7901, node },
+            command: Command::ContextUpsertNode { tenant_hash: 7901, node: Box::new(node) },
         });
         assert!(wrote.status.ok, "{:?}", wrote.status);
         let before_write = snapshot(&engine);
@@ -4195,7 +4195,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: crate::types::ContextNode {
+                node: Box::new(crate::types::ContextNode {
                     node_hash,
                     parent_hash: 0,
                     kind: 1,
@@ -4211,7 +4211,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
                     summary_vector: vec![0.5_f32; 16],
                     summary_vector_valid_from_ms: 1_781_700_000_000,
                     summary_vector_model_hash: 7,
-                },
+                }),
             },
         });
         assert!(node_write.status.ok, "{:?}", node_write.status);
@@ -4612,7 +4612,7 @@ fn what_a_records_kind_costs_resident() {
         };
         let response = engine_b.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: 7, node },
+            command: Command::ContextUpsertNode { tenant_hash: 7, node: Box::new(node) },
         });
         assert!(response.status.ok, "node write {index}: {:?}", response.status);
     }
@@ -4693,7 +4693,7 @@ fn what_a_resident_record_is_made_of() {
             };
             let response = engine.execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ContextUpsertNode { tenant_hash: 7, node },
+                command: Command::ContextUpsertNode { tenant_hash: 7, node: Box::new(node) },
             });
             assert!(response.status.ok, "{label} write {index}: {:?}", response.status);
         }
@@ -4793,7 +4793,7 @@ fn how_much_of_rss_per_record_is_live() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: 7,
-                node,
+                node: Box::new(node),
             },
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
@@ -5976,7 +5976,7 @@ fn what_a_node_write_spends_its_allocations_on() {
         // Warm on one key, measure another: the first write of a shape touches one-off structures.
         let warm = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: TENANT, node: node(tag, width, text) },
+            command: Command::ContextUpsertNode { tenant_hash: TENANT, node: Box::new(node(tag, width, text)) },
         });
         assert!(warm.status.ok, "{:?}", warm.status);
         let probe = crate::alloc_probe::Probe::start();
@@ -5984,7 +5984,7 @@ fn what_a_node_write_spends_its_allocations_on() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: node(tag + 1, width, text),
+                node: Box::new(node(tag + 1, width, text)),
             },
         });
         let counts = probe.stop();
@@ -6020,13 +6020,13 @@ fn what_a_node_write_spends_its_allocations_on() {
     let repeat = node(tag + 1, 384, long_text);
     let warm = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ContextUpsertNode { tenant_hash: TENANT, node: repeat.clone() },
+        command: Command::ContextUpsertNode { tenant_hash: TENANT, node: Box::new(repeat.clone()) },
     });
     assert!(warm.status.ok, "{:?}", warm.status);
     let probe = crate::alloc_probe::Probe::start();
     let out = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::ContextUpsertNode { tenant_hash: TENANT, node: repeat },
+        command: Command::ContextUpsertNode { tenant_hash: TENANT, node: Box::new(repeat) },
     });
     let unchanged = probe.stop().allocs;
     assert!(out.status.ok, "{:?}", out.status);
@@ -6364,7 +6364,7 @@ fn which_piece_of_the_write_machinery_costs() {
         // Warm on one key, measure another.
         let warm = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::ContextUpsertNode { tenant_hash: TENANT, node: node(9_000_000 + tag) },
+            command: Command::ContextUpsertNode { tenant_hash: TENANT, node: Box::new(node(9_000_000 + tag)) },
         });
         assert!(warm.status.ok, "{:?}", warm.status);
         let probe = crate::alloc_probe::Probe::start();
@@ -6372,7 +6372,7 @@ fn which_piece_of_the_write_machinery_costs() {
             shard_id: 1,
             command: Command::ContextUpsertNode {
                 tenant_hash: TENANT,
-                node: node(9_500_000 + tag),
+                node: Box::new(node(9_500_000 + tag)),
             },
         });
         let allocs = probe.stop().allocs;
@@ -7866,7 +7866,7 @@ fn what_a_thousand_records_hides() {
             };
             let response = engine.execute(ExecuteRequest {
                 shard_id: 1,
-                command: Command::ContextUpsertNode { tenant_hash: 7, node },
+                command: Command::ContextUpsertNode { tenant_hash: 7, node: Box::new(node) },
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }

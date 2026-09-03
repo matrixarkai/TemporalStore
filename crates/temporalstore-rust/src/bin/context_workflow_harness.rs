@@ -2043,12 +2043,12 @@ fn ingest_external_benchmark_sources(
         };
         commands.push(Command::ContextUpsertNode {
             tenant_hash,
-            node: node.clone(),
+            node: Box::new(node.clone()),
         });
         commands.push(Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
-            event,
+            event: Box::new(event),
             first_write_only: false,
             cold_storage: false,
         });
@@ -2974,12 +2974,12 @@ fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport)
     vec![
         Command::ContextUpsertNode {
             tenant_hash: 20260616,
-            node: extract.node.clone(),
+            node: Box::new(extract.node.clone()),
         },
         Command::ContextWriteEvent {
             tenant_hash: 20260616,
             node_hash: extract.node.node_hash,
-            event: extract.event.clone(),
+            event: Box::new(extract.event.clone()),
             first_write_only: false,
             cold_storage: false,
         },

@@ -420,11 +420,11 @@ fn write_raw_sources(
             primary_event_time_ms: timestamp_ms,
             event_id_hash,
         };
-        commands.push(Command::ContextUpsertNode { tenant_hash, node });
+        commands.push(Command::ContextUpsertNode { tenant_hash, node: Box::new(node) });
         commands.push(Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
-            event,
+            event: Box::new(event),
             first_write_only: true,
             cold_storage: false,
         });

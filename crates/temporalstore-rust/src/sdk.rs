@@ -385,7 +385,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .ok_or_else(|| TonicStatus::invalid_argument("context node missing"))?;
             types::Command::ContextUpsertNode {
                 tenant_hash: stable_hash(&command.key),
-                node: sdk_context_node_to_types(node),
+                node: Box::new(sdk_context_node_to_types(node)),
             }
         }
         v1::command::Kind::ContextNodeGet(command) => types::Command::ContextGetNode {

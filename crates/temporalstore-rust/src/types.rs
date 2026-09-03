@@ -1724,7 +1724,9 @@ pub enum Command {
     },
     ContextUpsertNode {
         tenant_hash: u64,
-        node: ContextNode,
+        /// Boxed: ~208 bytes of a 216-byte variant, and this variant caps the enum.
+        /// Serialises identically to the unboxed field.
+        node: Box<ContextNode>,
     },
     ContextGetNode {
         tenant_hash: u64,
@@ -1737,7 +1739,8 @@ pub enum Command {
     ContextWriteEvent {
         tenant_hash: u64,
         node_hash: u64,
-        event: ContextEvent,
+        /// Boxed: 184 bytes of a 208-byte variant, the other one capping the enum.
+        event: Box<ContextEvent>,
         #[serde(default)]
         first_write_only: bool,
         #[serde(default)]

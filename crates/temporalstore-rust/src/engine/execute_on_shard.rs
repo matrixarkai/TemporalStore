@@ -2539,7 +2539,7 @@ pub(crate) fn execute_on_shard(
             // the same event written twice. Testing the timeline key made two different events
             // that collided in the low FANOUT bits of one millisecond look like a rewrite.
             if !(first_write_only && series.contains_key(&event_id_hash)) {
-                let value = context_bytes(&event);
+                let value = context_bytes(&*event);
                 let routing_bucket =
                     page_routing_bucket(&object_key, start_routing_bucket, end_routing_bucket);
                 // The PAGE stays timestamp-keyed: pages pack by time, and the load path recovers

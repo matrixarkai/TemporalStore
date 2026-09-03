@@ -355,7 +355,7 @@ mod tests {
                 shard_id: 1,
                 command: Command::ContextUpsertNode {
                     tenant_hash,
-                    node: ContextNode {
+                    node: Box::new(ContextNode {
                         node_hash,
                         parent_hash: 0,
                         kind: 0,
@@ -371,7 +371,7 @@ mod tests {
                         summary_vector: Vec::new(),
                         summary_vector_valid_from_ms: 0,
                         summary_vector_model_hash: 0,
-                    },
+                    }),
                 },
             })
             .status
@@ -383,7 +383,7 @@ mod tests {
                 command: Command::ContextWriteEvent {
                     tenant_hash,
                     node_hash,
-                    event: ContextEvent {
+                    event: Box::new(ContextEvent {
                         event_id_hash: node_hash.wrapping_mul(7).max(1),
                         event_time_ms: 1_000,
                         ingestion_time_ms: 1_000,
@@ -399,7 +399,7 @@ mod tests {
                         related_node_hashes: Vec::new(),
                         compact_attrs: Vec::new(),
                         vector: Vec::new(),
-                    },
+                    }),
                     first_write_only: false,
                     cold_storage: false,
                 },
@@ -599,7 +599,7 @@ mod tests {
                 shard_id: 1,
                 command: Command::ContextUpsertNode {
                     tenant_hash: 9,
-                    node: ContextNode {
+                    node: Box::new(ContextNode {
                         node_hash: node,
                         parent_hash: 0,
                         kind: 0,
@@ -615,7 +615,7 @@ mod tests {
                         summary_vector: Vec::new(),
                         summary_vector_valid_from_ms: 0,
                         summary_vector_model_hash: 0,
-                    },
+                    }),
                 },
             });
         }

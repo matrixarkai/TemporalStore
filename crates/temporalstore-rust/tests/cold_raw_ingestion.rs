@@ -54,7 +54,7 @@ fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
             command: Command::ContextWriteEvent {
                 tenant_hash: TENANT,
                 node_hash: NODE,
-                event: cold_event(8000 + idx, START + idx * 10, &format!("cold raw {idx}")),
+                event: Box::new(cold_event(8000 + idx, START + idx * 10, &format!("cold raw {idx}"))),
                 first_write_only: false,
                 cold_storage: true,
             },
