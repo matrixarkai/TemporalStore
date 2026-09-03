@@ -11,6 +11,11 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:  # package path
+    from tools.matrixark_mcp_local_adapter import expand_interned_records
+except ImportError:
+    from matrixark_mcp_local_adapter import expand_interned_records
+
 try:  # names owned by the parent module
     from tools.test_matrixark_codex_hook_pipeline import (
     CountingLocalAdapter,
@@ -1856,11 +1861,15 @@ class _CodexPipelinePart4:
             )
 
             self.assertEqual("ok", msg["status"])
-            records = [
+            # The writer interns repeated metadata, so a raw line carries an ``_imb`` token
+            # where ``agent_hook`` used to sit inline. ``expand_interned_records`` is the
+            # read-side inverse every other consumer goes through; it is a no-op on a log
+            # with nothing interned.
+            records = expand_interned_records([
                 json.loads(line)
                 for line in event_log.read_text(encoding="utf-8").splitlines()
                 if line.strip()
-            ]
+            ])
             assistant_events = [
                 record
                 for record in records
@@ -1922,15 +1931,21 @@ class _CodexPipelinePart4:
                 ),
                 records,
             )
+            # Postings are folded onto the batch commit that wrote them, so filtering for
+            # data_model "context_profile_entity" now matches nothing; the entity's own postings
+            # are still there under the commit. What the entity carries itself -- its roles and
+            # its codex events -- is asserted directly above, and #562 stopped writing a posting
+            # whose term the record already carries, so `source_role:` and `codex_event:` names
+            # are gone rather than merely relabelled.
             index_names = {
                 str(record.get("index_name") or "")
                 for record in records
                 if record.get("record_type") == "context_index"
-                and record.get("data_model") == "context_profile_entity"
             }
             self.assertIn("entity_type:assistant_decision", index_names)
-            self.assertIn("source_role:assistant", index_names)
-            self.assertIn("codex_event:previousassistantbackfill", index_names)
+            self.assertNotIn("source_role:assistant", index_names)
+            self.assertNotIn("codex_event:previousassistantbackfill", index_names)
+            self.assertNotIn("codex_event:userpromptsubmit:previous_assistant_backfill", index_names)
 
             pack = adapter.retrieve(
                 {
