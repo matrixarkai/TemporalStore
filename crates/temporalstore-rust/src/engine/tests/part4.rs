@@ -5967,6 +5967,16 @@ fn a_manifest_written_as_an_array_of_numbers_still_loads() {
 
 /// End-to-end write amplification: every durable byte a write causes, over the bytes it carries.
 ///
+/// **Two numbers, and they are not interchangeable.** `AMP` is what has been WRITTEN when the
+/// ingest finishes; `AMP-STEADY` is what is still RETAINED after maintenance has run. Write
+/// amplification conventionally means the first. The second is smaller and flatters the system,
+/// because a maintenance pass reclaims the write-ahead log to a hundred-odd bytes and the index
+/// log to zero -- so the index log, which every single write appends to, disappears from it
+/// entirely at about 233 bytes a record (see `what_an_index_log_record_costs`).
+///
+/// Reporting only the retained figure was an error made here once. Both are printed now, and
+/// which one is meant should be said out loud whenever either is quoted.
+///
 /// The WAL record format is field-for-field the operation-log message, and the block geometry is
 /// the same 128 KiB block with a 128 B footer, so the log itself should already be at the size the
 /// design intends. This asks the question the log alone cannot: what does a write cost across the
@@ -6108,6 +6118,53 @@ fn what_a_write_costs_across_every_subsystem() {
 
         // A bound passes most easily when nothing was measured.
         assert!(user_bytes > 0 && total > 0, "the probe must observe writes");
+    }
+}
+
+/// What an index-log record costs, BEFORE anything reclaims it.
+///
+/// The steady-state footprint measurement misses this entirely: a maintenance pass reclaims the
+/// index log to zero bytes, so it never appears in what is retained. Write amplification counts
+/// bytes WRITTEN, and every write puts a record here whether or not it survives the hour.
+#[test]
+#[ignore]
+fn what_an_index_log_record_costs() {
+    for records in [1_000usize, 4_000] {
+        let dir = tempfile::tempdir().unwrap();
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            index_dir.clone(),
+        );
+        engine.load_shard(1);
+        for index in 0..records {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("tenant/7/object/{index:09}"),
+                    value: vec![118u8; 256],
+                },
+            });
+        }
+        // Deliberately NO maintenance: this is the written size, not the retained one.
+        let log = index_dir.join("indexlogs").join("shard-1.indexlog.jsonl");
+        let bytes = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+        let raw = std::fs::read(&log).unwrap_or_default();
+        let printable = raw
+            .iter()
+            .filter(|byte| {
+                let value = **byte;
+                value == 10 || value == 9 || (0x20u8..0x7f).contains(&value)
+            })
+            .count();
+        println!(
+            "  ILOG {records:>5} records -> {bytes:>9} B = {:>6.1} B/record | printable {:.1}%",
+            bytes as f64 / records as f64,
+            if raw.is_empty() { 0.0 } else { 100.0 * printable as f64 / raw.len() as f64 },
+        );
+        assert!(bytes > 0, "the probe must observe an index log");
     }
 }
 
