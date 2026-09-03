@@ -389,7 +389,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         command: Command::ContextWriteExtractedEvent {
             tenant_hash: 11,
             node_hash: 42,
-            event: extracted_event.clone(),
+            event: Box::new(extracted_event.clone()),
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 3001,
                 entity_hashes: vec![501, 502],
@@ -450,7 +450,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
         command: Command::ContextWriteExtractedEvent {
             tenant_hash: 11,
             node_hash: 43,
-            event: ContextEvent {
+            event: Box::new(ContextEvent {
                 event_id_hash: 446,
                 event_time_ms: 1_781_500_000_010,
                 ingestion_time_ms: 1_781_500_000_010,
@@ -466,7 +466,7 @@ fn context_models_match_keys_timeline_pages_and_filters() {
                 related_node_hashes: vec![43],
                 compact_attrs: Vec::new(),
                 vector: Vec::new(),
-            },
+            }),
             indexes: ContextExtractedEventIndexes {
                 scope_hash: 3001,
                 entity_hashes: Vec::new(),

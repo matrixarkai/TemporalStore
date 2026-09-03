@@ -4652,6 +4652,134 @@ mod tests {
         assert_eq!(scanned.len(), 2, "both records must be readable: {scanned:?}");
     }
 
+    /// Every `Command` variant's payload, sized by the compiler rather than by eye.
+    ///
+    /// `large_enum_variant` stays silent when the top variants are all wide -- it compares the
+    /// largest against the SECOND largest, so a family of equally fat variants reads as no problem.
+    /// That is a different question from "would boxing a few of them collapse the enum", which is
+    /// what this answers.
+    #[test]
+    #[ignore]
+    fn every_command_variant_payload_size() {
+        // Glob so every field type resolves without guessing which need qualifying.
+        #[allow(unused_imports)]
+        use crate::types::*;
+        let mut rows: Vec<(&str, usize)> = vec![
+        ("CommonDelete", std::mem::size_of::<(String)>()),
+        ("CommonExpire", std::mem::size_of::<(String, u64)>()),
+        ("CommonTtl", std::mem::size_of::<(String)>()),
+        ("CommonPersist", std::mem::size_of::<(String)>()),
+        ("CommonExists", std::mem::size_of::<(String)>()),
+        ("StringSet", std::mem::size_of::<(String, Vec<u8>)>()),
+        ("StringSetEx", std::mem::size_of::<(String, Vec<u8>, u64)>()),
+        ("StringSetConditional", std::mem::size_of::<(String, Vec<u8>, Option<u64>, StringSetCondition, bool)>()),
+        ("StringGet", std::mem::size_of::<(String)>()),
+        ("StringDelete", std::mem::size_of::<(String)>()),
+        ("HashSet", std::mem::size_of::<(String, String, Vec<u8>)>()),
+        ("HashGet", std::mem::size_of::<(String, String)>()),
+        ("HashMultiGet", std::mem::size_of::<(String, Vec<String>)>()),
+        ("HashMultiSet", std::mem::size_of::<(String, Vec<(String, Vec<u8>)>)>()),
+        ("HashIncrBy", std::mem::size_of::<(String, String, i64)>()),
+        ("HashGetAll", std::mem::size_of::<(String)>()),
+        ("HashLen", std::mem::size_of::<(String)>()),
+        ("HashDelete", std::mem::size_of::<(String, String)>()),
+        ("SetAdd", std::mem::size_of::<(String, Vec<u8>)>()),
+        ("ZSetAdd", std::mem::size_of::<(String, Vec<u8>, f64)>()),
+        ("ZSetScore", std::mem::size_of::<(String, Vec<u8>)>()),
+        ("ZSetRemove", std::mem::size_of::<(String, Vec<u8>)>()),
+        ("ZSetCard", std::mem::size_of::<(String)>()),
+        ("ZSetRange", std::mem::size_of::<(String, i64, i64, bool)>()),
+        ("ZSetRangeByScore", std::mem::size_of::<(String, f64, f64, bool, bool, bool)>()),
+        ("SeenCheck", std::mem::size_of::<(String, Vec<u8>, u64)>()),
+        ("SeenCard", std::mem::size_of::<(String)>()),
+        ("BucketTake", std::mem::size_of::<(String, f64, f64, f64)>()),
+        ("BucketPeek", std::mem::size_of::<(String, f64, f64, f64)>()),
+        ("ZSetIncrBy", std::mem::size_of::<(String, Vec<u8>, f64)>()),
+        ("ZSetPop", std::mem::size_of::<(String, bool, u64)>()),
+        ("ZSetRank", std::mem::size_of::<(String, Vec<u8>, bool)>()),
+        ("ListPush", std::mem::size_of::<(String, Vec<u8>, bool)>()),
+        ("ListPop", std::mem::size_of::<(String, bool)>()),
+        ("ListRange", std::mem::size_of::<(String, i64, i64)>()),
+        ("ListLen", std::mem::size_of::<(String)>()),
+        ("SetMembers", std::mem::size_of::<(String)>()),
+        ("SetRemove", std::mem::size_of::<(String, Vec<u8>)>()),
+        ("FeatureAppend", std::mem::size_of::<(String, Vec<FeaturePoint>)>()),
+        ("FeatureAppendWithPolicy", std::mem::size_of::<(String, Vec<FeaturePoint>, FeatureWritePolicy)>()),
+        ("FeatureQuery", std::mem::size_of::<(String, u64, u64, Option<usize>)>()),
+        ("FeatureQueryFiltered", std::mem::size_of::<(String, u64, u64, Option<usize>, Vec<FeatureFilter>)>()),
+        ("FeatureReplace", std::mem::size_of::<(String, u64, u64, Vec<FeaturePoint>)>()),
+        ("FeatureDelete", std::mem::size_of::<(String)>()),
+        ("FeatureAggQuery", std::mem::size_of::<(String, u64, u64, String, Option<usize>)>()),
+        ("SequenceAdd", std::mem::size_of::<(String, Vec<SequenceFeatureRow>)>()),
+        ("SequenceQuery", std::mem::size_of::<(String, u64, u64, usize, Vec<FeatureFilter>)>()),
+        ("SequenceBatchQuery", std::mem::size_of::<(Vec<SequenceQuerySpec>)>()),
+        ("ControlStateIncrement", std::mem::size_of::<(String, u64, i64)>()),
+        ("ControlStateIncrementWithOptions", std::mem::size_of::<(String, u64, i64, Option<u64>, Option<u64>)>()),
+        ("ControlStateChangeAdd", std::mem::size_of::<(String, u64, Vec<u8>, Option<u64>, Option<u64>)>()),
+        ("ControlStateCount", std::mem::size_of::<(String, u64, u64)>()),
+        ("ControlStateQuery", std::mem::size_of::<(String, u64, u64, String)>()),
+        ("ControlStateDetail", std::mem::size_of::<(String, u64, u64, Option<usize>)>()),
+        ("ControlStateSet", std::mem::size_of::<(ControlStateFamily, String, u64, i64)>()),
+        ("ControlStateSetAndGet", std::mem::size_of::<(ControlStateFamily, String, u64, i64, u64, u64, String)>()),
+        ("ControlStateSetAndGetWithOptions", std::mem::size_of::<(ControlStateFamily, String, u64, i64, u64, u64, String, Option<u64>, Option<u64>, Option<String>)>()),
+        ("ControlStateFamilyQuery", std::mem::size_of::<(ControlStateFamily, String, u64, u64, String)>()),
+        ("ControlStateSelectionSet", std::mem::size_of::<(String, Vec<u8>, u64, u64, ControlStateSelectionType)>()),
+        ("ControlStateSelectionQuery", std::mem::size_of::<(String)>()),
+        ("ControlStateManager", std::mem::size_of::<(String, Option<String>, Vec<(String, String)>, String, String, bool)>()),
+        ("ControlStateDebug", std::mem::size_of::<(String, u64, u64)>()),
+        ("ContextQueryNodeEmbeddings", std::mem::size_of::<(u64, Vec<u64>)>()),
+        ("ContextResourceBlobBegin", std::mem::size_of::<(u64)>()),
+        ("ContextResourceBlobAppend", std::mem::size_of::<(u64, String, String)>()),
+        ("ContextResourceBlobCommit", std::mem::size_of::<(u64, String)>()),
+        ("ContextResourceBlobPut", std::mem::size_of::<(u64, String)>()),
+        ("ContextResourceBlobFetch", std::mem::size_of::<(String, u64, u64)>()),
+        ("ContextResourceBlobSweep", std::mem::size_of::<(u64, Vec<u64>, u64)>()),
+        ("ContextSetNodeEmbedding", std::mem::size_of::<(u64, u64, u64, Vec<f32>, u64)>()),
+        ("ContextUpsertNode", std::mem::size_of::<(u64, ContextNode)>()),
+        ("ContextGetNode", std::mem::size_of::<(u64, u64)>()),
+        ("ContextGetNodes", std::mem::size_of::<(u64, Vec<u64>)>()),
+        ("ContextWriteEvent", std::mem::size_of::<(u64, u64, ContextEvent, bool, bool)>()),
+        ("ContextWriteExtractedEvent", std::mem::size_of::<(u64, u64, Box<ContextEvent>, ContextExtractedEventIndexes, bool, bool)>()),
+        ("ContextQueryEvents", std::mem::size_of::<(u64, u64, u64, u64, Option<usize>, Option<usize>, bool, u64, Vec<u32>, Vec<u32>, f32, f32)>()),
+        ("ContextWriteIndexRef", std::mem::size_of::<(u64, String, u64, u64, u64, ContextIndexRef)>()),
+        ("ContextQueryIndex", std::mem::size_of::<(u64, String, u64, u64, u64, u64, Option<usize>)>()),
+        ("ContextQueryIndexIntersection", std::mem::size_of::<(u64, Vec<ContextIndexLookup>, Option<usize>)>()),
+        ("ContextWritePackAudit", std::mem::size_of::<(u64, ContextPackAudit)>()),
+        ("ContextQueryPackAudit", std::mem::size_of::<(u64, u64, u64, u64, Option<usize>)>()),
+        ("ContextMarkSummaryDirty", std::mem::size_of::<(u64, u64, u64, u32, u32)>()),
+        ("ContextQuerySummaryDirty", std::mem::size_of::<(u64, u64, u64, u64, Option<usize>)>()),
+        ("ContextMarkEmbeddingDirty", std::mem::size_of::<(u64, u64, u64, u32, u32, bool)>()),
+        ("ContextQueryEmbeddingDirty", std::mem::size_of::<(u64, u64, u64, u64, Option<usize>)>()),
+        ("ContextUpsertEntity", std::mem::size_of::<(u64, ContextEntity)>()),
+        ("ContextGetEntity", std::mem::size_of::<(u64, u64, u64)>()),
+        ("ContextQueryEntities", std::mem::size_of::<(u64, u64, Vec<u64>, Option<usize>)>()),
+        ("ContextUpsertChildRef", std::mem::size_of::<(u64, ContextChildRef)>()),
+        ("ContextQueryChildren", std::mem::size_of::<(u64, u64, Option<usize>)>()),
+        ("ContextTraverseTree", std::mem::size_of::<(u64, u64, Vec<f32>, Option<u32>, Option<usize>, Option<usize>, Option<usize>, bool)>()),
+        ("ContextUpsertSummary", std::mem::size_of::<(u64, ContextSummary)>()),
+        ("ContextQuerySummaries", std::mem::size_of::<(u64, u64, u32, u64, Option<usize>)>()),
+        ("ContextQuerySummaryVectors", std::mem::size_of::<(u64, Vec<u64>, u32, u64)>()),
+        ("ContextWriteCompressionEvent", std::mem::size_of::<(u64, ContextCompressionEvent)>()),
+        ("ContextQueryCompressionEvents", std::mem::size_of::<(u64, Vec<u64>, u64, u64, Option<usize>)>()),
+        ("ContextCompressEvents", std::mem::size_of::<(u64, u64, u64, u64, u64, Option<usize>, f32, f32)>()),
+        ("ContextQueryNodeContext", std::mem::size_of::<(u64, u64, Option<u32>, u64, u64, u64, Option<usize>)>()),
+        ];
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        let whole = std::mem::size_of::<Command>();
+        println!("  Command is {whole} B");
+        println!("  FIELD ContextEvent                    {:>4} B", std::mem::size_of::<ContextEvent>());
+        println!("  FIELD ContextExtractedEventIndexes    {:>4} B", std::mem::size_of::<ContextExtractedEventIndexes>());
+        println!("  FIELD Box<ContextEvent>               {:>4} B", std::mem::size_of::<Box<ContextEvent>>());
+        let mut cumulative = 0usize;
+        for (index, (name, size)) in rows.iter().enumerate().take(12) {
+            cumulative += size;
+            println!("    VARIANT {:>2}. {:<36} {:>4} B", index + 1, name, size);
+        }
+        let _ = cumulative;
+        println!("  boxing the top N drops the enum to the (N+1)th plus a discriminant");
+        assert!(whole > 0);
+    }
+
     /// What one append allocates, and how much of it is the value it carries.
     ///
     /// Allocation count is latency and allocation bytes are memory; both are deterministic, unlike
