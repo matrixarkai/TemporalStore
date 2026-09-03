@@ -96,6 +96,7 @@ class RepeatedStringValuesAreShared(unittest.TestCase):
     def setUp(self):
         adapter_module._SHARED_STRINGS.clear()
         adapter_module._SHARED_STRINGS_ABANDONED.clear()
+        adapter_module._SHARED_STRING_STATS.clear()
 
     def test_a_repeated_value_is_held_once(self):
         first = adapter_module._shared_string("record_type", "context_" + "event")
@@ -111,22 +112,52 @@ class RepeatedStringValuesAreShared(unittest.TestCase):
         self.assertIn("record_type", adapter_module._SHARED_STRINGS)
         self.assertIn("state", adapter_module._SHARED_STRINGS)
 
-    def test_a_field_of_distinct_values_is_abandoned(self):
-        limit = adapter_module._STRING_FIELD_CARDINALITY_LIMIT
+    def test_a_field_whose_lookups_keep_missing_is_abandoned(self):
+        """`row_key` holds a different value on every row, so every lookup misses."""
+        limit = adapter_module._STRING_FIELD_WARMUP_LOOKUPS
         for i in range(limit + 5):
             adapter_module._shared_string("row_key", "row-%06d" % i)
         self.assertIn("row_key", adapter_module._SHARED_STRINGS_ABANDONED)
         self.assertNotIn("row_key", adapter_module._SHARED_STRINGS,
                          "the abandoned field is still holding its values")
 
+    def test_a_field_that_repeats_is_kept_however_many_values_it_holds(self):
+        """The reason the test above is not a cardinality test.
+
+        `text` on a chunked document holds one distinct value per chunk -- thousands of them -- and
+        every one appears exactly twice, because a chunk is stored once as a skill_section and once
+        as a resource_chunk. Measured: 873 distinct values over 1,743 rows, histogram {1: 3, 2:
+        870}. A cardinality limit abandons that; a hit rate keeps it, and keeping it is 13.8% of
+        the read cache.
+        """
+        limit = adapter_module._STRING_FIELD_WARMUP_LOOKUPS
+        pairs = limit * 2
+        for i in range(pairs):
+            value = "chunk body number %06d, long enough to be worth sharing" % i
+            first = adapter_module._shared_string("text", value)
+            second = adapter_module._shared_string("text", value)
+            self.assertIs(first, second, "the second lookup of a repeated value missed")
+        self.assertNotIn("text", adapter_module._SHARED_STRINGS_ABANDONED,
+                         "a field that hits on half its lookups was abandoned")
+        self.assertGreater(len(adapter_module._SHARED_STRINGS.get("text") or {}), limit,
+                           "it should hold far more distinct values than the old limit allowed")
+
+    def test_a_long_value_is_shared_now_that_the_cost_was_measured(self):
+        """The cap was 256 characters on the assumption that hashing longer values did not pay.
+        Hashing 1,743 values averaging 904 characters measured 0.4 ms, so the cap is 64 KiB."""
+        body = "x" * 4000
+        self.assertIs(adapter_module._shared_string("text", body),
+                      adapter_module._shared_string("text", body))
+        enormous = "y" * (adapter_module._SHARED_STRING_MAX_LEN + 1)
+        self.assertEqual(enormous, adapter_module._shared_string("text", enormous))
+
     def test_an_abandoned_field_still_returns_its_value(self):
         adapter_module._SHARED_STRINGS_ABANDONED.add("row_key")
         self.assertEqual("abc", adapter_module._shared_string("row_key", "abc"))
 
-    def test_a_long_value_is_not_hashed(self):
+    def test_a_value_past_the_cap_is_left_alone(self):
         long_value = "x" * (adapter_module._SHARED_STRING_MAX_LEN + 1)
         self.assertEqual(long_value, adapter_module._shared_string("text", long_value))
-        self.assertNotIn("text", adapter_module._SHARED_STRINGS)
 
     def test_a_cold_read_shares_a_repeated_column(self):
         store = Path(tempfile.mkdtemp())

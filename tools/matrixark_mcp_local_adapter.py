@@ -891,16 +891,27 @@ import json as _json
 import sys as _sys
 
 
-#: A field whose values keep turning out to be distinct is not worth a table: at scale the
-#: hashes and row names would flood it and crowd out the fields that DO repeat. Each field gets
-#: its own table and is abandoned once it exceeds this many distinct values. Measured on an
-#: attachment corpus the repetitive fields hold 1 to 21 distinct values, and the distinct ones
-#: (row_key, context_event_key) are unique per row, so the two separate cleanly.
-_STRING_FIELD_CARDINALITY_LIMIT = 512
-#: Longer than this and hashing the value to look it up costs more than the copy saves.
-_SHARED_STRING_MAX_LEN = 256
+#: A field is abandoned when its lookups keep MISSING -- not when it holds many distinct values.
+#:
+#: Cardinality was the first test and it is the wrong one. `text` on a chunked document holds 873
+#: distinct values over 1,743 rows, so a cardinality limit gives up on it -- yet its repetition
+#: histogram is {1: 3, 2: 870}: every value but three appears exactly TWICE, because a chunk is
+#: stored once as a skill_section and once as a resource_chunk. High cardinality and perfect
+#: repetition at the same time. Sharing those is 13.8% of the read cache.
+#:
+#: A hit rate separates the two shapes directly: `row_key` misses on essentially every lookup and
+#: is dropped after the warmup, while `text` hits half the time and is kept however many distinct
+#: values it accumulates.
+_STRING_FIELD_WARMUP_LOOKUPS = 512
+_STRING_FIELD_MIN_HIT_RATE = 0.10
+#: Longer than this and hashing to look the value up is not worth it. Raised from 256 once the
+#: cost was measured rather than assumed: hashing 1,743 values averaging 904 characters into a
+#: table takes 0.4 ms.
+_SHARED_STRING_MAX_LEN = 65536
 _SHARED_STRINGS: dict = {}
 _SHARED_STRINGS_ABANDONED: set = set()
+#: field -> [lookups, hits], kept only until the field has earned its place or lost it.
+_SHARED_STRING_STATS: dict = {}
 
 
 def _shared_string(field, value):
@@ -910,14 +921,24 @@ def _shared_string(field, value):
     table = _SHARED_STRINGS.get(field)
     if table is None:
         table = _SHARED_STRINGS[field] = {}
+        _SHARED_STRING_STATS[field] = [0, 0]
+    stats = _SHARED_STRING_STATS.get(field)
     shared = table.get(value)
+    if stats is not None:
+        stats[0] += 1
+        if shared is not None:
+            stats[1] += 1
+        elif stats[0] >= _STRING_FIELD_WARMUP_LOOKUPS:
+            if stats[1] < stats[0] * _STRING_FIELD_MIN_HIT_RATE:
+                # Its values are distinct, not repeated. Stop paying to find that out.
+                _SHARED_STRINGS_ABANDONED.add(field)
+                _SHARED_STRINGS.pop(field, None)
+                _SHARED_STRING_STATS.pop(field, None)
+                return value
+            # It has earned its place; stop counting.
+            _SHARED_STRING_STATS.pop(field, None)
     if shared is not None:
         return shared
-    if len(table) >= _STRING_FIELD_CARDINALITY_LIMIT:
-        # This field's values are distinct, not repeated. Stop paying to find that out.
-        _SHARED_STRINGS_ABANDONED.add(field)
-        _SHARED_STRINGS.pop(field, None)
-        return value
     table[value] = value
     return value
 
