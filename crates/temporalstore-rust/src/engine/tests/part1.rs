@@ -7809,3 +7809,118 @@ fn what_rebuilding_the_compressor_costs() {
     println!("  compressor, and one held across threads needs a lock or a thread-local. That is a");
     println!("  design question, and this measures only the size of the prize.");
 }
+
+/// How badly does a 1,000-record measurement mislead, and where does it stop?
+///
+/// The embedding-storage guidance rests on a datanode holding 1,000 records in 27.0 MB -- 27 kB
+/// per record -- and concludes a 384-dim vector is 7.1% of resident memory. An eight-hour run
+/// over 5.76M records measures the same node at 1.59 kB per record, seventeen times smaller, so
+/// one of those numbers cannot be used for capacity and it is worth knowing which and by how much.
+///
+/// A single corpus size cannot answer it: fixed setup divided by a small corpus looks exactly like
+/// a large per-record cost. This walks 1k -> 1M and reports both the naive per-record figure and
+/// the MARGINAL cost between sizes, which is the only part that scales.
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_thousand_records_hides -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_a_thousand_records_hides() {
+    const SIZES: [u64; 4] = [1_000, 10_000, 100_000, 1_000_000];
+    const VECTOR_DIMS: usize = 384;
+
+    // Live bytes and allocations for `records` writes, engine construction INCLUDED so that the
+    // fixed cost a small corpus hides is inside the measurement rather than excluded from it.
+    let arm = |records: u64, with_vector: bool| -> (f64, f64) {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = crate::alloc_probe::Probe::start();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let vector: Vec<f32> = if with_vector {
+            (0..VECTOR_DIMS).map(|i| (i as f32) * 0.001).collect()
+        } else {
+            Vec::new()
+        };
+        for index in 0..records {
+            let node = crate::types::ContextNode {
+                node_hash: 1_000_000 + index,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: format!("scale-{index:08}"),
+                l0: String::new(),
+                status: 0,
+                last_event_time_ms: 1_780_000_000_000,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+                vector: vector.clone(),
+                embedding_model_hash: 909,
+                embedding_updated_at_ms: 1_780_000_000_000,
+                summary_vector: Vec::new(),
+                summary_vector_valid_from_ms: 0,
+                summary_vector_model_hash: 0,
+            };
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode { tenant_hash: 7, node },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let counts = probe.stop();
+        std::hint::black_box(&engine);
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes) as f64;
+        (live, counts.allocs as f64 / records as f64)
+    };
+
+    println!();
+    println!("  records      live total    live/record   marginal/record   allocs/write");
+    let mut prev: Option<(u64, f64)> = None;
+    let mut rows: Vec<(u64, f64, f64)> = Vec::new();
+    for size in SIZES {
+        let (live, allocs) = arm(size, true);
+        let per = live / size as f64;
+        let marginal = match prev {
+            Some((psize, plive)) => (live - plive) / (size - psize) as f64,
+            None => f64::NAN,
+        };
+        if marginal.is_nan() {
+            println!("  {size:>8} {live:>14.0} {per:>14.0} B {:>17} {allocs:>14.1}", "--");
+        } else {
+            println!("  {size:>8} {live:>14.0} {per:>14.0} B {marginal:>15.0} B {allocs:>14.1}");
+        }
+        rows.push((size, per, marginal));
+        prev = Some((size, live));
+    }
+
+    let naive = rows[0].1;
+    let settled = rows[rows.len() - 1].2;
+    println!();
+    println!("  at {:>9} records a record looks like {naive:.0} B", SIZES[0]);
+    println!("  the marginal cost at {:>4} records is    {settled:.0} B", SIZES[SIZES.len()-1]);
+    println!("  the small figure overstates by         {:.1}x", naive / settled);
+    println!();
+
+    // Does the vector show up in RESIDENT memory at all? Same corpus, no vector.
+    const CHECK_AT: u64 = 100_000;
+    let (with_vec, _) = arm(CHECK_AT, true);
+    let (no_vec, _) = arm(CHECK_AT, false);
+    let saved = (with_vec - no_vec) / CHECK_AT as f64;
+    let vector_bytes = (VECTOR_DIMS * 4) as f64;
+    println!("  a {VECTOR_DIMS}-dim vector is {vector_bytes:.0} B on the wire");
+    println!("  removing it saves {saved:>6.1} B/record resident  ({:.1}% of the vector)",
+             100.0 * saved / vector_bytes);
+    println!();
+    if saved < vector_bytes * 0.1 {
+        println!("  So the vector is NOT resident. Quoting it as a percentage of a per-record RSS");
+        println!("  figure invites the wrong inference -- shrinking vectors moves durable bytes and");
+        println!("  read bandwidth, and moves resident memory by approximately nothing.");
+    } else {
+        println!("  The vector IS a real share of resident memory and shrinking it moves RSS.");
+    }
+
+    assert!(rows.iter().all(|r| r.1 > 0.0), "measured nothing");
+}
