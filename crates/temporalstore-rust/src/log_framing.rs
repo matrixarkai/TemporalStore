@@ -139,10 +139,27 @@ pub(crate) fn encode_frame(payload: &[u8]) -> Vec<u8> {
 
 /// Encode with whichever frame new writes are configured to use.
 pub(crate) fn encode_record(payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_record_into(payload, &mut out);
+    out
+}
+
+/// Encode into a caller-owned buffer, so an append can reuse one instead of allocating a frame
+/// per record.
+///
+/// The buffer is CLEARED, not appended to: a caller reusing a scratch buffer wants this record,
+/// not this record after the last one. Its capacity survives, which is the point -- a steady
+/// workload stops allocating here after the first few writes.
+pub(crate) fn encode_record_into(payload: &[u8], out: &mut Vec<u8>) {
+    out.clear();
     if binary_frame_enabled() {
-        encode_frame(payload)
+        out.reserve(payload.len() + 10);
+        out.push(FRAME_MAGIC_V3);
+        write_varint(payload.len() as u64, out);
+        out.extend_from_slice(&crate::checksum::crc32c(payload).to_le_bytes());
+        out.extend_from_slice(payload);
     } else {
-        encode_line(payload)
+        out.extend_from_slice(&encode_line(payload));
     }
 }
 
