@@ -132,6 +132,12 @@ class AWriteReportsARaisedValueTest(unittest.TestCase):
 
         directory = tempfile.mkdtemp(prefix="matrixark-clamp-test-")
         path = os.path.join(directory, "runtime_config.json")
+        # The WHOLE environment, not just the config path. update() sets os.environ for every
+        # setting it writes, and `unittest discover` runs the suite in one process -- leaving
+        # TS_CONTEXT_PAGE_TARGET_BYTES behind made the portal's export test see a configured
+        # setting where it asserts there are none. Isolating the config file is not enough when
+        # the thing under test also writes the environment.
+        self._saved_environ = dict(os.environ)
         self._saved = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE")
         os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = path
         resolved = cfgmod.config_path()
@@ -139,10 +145,8 @@ class AWriteReportsARaisedValueTest(unittest.TestCase):
             raise AssertionError("config isolation failed: %r" % resolved)
 
         def restore():
-            if self._saved is None:
-                os.environ.pop("MATRIXARK_RUNTIME_CONFIG_FILE", None)
-            else:
-                os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = self._saved
+            os.environ.clear()
+            os.environ.update(self._saved_environ)
             shutil.rmtree(directory, ignore_errors=True)
 
         self.addCleanup(restore)
