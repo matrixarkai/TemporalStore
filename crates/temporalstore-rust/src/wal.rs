@@ -4358,12 +4358,23 @@ mod tests {
         );
     }
 
-    /// What reclaim copies AT THE SHIPPED DEFAULT, as the log grows.
+    /// What reclaim copies AT THE SHIPPED DEFAULT, against what rolling would copy.
     ///
     /// `wal_segment_bytes` defaults to 0, and zero never rolls. Rolling is what lets reclaim
     /// unlink a whole earlier piece instead of copying the records it keeps, so at the default
-    /// every reclaim pays for what it KEEPS -- which grows with the log while the amount freed
-    /// does not.
+    /// every reclaim pays for what it KEEPS.
+    ///
+    /// What that does NOT mean: the log growing without bound. `DEFAULT_INDEX_DUMP_WAL_GAP_BYTES`
+    /// is a megabyte, so the index dumps once the log is that far ahead, and the storage-manager
+    /// cycle that drives reclaim is wired -- `bin/server.rs` submits it. A pass therefore copies
+    /// about the dump threshold, and the steady-state cost is bounded write amplification rather
+    /// anything quadratic. The quadratic shape needs something to BLOCK reclaim so the log grows,
+    /// and the blocking case clamps to the floor now instead of refusing at it.
+    ///
+    /// What it does mean: that bounded cost is about 33x larger than it needs to be, every pass,
+    /// for want of a threshold. This measures that, and nothing stronger -- the first version of
+    /// this comment claimed the lifetime cost, which is a different quantity that was never
+    /// measured here.
     ///
     /// Counted in bytes copied rather than timed: the bytes ARE the cost here, and a timing
     /// assertion in the suite would be a flake generator.
@@ -4415,9 +4426,12 @@ mod tests {
             "the probe must observe a reclaim: {default_copied:?}"
         );
 
-        // The point: at the default the copy tracks the log, so doubling the log doubles the work
-        // done to free the same tenth. This is a statement about the DEFAULT, not a regression
-        // bound -- if rolling ever becomes the default this fails, and that is the good outcome.
+        // The point: at the default the copy tracks what is KEPT, so a bigger log means a bigger
+        // copy for the same tenth freed. That is a per-pass statement -- the dump threshold bounds how
+        // big the log gets between passes, so it does not compound over the log's life.
+        //
+        // A statement about the DEFAULT, not a regression bound: if rolling ever becomes the
+        // default this fails, and that is the good outcome.
         assert!(
             default_copied[2] > default_copied[0] * 3,
             "at the shipped default the copy should track the whole log: {default_copied:?}"
