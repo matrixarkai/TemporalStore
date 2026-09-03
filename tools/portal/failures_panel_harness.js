@@ -24,9 +24,9 @@ const FRAME = {
   traffic: {
     total_requests: 12, total_errors: 3, in_flight: 0,
     routes: {
-      "/v1/memories": { requests: 9, errors: 1, avg_ms: 4.2,
+      "/v1/memories": { requests: 9, errors: 1, avg_ms: 4.2, p95_ms: 10,
                         statuses: { "200": 8, "404": 1 } },
-      "/v1/retrieve": { requests: 3, errors: 2, avg_ms: 30,
+      "/v1/retrieve": { requests: 3, errors: 2, avg_ms: 30, p95_ms: null,
                         statuses: { "200": 1, "401": 1, "503": 1 } }
     },
     recent_failures: [
@@ -122,6 +122,12 @@ setTimeout(function () {
   ok("a 200 is not marked as an error",
      !/status-chip bad'>200/.test(traffic) && !/status-chip bad">200/.test(traffic),
      traffic.slice(0, 300));
+
+  /* A mean hides the tail; the column exists to show it. And a route with no tail figure must
+     say so rather than reading as instant. */
+  ok("the tail is shown, not just the mean", /~10 ms/.test(traffic), traffic.slice(0, 460));
+  ok("a route with no tail figure does not read as zero", !/~0 ms/.test(traffic),
+     traffic.slice(0, 460));
 
   ok("the failures panel drew the failures", /\/v1\/retrieve/.test(fails), fails.slice(0, 200));
   ok("it shows the status", /503/.test(fails), fails.slice(0, 200));

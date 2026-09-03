@@ -76,6 +76,11 @@ _EXACT_ROUTES = frozenset({
 STREAMING_ROUTES = frozenset({"/v1/admin/events"})
 
 
+def _as_ms(seconds: Optional[float]) -> Optional[float]:
+    """Seconds to milliseconds, keeping None as None: unmeasured is not zero."""
+    return None if seconds is None else round(seconds * 1000.0, 2)
+
+
 def route_label(path: str) -> str:
     """Collapse a request path to a bounded route template (see the cardinality note above)."""
     if path in _EXACT_ROUTES:
@@ -84,6 +89,34 @@ def route_label(path: str) -> str:
         if path.startswith(prefix):
             return template
     return "other"
+
+
+def bucket_quantile(buckets: List[float], quantile: float, observed_max_s: float) -> Optional[float]:
+    """The bucket edge at or below which `quantile` of the observations fell, in seconds.
+
+    A bucket edge, not an exact quantile. A histogram supports "95% finished within 250 ms"; it
+    does not support "the 95th percentile was 212 ms", and a precise-looking number derived from
+    bucketed counts is a claim the data cannot make.
+
+    The last bucket is the overflow one and has no upper edge, so when the quantile lands there the
+    observed maximum is returned: "slower than the largest bucket" and "unbounded" are different
+    statements and only the first is true.
+
+    None when nothing has been observed -- an empty histogram has no tail, and a zero here would
+    read as a route that is very fast rather than one nobody has called.
+    """
+    total = sum(buckets)
+    if total <= 0:
+        return None
+    target = total * quantile
+    seen = 0.0
+    for index, count in enumerate(buckets):
+        seen += count
+        if seen >= target:
+            if index < len(_BUCKETS):
+                return _BUCKETS[index]
+            return observed_max_s
+    return observed_max_s
 
 
 class GatewayMetrics:
@@ -173,6 +206,10 @@ class GatewayMetrics:
                     "requests": count,
                     "avg_ms": round(self._sum.get(route, 0.0) / total * 1000.0, 2),
                     "max_ms": round(self._max.get(route, 0.0) * 1000.0, 2),
+                    # The tail, which the mean cannot show: fifty requests at 3 ms and one at nine
+                    # seconds average out to something describing neither.
+                    "p95_ms": _as_ms(bucket_quantile(self._latency.get(route, []), 0.95,
+                                                     self._max.get(route, 0.0))),
                     "request_bytes": self._req_bytes.get(route, 0),
                     "response_bytes": self._resp_bytes.get(route, 0),
                     "errors": 0,

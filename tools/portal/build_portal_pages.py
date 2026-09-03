@@ -2275,6 +2275,10 @@ function liveStream(options) {
     });
   }
 
+  /* Mean AND p95: a mean is the one latency figure that cannot describe the requests people
+     complain about -- nineteen at 3 ms and one at nine seconds average to 453 ms, which
+     describes neither. The p95 is a bucket edge, so it is shown with a tilde rather than
+     claiming a precision the histogram does not have. */
   /* The same table the scrape used to draw, from the frame instead of a /v1/metrics parse. */
   function renderLiveTraffic(traffic) {
     var routes = (traffic || {}).routes || {};
@@ -2286,12 +2290,13 @@ function liveStream(options) {
       return;
     }
     $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Answers</th>" +
-      "<th>Errors</th><th>Mean latency</th></tr></thead><tbody>" + names.map(function (name) {
+      "<th>Errors</th><th>Mean</th><th>95% within</th></tr></thead><tbody>" + names.map(function (name) {
         var row = routes[name];
         return "<tr><td><span class='mono'>" + esc(name) + "</span></td><td class='num'>" +
           row.requests + "</td><td>" + statusChips(row.statuses) + "</td><td class='num'>" +
           (row.errors || 0) + "</td><td class='num'>" +
-          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td></tr>";
+          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td><td class='num'>" +
+          (row.p95_ms == null ? "—" : "~" + row.p95_ms + " ms") + "</td></tr>";
       }).join("") + "</tbody></table>";
   }
 

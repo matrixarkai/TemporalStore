@@ -128,5 +128,42 @@ class TheLiveFrameCarriesThemTest(unittest.TestCase):
                          "that changes" % len(carried))
 
 
+class TheTailFigureTest(unittest.TestCase):
+    """A mean is the one latency figure that cannot describe the requests people complain about."""
+
+    def setUp(self) -> None:
+        self.metrics = gwm.GatewayMetrics()
+
+    def test_the_mean_hides_a_tail_that_the_p95_does_not(self) -> None:
+        for _ in range(10):
+            self.metrics.record("/v1/ingest", "POST", 200, 0.002)
+        for _ in range(10):
+            self.metrics.record("/v1/ingest", "POST", 200, 2.0)
+        route = self.metrics.snapshot()["routes"]["/v1/ingest"]
+        self.assertGreater(route["p95_ms"], route["avg_ms"],
+                           "half the requests took two seconds and the tail figure is not above "
+                           "the mean, so it is not describing the tail")
+
+    def test_a_route_nobody_called_has_no_tail_figure(self) -> None:
+        """None, not zero. A route with no observations is not a very fast route."""
+        self.assertIsNone(gwm.bucket_quantile([], 0.95, 0.0))
+
+    def test_beyond_the_largest_bucket_it_reports_the_observed_maximum(self) -> None:
+        """The overflow bucket has no upper edge, and infinity is not a true answer."""
+        self.metrics.record("/v1/ingest", "POST", 200, 120.0)
+        route = self.metrics.snapshot()["routes"]["/v1/ingest"]
+        self.assertEqual(route["max_ms"], route["p95_ms"])
+
+    def test_it_reports_a_bucket_edge_not_an_invented_precision(self) -> None:
+        """A histogram supports "95% finished within 250 ms", not "the 95th percentile was 212"."""
+        for _ in range(100):
+            self.metrics.record("/v1/ingest", "POST", 200, 0.003)
+        p95 = self.metrics.snapshot()["routes"]["/v1/ingest"]["p95_ms"]
+        edges_ms = [round(edge * 1000.0, 2) for edge in gwm._BUCKETS]
+        self.assertIn(p95, edges_ms,
+                      "%r is not one of the histogram's edges, so it claims a precision the "
+                      "buckets cannot support" % p95)
+
+
 if __name__ == "__main__":
     unittest.main()
