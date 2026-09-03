@@ -4732,6 +4732,40 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
             return (0, 0)
 
+    def _durable_read_cache_signature(self) -> Json | None:
+        """The signature the head recorded, or None when there is none to trust."""
+        try:
+            with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
+                head = json.load(handle)
+            if head.get("cache_key") != self._cache_key_str():
+                return None
+            if head.get("schema_version") != LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION:
+                return None
+            return head.get("signature")
+        except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+            return None
+
+    def _refresh_durable_read_cache_if_behind(
+        self, records: list[Json], signature: Json, epoch: int | None
+    ) -> None:
+        """Bring the snapshot up to the log this read just served.
+
+        A write only ever continues the tail and leaves a snapshot it cannot continue for "the
+        next read" to refresh. That only happened on the branch that re-derives from the log --
+        but once a cache is warm, every read is served from it and that branch is never reached
+        again. The snapshot froze at whatever the first read wrote, and because a stale snapshot
+        no longer matches the log's signature, the write path stopped being able to continue it
+        either: the two paths each waited for the other and every restart re-derived the log.
+
+        Reading only the head keeps this to one small file per read, and a read that added
+        nothing since the snapshot does no work at all.
+        """
+        if not self._local_jsonl_enabled or not LOCAL_DURABLE_READ_CACHE_ENABLED:
+            return
+        if self._durable_read_cache_signature() == signature:
+            return
+        self._write_durable_read_cache(list(records), signature, epoch=epoch)
+
     def _write_durable_read_cache(
         self,
         records: list[Json],
@@ -5970,6 +6004,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         signature = self._jsonl_cache_signature_detail(paths)
         size = int(signature.get("total_size", -1))
         mtime_ns = int(signature.get("max_mtime_ns", -1))
+        served: list[Json] | None = None
+        served_epoch: int | None = None
         with self._read_cache_lock:
             if (
                 self._read_cache_records is not None
@@ -5978,7 +6014,13 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             ):
                 self._compact_read_cache_if_dirty_locked()
                 self._read_cache_source = "instance"
-                return list(self._read_cache_records)
+                served = list(self._read_cache_records)
+                served_epoch = self._read_cache_compaction_epoch
+        if served is not None:
+            # Served from cache, so the re-derive branch below never runs -- refresh here or the
+            # snapshot never advances again. See _refresh_durable_read_cache_if_behind.
+            self._refresh_durable_read_cache_if_behind(served, signature, served_epoch)
+            return served
         with _LOCAL_READ_CACHE_LOCK:
             cached = _LOCAL_READ_CACHE.get(cache_key)
             if cached is not None and cache_key in _LOCAL_READ_CACHE_DIRTY:
@@ -6003,6 +6045,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         self._read_cache_size = size
                         self._read_cache_mtime_ns = mtime_ns
                         self._read_cache_source = "process"
+                        served_epoch = self._read_cache_compaction_epoch
+                    # Same reason as the instance branch above.
+                    self._refresh_durable_read_cache_if_behind(records, signature, served_epoch)
                     return list(records)
                 _LOCAL_READ_CACHE.pop(cache_key, None)
                 _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
