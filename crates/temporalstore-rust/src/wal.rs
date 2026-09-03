@@ -4358,6 +4358,72 @@ mod tests {
         );
     }
 
+    /// What a record actually costs on disk AT THE DEFAULTS.
+    ///
+    /// The neighbouring size analysis builds its "today" baseline by hand, as JSON. Both encoding
+    /// flags now default ON, so that hand-built baseline is not necessarily what the log writes,
+    /// and a stale baseline overstates what is left -- which is the exact error that analysis
+    /// warns about. This one asks the store instead, with no flags set.
+    ///
+    /// Measured as the DELTA between records rather than the file size: the log preallocates in
+    /// large steps, so file size answers a different question.
+    #[test]
+    fn what_a_record_actually_costs_on_disk() {
+        for value_len in [64usize, 1024, 4096] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let value = vec![118u8; value_len];
+            let path = write_ahead_log_path(dir.path(), 1);
+
+            let append = |index: usize| {
+                store
+                    .append(
+                        1,
+                        Command::StringSet {
+                            key: format!("scale-key-{index:09}"),
+                            value: value.clone(),
+                        },
+                    )
+                    .unwrap();
+            };
+
+            // Warm past any once-only header, then measure a run of appends.
+            append(0);
+            let (_, before) = last_wal_sequence_in(&path).unwrap();
+            let runs = 16usize;
+            for index in 1..=runs {
+                append(index);
+            }
+            let (_, after) = last_wal_sequence_in(&path).unwrap();
+
+            let per_record = (after - before) as f64 / runs as f64;
+            println!(
+                "  ONDISK value {value_len:>5}B -> {per_record:>7.1} B/record ({:>5.2}x)",
+                per_record / value_len as f64
+            );
+
+            // A bound passes most easily when nothing was measured.
+            assert!(
+                after > before,
+                "the probe must observe the appends at {value_len}B"
+            );
+            assert!(
+                per_record > value_len as f64,
+                "a record cannot be smaller than the value it carries: {per_record}"
+            );
+
+            // The envelope must stay in binary territory. The text fallback carries a ~122-byte
+            // envelope and base64s the value at a flat third on top, so this bound fails wide if
+            // either default ever flips back -- which is the drift that left the neighbouring
+            // analysis describing a saving that had already been taken.
+            let envelope = per_record - value_len as f64;
+            assert!(
+                envelope < 80.0,
+                "envelope is {envelope:.0} B at {value_len}B: that is the text fallback's shape,                  not the binary one -- has a default flipped?"
+            );
+        }
+    }
+
     /// What each frame costs in TIME, not just bytes. Ignored by default: it is a measurement,
     /// and a timing assertion in the suite would be a flake generator.
     ///

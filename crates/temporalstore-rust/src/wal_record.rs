@@ -291,13 +291,16 @@ mod tests {
         assert_eq!(with_block.encode_to_vec(), vec![0x6a, 0x02, b'a', b'b']);
     }
 
-    /// What a write costs on disk in the shape the log writes today, against the binary one.
+    /// What a write costs in the TEXT FALLBACK, against the binary record.
     ///
-    /// This is the headroom still available from changing the record format, and it is much
-    /// smaller than it once was: encoding payloads compactly and shortening the log's own field
-    /// names already took most of it. Measured against the REAL record -- the type the log
-    /// serializes -- because measuring against the shape records used to have would overstate what
-    /// is left and is the kind of number that justifies a migration it should not.
+    /// This is not the headroom still available: `binary_records_enabled` and
+    /// `binary_frame_enabled` both default ON, so the text side here is the fallback the log
+    /// takes only when a flag turns it off. `what_a_record_actually_costs_on_disk` in `wal`
+    /// measures the real path and comes in BELOW the binary column below.
+    ///
+    /// This comparison used to be labelled "today", which overstated the remaining saving by
+    /// about two-fold -- the exact error the note here warned about, committed by the note. What
+    /// it is good for is what the fallback costs if anyone reaches for it.
     #[test]
     fn what_is_left_to_gain_from_a_binary_record() {
         use crate::types::Command;
@@ -413,11 +416,13 @@ mod tests {
         }
     }
 
-    /// Where a record's bytes are now, and what carrying the value raw would leave.
+    /// Where a record's bytes go IN THE TEXT FALLBACK, and what carrying the value raw leaves.
     ///
     /// A JSON document cannot hold bytes, so the value is base64 -- a flat third on top, whatever
-    /// it is. At four kilobytes that dwarfs everything else in the record, which is why the shape
-    /// of the remaining saving is not "the format" but "the payload".
+    /// it is. At four kilobytes that dwarfs everything else in the record.
+    ///
+    /// The ~122-byte envelope this reports is the fallback's, not the default path's: measured
+    /// through the store at the defaults, the envelope is about 49 bytes.
     #[test]
     fn where_a_records_bytes_are_now() {
         use crate::types::Command;
