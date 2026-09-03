@@ -348,17 +348,19 @@ SETTINGS: List[Setting] = [
             "TS_BLOCK_SEGMENT_TARGET_BYTES",
             "Target size of a block segment", "int", "1073741824", "live",
             "The unit page-slab reclaim works in. A slab is retained while any loaded shard still "
-            "references it, so larger slabs mean fewer, coarser reclaims."),
+            "references it, so larger slabs mean fewer, coarser reclaims. Values below 1 KiB are "
+            "raised to it."),
     Setting("storage_engine.storage_zone_size", "storage_engine",
             "TS_STORAGE_ZONE_SIZE",
             "Storage zone size", "int", "1073741824", "live",
             "The span the band and zone catalog accounts in. It sets the granularity of what "
-            "compaction and the catalog can talk about, not how much is stored."),
+            "compaction and the catalog can talk about, not how much is stored. Values below 1 KiB "
+            "are raised to it."),
     Setting("storage_engine.stream_max_blob_size", "storage_engine",
             "TS_STREAM_MAX_BLOB_SIZE",
             "Largest streamed blob", "int", "10485760", "live",
             "The ceiling on a single streamed payload. Raising it admits larger objects and raises "
-            "the peak memory a single request can hold."),
+            "the peak memory a single request can hold. Values below 1 KiB are raised to it."),
     Setting("storage_engine.compaction_watermark_bytes", "storage_engine",
             "TS_COMPACTION_WATERMARK_BYTES",
             "Compaction watermark", "int", "268435456", "live",
