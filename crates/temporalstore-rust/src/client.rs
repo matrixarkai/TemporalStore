@@ -648,6 +648,13 @@ struct ClientInner {
     /// is atomic. It writes only when a route is fetched, replaced by a topology sync, or
     /// cleared.
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
+    /// Executes and batch executes, counted outside `stats`.
+    ///
+    /// Both are bumped once per call on the path that succeeds, and taking the stats mutex for
+    /// that serialised every execute against every other. Folded into `ClientStats` on read, so
+    /// callers -- including the proxy, which takes deltas -- see the same monotonic numbers.
+    execute_requests: AtomicU64,
+    batch_execute_requests: AtomicU64,
     /// Cached-route hits, counted outside `stats`.
     ///
     /// Every request that finds its route cached lands here, and taking the stats mutex to add one
@@ -824,6 +831,8 @@ impl TemporalStoreClient {
             inner: Arc::new(ClientInner {
                 options,
                 routes: RwLock::default(),
+                execute_requests: AtomicU64::new(0),
+                batch_execute_requests: AtomicU64::new(0),
                 route_cache_hits: AtomicU64::new(0),
                 backend_failures: Mutex::default(),
                 backend_failure_entries: AtomicUsize::new(0),
@@ -1405,10 +1414,8 @@ impl TemporalStoreTable {
     pub fn execute(&self, command: Command) -> Result<ExecuteResponse, ClientError> {
         self.client
             .inner
-            .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         let write = is_write(&command);
         if write {
             self.refresh_table_topology_before_write_if_due()?;
@@ -1470,10 +1477,8 @@ impl TemporalStoreTable {
     ) -> Result<BatchExecuteResponse, ClientError> {
         self.client
             .inner
-            .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         let write = commands.iter().any(is_write);
         if write {
             self.refresh_table_topology_before_write_if_due()?;
