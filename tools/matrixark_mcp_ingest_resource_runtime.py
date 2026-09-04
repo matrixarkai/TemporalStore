@@ -559,8 +559,10 @@ def ingest_resource_or_skill_if_needed(
                     "index_write_count": index_write_count,
                     "index_dropped_by_cap_count": index_dropped_by_cap_count,
                     **secondary_index_budget_summary(secondary_index_budget),
-                    "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
-                    "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
+                    # Same two caps the local writer drops: already in `metrics` on this record,
+                    # byte-identical, read by nothing at the top level, and process constants. At
+                    # 44 keys the record sat one over CPython's 43-key dict step, so the two of
+                    # them cost 1,096 B per row. See matrixark_local_adapter_ingest.
                     "summary_dirty_hashes": resource_dirty_hashes,
                     "metrics": resource_import_metrics,
                 },
