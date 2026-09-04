@@ -52,25 +52,43 @@ class TheCheapAnswerIsTheSameAnswerTest(unittest.TestCase):
         os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = os.path.join(tmp.name, "runtime.json")
         cfg.apply_boot()
 
+
+    def _change_it(self):
+        """Write something that differs from whatever is in effect right now.
+
+        A fixed string is not enough: another suite writes the same value into this same setting,
+        and under discovery its environment outlives it, so the write can land as a no-op and the
+        assertions below then describe a change that never happened.
+        """
+        field = next(f for group in cfg.snapshot()["groups"].values() for f in group
+                     if f["key"] == RESTART_KEY)
+        changed = (field["value"] or "https://example.invalid") + "/changed-by-this-test"
+        self.assertNotIn(RESTART_KEY, cfg.pending_restart_keys(),
+                         "something was already pending before this test wrote anything")
+        cfg.update({RESTART_KEY: changed})
+        return changed
+
     def test_it_agrees_with_the_catalogue_before_any_write(self) -> None:
         self.assertEqual(cfg.snapshot()["pending_restart"], cfg.pending_restart_keys())
 
     def test_it_agrees_with_the_catalogue_after_one(self) -> None:
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
-        self.assertEqual([RESTART_KEY], cfg.pending_restart_keys())
+        self._change_it()
+        # The agreement first: it is the property, and it holds whatever else the process has
+        # left lying about. The containment after, because that is what this test changed.
         self.assertEqual(cfg.snapshot()["pending_restart"], cfg.pending_restart_keys())
+        self.assertIn(RESTART_KEY, cfg.pending_restart_keys())
 
     def test_it_does_not_go_through_the_expensive_path(self) -> None:
         """The whole reason it exists. Asserted by breaking the expensive path and requiring the
         answer anyway, rather than by timing it."""
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
+        self._change_it()
         with mock.patch.object(cfg, "snapshot",
                                side_effect=AssertionError("built the catalogue")):
-            self.assertEqual([RESTART_KEY], cfg.pending_restart_keys())
+            self.assertIn(RESTART_KEY, cfg.pending_restart_keys())
 
     def test_without_a_boot_record_it_claims_nothing(self) -> None:
         cfg._BOOT_EFFECTIVE.clear()
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
+        cfg.update({RESTART_KEY: "https://example.invalid/whatever"})
         self.assertEqual([], cfg.pending_restart_keys())
 
 
