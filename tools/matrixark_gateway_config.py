@@ -184,6 +184,14 @@ GROUPS: Dict[str, Json] = {
         "note": "The edge's own ceilings. All of these are read when the gateway process starts, "
                 "so a change here needs a restart.",
     },
+    "audit": {
+        "title": "Audit trail", "order": 65, "advanced": False,
+        "note": "Off by default, and off means discarded: the access layer writes a record every "
+                "time a key is used to manage another key or is refused, and drops it here. Audit "
+                "records live in the main record log, so a busy deployment with this on grows the "
+                "store without bound -- which is why the default is what it is, and why the "
+                "choice belongs somewhere a customer can see it.",
+    },
     "behaviour": {
         "title": "Retrieval behaviour", "order": 70, "advanced": True,
         "note": "Deployment-wide defaults. A tenant policy -- or, for the ones marked, one "
@@ -226,6 +234,23 @@ SETTINGS: List[Setting] = [
     Setting("extraction.max_tokens", "extraction", "MATRIXARK_EXTRACTION_MAX_TOKENS",
             "Extraction max tokens", "int", "1200", "restart",
             "Completion cap per extraction call."),
+
+    # ---- audit trail ---------------------------------------------------------------------------
+    # Two readers, and they disagree about when a change lands. matrixark_access reads os.environ
+    # inside _append_audit_record, so the records IT writes -- key management, and every refusal --
+    # start or stop on the next call. matrixark_mcp_server captures the value into
+    # self._audit_mode_default in its constructor, so the server's own auditing keeps whatever it
+    # was built with. `restart` is the only label true of both, and the help says which half moves
+    # first rather than leaving a customer to find out by not finding records.
+    Setting("audit.mode", "audit", "MATRIXARK_AUDIT_MODE",
+            "Audit records", "str", "off", "restart",
+            "off discards every audit record, including the one written each time a key is refused "
+            "-- nothing is kept and nothing says so. async writes them off the request path; full "
+            "and sync make each one durable before the call returns, at the cost of that write. "
+            "Records go into the main record log, so a read-heavy deployment with this on grows "
+            "without bound. Setting it starts the access layer's records at once; the server's own "
+            "auditing is fixed when the process starts, so restart to have all of it.",
+            ["off", "async", "full", "sync"]),
 
     # ---- embedding (the encoder that makes retrieval semantic) ---------------------------------
     Setting("embedding.provider", "embedding", "MATRIXARK_EMBEDDING_PROVIDER",

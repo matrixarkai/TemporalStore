@@ -80,6 +80,11 @@ _DISPLAY_ONLY = {
 # request handler nested inside it (`make_v1_app._serve`) runs per request and must not inherit the
 # factory's classification.
 _STARTUP_ONLY = {
+    # The MCP server is constructed once, by the gateway at startup. A read in its constructor is
+    # syntactically per call and behaviourally frozen for the life of the process -- the same shape
+    # as GatewayConfig.from_env below, and the reason MATRIXARK_AUDIT_MODE is labelled restart even
+    # though the access layer re-reads it on every call.
+    ("matrixark_mcp_server.py", "MatrixArkMcpServer.__init__"),
     ("matrixark_v1_gateway.py", "GatewayConfig.from_env"),
     ("matrixark_v1_gateway.py", "_coerce_config"),
     ("matrixark_v1_gateway.py", "make_v1_app"),
