@@ -987,6 +987,14 @@ function liveStream(options) {
       controlHtml(f) + '<div class="helptext' + longCls + '">' + help + "</div></div>";
   }
 
+  function unsetSecrets() {
+    /* The snapshot never carries a secret VALUE -- it reports `kind: "secret"` and a
+       `configured` boolean -- so this asks the only question there is to ask. */
+    return Object.keys(fields)
+      .filter(function (k) { return fields[k].kind === "secret" && !fields[k].configured; })
+      .sort();
+  }
+
   function renderGroups(settings) {
     var groups = (settings || {}).groups || {};
     var meta = (settings || {}).group_meta || {};
@@ -1654,7 +1662,9 @@ function liveStream(options) {
 
   /* ---------- load ---------- */
   function load() {
-    fetch("/v1/admin/config", { headers: auth() })
+    /* Returned so a caller can act on the reloaded settings. The import needs to say what this
+       deployment is still missing, and that is only knowable once the answer has come back. */
+    return fetch("/v1/admin/config", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (d) {
         conn("live", "connected");
@@ -2124,14 +2134,24 @@ function liveStream(options) {
         }
         var n = Object.keys(settings).length;
         var restart = res.b.restart_required || [];
-        say($("importMsg"), "Applied " + n + " setting" + (n === 1 ? "" : "s") + "." +
+        var applied = "Applied " + n + " setting" + (n === 1 ? "" : "s") + "." +
           (restart.length
             ? " " + restart.length + (restart.length === 1 ? " of them needs" : " of them need") +
               " a gateway restart."
-            : ""),
-          restart.length ? "info" : "ok");
+            : "");
+        say($("importMsg"), applied, restart.length ? "info" : "ok");
         $("importText").value = "";
-        load();
+        load().then(function () {
+          /* An export never carries secret values, because blanking them at the target would
+             clear a working key. The person who made the file was told that; the person applying
+             it here was not, and an absent key looks exactly like a present one until an ingest
+             quietly falls back. */
+          var missing = unsetSecrets();
+          if (!missing.length) { return; }
+          say($("importMsg"), applied + " " + missing.length +
+            (missing.length === 1 ? " secret is" : " secrets are") + " not set on this " +
+            "deployment: " + missing.join(", ") + ". An export never carries them.", "info");
+        });
       })
       .catch(function () {
         $("importCfg").disabled = false;
