@@ -652,7 +652,12 @@ def select_token_budgeted_refs(
                 role_names.update(normalize_message_role(role) for role in roles if normalize_message_role(role))
         metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
         entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
-        semantic_role = semantic_source_role_for_entity_type(entity_type, role_names)
+        # Only an entity type it actually HAS can speak for a candidate. An unknown one maps to
+        # "durable_profile", so an empty one used to answer "profile" and that answer replaced
+        # the roles the candidate declared. Summaries carry no entity type, so every summary
+        # budgeted as profile and a per-role budget could never reach one -- an assistant budget
+        # of one token let a twelve-token assistant summary through untouched.
+        semantic_role = semantic_source_role_for_entity_type(entity_type, role_names) if entity_type else ""
         if semantic_role == "profile":
             return {semantic_role}
         if semantic_role and semantic_role in role_names:
@@ -677,7 +682,9 @@ def select_token_budgeted_refs(
         metadata = candidate.get("metadata")
         metadata_entity_type = metadata.get("entity_type") if isinstance(metadata, dict) else ""
         entity_type = str(candidate.get("entity_type") or metadata_entity_type or "").strip().lower()
-        semantic_role = semantic_source_role_for_entity_type(entity_type, role_names)
+        # Same rule as candidate_source_role_names above, so the counts describe the roles the
+        # budget actually charged.
+        semantic_role = semantic_source_role_for_entity_type(entity_type, role_names) if entity_type else ""
         if semantic_role == "profile":
             return {semantic_role: 1}
         if semantic_role and semantic_role in role_names:
