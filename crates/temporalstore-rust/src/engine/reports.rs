@@ -433,16 +433,23 @@ pub struct StorageSlabIntegrityReport {
 
 /// One summary a bucket, and a dump manifest carries one per bucket.
 ///
-/// The short aliases below are the first half of a two-step change, and they do nothing yet: this
-/// still WRITES the long names. A dump manifest is read by other engines during install, so a
-/// writer that emitted short names today would hand a document to a reader that has never heard of
-/// them -- and these fields carry no serde default, so that reader fails rather than degrades.
+/// The short aliases below were the first half of a two-step change: every reader accepts them,
+/// and this still WRITES the long names by default. A dump manifest is read by other engines
+/// during install, so a writer that emitted short names unconditionally would hand a document to
+/// a reader that has never heard of them -- and these fields carry no serde default, so that
+/// reader fails rather than degrades.
 ///
-/// Teaching every reader the short names first makes the second step safe whenever it is taken.
-/// Measured on a 4,000-bucket manifest: the nine field names are 592,046 bytes of a 1,367,875-byte
-/// document -- 43% of it, once the whitespace came out. Shortening them is worth about a third of
-/// the file, and costs nothing but the wait between the two deploys.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Measured on a 4,000-bucket manifest: the field names are 592,046 bytes of a 1,367,875-byte
+/// document -- 43% of it, once the whitespace came out.
+///
+/// The second step is now a SWITCH rather than a deploy. `TS_MANIFEST_SHORT_FIELD_NAMES=1` makes
+/// the writer emit the short names; it is off by default, so nothing changes until an operator
+/// who knows every reader in their fleet already accepts them turns it on. That is the only fact
+/// this code cannot check for itself, which is why it is a knob and not a version bump.
+///
+/// Reading never depends on the switch. Both spellings deserialize, so a directory holding
+/// manifests written either way -- which is what flipping it leaves behind -- loads end to end.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 pub struct BucketStorageSummary {
     #[serde(rename = "routing_slot", alias = "rs")]
     pub routing_bucket: u32,
@@ -465,6 +472,104 @@ pub struct BucketStorageSummary {
     pub page_slab_ids: Vec<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "lcz")]
     pub last_compacted_zone: Option<u64>,
+}
+
+/// Whether the manifest writer spells its fields short. Off unless asked.
+///
+/// Opt-in, unlike the other switches here, because turning it on writes a document an engine
+/// older than the release that taught readers the short names cannot load.
+pub(crate) fn manifest_short_field_names_enabled() -> bool {
+    matches!(
+        std::env::var("TS_MANIFEST_SHORT_FIELD_NAMES")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+impl BucketStorageSummary {
+    /// Write the summary under one spelling or the other.
+    ///
+    /// Takes the choice as an argument rather than reading the switch, so a test can exercise
+    /// both spellings without touching process environment -- which is shared, and which several
+    /// hundred sites in this crate already race over.
+    fn serialize_named<S>(&self, serializer: S, short: bool) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut fields = 9;
+        if self.last_compacted_zone.is_some() {
+            fields += 1;
+        }
+        let mut out = serializer.serialize_struct("BucketStorageSummary", fields)?;
+        out.serialize_field(
+            if short { "rs" } else { "routing_slot" },
+            &self.routing_bucket,
+        )?;
+        out.serialize_field(if short { "oc" } else { "object_count" }, &self.object_count)?;
+        out.serialize_field(
+            if short { "prc" } else { "page_ref_count" },
+            &self.page_ref_count,
+        )?;
+        out.serialize_field(
+            if short { "lb" } else { "logical_bytes" },
+            &self.logical_bytes,
+        )?;
+        out.serialize_field(
+            if short { "pb" } else { "physical_bytes" },
+            &self.physical_bytes,
+        )?;
+        out.serialize_field(
+            if short { "doc" } else { "dirty_object_count" },
+            &self.dirty_object_count,
+        )?;
+        out.serialize_field(
+            if short { "dg" } else { "dirty_generation" },
+            &self.dirty_generation,
+        )?;
+        out.serialize_field(
+            if short { "lds" } else { "last_dump_sequence" },
+            &self.last_dump_sequence,
+        )?;
+        out.serialize_field(
+            if short { "psi" } else { "page_slab_ids" },
+            &self.page_slab_ids,
+        )?;
+        // Absent stays absent: the derived writer skipped this when None, and a manifest that
+        // started emitting nulls would be bigger, not smaller.
+        match self.last_compacted_zone.as_ref() {
+            Some(zone) => {
+                out.serialize_field(if short { "lcz" } else { "last_compacted_zone" }, zone)?
+            }
+            None => out.skip_field(if short { "lcz" } else { "last_compacted_zone" })?,
+        }
+        out.end()
+    }
+}
+
+impl serde::Serialize for BucketStorageSummary {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.serialize_named(serializer, manifest_short_field_names_enabled())
+    }
+}
+
+/// A summary written under an explicit spelling, for tests and for anything that must not depend
+/// on the process-wide switch.
+pub(crate) struct SummaryNamed<'a>(pub(crate) &'a BucketStorageSummary, pub(crate) bool);
+
+impl serde::Serialize for SummaryNamed<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize_named(serializer, self.1)
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3478,5 +3583,132 @@ pub struct GoldenCorpusReport {
 impl GoldenCorpusReport {
     pub fn passed(&self) -> bool {
         self.failed_cases == 0 && self.total_cases == self.passed_cases
+    }
+}
+
+
+#[cfg(test)]
+mod manifest_field_name_tests {
+    use super::{BucketStorageSummary, SummaryNamed};
+
+    /// The writer this replaced: the derive, with the long names it emitted.
+    ///
+    /// Kept as the specification. A hand-written writer that produced a DIFFERENT document under
+    /// the default would change every manifest silently, which is the one thing this change must
+    /// not do -- the whole point is that nothing moves until an operator asks.
+    #[derive(serde::Serialize)]
+    struct Derived {
+        #[serde(rename = "routing_slot")]
+        routing_bucket: u32,
+        object_count: u64,
+        page_ref_count: u64,
+        logical_bytes: u64,
+        physical_bytes: u64,
+        dirty_object_count: u64,
+        dirty_generation: u64,
+        last_dump_sequence: u64,
+        page_slab_ids: Vec<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        last_compacted_zone: Option<u64>,
+    }
+
+    fn derived_of(summary: &BucketStorageSummary) -> Derived {
+        Derived {
+            routing_bucket: summary.routing_bucket,
+            object_count: summary.object_count,
+            page_ref_count: summary.page_ref_count,
+            logical_bytes: summary.logical_bytes,
+            physical_bytes: summary.physical_bytes,
+            dirty_object_count: summary.dirty_object_count,
+            dirty_generation: summary.dirty_generation,
+            last_dump_sequence: summary.last_dump_sequence,
+            page_slab_ids: summary.page_slab_ids.clone(),
+            last_compacted_zone: summary.last_compacted_zone,
+        }
+    }
+
+    fn cases() -> Vec<(&'static str, BucketStorageSummary)> {
+        let full = BucketStorageSummary {
+            routing_bucket: 8539,
+            object_count: 12,
+            page_ref_count: 34,
+            logical_bytes: 4096,
+            physical_bytes: 8192,
+            dirty_object_count: 3,
+            dirty_generation: 77,
+            last_dump_sequence: 909,
+            page_slab_ids: vec![1, 2, 3],
+            last_compacted_zone: Some(5),
+        };
+        let mut no_zone = full.clone();
+        no_zone.last_compacted_zone = None;
+        let mut empty_slabs = full.clone();
+        empty_slabs.page_slab_ids = Vec::new();
+        vec![
+            ("fully populated", full),
+            ("no compacted zone", no_zone),
+            ("no slab ids", empty_slabs),
+            ("all defaults", BucketStorageSummary::default()),
+        ]
+    }
+
+    /// Off by default: the long spelling is byte for byte what the derive produced.
+    #[test]
+    fn the_default_spelling_is_unchanged() {
+        for (label, summary) in cases() {
+            let ours = serde_json::to_vec(&SummaryNamed(&summary, false)).expect("ours");
+            let theirs = serde_json::to_vec(&derived_of(&summary)).expect("theirs");
+            assert_eq!(
+                String::from_utf8_lossy(&ours),
+                String::from_utf8_lossy(&theirs),
+                "default spelling changed for {label}"
+            );
+        }
+    }
+
+    /// The short spelling reads back as the same summary, because every reader learned the
+    /// aliases first. This is the property that makes the switch safe to turn on.
+    #[test]
+    fn the_short_spelling_round_trips() {
+        for (label, summary) in cases() {
+            let short = serde_json::to_vec(&SummaryNamed(&summary, true)).expect("short");
+            let back: BucketStorageSummary =
+                serde_json::from_slice(&short).unwrap_or_else(|err| {
+                    panic!("short form did not parse for {label}: {err}");
+                });
+            assert_eq!(back, summary, "short form lost something for {label}");
+
+            // And the long form still reads, so a directory holding both loads either way.
+            let long = serde_json::to_vec(&SummaryNamed(&summary, false)).expect("long");
+            let back_long: BucketStorageSummary =
+                serde_json::from_slice(&long).expect("long form parses");
+            assert_eq!(back_long, summary, "long form lost something for {label}");
+        }
+    }
+
+    /// And it is actually smaller -- the reason for the change.
+    #[test]
+    fn the_short_spelling_is_smaller() {
+        let summary = cases()
+            .into_iter()
+            .find(|(label, _)| *label == "fully populated")
+            .expect("the populated case")
+            .1;
+        let long = serde_json::to_vec(&SummaryNamed(&summary, false)).expect("long");
+        let short = serde_json::to_vec(&SummaryNamed(&summary, true)).expect("short");
+        let saved = 100.0 * (long.len() - short.len()) as f64 / long.len() as f64;
+        println!(
+            "  MANIFEST one summary: long {} B, short {} B, saved {saved:.1}%",
+            long.len(),
+            short.len()
+        );
+        assert!(
+            short.len() < long.len(),
+            "short {} is not smaller than long {}",
+            short.len(),
+            long.len()
+        );
+        // A saving this small would mean the names were not what cost the bytes.
+        assert!(saved > 25.0, "expected the names to be worth more than 25%, got {saved:.1}%");
     }
 }
