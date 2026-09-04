@@ -1667,11 +1667,32 @@ pub(super) fn sync_bucket_index_object_pages(
         }
     }
 
-    if removed_any || dirty {
-        shard
-            .bucket_index
-            .bucket_map
-            .retain(|_, bucket| !bucket.page_index.is_empty() || !bucket.object_index.is_empty());
+    // Drop buckets this call emptied -- BY NAME, not by walking the map.
+    //
+    // This was `bucket_map.retain(..)`, which is O(buckets) and ran on every write because
+    // `dirty` is true for one. At the default routing-slot range every key gets its own slot, so
+    // the map holds one bucket per record and the walk is O(corpus) per command: measured at
+    // 94.2% of the datanode's self time under a message-ingest profile, and an 8-hour run
+    // degraded from 7 ms to 105 ms per message as `corpus^0.96` -- linear per write, quadratic
+    // overall.
+    //
+    // Only a bucket whose `page_index` actually shrank above can have newly become empty, and
+    // that set is `touched_buckets`. Buckets the publish loop inserted into gained a page, and
+    // buckets this call never opened are unchanged. So the same buckets are removed, without
+    // reading the ones that cannot have changed.
+    if removed_any {
+        for routing_bucket in &touched_buckets {
+            let now_empty = shard
+                .bucket_index
+                .bucket_map
+                .get(routing_bucket)
+                .is_some_and(|bucket| {
+                    bucket.page_index.is_empty() && bucket.object_index.is_empty()
+                });
+            if now_empty {
+                shard.bucket_index.bucket_map.remove(routing_bucket);
+            }
+        }
     }
     if lookup_needs_establishing {
         shard.bucket_index.rebuild_object_page_lookup();
