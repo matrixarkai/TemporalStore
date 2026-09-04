@@ -460,6 +460,32 @@ def _prior_context_event_window() -> int:
     return max(value, 0)
 
 
+
+def _shadow_compare_enabled() -> bool:
+    """One switch for the shadow comparison, whichever read is running it.
+
+    There were six of these, one per operation, and they were six copies of the same two lines.
+    Nothing used the granularity: no test set any of them, nothing outside this module mentioned
+    them, and none was offered on the portal. One name is easier to find, and easier to turn off
+    again after a diagnosis.
+    """
+    import os as _os
+    return _os.environ.get("MATRIXARK_SHADOW_COMPARE", "").strip() not in {
+        "", "0", "false", "no", "off"
+    }
+
+
+def _shadow_log_path(operation: str) -> str:
+    """Where the comparison writes. One override; the default still names the operation.
+
+    The six per-operation defaults are kept deliberately -- comparing two reads is easier when
+    their logs are separate files -- so what collapsed is the six ways to override the path, not
+    the paths themselves.
+    """
+    import os as _os
+    return _os.environ.get("MATRIXARK_SHADOW_LOG", "/tmp/matrixark_%s_shadow.log" % operation)
+
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
     # The base class precedes the mixins in the MRO, so without this the buffered audit
     # implementation the __init__ prepares for (MATRIXARK_DIRECT_AUDIT_MODE, buffer, flusher)
@@ -1370,8 +1396,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
             from matrixark_mcp_serving_records import compact_latest_context_state_records
 
-        shadow = _os.environ.get("MATRIXARK_GETALL_SHADOW_COMPARE", "").strip()
-        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        shadow_on = _shadow_compare_enabled()
         count_before = None
         if shadow_on:
             try:
@@ -1410,8 +1435,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 count_after = int(self._get_count())
             except Exception:  # noqa: BLE001
                 count_after = None
-            log_path = _os.environ.get("MATRIXARK_GETALL_SHADOW_LOG",
-                                       "/tmp/matrixark_getall_shadow.log")
+            log_path = _shadow_log_path("getall")
             if count_before is None or count_after is None or count_before != count_after:
                 try:
                     with open(log_path, "a", encoding="utf-8") as log:
@@ -1492,8 +1516,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
             from matrixark_mcp_serving_records import compact_latest_context_state_records
 
-        shadow = _os.environ.get("MATRIXARK_SESSBUF_SHADOW_COMPARE", "").strip()
-        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        shadow_on = _shadow_compare_enabled()
         engine_scope: Json = {
             "tenant_hash": tenant_hash,
             "user_hash": user_hash,
@@ -1522,8 +1545,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
 
         if shadow_on:
             full = self.read_all()
-            log_path = _os.environ.get("MATRIXARK_SESSBUF_SHADOW_LOG",
-                                       "/tmp/matrixark_sessbuf_shadow.log")
+            log_path = _shadow_log_path("sessbuf")
 
             def project(records: list[Json]) -> tuple:
                 events, buffers, commits = [], [], []
@@ -1572,7 +1594,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         exactly that to the subset. The fold's index-posting step is a no-op here because index
         rows are excluded by design and nothing this pass reads consumes them.
 
-        Any failure serves the full read. With MATRIXARK_REFRESH_SHADOW_COMPARE=1 both views are
+        Any failure serves the full read. With MATRIXARK_SHADOW_COMPARE=1 both views are
         computed and compared -- skipping the comparison when the store moved between the two
         reads, because a foreground write landing in the window is a race, not a divergence --
         and the FULL view is served.
@@ -1596,8 +1618,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             )
             from matrixark_mcp_serving_records import compact_latest_context_state_records
 
-        shadow = _os.environ.get("MATRIXARK_REFRESH_SHADOW_COMPARE", "").strip()
-        shadow_on = shadow not in {"", "0", "false", "no", "off"}
+        shadow_on = _shadow_compare_enabled()
         count_before = None
         if shadow_on:
             try:
@@ -1626,8 +1647,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                 count_after = int(self._get_count())
             except Exception:  # noqa: BLE001
                 count_after = None
-            log_path = _os.environ.get("MATRIXARK_REFRESH_SHADOW_LOG",
-                                       "/tmp/matrixark_refresh_shadow.log")
+            log_path = _shadow_log_path("refresh")
             if count_before is None or count_after is None or count_before != count_after:
                 try:
                     with open(log_path, "a", encoding="utf-8") as log:
@@ -1738,11 +1758,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
 
-        shadow = _os.environ.get("MATRIXARK_DELETE_SHADOW_COMPARE", "").strip()
-        if shadow not in {"", "0", "false", "no", "off"}:
+        if _shadow_compare_enabled():
             full = self.read_all()
-            log_path = _os.environ.get("MATRIXARK_DELETE_SHADOW_LOG",
-                                       "/tmp/matrixark_delete_shadow.log")
+            log_path = _shadow_log_path("delete")
 
             def decisions(records: list[Json]) -> tuple:
                 """What delete actually decides from these records: is this a source event, and
@@ -1880,11 +1898,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
 
-        shadow = _os.environ.get("MATRIXARK_GETMEM_SHADOW_COMPARE", "").strip()
-        if shadow not in {"", "0", "false", "no", "off"}:
+        if _shadow_compare_enabled():
             full = self.read_all()
-            log_path = _os.environ.get("MATRIXARK_GETMEM_SHADOW_LOG",
-                                       "/tmp/matrixark_getmem_shadow.log")
+            log_path = _shadow_log_path("getmem")
 
             def project(records: list[Json]) -> tuple:
                 try:
@@ -1959,7 +1975,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         `compact_and_apply_tombstones` then `filter_live_memory_records`. The scan returns append
         order, which is what the order-aware sweep and the newest-first consumers need.
 
-        Any failure falls back to the full read. With MATRIXARK_PRIOR_CONTEXT_SHADOW_COMPARE=1
+        Any failure falls back to the full read. With MATRIXARK_SHADOW_COMPARE=1
         both views are computed, projected to what the consumers can see, compared, and the FULL
         view is served -- the scan path earns trust shadowed over live traffic first.
         """
@@ -2072,8 +2088,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         ])
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded_prior))
 
-        shadow = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_COMPARE", "").strip()
-        if shadow not in {"", "0", "false", "no", "off"}:
+        if _shadow_compare_enabled():
             # prior-context shadow: skip a racy window. The two views are computed in sequence,
             # so a write landing between them differs in length with every compared position
             # equal -- a race, not a divergence. Read the count around the pair and skip when it
@@ -2096,8 +2111,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                     or latest_before is None or latest_after is None
                     or count_before != count_after or latest_before != latest_after):
                 try:
-                    path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
-                                           "/tmp/matrixark_prior_context_shadow.log")
+                    path = _shadow_log_path("prior_context")
                     with open(path, "a", encoding="utf-8") as log:
                         log.write("SKIPPED racy window count %r -> %r\n"
                                   % (count_before, count_after))
@@ -2133,8 +2147,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             expected, got = project(full), project(live_subset)
             if expected != got:
                 try:
-                    path = _os.environ.get("MATRIXARK_PRIOR_CONTEXT_SHADOW_LOG",
-                                           "/tmp/matrixark_prior_context_shadow.log")
+                    path = _shadow_log_path("prior_context")
                     with open(path, "a", encoding="utf-8") as log:
                         first_div = next((i for i, (a, b) in enumerate(zip(expected, got)) if a != b), -1)
                         log.write("MISMATCH n=%d div@%d full=%r subset=%r ctx_full=%r ctx_sub=%r\n" % (
