@@ -154,6 +154,12 @@
   table.failures td{vertical-align:top;overflow-wrap:anywhere}
   table.failures td.mono{font-family:"IBM Plex Mono",monospace;font-size:12px}
   details ul li{list-style:none;margin-left:-18px}
+  /* Named for a screen reader, absent for everyone else. The heading beside a control can
+     already say what it is for, in which case a second visible copy is noise -- but a
+     heading is not a name, and announced on its own the control has none. Clipped rather
+     than display:none, which would take it out of the accessibility tree as well. */
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+           clip:rect(0 0 0 0);white-space:nowrap;border:0}
   /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
   .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
              border-bottom:1px solid var(--line)}
@@ -407,7 +413,7 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+<main class="wrap">
 
   <header>
     <h1>Setup &amp; metrics</h1>
@@ -683,7 +689,7 @@
   </section>
   </section>
 
-</div>
+</main>
 <script>
 /* Tabs, for every portal page whose body declares a tablist.
  *
