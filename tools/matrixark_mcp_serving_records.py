@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import os
 import sys
 from typing import Any
@@ -45,7 +51,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 Json = dict[str, Any]
 
-ENABLE_CONTEXT_DEBUG_RECORDS = os.environ.get("MATRIXARK_CONTEXT_DEBUG_RECORDS", "0").strip().lower() in {"1", "true", "yes"}
+ENABLE_CONTEXT_DEBUG_RECORDS = env_bool("MATRIXARK_CONTEXT_DEBUG_RECORDS", False)
 
 HOT_SERVING_RECORD_TYPES = {
     "context_event",

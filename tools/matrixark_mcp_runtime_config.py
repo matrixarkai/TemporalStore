@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import os
 
 
@@ -22,10 +28,10 @@ DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUF
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 
 CONTEXT_TELEMETRY_WRITE_MODE = os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "inline").strip().lower()
-ENABLE_CONTEXT_DEBUG_RECORDS = os.environ.get("MATRIXARK_CONTEXT_DEBUG_RECORDS", "0").strip().lower() in {"1", "true", "yes"}
-ENABLE_CONTEXT_REPLAY = os.environ.get("MATRIXARK_ENABLE_REPLAY", "0").strip().lower() in {"1", "true", "yes"}
-ENABLE_SUMMARY_REFRESH_AUDIT = os.environ.get("MATRIXARK_SUMMARY_REFRESH_AUDIT", "0").strip().lower() in {"1", "true", "yes"}
-ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = os.environ.get("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", "0").strip().lower() in {"1", "true", "yes"}
+ENABLE_CONTEXT_DEBUG_RECORDS = env_bool("MATRIXARK_CONTEXT_DEBUG_RECORDS", False)
+ENABLE_CONTEXT_REPLAY = env_bool("MATRIXARK_ENABLE_REPLAY", False)
+ENABLE_SUMMARY_REFRESH_AUDIT = env_bool("MATRIXARK_SUMMARY_REFRESH_AUDIT", False)
+ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = env_bool("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", False)
 SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000"))
 SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64"))
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
@@ -41,7 +47,7 @@ BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_B
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 
 MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
-MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
+MATRIXARK_ALLOW_LOCAL_BACKEND = env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
 MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
@@ -100,7 +106,7 @@ DEFAULT_CONTEXT_SOURCE_MODE = os.environ.get("MATRIXARK_CONTEXT_SOURCE_MODE", "a
 #   remote_only: remote must also reconstruct the working context, so cross-session takes the
 #       minority (current-session reconstruction fills the majority of the remote budget).
 # Flip on with MATRIXARK_MODE_DEPENDENT_QUOTA=1 once the three-arm study validates it.
-MODE_DEPENDENT_QUOTA_ENABLED = os.environ.get("MATRIXARK_MODE_DEPENDENT_QUOTA", "0").strip().lower() in {"1", "true", "yes"}
+MODE_DEPENDENT_QUOTA_ENABLED = env_bool("MATRIXARK_MODE_DEPENDENT_QUOTA", False)
 DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO", "0.60"))
 DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO", "0.30"))
 
@@ -159,8 +165,8 @@ def apply_remote_only_local_fallback(
     local_budget["token_estimate"] = int(local_budget.get("observed_local_token_estimate", 0))
     local_budget["context_source_mode"] = "remote_only_local_fallback"
     return True
-CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
-AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
+CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
+AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
@@ -226,19 +232,19 @@ DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEX
 # Conditional follow-up query rewriting: rewrite the RETRIEVAL query (ranking only) from
 # recent session turns so anaphora ("that"/"the ones") carries its referent terms. It does
 # NOT change the pack fed to the model, so it adds ZERO model tokens. Ships OFF.
-QUERY_REWRITE_ENABLED = os.environ.get("MATRIXARK_QUERY_REWRITE", "0").strip().lower() in {"1", "true", "yes"}
+QUERY_REWRITE_ENABLED = env_bool("MATRIXARK_QUERY_REWRITE", False)
 QUERY_REWRITE_WINDOW = int(os.environ.get("MATRIXARK_QUERY_REWRITE_WINDOW", "3"))
 
 # Precision-expand: for exact-fact queries, expand matched segments/summaries to their source
 # raw events (recovers exact hashes/numbers/commands that summaries drop). Ships OFF. Adds tokens
 # (raw > summary), so intended for remote-only exact-fact queries where accuracy is the priority.
-PACK_PRECISION_EXPAND_ENABLED = os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND", "0").strip().lower() in {"1", "true", "yes"}
+PACK_PRECISION_EXPAND_ENABLED = env_bool("MATRIXARK_PACK_PRECISION_EXPAND", False)
 PACK_PRECISION_EXPAND_MAX_EVENTS = int(os.environ.get("MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS", "12"))
 PACK_PRECISION_EXPAND_QUESTION_TYPES = {"fact", "multi_hop", "evidence", "benchmark_quality", "date"}
 
 # Auto skill discovery on session commit (mine reusable tool-procedures -> skill records).
 # Ships OFF; enable per-deployment. Runs only on final session boundaries.
-SKILL_DISCOVERY_ENABLED = os.environ.get("MATRIXARK_SKILL_DISCOVERY", "0").strip().lower() in {"1", "true", "yes"}
+SKILL_DISCOVERY_ENABLED = env_bool("MATRIXARK_SKILL_DISCOVERY", False)
 SKILL_DISCOVERY_MIN_SUPPORT = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MIN_SUPPORT", "2"))
 SKILL_DISCOVERY_MAX_SKILLS = int(os.environ.get("MATRIXARK_SKILL_DISCOVERY_MAX_SKILLS", "8"))
 
@@ -250,7 +256,7 @@ TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSI
 TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", str(30 * 24 * 60 * 60 * 1000)))
 TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", str(30 * 24 * 60 * 60 * 1000)))
 
-ENABLE_LLM_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", "").strip().lower() in {"1", "true", "yes"}
+ENABLE_LLM_MERGE_OPERATOR = env_bool("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", False)
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: dict[str, float] = {

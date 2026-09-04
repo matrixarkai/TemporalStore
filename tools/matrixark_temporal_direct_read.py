@@ -3,6 +3,12 @@
 """_TemporalDirectReadMixin methods split from matrixark_mcp_temporal_adapters.MatrixArkTemporalStoreDirectAdapter (mixin)."""
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -881,7 +887,7 @@ class _TemporalDirectReadMixin:
         return pack
 
     def _try_native_context_pack(self, args: Json) -> Json | None:
-        if os.environ.get("MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK", "").strip().lower() in {"1", "true", "yes"}:
+        if env_bool("MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK", False):
             return None
         if not self.supports_native_context_pack():
             return None

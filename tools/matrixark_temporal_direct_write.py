@@ -3,6 +3,12 @@
 """_TemporalDirectWriteMixin methods split from matrixark_mcp_temporal_adapters.MatrixArkTemporalStoreDirectAdapter (mixin)."""
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -674,7 +680,7 @@ class _TemporalDirectWriteMixin:
     def _async_context_warmup_allowed(self) -> tuple[bool, str]:
         if not bool(getattr(self, "_async_context_warmup_enabled", False)):
             return False, "disabled"
-        if os.environ.get("MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE", "").strip().lower() in {"1", "true", "yes"}:
+        if env_bool("MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE", False):
             return True, "env_force"
         mode = self._async_context_warmup_storage_mode()
         replication_mode = os.environ.get("MATRIXARK_BENCHMARK_REPLICATION_MODE", "").strip().lower().replace("-", "_")

@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import os
 from typing import Any
 
@@ -25,7 +31,7 @@ def is_retrieval_tool(name: str) -> bool:
 def native_retrieve_fallback_allowed(args: dict[str, Any]) -> bool:
     """Return whether Python may leave the native serving path for this request."""
 
-    if os.environ.get("MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
+    if env_bool("MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK", False):
         return True
     for flag in RETRIEVAL_FALLBACK_FLAGS:
         if bool(args.get(flag)):

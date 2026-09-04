@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 from contextlib import contextmanager
 import copy as _copy
 import hashlib as _hashlib
@@ -111,8 +117,8 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 }
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
-LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
-LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+LOCAL_READ_CACHE_COPY = env_bool("MATRIXARK_LOCAL_READ_CACHE_COPY", True)
+LOCAL_DURABLE_READ_CACHE_ENABLED = env_bool("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", True)
 # Records the tail file may hold before the base is folded back in. Bounds both the
 # delta file and the work a load does stitching it onto the base.
 LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
@@ -150,7 +156,7 @@ def _snapshot_prefix_fingerprint(record: "Json") -> str:
     except (TypeError, ValueError):
         return ""
 LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 1
-PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
+PRE_RETRIEVAL_SUMMARY_REFRESH = env_bool("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 
 QUALITY_FIRST_UNDERFILL_DROP_KEYS = {
     "cross_session_budget",
