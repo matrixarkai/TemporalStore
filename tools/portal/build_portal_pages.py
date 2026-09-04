@@ -296,7 +296,8 @@ NAV_JS = r'''<script>
     enc: document.getElementById("liveEnc"),
     imp: document.getElementById("liveImp"),
     req: document.getElementById("liveReq"),
-    warn: document.getElementById("liveWarn")
+    warn: document.getElementById("liveWarn"),
+    node: document.getElementById("liveNode")
   };
   var dot = document.getElementById("liveDot");
   /* Any page can watch the frames this page is already receiving. The alternative -- each panel
@@ -368,6 +369,20 @@ NAV_JS = r'''<script>
       t.total_errors ? "warn" : "");
 
     show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    /* Only when it is NOT ok, the way the warning segment already behaves. A strip that always
+       says "datanode: ok" is one people stop reading, and absent means nothing has looked yet --
+       which is not the same as reachable, so that shows nothing either.
+
+       Matched against the two states rather than escaped and interpolated: this block has no esc()
+       (it defines n, show and plural and nothing else), so calling one would have thrown inside
+       render, which the caller wraps in a catch that ignores -- failing in total silence. A closed
+       set of expected values is also stricter than escaping: a server sending something
+       unexpected renders nothing rather than rendering it safely. */
+    show(seg.node,
+      frame.datanode === "unreachable" ? "datanode <b>unreachable</b>"
+        : (frame.datanode === "erroring" ? "datanode <b>erroring</b>" : null),
+      "warn");
 
     watchers.forEach(function (callback) {
       /* One panel throwing must not stop the others, or the strip, from updating. */
@@ -459,7 +474,7 @@ LIVE_STRIP = """
       <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
       <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
       <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
-      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span>
       <span class="live-dot" id="liveDot" title="live"></span>
     </div>"""
 
