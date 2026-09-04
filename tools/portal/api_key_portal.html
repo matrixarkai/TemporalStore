@@ -623,6 +623,11 @@
 
   function rotateKey(id) {
     if (!id) return;
+    /* Revoke asks and this did not, though it revokes the key too -- and it is the button that
+       looks safer of the two, sitting next to it in the same row. */
+    if (!window.confirm("Rotate " + id + "? A replacement is issued and this key stops working "
+                        + "immediately, so anything still using it will be rejected until you "
+                        + "update it.")) { return; }
     apiFetch(mgmtBase(), "/api/admin/rotate_api_key", "POST", { api_key_id: id })
       .then(function (data) {
         var r = unwrap(data);
