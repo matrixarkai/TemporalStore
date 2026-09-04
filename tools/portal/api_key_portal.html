@@ -166,6 +166,16 @@
         <input id="ctxAccount" type="text" placeholder="acct_local" autocomplete="off">
       </div>
       <div>
+        <label>Tenant ID <span class="opt">(scopes the list/create views)</span></label>
+        <input id="ctxTenant" type="text" placeholder="tenantA" autocomplete="off">
+      </div>
+    </div>
+    <div class="actions">
+      <button id="saveConn" class="secondary">Save connection</button>
+      <button id="clearKey" class="secondary">Clear key</button>
+      <span id="connMsg" class="hint" style="margin:0" role="status" aria-live="polite"></span>
+    </div>
+  </section>
 
   <div class="tabs" role="tablist" aria-label="Key portal sections">
     <button type="button" role="tab" id="tab-keys" aria-controls="pane-keys"
@@ -177,16 +187,6 @@
   </div>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-keys" id="pane-keys">
-        <label>Tenant ID <span class="opt">(scopes the list/create views)</span></label>
-        <input id="ctxTenant" type="text" placeholder="tenantA" autocomplete="off">
-      </div>
-    </div>
-    <div class="actions">
-      <button id="saveConn" class="secondary">Save connection</button>
-      <button id="clearKey" class="secondary">Clear key</button>
-      <span id="connMsg" class="hint" style="margin:0" role="status" aria-live="polite"></span>
-    </div>
-  </section>
 
   <!-- ============================ Create ============================ -->
   <section class="card">
@@ -258,9 +258,6 @@
       </label>
     </div>
     <div id="listMsg" class="msg" role="status" aria-live="polite"></div>
-  </section>
-
-  <section class="pane" role="tabpanel" aria-labelledby="tab-policy" id="pane-policy" hidden>
     <div class="tablewrap">
       <table id="keysTable" style="display:none">
         <thead><tr>
@@ -271,6 +268,10 @@
       </table>
     </div>
   </section>
+
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-policy" id="pane-policy" hidden>
 
   <!-- ======================= Policy overrides ======================= -->
   <section class="card">
@@ -283,9 +284,6 @@
     <div class="actions">
       <button id="overridesBtn" class="secondary">Refresh overrides</button>
     </div>
-  </section>
-
-  <section class="pane" role="tabpanel" aria-labelledby="tab-usage" id="pane-usage" hidden>
     <div id="overridesMsg" class="msg" role="status" aria-live="polite"></div>
     <div class="tablewrap">
       <table id="overridesTable">
@@ -297,6 +295,10 @@
     </div>
   </section>
 
+  </section>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-usage" id="pane-usage" hidden>
+
   <!-- ============================ Usage ============================ -->
   <section class="card">
     <h2>Live edge usage</h2>
@@ -306,7 +308,6 @@
       <button id="usageBtn" class="secondary">Refresh usage</button>
     </div>
     <div id="usageMsg" class="msg" role="status" aria-live="polite"></div>
-  </section>
     <div class="tablewrap">
       <table id="usageTable" style="display:none">
         <thead><tr>
@@ -316,6 +317,8 @@
         <tbody></tbody>
       </table>
     </div>
+  </section>
+
   </section>
 
   <footer>
