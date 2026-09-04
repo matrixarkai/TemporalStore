@@ -19,7 +19,7 @@ After you deploy the Cloud API, hand customers the **[Enterprise Onboarding](./e
 | Method | Path | Purpose | Success |
 |---|---|---|---|
 | `GET` | `/v1/healthz` | Liveness | `200 {"status":"ok"}` |
-| `GET` | `/v1/readyz` | Readiness (shallow datanode probe) | `200 {"ready":true,"datanode":"ok"}` |
+| `GET` | `/v1/readyz` | Readiness (shallow datanode probe) | `200 {"ready":true,"datanode":"ok"}`, or `503 {"ready":false,"datanode":"erroring\|unreachable"}` when the datanode cannot serve |
 | `POST` | `/v1/ingest` | Write resources/skills/session events (async, fast-ack) | `202 {"accepted":n,"scope":...}` |
 | `POST` | `/v1/session/commit` | Close a window; extract entities & summaries | `200` |
 | `POST` | `/v1/retrieve` | Ranked, token-budgeted ContextPack | `200` |

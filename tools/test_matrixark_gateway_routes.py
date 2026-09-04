@@ -24,7 +24,7 @@ from typing import Set
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_v1_gateway as gw  # noqa: E402
-from test_matrixark_v1_gateway import _FakeServer, _cfg, drive  # noqa: E402
+from test_matrixark_v1_gateway import _factory_for, _FakeResponse, _FakeServer, _cfg, drive  # noqa: E402
 
 SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "matrixark_v1_gateway.py")
 
@@ -135,7 +135,13 @@ class RouteDocsTest(unittest.TestCase):
         allowed to refuse.
         """
         server = _FakeServer()
-        app = gw.make_v1_app(server, _cfg())
+        # With a datanode that answers. /v1/readyz is documented as 200 only while the datanode can
+        # serve -- it answers 503 otherwise, which is the point of the route -- so a sweep with no
+        # datanode would be asserting that a readiness probe cannot report unready. Giving it a
+        # healthy one exercises the documented example rather than excluding the route from the
+        # sweep.
+        app = gw.make_v1_app(server, _cfg(
+            blob_connection_factory=_factory_for(_FakeResponse(200))))
         headers = {"Authorization": "Bearer k-acme"}
         checked = 0
         for entry in gw.ROUTE_DOCS:

@@ -1564,7 +1564,9 @@ ROUTE_DOCS: List[Json] = [
     {"group": "Health", "method": "GET", "path": "/v1/healthz", "scope": None,
      "summary": "Liveness. Answers as long as the process is up."},
     {"group": "Health", "method": "GET", "path": "/v1/readyz", "scope": None,
-     "summary": "Readiness, including whether the datanode answers."},
+     "summary": "Readiness. 200 only when the datanode can serve; 503 with "
+                "\"datanode\": \"erroring\" or \"unreachable\" when it cannot, so a gateway "
+                "with a backend that is down takes itself out of rotation."},
     {"group": "Health", "method": "GET", "path": "/v1/metrics", "scope": None,
      "summary": "Prometheus scrape. Aggregate counters only, so it needs no credentials."},
 
@@ -3305,8 +3307,17 @@ def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
         return None
 
 
-def _probe_datanode(cfg: GatewayConfig) -> Optional[bool]:
-    """Best-effort readiness probe against the datanode. None => could not determine (never fatal)."""
+def _probe_datanode(cfg: GatewayConfig) -> str:
+    """What the datanode is doing, by name: "ok", "erroring" or "unreachable".
+
+    It used to return a tri-state bool whose two failure states were reported under names that had
+    them the wrong way round. None meant the connection failed -- nothing listening -- and was
+    reported as "unknown"; False meant the datanode answered with a 5xx and was reported as
+    "unreachable". The reassuring word described the worse state.
+
+    There is no fourth state for "no datanode configured": `datanode_url` always resolves, so a
+    connection failure is a failure to reach something that should be there.
+    """
     try:
         conn = cfg.blob_connection_factory(cfg)
         conn.putrequest("GET", "/health")
@@ -3318,9 +3329,11 @@ def _probe_datanode(cfg: GatewayConfig) -> Optional[bool]:
             pass
         status = int(getattr(resp, "status", 0) or 0)
         _safe_close(conn)
-        return status < 500
+        return "ok" if status < 500 else "erroring"
     except Exception:
-        return None
+        # Could not connect at all. This is the state that was called "unknown", and it is the
+        # least ambiguous of the three.
+        return "unreachable"
 
 
 # ================================================================================================
@@ -3498,9 +3511,21 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if method == "GET" and path == "/v1/healthz":
             return await _json(send, 200, {"status": "ok"})
         if method == "GET" and path == "/v1/readyz":
-            probe = await asyncio.to_thread(_probe_datanode, cfg)
-            datanode = "unknown" if probe is None else ("ok" if probe else "unreachable")
-            return await _json(send, 200, {"ready": True, "datanode": datanode})
+            # Answers 503 when the datanode cannot serve. It used to answer 200 with
+            # `"ready": true` whatever the probe found, so a gateway with an unreachable backend
+            # stayed in rotation and was handed requests it could not fulfil -- the one thing a
+            # readiness probe exists to prevent.
+            #
+            # `/v1/healthz` is unchanged and still answers 200 whenever the process is alive: a
+            # liveness probe that fails on a dependency gets the container restarted, which fixes
+            # nothing and loses whatever it was doing.
+            datanode = await asyncio.to_thread(_probe_datanode, cfg)
+            # Recorded so monitoring can see it too. The orchestrator acts on the status code;
+            # without a series nobody can alert on a backend that has been down for two minutes.
+            _gwmetrics.METRICS.note_datanode(datanode)
+            ready = datanode == "ok"
+            return await _json(send, 200 if ready else 503,
+                               {"ready": ready, "datanode": datanode})
 
         # ---- key-management portal UI (static HTML, no auth to FETCH) ------------------------
         # Returns the self-contained portal page. Fetching the static page needs no auth; every
