@@ -4029,7 +4029,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
-            denied = _usage_read_denied(key_record)
+            # One branch serves both methods, so the gate is chosen by method rather than by the
+            # branch: the POST below writes user- and tenant-level settings, and read scopes have
+            # no business doing that. A combined branch is exactly how this one kept the read gate
+            # when the other four writes were moved off it.
+            denied = (_admin_write_denied if method == "POST" else _usage_read_denied)(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
             policy_mod = _tenant_policy_module()
