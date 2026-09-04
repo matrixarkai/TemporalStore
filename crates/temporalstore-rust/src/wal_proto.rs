@@ -389,17 +389,23 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
             })
             .collect(),
     };
-    let mut encoded = Vec::with_capacity(message.encoded_len());
+    let len = message.encoded_len();
+    if crate::log_framing::binary_frame_enabled() {
+        // The frame declares its own length, so the payload is written as produced -- which means
+        // the marker can go in FIRST and the message encode straight after it. `encode` appends,
+        // so there is no second buffer and no second copy of the payload. That copy was the whole
+        // record again: at a four-kilobyte value it was four kilobytes to prepend one byte.
+        let mut out = Vec::with_capacity(len + 1);
+        out.push(RAW_PAYLOAD_MARKER);
+        message.encode(&mut out).map_err(|err| err.to_string())?;
+        return Ok(out);
+    }
+    // The escaping fallback still needs the payload on its own, because escaping rewrites it.
+    let mut encoded = Vec::with_capacity(len);
     message.encode(&mut encoded).map_err(|err| err.to_string())?;
     let mut out = Vec::with_capacity(encoded.len() + 8);
-    if crate::log_framing::binary_frame_enabled() {
-        // The frame declares its own length, so the payload is written as produced.
-        out.push(RAW_PAYLOAD_MARKER);
-        out.extend_from_slice(&encoded);
-    } else {
-        out.push(BINARY_PAYLOAD_MARKER);
-        out.extend_from_slice(&escape_newlines(&encoded));
-    }
+    out.push(BINARY_PAYLOAD_MARKER);
+    out.extend_from_slice(&escape_newlines(&encoded));
     Ok(out)
 }
 
