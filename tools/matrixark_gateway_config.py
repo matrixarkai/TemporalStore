@@ -983,6 +983,24 @@ def _is_pending_restart(setting: "Setting", value: str) -> bool:
     return str(value) != _BOOT_EFFECTIVE[setting.key]
 
 
+def pending_restart_keys() -> List[str]:
+    """Settings written since startup and not yet in effect.
+
+    The same question `snapshot()` answers per field, without building the catalogue to ask it: the
+    live strip asks this every couple of seconds on every open page, and that document costs most
+    of a frame on its own.
+    """
+    document = load()
+    values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
+    waiting: List[str] = []
+    for setting in SETTINGS:
+        if setting.applies != "restart" or setting.key not in _BOOT_EFFECTIVE:
+            continue
+        if _effective(setting, values)[0] != _BOOT_EFFECTIVE[setting.key]:
+            waiting.append(setting.key)
+    return sorted(waiting)
+
+
 def snapshot(include_catalog: bool = True) -> Json:
     """The full settable-config view for the portal: effective value, where it came from, and when
     a change takes effect. Secret VALUES are never present -- only ``configured``."""

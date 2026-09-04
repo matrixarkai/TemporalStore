@@ -339,7 +339,8 @@ NAV_JS = r'''<script>
     imp: document.getElementById("liveImp"),
     req: document.getElementById("liveReq"),
     warn: document.getElementById("liveWarn"),
-    node: document.getElementById("liveNode")
+    node: document.getElementById("liveNode"),
+    waiting: document.getElementById("liveWaiting")
   };
   var dot = document.getElementById("liveDot");
   /* Any page can watch the frames this page is already receiving. The alternative -- each panel
@@ -411,6 +412,15 @@ NAV_JS = r'''<script>
       t.total_errors ? "warn" : "");
 
     show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    /* Written and not in effect: the deployment is running something other than what the Setup
+       page describes. Absent when there is none, the way the warning segment behaves -- a strip
+       that always says "0 awaiting restart" is a place people stop looking. */
+    show(seg.waiting,
+         frame.settings_waiting
+           ? plural(frame.settings_waiting, "setting") + " awaiting restart"
+           : null,
+         "warn");
 
     /* Only when it is NOT ok, the way the warning segment already behaves. A strip that always
        says "datanode: ok" is one people stop reading, and absent means nothing has looked yet --
@@ -516,7 +526,7 @@ LIVE_STRIP = """
       <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
       <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
       <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
-      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span><a class="live-seg warn" href="/v1/admin/setup" id="liveWaiting" hidden></a>
       <span class="live-dot" id="liveDot" title="live"></span>
     </div>"""
 

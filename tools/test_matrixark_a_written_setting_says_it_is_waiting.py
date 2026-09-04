@@ -56,19 +56,35 @@ class APendingSettingIsReportedTest(unittest.TestCase):
         """If it became live, every check below would pass while testing nothing."""
         self.assertEqual("restart", cfg.SETTINGS_BY_KEY[RESTART_KEY].applies)
 
+
+    def _change_it(self):
+        """Write something that differs from whatever is in effect right now.
+
+        A fixed string is not enough: another suite writes the same value into this same setting,
+        and under discovery its environment outlives it, so the write can land as a no-op and the
+        assertions below then describe a change that never happened.
+        """
+        field = next(f for group in cfg.snapshot()["groups"].values() for f in group
+                     if f["key"] == RESTART_KEY)
+        changed = (field["value"] or "https://example.invalid") + "/changed-by-this-test"
+        self.assertNotIn(RESTART_KEY, cfg.pending_restart_keys(),
+                         "something was already pending before this test wrote anything")
+        cfg.update({RESTART_KEY: changed})
+        return changed
+
     def test_a_fresh_boot_has_nothing_waiting(self) -> None:
         cfg.apply_boot()
         self.assertEqual([], self._pending())
 
     def test_a_write_to_a_restart_setting_is_reported_as_waiting(self) -> None:
         cfg.apply_boot()
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
-        self.assertEqual([RESTART_KEY], self._pending())
+        self._change_it()
+        self.assertIn(RESTART_KEY, self._pending())
 
     def test_the_field_itself_carries_it(self) -> None:
         """The page renders per field, so the list alone would not reach the reader."""
         cfg.apply_boot()
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
+        self._change_it()
         field = next(f for group in cfg.snapshot()["groups"].values() for f in group
                      if f["key"] == RESTART_KEY)
         self.assertTrue(field["pending_restart"])
@@ -77,8 +93,8 @@ class APendingSettingIsReportedTest(unittest.TestCase):
 
     def test_a_restart_clears_it(self) -> None:
         cfg.apply_boot()
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
-        self.assertEqual([RESTART_KEY], self._pending())
+        self._change_it()
+        self.assertIn(RESTART_KEY, self._pending())
         cfg.apply_boot()                       # what a restart does
         self.assertEqual([], self._pending(),
                          "it still reads as waiting after the restart that applied it")
@@ -92,7 +108,7 @@ class APendingSettingIsReportedTest(unittest.TestCase):
         """A tool that imports this module has no idea what the serving process started with, and
         must not answer as though it did."""
         cfg._BOOT_EFFECTIVE.clear()
-        cfg.update({RESTART_KEY: "https://api.deepseek.com/v1"})
+        cfg.update({RESTART_KEY: "https://example.invalid/whatever"})
         self.assertEqual([], self._pending())
 
 
