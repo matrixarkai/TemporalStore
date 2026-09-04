@@ -186,11 +186,19 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             dirty_markers = [r for r in adapter.read_all() if r.get("record_type") == "context_summary_dirty"]
             self.assertTrue(dirty_markers)
             for marker in dirty_markers:
-                self.assertNotIn("dirty_reason", marker)
-                self.assertNotIn("source_ref_type", marker)
-                self.assertNotIn("source_event_hash", marker)
+                # What "compact" leaves out is the DEBUG lineage, which is what the flag gates.
                 self.assertNotIn("changed_ref_count", marker)
+                self.assertNotIn("propagate_depth", marker)
+                self.assertNotIn("source_role_counts", marker)
+                self.assertNotIn("source_codex_events", marker)
                 self.assertNotIn("empty_summary_seen", marker)
+                # What it keeps is the part the store itself reads. Recovery branches on
+                # dirty_reason (profile_entity_promoted), and both dashboards and the summary
+                # runtime read all three of these, so a marker without them is not compact --
+                # it is broken. Asserting their absence asked for that.
+                self.assertEqual("new_event", marker.get("dirty_reason"))
+                self.assertEqual("event", marker.get("source_ref_type"))
+                self.assertIn("source_event_hash", marker)
 
     def test_summary_dirty_debug_fields_are_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -220,10 +228,14 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             dirty_markers = [r for r in adapter.read_all() if r.get("record_type") == "context_summary_dirty"]
             self.assertTrue(dirty_markers)
             for marker in dirty_markers:
+                # These three are written either way -- see the compact test above -- so they
+                # document the shape rather than guard the flag. The gated ones below are what
+                # turning it on actually adds.
                 self.assertEqual("new_event", marker.get("dirty_reason"))
                 self.assertEqual("event", marker.get("source_ref_type"))
                 self.assertIn("source_event_hash", marker)
                 self.assertEqual(1, marker.get("changed_ref_count"))
+                self.assertIn("propagate_depth", marker)
 
     def test_background_worker_refreshes_dirty_nodes_and_embeddings(self) -> None:
         mcp.SUMMARY_REFRESH_INTERVAL_MS = 100
