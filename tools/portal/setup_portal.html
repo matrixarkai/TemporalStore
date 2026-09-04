@@ -882,9 +882,22 @@ function liveStream(options) {
     $("summary").innerHTML = cards.map(function (c) {
       return '<div class="stat ' + c.c + '"><b>' + esc(c.n) + "</b><span>" + esc(c.l) + "</span></div>";
     }).join("");
+    /* Values in the file that this build has no setting for. They were set deliberately by
+       somebody who then upgraded, and they have quietly meant nothing since. The page cannot
+       remove them -- a write of an unknown key is refused, correctly -- so it says where they
+       are instead. */
+    var forgotten = ((d.settings || {}).unknown_stored) || [];
     $("warnings").innerHTML = (d.warnings || []).map(function (w) {
       return '<div class="note">' + esc(w) + "</div>";
-    }).join("");
+    }).join("") + (forgotten.length
+      ? '<div class="note">' + esc(forgotten.length) +
+        (forgotten.length === 1 ? " stored value is" : " stored values are") +
+        " not a setting this build has, so " +
+        (forgotten.length === 1 ? "it does" : "they do") + " nothing: " +
+        esc(forgotten.join(", ")) + ". Stored by an older build, in " +
+        esc((d.settings || {}).config_file || "the configuration file") + "." +
+        "</div>"
+      : "");
   }
 
   /* ---------- presets ---------- */
