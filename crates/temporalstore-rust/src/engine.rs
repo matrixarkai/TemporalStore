@@ -709,7 +709,7 @@ impl TemporalEngine {
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
             let delta_command_keys = object_keys.clone();
-            let upsert_components = command_upsert_components(&command);
+            let upsert_components = command_upsert_components(&command, shard);
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
                     request.shard_id,
@@ -2112,6 +2112,7 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
 /// rewrites), and the caller must fall back to the whole-object snapshot record.
 fn command_upsert_components(
     command: &Command,
+    shard: &ShardState,
 ) -> Option<Vec<(&'static str, String, Option<String>)>> {
     match command {
         Command::HashSet { key, field, .. } => {
@@ -2140,6 +2141,24 @@ fn command_upsert_components(
         )]),
         Command::SetAdd { key, member } => {
             Some(vec![("set", key.clone(), Some(hex::encode(member)))])
+        }
+        // A push files its page under its sequence number, which is only knowable once the
+        // write has landed: post-apply the pushed element is the list's FIRST entry for a left
+        // push and its LAST for a right one. That is why this needs shard state and the other
+        // arms do not.
+        Command::ListPush { key, left, .. } => {
+            let seq = shard.lists.get(key).and_then(|list| {
+                if *left {
+                    list.keys().next().copied()
+                } else {
+                    list.keys().next_back().copied()
+                }
+            })?;
+            Some(vec![(
+                "list",
+                key.clone(),
+                Some(format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64))),
+            )])
         }
         _ => None,
     }
@@ -2179,6 +2198,18 @@ fn collect_upsert_index_items(
                 }),
             // `hex::encode(member)` is the component a set add files its page under, so
             // the member the map is keyed by is recoverable from the component itself.
+            // `{biased:016x}` of the entry's sequence, so the key the list map is keyed by
+            // is recoverable from the component it was filed under.
+            ("list", Some(component)) => u64::from_str_radix(component, 16)
+                .ok()
+                .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+                .and_then(|seq| {
+                    shard
+                        .lists
+                        .get(object_key)
+                        .and_then(|entries| entries.get(&seq))
+                        .cloned()
+                }),
             ("set", Some(component)) => hex::decode(component)
                 .ok()
                 .and_then(|member| {

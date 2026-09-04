@@ -14699,3 +14699,175 @@ fn a_set_survives_a_restart_with_its_members_and_removals() {
         "a duplicate add must not add a second copy, and nothing may appear that was not written"
     );
 }
+
+/// A list must come back from a restart with its ORDER intact, pushes from both ends included.
+///
+/// `ListPush` now declares its index component, and that component is its sequence number --
+/// read from the list AFTER the write lands, because a push's position is not knowable from the
+/// command alone.
+///
+/// This is a GUARD on the restart path, not a check of the component: a clean `unload_shard`
+/// writes a full base snapshot that recovery reads wholesale, so inverting the end the component
+/// is taken from leaves this test green. The component itself is asserted directly by
+/// `a_list_push_files_its_index_item_under_the_pushed_entry`, which reads the delta record.
+#[test]
+fn a_list_survives_a_restart_with_its_order_across_both_ends() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+
+    // Right pushes build r-0000..r-0031 left-to-right; left pushes then prepend l-0000, l-0001,
+    // so the head ends up l-0001, l-0000 -- an order no single-ended push could produce.
+    for index in 0..32 {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ListPush {
+                key: "queue".to_string(),
+                member: format!("r-{index:04}").into_bytes(),
+                left: false,
+            },
+        });
+        assert!(out.status.ok, "right push {index}: {:?}", out.status);
+    }
+    for index in 0..2 {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ListPush {
+                key: "queue".to_string(),
+                member: format!("l-{index:04}").into_bytes(),
+                left: true,
+            },
+        });
+        assert!(out.status.ok, "left push {index}: {:?}", out.status);
+    }
+
+    let expected: Vec<String> = std::iter::once("l-0001".to_string())
+        .chain(std::iter::once("l-0000".to_string()))
+        .chain((0..32).map(|index| format!("r-{index:04}")))
+        .collect();
+
+    let read_all = |engine: &TemporalEngine| -> Vec<String> {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ListRange {
+                key: "queue".to_string(),
+                start: 0,
+                stop: -1,
+            },
+        });
+        assert!(out.status.ok, "ListRange refused: {:?}", out.status);
+        match out.response {
+            CommandResponse::Members { members } => members
+                .into_iter()
+                .map(|m| String::from_utf8(m).expect("member is utf8"))
+                .collect(),
+            other => panic!("expected list members, got {other:?}"),
+        }
+    };
+
+    // Before the restart, so a mismatch after it is attributable to the RESTART and not to the
+    // pushes having been wrong all along.
+    assert_eq!(read_all(&engine), expected, "the order is wrong before any restart");
+
+    engine.unload_shard(1);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+
+    let after = read_all(&restarted);
+    assert!(
+        !after.is_empty(),
+        "the list read back EMPTY after the restart: its entries no longer resolve"
+    );
+    assert_eq!(
+        after, expected,
+        "the list came back in a different order than it went in"
+    );
+}
+
+/// A push must file its index item under the entry it actually pushed.
+///
+/// The restart tests cannot see this: a clean unload writes a full base snapshot, so recovery
+/// never consults the incremental item. This reads the delta record itself, which is the only
+/// place the component appears, and so is the only test that fails if the component is computed
+/// from the wrong end of the list.
+#[test]
+fn a_list_push_files_its_index_item_under_the_pushed_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    for index in 0..4 {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ListPush {
+                key: "queue".to_string(),
+                member: format!("r-{index:04}").into_bytes(),
+                left: false,
+            },
+        });
+        assert!(out.status.ok, "right push: {:?}", out.status);
+    }
+    // The last write is a LEFT push, so the entry it created is the list's FIRST key. If the
+    // component were taken from the other end it would name the last right push instead.
+    let out = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ListPush {
+            key: "queue".to_string(),
+            member: b"l-0000".to_vec(),
+            left: true,
+        },
+    });
+    assert!(out.status.ok, "left push: {:?}", out.status);
+
+    let (head_seq, tail_seq) = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let list = shard.lists.get("queue").expect("the list exists");
+        (
+            *list.keys().next().expect("a head"),
+            *list.keys().next_back().expect("a tail"),
+        )
+    };
+    assert_ne!(head_seq, tail_seq, "the list must have both ends to tell them apart");
+
+    let records = engine
+        .index_log_store
+        .read_delta_records(1, 0)
+        .expect("delta records readable");
+    // The newest record carrying a component for this list is the left push's.
+    let component = records
+        .iter()
+        .rev()
+        .flat_map(|record| record.items.iter())
+        .find(|item| item.object_key == "queue" && item.component.is_some())
+        .and_then(|item| item.component.clone())
+        .expect("the push wrote an index item with a component");
+
+    let biased = u64::from_str_radix(&component, 16).expect("the component is 16 hex digits");
+    let seq = biased.wrapping_add(i64::MIN as u64) as i64;
+
+    assert_eq!(
+        seq, head_seq,
+        "a LEFT push must file its item under the list's head ({head_seq}), not its tail \
+         ({tail_seq}); the component named {seq}"
+    );
+}
