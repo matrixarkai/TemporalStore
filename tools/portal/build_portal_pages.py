@@ -584,10 +584,47 @@ TABS_JS = r"""
       });
     });
 
+    /* A fragment can name something inside a pane that is not showing.
+     *
+     * The live strip does exactly that from every page: "/v1/admin/setup#encoding" is a div inside
+     * the Settings pane, "#traffic" one inside Checks, and both panes load hidden. The browser
+     * scrolls to a fragment once, at load, and a hidden element is nowhere to scroll to -- so the
+     * badge arrived at the page, the default tab came up, and the state it was reporting on was not
+     * on screen. Nothing said so; the link worked in the only sense a link can be said to work.
+     *
+     * Which pane holds the target is the page's business, not this helper's, so it is read off the
+     * element rather than listed here: any fragment naming anything inside any pane opens it. */
+    function fromHash(hash) {
+      var name;
+      try { name = decodeURIComponent((hash || "").replace(/^#/, "")); }
+      catch (error) { name = (hash || "").replace(/^#/, ""); }
+      if (!name) { return false; }
+      var target = document.getElementById(name);
+      var pane = target && target.closest ? target.closest(".pane") : null;
+      if (!pane) { return false; }
+      var button = document.getElementById("tab-" + pane.id.replace(/^pane-/, ""));
+      if (!button) { return false; }
+      show(button);
+      /* The pane was hidden when the browser did its own scrolling, so it did not scroll. */
+      if (target.scrollIntoView) { target.scrollIntoView(); }
+      return true;
+    }
+
+    /* Clicking "#traffic" while already on this page changes no document, so nothing reloads and
+       the only signal is this event. That is the strip's own page -- the case most likely to be
+       reached and the one where doing nothing looks most like a dead control. */
+    if (window.addEventListener) {
+      window.addEventListener("hashchange", function () {
+        fromHash(window.location && window.location.hash);
+      });
+    }
+
     var already = tabs.filter(function (b) {
       return b.getAttribute("aria-selected") === "true";
     });
-    show(already[0] || tabs[0]);
+    if (!fromHash(window.location && window.location.hash)) {
+      show(already[0] || tabs[0]);
+    }
   };
 
   /* Show a pane from code. Needed whenever one pane's control writes into another's: without
