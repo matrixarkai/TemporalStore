@@ -1899,6 +1899,13 @@ def _shared_live_parts() -> Json:
     except Exception:
         warnings = 0
     try:
+        # Settings written since this process started and still not in effect. Deployment-wide, so
+        # it belongs on the shared half of the frame, and deliberately not read out of snapshot():
+        # this walks the settings list rather than building that document again.
+        waiting = len(_gwconfig.pending_restart_keys())
+    except Exception:
+        waiting = 0
+    try:
         # When the stored configuration was last written, so an open portal can notice a change
         # made in another tab or by another operator instead of waiting for its own slow timer.
         # The fact and the time only -- no values; those stay behind the admin-gated read.
@@ -1919,6 +1926,7 @@ def _shared_live_parts() -> Json:
         },
         "imports": imports,
         "warnings": warnings,
+        "settings_waiting": waiting,
         "config_changed_at": changed_at,
     }
     _LIVE_SHARED_AT = now
