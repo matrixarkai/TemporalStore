@@ -1240,7 +1240,15 @@ pub(crate) fn execute_on_shard(
                 Vec::new()
             } else {
                 // A BTreeMap iterates in key order, which is the list's order -- the same order the
-                // materialised Vec had. Only the requested span is visited.
+                // materialised Vec had. Only the requested span is READ: `read_page_bytes` runs
+                // `wanted` times, not `length` times, which is what stopped a ten-entry page of a
+                // four-thousand-entry list from touching four thousand pages.
+                //
+                // `skip(from)` still ADVANCES the iterator `from` times, so reaching a late offset
+                // walks the nodes before it -- cheap per step and allocating nothing, but not
+                // free. A read near the head is O(wanted); one near the tail is O(from + wanted).
+                // An allocation probe cannot see that difference, so it is stated here rather
+                // than left for a flat byte measurement to imply otherwise.
                 let wanted = (to - from + 1) as usize;
                 list.map(|list| {
                     list.values()
