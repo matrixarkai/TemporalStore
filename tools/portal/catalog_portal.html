@@ -188,6 +188,9 @@
          padding:2px 7px;border-radius:20px;margin-left:7px;white-space:nowrap}
   .badge.restart{background:var(--warn-soft);color:var(--warn)}
   .badge.essential{background:var(--crit-soft);color:var(--crit)}
+  /* Louder than .restart on purpose: that one is advice about a kind of setting, this one is a
+     deployment running something other than what this page shows. */
+  .badge.pending{background:var(--crit-soft);color:var(--crit)}
   .badge.portal{background:var(--accent-soft);color:var(--accent)}
   .badge.environment{background:var(--line);color:var(--muted)}
   .badge.override{background:var(--panel-2);color:var(--muted);border:1px solid var(--line)}

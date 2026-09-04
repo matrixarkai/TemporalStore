@@ -188,6 +188,9 @@
          padding:2px 7px;border-radius:20px;margin-left:7px;white-space:nowrap}
   .badge.restart{background:var(--warn-soft);color:var(--warn)}
   .badge.essential{background:var(--crit-soft);color:var(--crit)}
+  /* Louder than .restart on purpose: that one is advice about a kind of setting, this one is a
+     deployment running something other than what this page shows. */
+  .badge.pending{background:var(--crit-soft);color:var(--crit)}
   .badge.portal{background:var(--accent-soft);color:var(--accent)}
   .badge.environment{background:var(--line);color:var(--muted)}
   .badge.override{background:var(--panel-2);color:var(--muted);border:1px solid var(--line)}
@@ -939,7 +942,17 @@ function liveStream(options) {
   function fieldHtml(f) {
     var badges = "";
     if (f.essential) { badges += '<span class="badge essential">required</span>'; }
-    if (f.applies === "restart") { badges += '<span class="badge restart">needs restart</span>'; }
+    /* Written since this process started, and read only at startup, so the deployment is
+       running the old value right now. This replaces the "needs restart" note rather than
+       joining it: that note is about the kind of setting and is true before anybody touches
+       anything, and showing both buries the half that is about this deployment today. */
+    if (f.pending_restart) {
+      badges += '<span class="badge pending" title="This value is saved but not in effect: it ' +
+        'is read once at startup, and this process is still running the previous one. Restart ' +
+        'the gateway to apply it.">changed — restart to apply</span>';
+    } else if (f.applies === "restart") {
+      badges += '<span class="badge restart">needs restart</span>';
+    }
     /* The launcher set this variable before the process started. A change here takes effect now
        and is dropped at the next restart, because boot values keep precedence over stored ones.
        Without this the field looks exactly like any other live setting. */
