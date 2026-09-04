@@ -3295,7 +3295,27 @@ fn skip_block_footer_if_due<R: std::io::BufRead + std::io::Seek>(
     if relative < block_data_end(index) {
         return Ok(at);
     }
-    // At or past this block's data end: the rest of the block is its footer slot.
+    // At or past this block's data end -- but that is a statement about POSITION, and a log
+    // written before footers existed has records occupying exactly these bytes. Skipping on
+    // position alone discards up to 128 bytes of record and resumes mid-record, which decodes
+    // as garbage and refuses a load whose bytes were entirely intact: measured on a real
+    // store, 92 bytes holding the start of a record were stepped over and the walk resumed
+    // on `"key":...`, reported as `invalid type: string "key" ... at line 1 column 5`.
+    //
+    // So verify the slot before believing it: a written footer carries its magic, and
+    // `block_is_closed` already refuses to treat a slot without one as a footer. Reading the
+    // slot moves the cursor, so the position it was read from is restored on the way out.
+    let slot_at = header_len + block_footer_at(index);
+    let resume = reader.stream_position()?;
+    let mut slot = vec![0u8; WAL_BLOCK_FOOTER_BYTES as usize];
+    reader.seek(SeekFrom::Start(slot_at))?;
+    let footer_present =
+        reader.read_exact(&mut slot).is_ok() && decode_block_footer(&slot).is_some();
+    if !footer_present {
+        // Records, not a footer. Carry on reading where we were.
+        reader.seek(SeekFrom::Start(resume))?;
+        return Ok(at);
+    }
     let next = header_len + (index + 1) * WAL_BLOCK_BYTES;
     reader.seek(SeekFrom::Start(next))?;
     Ok(next)
@@ -4282,6 +4302,84 @@ mod tests {
         for (_, line) in &after {
             decode_wal_line(line).expect("every record must still decode");
         }
+    }
+
+    /// A record that ENDS inside a block's footer slot, in a log written without footers.
+    ///
+    /// Reading is documented to tolerate such a log -- "records occupying what would be the
+    /// footer slots" -- and the two transition tests above cover a record that STARTS in a slot.
+    /// Neither covers one that ends there, and that is the case the tail walk got wrong: it
+    /// skipped to the next block on POSITION alone, without checking whether the slot held a
+    /// footer at all, discarding up to 128 bytes of record and resuming mid-record. On a real
+    /// store that skipped 92 bytes holding the start of a record and resumed on `"key":...`,
+    /// which the decoder reported as `invalid type: string "key" ... at line 1 column 5` --
+    /// refusing to open a store whose bytes were entirely intact.
+    #[test]
+    fn a_record_that_ends_inside_a_footer_slot_is_not_skipped() {
+        // Rolling off: these assertions are about blocks within one piece.
+        set_wal_segment_bytes_for_test(Some(0));
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_ahead_log_path(dir.path(), 1);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        // Frames of a fixed size, laid end to end with nothing reserved -- a log as a writer
+        // that predates footers left it. 250 divides into the first block so that record 524
+        // ends at 131_000, which is inside the slot that starts at 130_944.
+        const FRAME: usize = 250;
+        let framed = |sequence: u64| -> Vec<u8> {
+            let mut pad = 8usize;
+            loop {
+                let payload = format!(
+                    "{{\"shard_id\":1,\"sequence\":{sequence},\"command\":{{\"kind\":\"string_set\",\"key\":\"{}\",\"value\":[118]}}}}",
+                    "k".repeat(pad)
+                );
+                let line = crate::log_framing::encode_line(payload.as_bytes());
+                match line.len().cmp(&FRAME) {
+                    std::cmp::Ordering::Equal => return line,
+                    std::cmp::Ordering::Less => pad += FRAME - line.len(),
+                    std::cmp::Ordering::Greater => {
+                        pad = pad
+                            .checked_sub(line.len() - FRAME)
+                            .expect("a frame of this size must be reachable by padding the key");
+                    }
+                }
+            }
+        };
+
+        let records = (WAL_BLOCK_BYTES as usize / FRAME) + 40;
+        let mut bytes = Vec::with_capacity(records * FRAME);
+        for sequence in 1..=records as u64 {
+            bytes.extend_from_slice(&framed(sequence));
+        }
+        std::fs::write(&path, &bytes).unwrap();
+
+        // The precondition this test exists for: some record must END inside a footer slot.
+        // Without it the test would pass on any reader and prove nothing.
+        let slot_start = block_data_end(0);
+        let ends_in_slot = (1..=records as u64)
+            .map(|n| n * FRAME as u64)
+            .filter(|end| *end >= slot_start && *end < WAL_BLOCK_BYTES)
+            .count();
+        assert!(
+            ends_in_slot > 0,
+            "no record ends inside the footer slot, so this test would not exercise the skip"
+        );
+
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(
+            scanned.len(),
+            records,
+            "every record must survive the block boundary in a log written without footers"
+        );
+        for (_, line) in &scanned {
+            decode_wal_line(line).expect("every record must still decode");
+        }
+        let (last, _) = last_wal_sequence_in(&path).unwrap();
+        assert_eq!(
+            last, records as u64,
+            "the tail walk must reach the last record rather than stopping at a slot"
+        );
     }
 
     /// What the footer actually buys, on equivalent logs. Ignored: a measurement, not a gate.
