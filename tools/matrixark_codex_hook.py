@@ -2969,6 +2969,15 @@ def pushed_main_commit_from_text(text: str) -> str:
     match = re.search(r"\bpushed commit\s+([0-9a-f]{7,40})\b", compact, re.IGNORECASE)
     if match:
         return match.group(1)
+    # A `old..new` range names both ends, and the pushed commit is always the SECOND. Ask it
+    # before the looser forms below: those capture the first hash they meet after the word
+    # "push", which in a range is the commit that was ALREADY there. Git's own output does not
+    # contain the word, so it reached the range pattern and read correctly, while a sentence
+    # about the same push ("git push output was b223ca8c..4eafaf9c HEAD -> main") reported the
+    # old head as the thing that landed.
+    match = re.search(r"\b[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)\b", compact, re.IGNORECASE)
+    if match:
+        return match.group(1)
     match = re.search(
         r"\b(?:git\s+push|push|published|publish|pushed)\s+(?:accepted|succeeded|completed|done|sent|landed)?\b.{0,80}?\b(?:main|origin/main)\b.{0,40}?\b(?:at|as|commit)?\s*([0-9a-f]{7,40})\b",
         compact,
@@ -2984,9 +2993,6 @@ def pushed_main_commit_from_text(text: str) -> str:
     if match:
         return match.group(1)
     match = re.search(r"\b([0-9a-f]{7,40})\s+(?:refs/heads/main|origin/main)\b", compact, re.IGNORECASE)
-    if match:
-        return match.group(1)
-    match = re.search(r"\b[0-9a-f]{7,40}\.\.([0-9a-f]{7,40})\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)\b", compact, re.IGNORECASE)
     if match:
         return match.group(1)
     match = re.search(r"\b([0-9a-f]{7,40})\s+(?:HEAD|[^\s]+)\s*->\s*(?:main|origin/main)\b", compact, re.IGNORECASE)
