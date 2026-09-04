@@ -3,6 +3,12 @@
 # Copyright 2026 MatrixArkAI
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import argparse
 import hashlib
 import json
@@ -77,11 +83,7 @@ except ModuleNotFoundError:
 
 Json = dict[str, Any]
 
-CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
+CONTEXT_PACK_DEBUG_LINEAGE = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", False)
 CODEX_HOOK_CAPTURE_RAW_PAYLOAD = os.environ.get("MATRIXARK_CODEX_HOOK_CAPTURE_RAW_PAYLOAD", "0").strip().lower() in {
     "1",
     "true",

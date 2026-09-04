@@ -6,6 +6,12 @@
 from __future__ import annotations
 
 try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
+try:
     from tools.matrixark_mcp_core import *
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
@@ -825,7 +831,7 @@ def build_matrixark_metadata_store(adapter: "MatrixArkLocalAdapter") -> MatrixAr
             dsn = "/tmp/matrixark_metadata.sqlite3"
         if backend in MATRIXARK_MYSQL_COMPATIBLE_METADATA_BACKENDS and not dsn:
             raise MatrixArkError("MATRIXARK_METADATA_DSN is required for mysql/matrixkv_sql/matrixkv_sql metadata backend")
-        auto_init = os.environ.get("MATRIXARK_METADATA_AUTO_INIT", "1").strip().lower() in {"1", "true", "yes"}
+        auto_init = env_bool("MATRIXARK_METADATA_AUTO_INIT", True)
         store = MatrixArkSqlMetadataStore(backend=backend, dsn=dsn, auto_init=auto_init)
         if require_live:
             store.check_ready()

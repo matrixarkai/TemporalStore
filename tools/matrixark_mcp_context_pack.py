@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import os as _os
 
 import os
@@ -12,8 +18,8 @@ from typing import Any
 
 Json = dict[str, Any]
 
-AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
-DEBUG_LINEAGE_PAYLOAD = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
+AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
+DEBUG_LINEAGE_PAYLOAD = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", False)
 
 DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "debug",
@@ -577,7 +583,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
-    if os.environ.get("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", "0").strip().lower() in {"1", "true", "yes"}:
+    if env_bool("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", False):
         if "score" in ref:
             try:
                 item["score"] = round(float(ref.get("score") or 0.0), 4)

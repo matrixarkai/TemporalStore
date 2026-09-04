@@ -5,6 +5,12 @@ relative/absolute import pattern so the same core module object is reused under
 both the package path (tools.matrixark_mcp_core) and the top-level path. No
 import-time cycle. __all__ lists every moved name for total re-export."""
 import os
+
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
 from typing import Any, Callable
 
 try:  # package path (tools.matrixark_mcp_core)
@@ -260,7 +266,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
-    if os.environ.get("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", "0").strip().lower() in {"1", "true", "yes"}:
+    if env_bool("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", False):
         if "score" in ref:
             try:
                 item["score"] = round(float(ref.get("score") or 0.0), 4)

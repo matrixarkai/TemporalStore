@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import copy
 import hashlib
 import json
@@ -294,8 +300,7 @@ def ensure_direct_context_pack_response_cache(target: Any) -> None:
     if hasattr(target, "_direct_context_pack_response_cache"):
         return
     target._direct_context_pack_response_cache_enabled = (
-        os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE", "1").strip().lower()
-        not in {"0", "false", "no"}
+        env_bool("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE", True)
     )
     target._direct_context_pack_response_cache_max_entries = max(
         1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "256"))
