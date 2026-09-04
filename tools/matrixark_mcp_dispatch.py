@@ -27,6 +27,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 __all__ = ["dispatch_matrixark_tool"]
 
 
+# The payload switches belong to whoever runs the deployment, not to whoever holds a key.
+_REPLAY_OPERATOR_SWITCHES = {"include_debug_records", "include_debug_refs"}
+
+
 def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | None, identity: Json, request_deadline_ms: int) -> Json:
     if name == "matrixark_backend_ready":
         started_perf = time.perf_counter()
@@ -255,8 +259,21 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_replay":
         started_perf = time.perf_counter()
+        # The debug payload switches replace the pack-scoped answer with the entire record log --
+        # every tenant's, ignoring the pack that was asked for -- and they were read straight off
+        # the request, so holding any key with context:replay was enough to dump the store. They
+        # are honoured for a dev-mode identity, which is the console debugging they were written
+        # for, and ignored for anybody arriving with a key.
+        #
+        # `enable_replay` is deliberately NOT stripped. It is documented in the error the guard
+        # raises, and on its own it buys the compact pack-scoped payload, which carries no memory
+        # text. Removing it would be a change to a published capability rather than a fix to this.
+        replay_args = args
+        if identity.get("mode") != "dev":
+            replay_args = {key: value for key, value in args.items()
+                           if key not in _REPLAY_OPERATOR_SWITCHES}
         try:
-            result = server.adapter.replay(args)
+            result = server.adapter.replay(replay_args)
         except Exception as exc:
             server.metrics.observe_operation("replay", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
             raise
