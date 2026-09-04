@@ -96,6 +96,7 @@ function boot(clipboard) {
   }
 
   let createResponse = { api_key_id: "ak_new", api_key: CREATED_KEY };
+  let createStatus = 200;
   const rotateResponse = { api_key_id: "ak_rotated", api_key: ROTATED_KEY };
 
   const store = { mtx_admin_key: "admin-key-for-the-harness" };
@@ -132,7 +133,16 @@ function boot(clipboard) {
     URL: { createObjectURL: () => "", revokeObjectURL() {} },
     fetch: (url) => {
       const u = String(url);
-      if (u.indexOf("create_api_key") >= 0) { return reply({ result: createResponse }); }
+      if (u.indexOf("create_api_key") >= 0) {
+        if (createStatus !== 200) {
+          const body = JSON.stringify(createResponse);
+          return Promise.resolve({
+            ok: false, status: createStatus,
+            text: () => Promise.resolve(body), json: () => Promise.resolve(createResponse)
+          });
+        }
+        return reply({ result: createResponse });
+      }
       if (u.indexOf("rotate_api_key") >= 0) { return reply({ result: rotateResponse }); }
       if (u.indexOf("list_api_keys") >= 0) {
         /* The field names are the served ones: the list reads `api_keys`, and only a row whose
@@ -160,6 +170,7 @@ function boot(clipboard) {
     el, created, timers, asked,
     answerDialogs(value) { answer = value; },
     setCreateResponse(v) { createResponse = v; },
+    setCreateStatus(v) { createStatus = v; },
     create() {
       /* Both are required, and createKey returns quietly without either -- which would leave the
          output empty and let an "is no button offered?" check pass having rendered nothing. */
@@ -309,6 +320,21 @@ async function quiet() { for (let i = 0; i < 60; i += 1) { await settle(); } }
     ok("G answering yes still rotates",
        page.el("createKeyOut").innerHTML.indexOf(ROTATED_KEY) >= 0,
        JSON.stringify(page.el("createKeyOut").innerHTML).slice(0, 200));
+  }
+
+  /* ---- H. a refusal names the scope it wanted ------------------------------------------------ */
+  {
+    const cb = clipboardThat("resolve");
+    const page = boot(cb.api);
+    page.setCreateStatus(403);
+    page.setCreateResponse({ error: "insufficient_scope", required: ["admin:api_key"] });
+    page.create();
+    await quiet();
+
+    const message = page.el("createMsg").textContent;
+    ok("H the refusal is reported", /insufficient_scope/.test(message), JSON.stringify(message));
+    ok("H it names the scope that was wanted", /admin:api_key/.test(message),
+       JSON.stringify(message));
   }
 
   /* ---- F. the curl button shares the honest copier ------------------------------------------ */

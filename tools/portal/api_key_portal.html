@@ -465,6 +465,12 @@
         try { data = txt ? JSON.parse(txt) : {}; } catch (e) { data = { raw: txt }; }
         if (!resp.ok) {
           var detail = data.error || data.detail || ("HTTP " + resp.status);
+          /* A refusal for want of a scope names the scope, and that name is exactly what has to
+             be ticked in the Scopes box. Dropping it left "insufficient_scope" on screen and the
+             operator guessing at the one thing the answer already contained. */
+          if (typeof detail === "string" && data.required && data.required.length) {
+            detail += " — this needs " + [].concat(data.required).join(" or ");
+          }
           var err = new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
           err.status = resp.status; err.data = data;
           throw err;
