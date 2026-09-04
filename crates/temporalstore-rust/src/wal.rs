@@ -882,6 +882,15 @@ pub type LocalWalStore = LocalWriteAheadLogStore;
 #[derive(Debug)]
 struct WriteAheadLogInner {
     root: PathBuf,
+    /// The active piece's path, built once per shard.
+    ///
+    /// `write_ahead_log_path` is a `format!` and a `join` -- two allocations -- and the append
+    /// path asked for the same answer six times a write. The name is stable: a roll seals the old
+    /// piece under a numbered name and recreates this one, so the active path outlives any roll.
+    ///
+    /// An `Arc` so callers can hold it while the rest of this struct stays borrowable; cloning it
+    /// is a refcount bump.
+    active_path_by_shard: HashMap<ShardId, std::sync::Arc<PathBuf>>,
     /// The append lock file, held open per shard.
     ///
     /// It used to be opened and closed on every append: a `format!`, a `PathBuf`, an open and a
@@ -958,6 +967,7 @@ impl LocalWriteAheadLogStore {
         Self {
             inner: Arc::new(Mutex::new(WriteAheadLogInner {
                 root,
+                active_path_by_shard: HashMap::new(),
                 append_lock_by_shard: HashMap::new(),
                 encode_scratch: Vec::new(),
                 scratch: None,
@@ -1434,7 +1444,7 @@ impl LocalWriteAheadLogStore {
             }
         };
         if record.sequence <= last_sequence {
-            let path = write_ahead_log_path(&inner.root, record.shard_id);
+            let path = active_wal_path(&mut inner, record.shard_id);
             return Ok(WriteAheadLogAppendReport {
                 shard_id: record.shard_id,
                 requested_sequence: record.sequence,
@@ -1636,7 +1646,7 @@ impl LocalWriteAheadLogStore {
     pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = write_ahead_log_path(&inner.root, shard_id);
+        let path = active_wal_path(&mut inner, shard_id);
         let (last_sequence, _) = last_wal_sequence_at(&inner.root, shard_id)?;
         if !path.exists() {
             return Ok(WriteAheadLogFlushReport {
@@ -1812,7 +1822,7 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = write_ahead_log_path(&inner.root, shard_id);
+        let path = active_wal_path(&mut inner, shard_id);
         if !path.exists() {
             return Ok(WriteAheadLogGcReport {
                 shard_id,
@@ -2005,7 +2015,7 @@ impl LocalWriteAheadLogStore {
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         inner.stats.stats_full_scans = inner.stats.stats_full_scans.saturating_add(1);
-        let path = write_ahead_log_path(&inner.root, shard_id);
+        let path = active_wal_path(&mut inner, shard_id);
         // Durable bytes, not written bytes. An append puts a record in the file whether or not
         // a barrier followed it, so the file's length is what has been WRITTEN -- reporting it
         // as `persistent_bytes` says unsynced records are on disk to survive a crash, which is
@@ -2321,7 +2331,7 @@ fn ensure_active_wal_segment(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
 ) -> Result<(), WriteAheadLogError> {
-    let path = write_ahead_log_path(&inner.root, shard_id);
+    let path = active_wal_path(inner, shard_id);
     // A piece of zero length is one that was created and never got its header, which a crash
     // between the two leaves behind. It has to be treated as absent: `read_wal_base` reads an
     // empty file as starting at log id ZERO, and if there are sealed pieces then zero is an
@@ -2362,7 +2372,7 @@ fn roll_wal_segment_if_due(
     if threshold == 0 {
         return Ok(false);
     }
-    let path = write_ahead_log_path(&inner.root, shard_id);
+    let path = active_wal_path(inner, shard_id);
     let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
     let (base, header_len) = read_wal_base(&path)?;
     // Where the records stop. Under preallocation the file is longer than the records, and both
@@ -2434,6 +2444,22 @@ fn roll_wal_segment_if_due(
 
 fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.wal.jsonl"))
+}
+
+/// The active piece's path for this shard, built once and kept.
+///
+/// Same answer as [`write_ahead_log_path`], without rebuilding it. Used on the append path, which
+/// asked for it six times a write; callers that are not per-write can keep using the free
+/// function.
+fn active_wal_path(inner: &mut WriteAheadLogInner, shard_id: ShardId) -> PathBuf {
+    if let Some(path) = inner.active_path_by_shard.get(&shard_id) {
+        return path.as_ref().clone();
+    }
+    // NOTE: the free function, deliberately. This IS the thing that builds the name; calling the
+    // accessor here would be infinite recursion.
+    let built = std::sync::Arc::new(write_ahead_log_path(&inner.root, shard_id));
+    inner.active_path_by_shard.insert(shard_id, built.clone());
+    built.as_ref().clone()
 }
 
 /// An earlier piece of a shard's log, named by the log id its contents start at.
@@ -2683,7 +2709,7 @@ fn resolve_last_sequence_for_append(
             inner.last_sequence_by_shard.contains_key(&shard_id),
             inner.verified_len_by_shard.get(&shard_id),
         ) {
-            let path = write_ahead_log_path(&inner.root, shard_id);
+            let path = active_wal_path(inner, shard_id);
             let on_disk_len = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             // Under preallocation the file is allowed to be longer than the records; unchanged
             // means "still exactly the size this process grew it to". Either way, the offset
@@ -2718,7 +2744,7 @@ fn resolve_last_sequence_for_append(
     // records stop rather than where the file ends -- the file may keep a zeros reservation
     // after them. The next append belongs at the record end; the fast path compares the file
     // against its physical size separately.
-    let reconciled_physical = write_ahead_log_path(&inner.root, shard_id)
+    let reconciled_physical = active_wal_path(inner, shard_id)
         .metadata()
         .map(|metadata| metadata.len())
         .unwrap_or(0);
@@ -2876,7 +2902,7 @@ fn append_record_locked(
     sync: bool,
     known_offset: Option<u64>,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
-    let path = write_ahead_log_path(&inner.root, record.shard_id);
+    let path = active_wal_path(inner, record.shard_id);
     // The caller has usually just measured this under the same append lock, so taking its answer
     // costs nothing and asking again costs a stat. With no answer in hand, the record end comes
     // from the cache this function itself maintains -- under preallocation the file's length is
@@ -3087,7 +3113,7 @@ fn cached_wal_base(
     if let Some(cached) = inner.base_by_shard.get(&shard_id) {
         return Ok(*cached);
     }
-    let path = write_ahead_log_path(&inner.root, shard_id);
+    let path = active_wal_path(inner, shard_id);
     let base = read_wal_base(&path)?;
     inner.base_by_shard.insert(shard_id, base);
     Ok(base)
@@ -4804,6 +4830,54 @@ mod tests {
         );
         println!("  their item is ~20 B of scalars plus the message, held by value");
         assert!(wal_item > 0);
+    }
+
+    /// The cached active path still names the live piece after a roll.
+    ///
+    /// The append path keeps the active piece's path per shard instead of rebuilding it six times
+    /// a write. That is only safe because a roll SEALS the old piece under a numbered name and
+    /// recreates the active one under the same name -- the cached path keeps pointing at the live
+    /// file. If a roll ever renamed the active piece instead, the cache would address the sealed
+    /// file and every later append would land in the wrong place.
+    #[test]
+    fn the_cached_active_path_survives_a_roll() {
+        set_wal_segment_bytes_for_test(Some(4 * 1024));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let value = vec![118u8; 512];
+
+        for index in 0..40usize {
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:04}"),
+                        value: value.clone(),
+                    },
+                )
+                .unwrap();
+        }
+        let pieces = wal_segment_paths(dir.path(), 1).len();
+        set_wal_segment_bytes_for_test(None);
+        assert!(pieces > 1, "the workload must roll or this proves nothing: {pieces}");
+
+        // Every record is still readable, in order, across the roll.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(scanned.len(), 40, "every record must survive the roll: {}", scanned.len());
+
+        // And the next append lands in the live piece, not a sealed one.
+        let after = store
+            .append(
+                1,
+                Command::StringSet {
+                    key: "after-roll".to_string(),
+                    value: b"v".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(after.sequence, 41, "the append after a roll must continue the sequence");
+        let reread = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(reread.len(), 41, "the post-roll record must be readable too");
     }
 
     /// What one append allocates, and how much of it is the value it carries.
