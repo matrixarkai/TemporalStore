@@ -3587,6 +3587,46 @@ fn execute_record_log_request(
             }
             json_output(serde_json::Value::Object(map), root)?
         }
+        // Run the engine's own storage-manager cycle: dump the catalog, mint the durable WAL
+        // anchor, and let reclaim use it. This proxy never ran it, so the anchor was never
+        // produced and the log could never be reclaimed -- every start replayed everything.
+        // Exposed as an op, not a background thread: it rewrites durable structures, so it runs
+        // when asked. `shard_size` carries the dump budget so no new request field is needed.
+        "storage_manager_cycle" => {
+            // Only an embedded engine has a cycle to run; a remote table is served elsewhere.
+            let RecordStore::Local(local) = &engine else {
+                return Err("the storage-manager cycle needs a local engine".to_string());
+            };
+            // `shard_size` carries the dump budget: the request shape has no field for it, and
+            // adding one would change a wire format for a maintenance call.
+            let budget = request.shard_size.unwrap_or(4).clamp(1, 1024) as usize;
+            let report = local.run_storage_manager_cycle(
+                temporalstore_rust::engine::reports::StorageManagerCycleRequest {
+                    shard_id: DEFAULT_SHARD_ID,
+                    max_dump_buckets_per_round: budget,
+                    warm_cache: false,
+                    ..Default::default()
+                },
+            );
+            // Report the reclaim outcome, not just that the cycle ended: a cycle that frees
+            // nothing looks identical to one that freed plenty unless it says which.
+            let reclaim = report
+                .wal_reclaim_report
+                .as_ref()
+                .map(|r| serde_json::to_value(r).unwrap_or(serde_json::Value::Null))
+                .unwrap_or(serde_json::Value::Null);
+            json_output(
+                serde_json::json!({
+                    "completed": report.completed,
+                    "shard_id": DEFAULT_SHARD_ID,
+                    "max_dump_buckets_per_round": budget,
+                    "duration_ms": report.duration_ms,
+                    "stages": report.native_stage_order,
+                    "wal_reclaim_report": reclaim,
+                }),
+                root,
+            )?
+        }
         "matrixark_scan_candidates" => {
             json_output(scan_matrixark_candidates(&engine, &request)?, root)?
         }
@@ -3753,7 +3793,7 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             }
         }
         // Read-only counter dump: no key, no field, nothing to validate.
-        "durability_barriers" => Ok(()),
+        "durability_barriers" | "storage_manager_cycle" => Ok(()),
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;
             require_non_empty("field", &request.field)
