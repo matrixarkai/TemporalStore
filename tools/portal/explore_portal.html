@@ -2027,6 +2027,11 @@
   var controller = null, backoff = 1000, buffer = "";
 
   function open() {
+    /* The drop below aborts the request; the abort rejects the fetch; the catch schedules another
+       open(). Without this the connection came back one backoff later with the tab still hidden,
+       so the rule this file states was true for about a second at a time. Left null so the
+       visibility handler's `!controller` test is what brings it back. */
+    if (document.hidden) { controller = null; return; }
     var k = key();
     if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
     controller = new AbortController();

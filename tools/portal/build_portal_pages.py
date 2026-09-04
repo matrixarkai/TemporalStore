@@ -462,6 +462,11 @@ NAV_JS = r'''<script>
   var controller = null, backoff = 1000, buffer = "";
 
   function open() {
+    /* The drop below aborts the request; the abort rejects the fetch; the catch schedules another
+       open(). Without this the connection came back one backoff later with the tab still hidden,
+       so the rule this file states was true for about a second at a time. Left null so the
+       visibility handler's `!controller` test is what brings it back. */
+    if (document.hidden) { controller = null; return; }
     var k = key();
     if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
     controller = new AbortController();
@@ -572,6 +577,98 @@ def nav(active):
         current = ' aria-current="page"' if href == active else ""
         parts.append('    <a href="%s"%s>%s</a>' % (href, current, label))
     return ('  <nav class="portalnav">\n' + "\n".join(parts) + LIVE_STRIP + "\n  </nav>")
+
+
+LIVE_STREAM_JS = r"""
+/* ---------- the live stream ---------- */
+/* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
+   the alternative is the key in a query string, and a credential in a URL ends up in every access
+   log and proxy trace between here and the gateway. Same wire format either way; only the
+   reconnect is ours to write. */
+function liveStream(options) {
+  var onFrame = options.onFrame || function () {};
+  var onState = options.onState || function () {};
+  var headers = options.headers || function () { return {}; };
+  var controller = null, stopped = false, backoff = 1000, buffer = "";
+
+  function schedule() {
+    if (stopped) { return; }
+    onState("retrying", Math.round(backoff / 1000));
+    setTimeout(open, backoff);
+    backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down should not be hammered */
+  }
+
+  function handle(block) {
+    var payload = null;
+    block.split("\n").forEach(function (line) {
+      if (line.indexOf("data: ") === 0) { payload = line.slice(6); }
+    });
+    if (!payload) { return; }
+    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
+  }
+
+  function open() {
+    if (stopped) { return; }
+    /* Same rule as the strip, which never reaches these two pages: they claim __matrixarkLive, so
+       the strip's script returns before registering it. */
+    if (document.hidden) { controller = null; return; }
+    controller = new AbortController();
+    onState("connecting");
+    fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
+      .then(function (response) {
+        if (!response.ok) { return Promise.reject(response.status); }
+        if (!response.body) { return Promise.reject("nostream"); }
+        onState("live");
+        backoff = 1000;
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        function pump() {
+          return reader.read().then(function (chunk) {
+            if (chunk.done) { schedule(); return; }
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var blocks = buffer.split("\n\n");
+            buffer = blocks.pop();
+            blocks.forEach(handle);
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(function (err) {
+        if (stopped) { return; }
+        if (err === 401 || err === 403) { onState("denied"); return; }
+        schedule();
+      });
+  }
+
+  open();
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return -- the same
+     rule the strip follows, and until now the two pages that run their own stream followed
+     neither: the strip stands down for them, and this registered only pagehide. */
+  document.addEventListener("visibilitychange", function () {
+    if (stopped) { return; }
+    if (document.hidden) {
+      if (controller) { controller.abort(); controller = null; }
+    } else if (!controller) {
+      backoff = 1000;
+      open();
+    }
+  });
+  window.addEventListener("pagehide", function () {
+    stopped = true;
+    if (controller) { controller.abort(); }
+  });
+  return {
+    restart: function () {
+      if (controller) { controller.abort(); }
+      backoff = 1000;
+      stopped = false;
+      open();
+    },
+    stop: function () { stopped = true; if (controller) { controller.abort(); } }
+  };
+}
+"""
 
 
 TABS_JS = r"""
@@ -970,79 +1067,8 @@ SETUP_JS = r"""
      opening a second one to the same endpoint. */
   window.__matrixarkLive = "page";
 
-/* ---------- the live stream ---------- */
-/* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
-   the alternative is the key in a query string, and a credential in a URL ends up in every access
-   log and proxy trace between here and the gateway. Same wire format either way; only the
-   reconnect is ours to write. */
-function liveStream(options) {
-  var onFrame = options.onFrame || function () {};
-  var onState = options.onState || function () {};
-  var headers = options.headers || function () { return {}; };
-  var controller = null, stopped = false, backoff = 1000, buffer = "";
+  /*LIVESTREAM*/
 
-  function schedule() {
-    if (stopped) { return; }
-    onState("retrying", Math.round(backoff / 1000));
-    setTimeout(open, backoff);
-    backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down should not be hammered */
-  }
-
-  function handle(block) {
-    var payload = null;
-    block.split("\n").forEach(function (line) {
-      if (line.indexOf("data: ") === 0) { payload = line.slice(6); }
-    });
-    if (!payload) { return; }
-    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
-  }
-
-  function open() {
-    if (stopped) { return; }
-    controller = new AbortController();
-    onState("connecting");
-    fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
-      .then(function (response) {
-        if (!response.ok) { return Promise.reject(response.status); }
-        if (!response.body) { return Promise.reject("nostream"); }
-        onState("live");
-        backoff = 1000;
-        var reader = response.body.getReader();
-        var decoder = new TextDecoder();
-        function pump() {
-          return reader.read().then(function (chunk) {
-            if (chunk.done) { schedule(); return; }
-            buffer += decoder.decode(chunk.value, { stream: true });
-            var blocks = buffer.split("\n\n");
-            buffer = blocks.pop();
-            blocks.forEach(handle);
-            return pump();
-          });
-        }
-        return pump();
-      })
-      .catch(function (err) {
-        if (stopped) { return; }
-        if (err === 401 || err === 403) { onState("denied"); return; }
-        schedule();
-      });
-  }
-
-  open();
-  window.addEventListener("pagehide", function () {
-    stopped = true;
-    if (controller) { controller.abort(); }
-  });
-  return {
-    restart: function () {
-      if (controller) { controller.abort(); }
-      backoff = 1000;
-      stopped = false;
-      open();
-    },
-    stop: function () { stopped = true; if (controller) { controller.abort(); } }
-  };
-}
 
   var loaded = null;      /* last GET /v1/admin/config payload */
   var fields = {};        /* setting key -> field descriptor from the server */
@@ -3032,79 +3058,8 @@ OVERVIEW_JS = r"""
      opening a second one to the same endpoint. */
   window.__matrixarkLive = "page";
 
-/* ---------- the live stream ---------- */
-/* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
-   the alternative is the key in a query string, and a credential in a URL ends up in every access
-   log and proxy trace between here and the gateway. Same wire format either way; only the
-   reconnect is ours to write. */
-function liveStream(options) {
-  var onFrame = options.onFrame || function () {};
-  var onState = options.onState || function () {};
-  var headers = options.headers || function () { return {}; };
-  var controller = null, stopped = false, backoff = 1000, buffer = "";
+  /*LIVESTREAM*/
 
-  function schedule() {
-    if (stopped) { return; }
-    onState("retrying", Math.round(backoff / 1000));
-    setTimeout(open, backoff);
-    backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down should not be hammered */
-  }
-
-  function handle(block) {
-    var payload = null;
-    block.split("\n").forEach(function (line) {
-      if (line.indexOf("data: ") === 0) { payload = line.slice(6); }
-    });
-    if (!payload) { return; }
-    try { onFrame(JSON.parse(payload)); } catch (e) { /* a partial frame; the next one is whole */ }
-  }
-
-  function open() {
-    if (stopped) { return; }
-    controller = new AbortController();
-    onState("connecting");
-    fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
-      .then(function (response) {
-        if (!response.ok) { return Promise.reject(response.status); }
-        if (!response.body) { return Promise.reject("nostream"); }
-        onState("live");
-        backoff = 1000;
-        var reader = response.body.getReader();
-        var decoder = new TextDecoder();
-        function pump() {
-          return reader.read().then(function (chunk) {
-            if (chunk.done) { schedule(); return; }
-            buffer += decoder.decode(chunk.value, { stream: true });
-            var blocks = buffer.split("\n\n");
-            buffer = blocks.pop();
-            blocks.forEach(handle);
-            return pump();
-          });
-        }
-        return pump();
-      })
-      .catch(function (err) {
-        if (stopped) { return; }
-        if (err === 401 || err === 403) { onState("denied"); return; }
-        schedule();
-      });
-  }
-
-  open();
-  window.addEventListener("pagehide", function () {
-    stopped = true;
-    if (controller) { controller.abort(); }
-  });
-  return {
-    restart: function () {
-      if (controller) { controller.abort(); }
-      backoff = 1000;
-      stopped = false;
-      open();
-    },
-    stop: function () { stopped = true; if (controller) { controller.abort(); } }
-  };
-}
 
   function auth() {
     var k = $("key").value.trim();
@@ -5044,7 +4999,7 @@ def emit(filename, title, body, js, active):
     rendered = body % {"nav": nav(active)}
     # Only pages that declare a tablist carry the helper, so a page without tabs is byte for byte
     # what it was and a page that grows tabs picks it up without anyone remembering to wire it.
-    page_js = js.strip()
+    page_js = js.strip().replace("/*LIVESTREAM*/", LIVE_STREAM_JS.strip())
     if 'role="tablist"' in rendered:
         page_js = TABS_JS.strip() + "\n" + page_js
     html = (HEAD % {"title": title, "css": css}
