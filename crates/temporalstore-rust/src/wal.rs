@@ -2374,7 +2374,12 @@ fn roll_wal_segment_if_due(
     }
     let path = active_wal_path(inner, shard_id);
     let length = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-    let (base, header_len) = read_wal_base(&path)?;
+    // From the cache, not the file. This runs on EVERY append to answer "is the piece full", and
+    // `read_wal_base` opens the file and reads its header to do it -- through a `BufReader`, whose
+    // buffer is eight kilobytes. That was 8,240 bytes and an open per write, to learn a number the
+    // shard already knows: `base_by_shard` is written when a piece is created and refreshed by
+    // both reclaim and the roll below, which are the only things that move it.
+    let (base, header_len) = cached_wal_base(inner, shard_id)?;
     // Where the records stop. Under preallocation the file is longer than the records, and both
     // decisions below -- is this piece full, and what log id does the next piece start at --
     // must come from the records: log ids are cumulative RECORD bytes, and a base derived from
@@ -4935,6 +4940,54 @@ mod tests {
         let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
         set_wal_segment_bytes_for_test(None);
         assert_eq!(scanned.len(), 600, "every record must be readable: {}", scanned.len());
+    }
+
+    /// An append allocates no buffer of its own beyond the record it is writing.
+    ///
+    /// This bounds the number rather than printing it, because the thing it guards against is
+    /// invisible in a passing suite: the roll check used to call `read_wal_base` on EVERY append,
+    /// which opens the piece and reads its header through a `BufReader` -- and that reader's
+    /// buffer is eight kilobytes. A write of a 256-byte value allocated 8,987 bytes, almost all of
+    /// it that one buffer, to answer "is this piece full" from a number the shard already had.
+    ///
+    /// Anything that re-introduces a per-append reader, or any other fixed buffer, fails here.
+    #[test]
+    #[cfg(feature = "alloc-probe")]
+    fn an_append_allocates_no_hidden_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let value = vec![118u8; 256];
+
+        // Warm past the first write, which pays for the file and the header.
+        store
+            .append(1, Command::StringSet { key: "warm".to_string(), value: value.clone() })
+            .unwrap();
+
+        let runs = 100usize;
+        let commands = (0..runs)
+            .map(|index| Command::StringSet {
+                key: format!("k{index:06}"),
+                value: value.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let probe = crate::alloc_probe::Probe::start();
+        for command in commands {
+            store.append(1, command).unwrap();
+        }
+        let counts = probe.stop();
+        let per_write = counts.alloc_bytes as f64 / runs as f64;
+        println!("  a 256-byte write allocates {per_write:.0} B");
+
+        // A bound passes most easily when nothing was measured.
+        assert!(counts.allocs > 0, "the probe must observe the appends");
+
+        // Eight kilobytes is the size of the reader that used to be here. Two is comfortably
+        // above what the record itself needs and far below anything with a hidden buffer in it.
+        assert!(
+            per_write < 2_000.0,
+            "a 256-byte write allocated {per_write:.0} B: something is allocating a buffer per              append again"
+        );
     }
 
     /// What one append allocates, and how much of it is the value it carries.
