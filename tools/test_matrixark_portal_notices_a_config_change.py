@@ -118,5 +118,47 @@ class ThePageReactsOnlyToAChangeTest(unittest.TestCase):
         self.assertIn("ok   a frame without the field changes nothing", out, out)
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed; the page JS cannot be run")
+class TheSetupPageDoesNotClobberEditsTest(unittest.TestCase):
+    """The Setup page holds an editable form, so reacting to someone else's change is not simply
+    "reload".
+
+    With nothing unsaved, taking their change is right -- the form is showing stale values and
+    there is nothing to lose. With unsaved edits, reloading would discard what the person here has
+    typed, which is the case two operators on one deployment actually hit. Both paths run through
+    the same handler and differ by one condition, which is the kind of thing that reads correct and
+    behaves wrong.
+    """
+
+    def _run(self):
+        return subprocess.run(
+            ["node", os.path.join(PORTAL, "setup_config_harness.js"),
+             os.path.join(PORTAL, "setup_portal.html")],
+            capture_output=True, text=True, timeout=180)
+
+    def test_both_paths_behave(self) -> None:
+        proc = self._run()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_with_nothing_unsaved_it_takes_the_change(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   with nothing unsaved, a change elsewhere is taken", out, out)
+
+    def test_with_unsaved_edits_it_does_not_reload_over_them(self) -> None:
+        """The one that loses work if it goes wrong."""
+        out = self._run().stdout
+        self.assertIn("ok   with unsaved edits, the page does NOT reload over them", out, out)
+
+    def test_it_warns_that_saving_would_overwrite_the_other_change(self) -> None:
+        """Knowing after you pressed save is not knowing."""
+        out = self._run().stdout
+        self.assertIn("ok   it warns that saving would overwrite theirs", out, out)
+
+    def test_the_edit_path_is_actually_exercised(self) -> None:
+        """If the form never recorded an edit, the check above would pass with nothing unsaved."""
+        out = self._run().stdout
+        self.assertIn("ok   the settings form records edits", out, out)
+
+
 if __name__ == "__main__":
     unittest.main()
