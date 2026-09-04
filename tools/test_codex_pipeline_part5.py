@@ -1857,6 +1857,11 @@ class _CodexPipelinePart5:
                 )
             )
 
+    # Pinned for the same reason as the sibling backfill test: a posting is only dropped
+    # when the record it points at carries a vector, so with embeddings off nothing is
+    # dropped and the names asserted absent below are written after all. The suite shares
+    # one process and other tests move this policy.
+    @mock.patch.dict(os.environ, {"MATRIXARK_GENERATE_EMBEDDINGS": "1"})
     def test_batch_extract_normalizes_llm_response_aliases_to_assistant_profile_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-profile-llm-aliases.jsonl")

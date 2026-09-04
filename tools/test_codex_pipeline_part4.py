@@ -1568,6 +1568,11 @@ class _CodexPipelinePart4:
         self.assertEqual("warning", output["status"])
         self.assertIn("timed out", output["error"])
 
+    # Pinned for the same reason as the sibling backfill test: a posting is only dropped
+    # when the record it points at carries a vector, so with embeddings off nothing is
+    # dropped and the names asserted absent below are written after all. The suite shares
+    # one process and other tests move this policy.
+    @mock.patch.dict(os.environ, {"MATRIXARK_GENERATE_EMBEDDINGS": "1"})
     def test_user_prompt_cli_idle_preflushes_previous_assistant_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1828,6 +1833,13 @@ class _CodexPipelinePart4:
             self.assertTrue(any("cross_session" in record.get("source_session_continuities", []) for record in profile_summaries))
             self.assertTrue(any("assistant_decision" in record.get("source_entity_types", []) for record in profile_summaries))
 
+    # The absence checks below depend on embeddings being ON. A posting is only dropped when the
+    # record it points at carries a vector -- that is the condition drop_owner_derivable_postings
+    # is gated on -- so with embeddings off nothing is dropped and every one of those names is
+    # written after all. The suite shares one process and other tests move this policy, which is
+    # why this passed alone and failed under discovery. Pin it rather than depend on whoever ran
+    # first.
+    @mock.patch.dict(os.environ, {"MATRIXARK_GENERATE_EMBEDDINGS": "1"})
     def test_user_prompt_fast_async_still_backfills_previous_assistant_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1977,6 +1989,11 @@ class _CodexPipelinePart4:
             memory_budget = pack["recall_policy"]["memory_layer_budget"]
             self.assertGreaterEqual(memory_budget["source_message_counts_by_role"].get("assistant", 0), 1)
 
+    # Pinned for the same reason as the sibling backfill test: a posting is only dropped
+    # when the record it points at carries a vector, so with embeddings off nothing is
+    # dropped and the names asserted absent below are written after all. The suite shares
+    # one process and other tests move this policy.
+    @mock.patch.dict(os.environ, {"MATRIXARK_GENERATE_EMBEDDINGS": "1"})
     def test_user_prompt_fast_async_threshold_commits_previous_tool_rollout(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2828,6 +2845,11 @@ class _CodexPipelinePart4:
             self.assertIsInstance(pack.get("retrieval_metrics"), dict)
             self.assertTrue(result["summary_refresh"]["profile_dirty_hashes"])
 
+    # Pinned for the same reason as the sibling backfill test: a posting is only dropped
+    # when the record it points at carries a vector, so with embeddings off nothing is
+    # dropped and the names asserted absent below are written after all. The suite shares
+    # one process and other tests move this policy.
+    @mock.patch.dict(os.environ, {"MATRIXARK_GENERATE_EMBEDDINGS": "1"})
     def test_batch_extract_assigns_role_specific_event_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-role-event-types.jsonl")
