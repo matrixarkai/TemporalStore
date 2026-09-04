@@ -3487,6 +3487,49 @@ mod tests {
         let counts = probe.stop();
         rows.push(("cached route lookup", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
+        // End to end through the dispatcher, so the rows above can be read against what a whole
+        // request costs: parsing, routing to a handler, admission, and building the reply. There
+        // is no backend at 127.0.0.1:1, so the execute arm pays the failure path too -- that is
+        // the point of showing the config read beside it, which answers without leaving the proxy.
+        let execute_body = serde_json::to_vec(&serde_json::json!({
+            "shard_id": 1,
+            "command": {"StringGet": {"key": "k"}},
+        }))
+        .expect("body");
+        let _ = proxy.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/execute".to_string(),
+            body: execute_body.clone(),
+        });
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = proxy.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/execute".to_string(),
+                body: execute_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("POST /execute, end to end", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let _ = proxy.handle(crate::proxy::HttpRequest {
+            method: "GET".to_string(),
+            path: "/proxy/config".to_string(),
+            body: Vec::new(),
+        });
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = proxy.handle(crate::proxy::HttpRequest {
+                method: "GET".to_string(),
+                path: "/proxy/config".to_string(),
+                body: Vec::new(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("GET /proxy/config", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
         println!();
         println!("  path                    allocs/call   bytes/call");
         for (name, allocs, bytes) in &rows {
