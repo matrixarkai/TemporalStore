@@ -442,10 +442,9 @@ pub struct StorageSlabIntegrityReport {
 /// Measured on a 4,000-bucket manifest: the field names are 592,046 bytes of a 1,367,875-byte
 /// document -- 43% of it, once the whitespace came out.
 ///
-/// The second step is now a SWITCH rather than a deploy. `TS_MANIFEST_SHORT_FIELD_NAMES=1` makes
-/// the writer emit the short names; it is off by default, so nothing changes until an operator
-/// who knows every reader in their fleet already accepts them turns it on. That is the only fact
-/// this code cannot check for itself, which is why it is a knob and not a version bump.
+/// The second step has been taken: the writer emits the short names by default, which is worth
+/// 43% of the document. `TS_MANIFEST_SHORT_FIELD_NAMES=0` restores the long spelling for a fleet
+/// that still holds a reader older than the release which taught them.
 ///
 /// Reading never depends on the switch. Both spellings deserialize, so a directory holding
 /// manifests written either way -- which is what flipping it leaves behind -- loads end to end.
@@ -474,18 +473,29 @@ pub struct BucketStorageSummary {
     pub last_compacted_zone: Option<u64>,
 }
 
-/// Whether the manifest writer spells its fields short. Off unless asked.
+/// Whether the manifest writer spells its fields short. **On by default.**
 ///
-/// Opt-in, unlike the other switches here, because turning it on writes a document an engine
-/// older than the release that taught readers the short names cannot load.
+/// Shipped opt-in first, because turning it on writes a document an engine older than the
+/// release that taught readers the short names cannot load -- those fields carry no serde
+/// default, so such a reader fails rather than degrades. Which engines are deployed is the one
+/// fact this code cannot check for itself, so the flip was left as an operator decision, and it
+/// has now been taken.
+///
+/// What the code CAN check, and does: every reader in this repository accepts both spellings.
+/// The aliases are on the struct, the round-trip is asserted in both directions below, and no
+/// Python tool reads this document -- the `logical_bytes`/`physical_bytes` names in `tools/`
+/// belong to the band extent manifest, which is a different file with different fields.
+///
+/// `TS_MANIFEST_SHORT_FIELD_NAMES=0` restores the long spelling. Reading never depends on the
+/// switch either way, so a directory holding manifests written both ways loads end to end.
 pub(crate) fn manifest_short_field_names_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("TS_MANIFEST_SHORT_FIELD_NAMES")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -3684,6 +3694,30 @@ mod manifest_field_name_tests {
                 serde_json::from_slice(&long).expect("long form parses");
             assert_eq!(back_long, summary, "long form lost something for {label}");
         }
+    }
+
+    /// The DEFAULT is now the short spelling.
+    ///
+    /// Reads the switch and sets nothing: the variable is process-global, and several hundred
+    /// sites in this crate already race over environment. Nothing in the suite sets this one.
+    /// Without this test the flip would be invisible -- every other test here names the spelling
+    /// explicitly, so all of them would pass with the default either way.
+    #[test]
+    fn the_default_is_now_the_short_spelling() {
+        assert!(
+            super::manifest_short_field_names_enabled(),
+            "the switch should default on"
+        );
+        let written = serde_json::to_vec(&BucketStorageSummary::default()).expect("serialize");
+        let text = String::from_utf8_lossy(&written);
+        assert!(
+            text.contains("\"rs\""),
+            "the default write should use the short names, got {text}"
+        );
+        assert!(
+            !text.contains("routing_slot"),
+            "the default write should not use the long names, got {text}"
+        );
     }
 
     /// And it is actually smaller -- the reason for the change.
