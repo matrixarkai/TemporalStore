@@ -1489,15 +1489,39 @@ class MatrixArkRustProxyClient:
         self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane=group, wait_ms=wait_ms)
         return response
 
+    # Connecting to a live daemon socket returns immediately, so the connect keeps a
+    # short ceiling: a stale socket file should fail fast rather than spend the call's
+    # whole budget. Reads are a different question -- see `_call_socket_json`.
+    SOCKET_CONNECT_TIMEOUT_CEILING_S = 2.0
+
     def _call_socket_json(self, op: str, payload: str) -> Json:
-        deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        # The read timeout tracks what is LEFT of the deadline. It used to be a constant
+        # `min(2.0, ...)`, which no `--request-timeout-ms` could raise, so any response
+        # slower than two seconds became a timeout -- and since `_call_json` re-raises
+        # instead of falling back to the lane path, the call simply failed. On a large
+        # store every ContextPack takes longer than that, so hook retrieval failed open
+        # with no context and nothing in the logs but "TimeoutError: timed out".
+        budget_s = max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        deadline = time.monotonic() + budget_s
+        connect_timeout_s = min(
+            self.SOCKET_CONNECT_TIMEOUT_CEILING_S,
+            max(0.1, self.request_timeout_ms / 1000.0),
+        )
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(min(2.0, max(0.1, self.request_timeout_ms / 1000.0)))
+            client.settimeout(connect_timeout_s)
             client.connect(self._proxy_socket)
             client.sendall(payload.encode("utf-8"))
             stream = client.makefile("rb")
-            while time.monotonic() < deadline:
-                line = stream.readline()
+            while True:
+                remaining_s = deadline - time.monotonic()
+                if remaining_s <= 0:
+                    break
+                # Re-armed per read so a partial answer cannot extend the total budget.
+                client.settimeout(remaining_s)
+                try:
+                    line = stream.readline()
+                except socket.timeout:
+                    break
                 if not line:
                     break
                 if not line.strip().startswith(b"{"):
@@ -1506,7 +1530,10 @@ class MatrixArkRustProxyClient:
                     return json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError as exc:
                     raise MatrixArkError(f"Rust TemporalStore {op} daemon returned invalid JSON: {line[:200]!r}") from exc
-        raise MatrixArkError(f"Rust TemporalStore {op} daemon timed out waiting for response from {self._proxy_socket}")
+        raise MatrixArkError(
+            f"Rust TemporalStore {op} daemon timed out waiting for response from "
+            f"{self._proxy_socket} after {budget_s:.1f}s"
+        )
 
     def _record_call_metrics(
         self,

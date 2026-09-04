@@ -101,6 +101,20 @@ class RustProxyDaemon:
                 proc.kill()
         self._write_log({"event": "proxy_stopped", "returncode": proc.returncode})
 
+    def _health_ok(self) -> bool:
+        """Whether this socket can serve the next request.
+
+        Deliberately lock-free: a health check must not queue behind an in-flight request,
+        or a cold load turns every ping into a timeout -- which callers read as "no daemon"
+        and answer by starting their own. A live engine is healthy; no engine is still
+        healthy, because `_ensure_proxy` starts one on the next request. The one condition
+        worth reporting is an engine that cannot be started at all.
+        """
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            return True
+        return os.access(str(self.proxy_path), os.X_OK)
+
     def _ensure_proxy(self) -> None:
         proc = self._proc
         if proc is not None and proc.poll() is None:
@@ -228,9 +242,18 @@ class RustProxyDaemon:
                 self._send(
                     file,
                     {
-                        "ok": bool(proc is not None and proc.poll() is None),
+                        # Health is about whether this socket will serve the next request,
+                        # not about whether an engine happens to be running right now. The
+                        # engine is restarted on demand (`_ensure_proxy`), and callers treat
+                        # an unhealthy answer as "no daemon" and start their OWN -- which
+                        # unlinks this socket on bind and leaves them reloading the store
+                        # per invocation. Reporting "dead" during a recycle is what turns a
+                        # one-second gap into a spawn storm, so spawn and answer for the
+                        # socket. Starting the process is cheap: the store is loaded lazily
+                        # on the first real request, not here.
+                        "ok": self._health_ok(),
                         "mode": "rust_proxy_daemon",
-                        "proxy_pid": None if proc is None else proc.pid,
+                        "proxy_pid": None if self._proc is None else self._proc.pid,
                         "socket": str(self.socket_path),
                     },
                 )
@@ -284,9 +307,25 @@ class RustProxyDaemon:
         self._log_file.flush()
 
 
+def ping_timeout_seconds() -> float:
+    """How long a health check waits before calling the daemon dead.
+
+    Callers treat a failed ping as "no daemon": the hooks then start one, and a second
+    daemon unlinks the first one's socket on bind, so the loser cold-spawns its own
+    proxy and replays the store per invocation. A fixed 2 s made that happen on a merely
+    busy box -- a ping measured 2.4 s here under load, with the daemon perfectly
+    healthy. Bounded, but generous enough that "busy" is not read as "dead".
+    """
+    raw = os.environ.get("MATRIXARK_RUST_PROXY_PING_TIMEOUT_MS", "10000")
+    try:
+        return max(0.5, int(str(raw).strip()) / 1000.0)
+    except ValueError:
+        return 10.0
+
+
 def ping(socket_path: Path) -> Json:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(2.0)
+        client.settimeout(ping_timeout_seconds())
         client.connect(str(socket_path))
         client.sendall(b'{"op":"__daemon_health"}\n')
         return json.loads(client.makefile("rb").readline().decode("utf-8"))
