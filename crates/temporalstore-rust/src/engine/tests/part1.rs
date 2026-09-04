@@ -7924,3 +7924,132 @@ fn what_a_thousand_records_hides() {
 
     assert!(rows.iter().all(|r| r.1 > 0.0), "measured nothing");
 }
+
+/// Dropping emptied buckets must not walk every bucket.
+///
+/// `sync_bucket_index_object_pages` ended with `bucket_map.retain(..)` to drop buckets it had
+/// emptied. `dirty` is true for a write, so that ran on every one, and at the default routing-slot
+/// range the map holds a bucket per record -- O(corpus) per command. Profiling a degraded node put
+/// 94.2% of self time in that one retain, and an 8-hour run went 7 ms -> 105 ms per message.
+///
+/// Two properties, and the test needs BOTH: the cost must not grow with the store, and the
+/// emptied buckets must still be gone. Either alone is satisfiable by a wrong change -- never
+/// dropping anything is flat, and walking everything is correct.
+///
+///   cargo test -p temporalstore-rust --lib emptied_buckets_are_dropped_without_walking_the_map -- --nocapture
+#[test]
+fn emptied_buckets_are_dropped_without_walking_the_map() {
+    use crate::types::ContextNode;
+
+    fn node(nid: u64) -> Box<ContextNode> {
+        Box::new(ContextNode {
+            node_hash: nid, parent_hash: 0, kind: 1,
+            canonical_name: format!("session/turn/{nid}"),
+            l0: "body".to_string(), status: 0,
+            last_event_time_ms: 1_780_000_000_000,
+            l1_ref: String::new(), raw_metadata_ref: String::new(),
+            vector: Vec::new(), embedding_model_hash: 0, embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(), summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        })
+    }
+
+    // --- correctness: a bucket emptied by a delete must not survive -----------------------
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        4 * 1024 * 1024, dir.path().join("cache"),
+        dir.path().join("pages"), dir.path().join("indexes"));
+    engine.load_shard(1);
+    for index in 0..200u64 {
+        let r = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: format!("drop-{index}"), value: vec![b'v'; 64] },
+        });
+        assert!(r.status.ok, "write: {:?}", r.status);
+    }
+    let before = {
+        let shards = engine.shards.read().expect("lock");
+        shards.get(&1).expect("shard").bucket_index.bucket_map.len()
+    };
+    for index in 0..200u64 {
+        let r = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringDelete { key: format!("drop-{index}") } });
+        assert!(r.status.ok, "delete: {:?}", r.status);
+    }
+    let (after, empties) = {
+        let shards = engine.shards.read().expect("lock");
+        let map = &shards.get(&1).expect("shard").bucket_index.bucket_map;
+        let empties = map
+            .values()
+            .filter(|b| b.page_index.is_empty() && b.object_index.is_empty())
+            .count();
+        (map.len(), empties)
+    };
+    println!();
+    println!("  buckets after 200 writes: {before}, after deleting all: {after} ({empties} empty)");
+    assert!(before > 0, "the writes should have created buckets");
+    assert_eq!(
+        empties, 0,
+        "an emptied bucket survived in bucket_map: {empties} of {after} hold nothing"
+    );
+
+    // --- the shape: per-write cost must not grow with the store --------------------------
+    // The batch a real message sends. An upsert ALONE does not reproduce this -- the first
+    // version of this test used one, passed on the unfixed code, and guarded nothing. The
+    // removals that reach the whole-map walk come from the event and index-ref writes.
+    let per_write_us = |corpus: u64| -> f64 {
+        use crate::types::{ContextEvent, ContextIndexRef};
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            4 * 1024 * 1024, dir.path().join("cache"),
+            dir.path().join("pages"), dir.path().join("indexes"));
+        engine.load_shard(1);
+        let msg = |nid: u64| vec![
+            Command::ContextUpsertNode { tenant_hash: 7, node: node(nid) },
+            Command::ContextWriteEvent {
+                tenant_hash: 7, node_hash: nid, first_write_only: true, cold_storage: false,
+                event: Box::new(ContextEvent {
+                    event_id_hash: nid, event_time_ms: 1_780_000_000_000,
+                    ingestion_time_ms: 1_780_000_000_000, kind: 1, event_type: 1,
+                    actor_hash: 42, status: 1, valid_until_ms: 0, confidence: 1.0,
+                    importance: 1.0, text: "body".to_string(),
+                    source_ref: format!("msg-{nid}"), related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(), vector: Vec::new(),
+                }),
+            },
+            Command::ContextWriteIndexRef {
+                tenant_hash: 7, index_name: "source".to_string(),
+                index_value_hash: nid % 100_000, scope_hash: 0,
+                event_time_ms: 1_780_000_000_000,
+                index_ref: ContextIndexRef {
+                    primary_node_hash: nid, primary_event_time_ms: 1_780_000_000_000,
+                    event_id_hash: nid,
+                },
+            },
+        ];
+        let mut nid = 5_000_000u64;
+        for _ in 0..corpus {
+            nid += 1;
+            engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: 1, commands: msg(nid) });
+        }
+        const N: u64 = 300;
+        let t0 = std::time::Instant::now();
+        for _ in 0..N {
+            nid += 1;
+            engine.batch_execute(crate::types::BatchExecuteRequest {
+                shard_id: 1, commands: msg(nid) });
+        }
+        t0.elapsed().as_micros() as f64 / N as f64
+    };
+    let small = per_write_us(2_000);
+    let large = per_write_us(20_000);
+    let growth = large / small;
+    println!("  per-write: {small:.0} us at 2k -> {large:.0} us at 20k  ({growth:.2}x)");
+    // Generous: the defect measured 2.97x over this range and 15x over a real run. Anything
+    // under 2x is not the walk coming back; timing on a shared machine is not tighter than this.
+    assert!(
+        growth < 2.0,
+        "per-write cost grew {growth:.2}x from a 2k to a 20k corpus -- the whole-map walk is back"
+    );
+}
