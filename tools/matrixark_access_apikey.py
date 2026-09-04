@@ -56,6 +56,10 @@ class _AccessApiKeyMixin:
             "allowed_session_ids": allowed_session_ids,
             "expires_at_ms": expires_at_ms,
             "status": "active",
+            # Stored so rotation can mint the replacement with the same prefix. Without it rotate
+            # has nothing to carry and falls back to its default, turning an sk_live key into an
+            # mk_test one.
+            "key_prefix": key_prefix,
             "created_by_api_key_id": identity.get("api_key_id", ""),
             "created_at_ms": now_ms(),
         }
@@ -303,6 +307,10 @@ class _AccessApiKeyMixin:
         record = self.latest_api_key_record(api_key_id)
         if not record or record.get("status") != "active":
             raise MatrixArkError("active api_key_id not found")
+        # Creating a key checks this; revoking one did not, so an admin key for one tenant could
+        # revoke another tenant's key given its id. Authorization must not rest on an identifier
+        # being hard to guess.
+        self.ensure_identity_can_manage(identity, record["account_id"], record["tenant_id"])
         revoked = {
             **record,
             "record_type": "matrixark_api_key",
@@ -319,7 +327,13 @@ class _AccessApiKeyMixin:
         old_record = self.latest_api_key_record(old_api_key_id)
         if old_record is None or old_record.get("status") != "active":
             raise MatrixArkError("active api_key_id not found")
-        self.revoke_api_key({"api_key_id": old_api_key_id}, identity, action="admin.rotate_api_key.revoke_old")
+        # Before either half runs. This used to be reached only inside the create below, by
+        # which point the old key had already been revoked -- so a refused rotation destroyed the
+        # key it was refused permission to touch.
+        self.ensure_identity_can_manage(identity, old_record["account_id"], old_record["tenant_id"])
+        # Mint first, revoke second. Whatever the create rejects -- a scope retired since the key
+        # was made, a role that no longer carries it -- the caller keeps a working key. The old
+        # order left them with none, and returned an error that read like nothing had happened.
         created = self.create_api_key(
             {
                 "account_id": old_record["account_id"],
@@ -332,12 +346,28 @@ class _AccessApiKeyMixin:
                 "expires_at_ms": old_record.get("expires_at_ms"),
                 "request_quota": old_record.get("request_quota"),
                 "quota_window": old_record.get("quota_window"),
-                "key_prefix": optional_string(args, "key_prefix", "mk_test"),
+                # The replacement keeps the prefix of the key it replaces. Records written
+                # before the prefix was stored have nothing to carry, so they keep the old default.
+                "key_prefix": optional_string(args, "key_prefix",
+                                              old_record.get("key_prefix") or "mk_test"),
             },
             identity,
         )
+        try:
+            self.revoke_api_key({"api_key_id": old_api_key_id}, identity,
+                                action="admin.rotate_api_key.revoke_old")
+        except MatrixArkError as exc:
+            # The replacement exists and works. Say so rather than letting a bare failure suggest
+            # the rotation did nothing -- the caller needs to know the new key is live and the old
+            # one still is too.
+            raise MatrixArkError(
+                "rotation minted %s but could not revoke %s (%s); the new key is active and the "
+                "old one is still active" % (created["api_key_id"], old_api_key_id, exc)
+            ) from exc
         self.append_audit("admin.rotate_api_key", identity, status="ok", details={"old_api_key_id": old_api_key_id, "new_api_key_id": created["api_key_id"]})
-        return {"status": "rotated", "old_api_key_id": old_api_key_id, **created}
+        # `**created` last would overwrite the status with the "created" that create_api_key
+        # returns, so every rotation reported itself as a creation.
+        return {**created, "status": "rotated", "old_api_key_id": old_api_key_id}
 
     def list_api_keys(self, args: Json, identity: Json) -> Json:
         limit = args.get("limit", 100)
