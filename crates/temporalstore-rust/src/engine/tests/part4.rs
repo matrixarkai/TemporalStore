@@ -5867,15 +5867,18 @@ fn one_component_is_held_without_a_vector() {
     assert!(list.is_empty(), "the last removal empties the list");
 }
 
-/// A bucket summary reads the short field names, and still writes the long ones.
+/// A bucket summary reads BOTH spellings, and now writes the short one.
 ///
-/// This is the first half of a two-step change. A dump manifest crosses engines during install,
-/// and these fields carry no serde default, so a writer that switched to short names before every
-/// reader knew them would hand over a document the reader cannot parse at all. Readers learn
-/// first; writers switch later, if someone decides to.
+/// This was the first half of a two-step change, and the second half has been taken. A dump
+/// manifest crosses engines during install and these fields carry no serde default, so a writer
+/// that switched before every reader knew the short names would hand over a document the reader
+/// cannot parse at all. Readers learned first; the writer switched once an operator confirmed the
+/// fleet, which is the one fact this code cannot check for itself.
 ///
-/// So the property to pin is exactly this: short names parse, long names parse, and what gets
-/// written is still long.
+/// The property to pin is now: short names parse, long names parse, what gets written is short,
+/// and the switch still writes long when asked. The first two matter most -- they are what makes
+/// a directory holding manifests written BOTH ways readable end to end, which is exactly what
+/// flipping the default leaves behind.
 #[test]
 fn a_bucket_summary_reads_short_field_names_too() {
     use crate::engine::reports::BucketStorageSummary;
@@ -5893,17 +5896,30 @@ fn a_bucket_summary_reads_short_field_names_too() {
     assert_eq!(from_long.routing_bucket, 7);
     assert_eq!(from_long.page_slab_ids, vec![9]);
 
-    // And writing is unchanged: the long names still go out, so a reader that has NOT learned the
-    // short names is unaffected by this landing.
+    // And writing is now short by default -- the saving this whole change exists for.
     let written = serde_json::to_string(&from_long).expect("serialize");
     assert!(
-        written.contains("\"object_count\""),
-        "writing must still use the long names until every reader knows the short ones: {written}"
+        written.contains("\"oc\""),
+        "the default write should use the short names: {written}"
     );
     assert!(
-        !written.contains("\"oc\""),
-        "nothing should be writing short names yet: {written}"
+        !written.contains("\"object_count\""),
+        "the default write should not carry the long names: {written}"
     );
+
+    // The escape hatch still writes long, for a fleet that holds an older reader. Named
+    // explicitly rather than through the process-wide switch, which is shared state several
+    // hundred sites in this crate already race over.
+    let long_written =
+        serde_json::to_string(&crate::engine::reports::SummaryNamed(&from_long, false))
+            .expect("serialize long");
+    assert!(
+        long_written.contains("\"object_count\""),
+        "the long spelling must still be reachable: {long_written}"
+    );
+    let round_trip: BucketStorageSummary =
+        serde_json::from_str(&long_written).expect("the long spelling must parse back");
+    assert_eq!(round_trip, from_long, "the long spelling must round-trip");
 
     // What the second step would be worth, on this one summary.
     println!(
