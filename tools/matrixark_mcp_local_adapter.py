@@ -4633,7 +4633,17 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if LOCAL_JSONL_INCLUDE_BULKY_FIELDS:
             return record
         sanitized = dict(record)
-        dropped = sorted(field for field in LOCAL_JSONL_BULKY_FIELDS if field in sanitized)
+        bulky = LOCAL_JSONL_BULKY_FIELDS
+        if sanitized.get("record_type") == "context_debug_record":
+            # On this record type debug_payload is the entire content, not incidental bulk riding
+            # on a larger row. The writer refuses to emit the record at all without a payload
+            # (materialize_serving_record returns early), and the record only exists when the
+            # caller opts in via MATRIXARK_CONTEXT_DEBUG_RECORDS. Stripping the payload here left
+            # a husk that costs bytes and tells every reader nothing -- so the opt-in bought no
+            # diagnostics unless the caller also knew to set the unrelated bulky-fields flag.
+            # Every other record type keeps the default treatment.
+            bulky = bulky - {"debug_payload"}
+        dropped = sorted(field for field in bulky if field in sanitized)
         for field in dropped:
             sanitized.pop(field, None)
         if dropped:
