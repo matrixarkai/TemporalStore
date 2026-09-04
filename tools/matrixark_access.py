@@ -1176,16 +1176,30 @@ class MatrixArkAccessManager(_AccessPortalMixin, _AccessSsoMixin, _AccessApiKeyM
             }
         )
 
-    def ensure_identity_can_manage(self, identity: Json, account_id: str, tenant_id: str) -> None:
+    def ensure_identity_can_manage(self, identity: Json, account_id: str, tenant_id: str,
+                                   *, action: str = "admin.operation") -> None:
         if identity.get("mode") == "dev":
             return
         if identity.get("account_id") != account_id or identity.get("tenant_id") != tenant_id:
+            # Authentication passed and so did the scope check: this is a valid admin key reaching
+            # for a tenant it does not hold, which is the most interesting denial this system can
+            # produce -- and it used to write nothing at all. append_audit rather than
+            # append_denied_audit because the identity IS known here; the record names the caller
+            # and the details name what they asked for instead.
+            self.append_audit(action, identity, status="denied",
+                              details={"requested_account_id": account_id,
+                                       "requested_tenant_id": tenant_id})
             raise MatrixArkError("admin operation account/tenant does not match API key")
 
-    def ensure_identity_can_read_scope(self, identity: Json, account_id: str, tenant_id: str, scope: Json | None = None) -> None:
+    def ensure_identity_can_read_scope(self, identity: Json, account_id: str, tenant_id: str, scope: Json | None = None,
+                                       *, action: str = "portal.read") -> None:
         if identity.get("mode") == "dev":
             return
         if identity.get("account_id") != account_id or identity.get("tenant_id") != tenant_id:
+            # The read side of the same boundary, and it was equally silent.
+            self.append_audit(action, identity, status="denied",
+                              details={"requested_account_id": account_id,
+                                       "requested_tenant_id": tenant_id})
             raise MatrixArkError("portal scope account/tenant does not match API key")
         self.ensure_account_tenant_active(account_id, tenant_id)
         scope = scope or {}

@@ -14,7 +14,8 @@ class _AccessApiKeyMixin:
         scope = optional_object(args, "scope")
         account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
-        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        self.ensure_identity_can_manage(identity, account_id, tenant_id,
+                                        action="admin.create_api_key")
         scopes = optional_string_list(args, "scopes", ["context:ingest", "context:retrieve", "context:feedback", "context:replay"])
         if not scopes:
             raise MatrixArkError("scopes must not be empty")
@@ -112,7 +113,8 @@ class _AccessApiKeyMixin:
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(defaults["tenant_id"]))
         user_id = optional_string(args, "user_id") or str(scope.get("user_id") or defaults["user_id"])
         agent_name = safe_identifier(optional_string(args, "agent_name") or str(defaults["agent_name"]), default="local_agent")
-        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        self.ensure_identity_can_manage(identity, account_id, tenant_id,
+                                        action="admin.apply_api_key")
 
         created_records: list[str] = []
         if self.latest_account_record(account_id) is None:
@@ -310,7 +312,8 @@ class _AccessApiKeyMixin:
         # Creating a key checks this; revoking one did not, so an admin key for one tenant could
         # revoke another tenant's key given its id. Authorization must not rest on an identifier
         # being hard to guess.
-        self.ensure_identity_can_manage(identity, record["account_id"], record["tenant_id"])
+        self.ensure_identity_can_manage(identity, record["account_id"], record["tenant_id"],
+                                        action=action)
         revoked = {
             **record,
             "record_type": "matrixark_api_key",
@@ -330,7 +333,8 @@ class _AccessApiKeyMixin:
         # Before either half runs. This used to be reached only inside the create below, by
         # which point the old key had already been revoked -- so a refused rotation destroyed the
         # key it was refused permission to touch.
-        self.ensure_identity_can_manage(identity, old_record["account_id"], old_record["tenant_id"])
+        self.ensure_identity_can_manage(identity, old_record["account_id"], old_record["tenant_id"],
+                                        action="admin.rotate_api_key")
         # Mint first, revoke second. Whatever the create rejects -- a scope retired since the key
         # was made, a role that no longer carries it -- the caller keeps a working key. The old
         # order left them with none, and returned an error that read like nothing had happened.
@@ -376,7 +380,8 @@ class _AccessApiKeyMixin:
         scope = optional_object(args, "scope")
         account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
-        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        self.ensure_identity_can_manage(identity, account_id, tenant_id,
+                                        action="admin.list_api_keys")
         include_revoked = bool(args.get("include_revoked", False))
         metadata_records = self.metadata.read_all()
         usage_by_key: dict[str, Json] = {}
