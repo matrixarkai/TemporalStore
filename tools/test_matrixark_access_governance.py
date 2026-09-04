@@ -482,6 +482,40 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         self.assertNotIn(secret_password, str(server.adapter.read_all()))
 
 
+    def test_close_waits_for_an_audit_write_it_started(self) -> None:
+        # Auditing is async here, so an audited hot-path call hands its write to a pool thread.
+        # close() stops every other background worker it owns and waits for it; if it does not do
+        # the same for these, it returns while writes are still landing in the event log -- and a
+        # caller that closes usually removes that directory next.
+        #
+        # The write is made slow on purpose. With a fast one this test passes whether or not
+        # close() waits, which is what a first version of it did. The count assertion matters for
+        # the same reason: "no outstanding writes" is trivially true of a set nothing was ever
+        # added to, so the write has to be shown to exist before its absence means anything.
+        import threading
+        import time as _time
+
+        server = self.make_server()
+        started = threading.Event()
+        original = server.access.append_audit
+
+        def slow_append(*args, **kwargs):
+            started.set()
+            _time.sleep(1.5)
+            return original(*args, **kwargs)
+
+        server.access.append_audit = slow_append
+        server.call_tool(
+            "matrixark_list_users",
+            {"scope": {"account_id": "acct_gov", "tenant_id": "tenant_gov"}},
+        )
+        self.assertTrue(started.wait(5.0), "no async audit write was ever submitted")
+        self.assertTrue(server._audit_queue.pending, "the audit write was not tracked as pending")
+
+        server.close(timeout_s=10.0)
+        outstanding = [future for future in server._audit_queue.pending if not future.done()]
+        self.assertEqual([], outstanding, "close() returned while an audit write was still running")
+
     def test_http_json_portal_facade_calls_live_mcp_admin_routes(self) -> None:
         server = self.make_server()
         handler = make_matrixark_http_handler(

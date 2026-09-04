@@ -16,7 +16,6 @@ storage adapters for compatibility with existing scripts.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import sys
@@ -288,7 +287,8 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # read-heavy workload grows the store without bound. MATRIXARK_AUDIT_MODE=async restores
         # the off-request-path auditing; full/sync restore per-call durability.
         self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off"
-        self._audit_executor = ThreadPoolExecutor(max_workers=max(1, int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2"))))
+        from matrixark_mcp_audit_queue import AuditWriteQueue  # sibling; keeps this module small
+        self._audit_queue = AuditWriteQueue(int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2")))
         self._operation_limiters = {
             group: threading.BoundedSemaphore(max(1, int(capacity)))
             for group, capacity in self.DEFAULT_OPERATION_CONCURRENCY.items()
@@ -409,7 +409,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         adapter_close = getattr(self.adapter, "close", None)
         if callable(adapter_close):
             adapter_close(timeout_s=timeout_s)
-        self._audit_executor.shutdown(wait=False, cancel_futures=False)
+        self._audit_queue.drain(timeout_s)
 
     def append_audit_policy(self, action: str, identity: Json, *, status: str, details: Json | None = None, args: Json | None = None, hot_path: bool = False) -> None:
         mode = str((args or {}).get("audit_mode") or self._audit_mode_default).strip().lower()
@@ -423,7 +423,7 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
                     setattr(self.adapter, "_audit_flush_failures", int(getattr(self.adapter, "_audit_flush_failures", 0) or 0) + 1)
                     _mcp_debug_log(f"async audit write failed action={action}: {exc}")
 
-            self._audit_executor.submit(write_audit)
+            self._audit_queue.submit(write_audit)
             return
         self.access.append_audit(action, identity, status=status, details=details)
 
