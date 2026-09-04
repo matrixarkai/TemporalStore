@@ -359,50 +359,101 @@ fn metadata_from_proto(
     })
 }
 
-/// Encode a record as protobuf, marker byte first.
-pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
-    let message = v1::EngineWalRecord {
-        shard_id: record.shard_id,
-        sequence: record.sequence,
-        command: match record.command.as_ref() {
-            Some(command) => Some(v1::WalCommand {
-                kind: Some(
-                    crate::raft::wal_proto::command_to_proto(command)
-                        .map_err(|err| err.to_string())?,
-                ),
-            }),
-            None => None,
-        },
+/// The record split into the part written by hand and the part left to the generated encoder.
+///
+/// Fields one to three are written here; four to six are still a `prost` message. The split is
+/// what lets the command borrow: only the command carries a payload worth not copying, and it is
+/// the one field the generated encoder cannot be handed a borrow of.
+struct RecordParts<'a> {
+    command: Option<crate::raft::wal_proto::CommandEncoding<'a>>,
+    /// Fields four to six only. proto3 omits a scalar holding its default and `command` is None,
+    /// so encoding this writes the tail and nothing else -- which is why the bytes come out in
+    /// tag order and identical to encoding the whole record at once.
+    tail: v1::EngineWalRecord,
+    len: usize,
+}
+
+fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String> {
+    let command = match record.command.as_ref() {
+        Some(command) => Some(
+            crate::raft::wal_proto::command_encoding(command).map_err(|err| err.to_string())?,
+        ),
+        None => None,
+    };
+    let tail = v1::EngineWalRecord {
+        shard_id: 0,
+        sequence: 0,
+        command: None,
         metadata: record
             .metadata
             .as_ref()
             .map(metadata_to_proto)
             .transpose()?,
         items: record.outcomes.iter().map(item_to_proto).collect(),
-        staged_blocks: record
+        // Written by hand below, from the pages themselves. A staged page is a whole page, and
+        // filling this field copied every one of them before the encoder copied them again.
+        staged_blocks: Vec::new(),
+    };
+    let len = crate::raft::wal_proto::varint_field_len(1, record.shard_id)
+        + crate::raft::wal_proto::varint_field_len(2, record.sequence)
+        + command.as_ref().map_or(0, |command| command.encoded_len_at(3))
+        + tail.encoded_len()
+        + record
             .staged_pages
             .iter()
-            .map(|page| v1::WalStagedBlock {
-                object_id: page.object_id,
-                block: page.bytes.clone(),
-                routing_bucket: None,
-            })
-            .collect(),
-    };
-    let len = message.encoded_len();
+            .map(|page| crate::raft::wal_proto::len_delimited_len(6, staged_block_body_len(page)))
+            .sum::<usize>();
+    Ok(RecordParts {
+        command,
+        tail,
+        len,
+    })
+}
+
+impl RecordParts<'_> {
+    fn put(&self, record: &WriteAheadLogRecord, out: &mut Vec<u8>) -> Result<(), String> {
+        crate::raft::wal_proto::put_varint_field(1, record.shard_id, out);
+        crate::raft::wal_proto::put_varint_field(2, record.sequence, out);
+        if let Some(command) = self.command.as_ref() {
+            command.put_at(3, out);
+        }
+        self.tail.encode(out).map_err(|err| err.to_string())?;
+        for page in &record.staged_pages {
+            crate::raft::wal_proto::put_staged_block(6, page, out);
+        }
+        Ok(())
+    }
+}
+
+/// Bytes a staged page occupies as a `WalStagedBlock` body.
+///
+/// `routing_bucket` is never set on this path, and proto3 omits an absent optional, so it costs
+/// nothing here and is not written.
+fn staged_block_body_len(page: &crate::wal::StagedPage) -> usize {
+    crate::raft::wal_proto::varint_field_len(1, page.object_id)
+        + if page.bytes.is_empty() {
+            0
+        } else {
+            crate::raft::wal_proto::len_delimited_len(2, page.bytes.len())
+        }
+}
+
+/// Encode a record as protobuf, marker byte first.
+pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
+    let parts = record_parts(record)?;
     if crate::log_framing::binary_frame_enabled() {
         // The frame declares its own length, so the payload is written as produced -- which means
         // the marker can go in FIRST and the message encode straight after it. `encode` appends,
         // so there is no second buffer and no second copy of the payload. That copy was the whole
         // record again: at a four-kilobyte value it was four kilobytes to prepend one byte.
-        let mut out = Vec::with_capacity(len + 1);
+        let mut out = Vec::with_capacity(parts.len + 1);
         out.push(RAW_PAYLOAD_MARKER);
-        message.encode(&mut out).map_err(|err| err.to_string())?;
+        parts.put(record, &mut out)?;
         return Ok(out);
     }
     // The escaping fallback still needs the payload on its own, because escaping rewrites it.
-    let mut encoded = Vec::with_capacity(len);
-    message.encode(&mut encoded).map_err(|err| err.to_string())?;
+    let mut encoded = Vec::with_capacity(parts.len);
+    parts.put(record, &mut encoded)?;
     let mut out = Vec::with_capacity(encoded.len() + 8);
     out.push(BINARY_PAYLOAD_MARKER);
     out.extend_from_slice(&escape_newlines(&encoded));
@@ -442,4 +493,274 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
             .collect(),
         outcomes: message.items.into_iter().map(item_from_proto).collect(),
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Command;
+    use crate::wal::{StagedPage, WriteAheadLogRecord, WriteAheadLogRecordMetadata};
+
+    /// The encoder this replaced: build the whole message, owning every payload, then serialise.
+    ///
+    /// Kept here because it is the specification. The hand-written head is only allowed to exist
+    /// if it produces exactly these bytes -- a record already on disk is read by the generated
+    /// decoder, and a head that decoded correctly but differed byte for byte would still be a
+    /// format change, silently, on every record written from here on.
+    fn owned_bytes(record: &WriteAheadLogRecord) -> Vec<u8> {
+        let message = v1::EngineWalRecord {
+            shard_id: record.shard_id,
+            sequence: record.sequence,
+            command: record.command.as_ref().map(|command| v1::WalCommand {
+                kind: Some(crate::raft::wal_proto::command_to_proto(command).unwrap()),
+            }),
+            metadata: record
+                .metadata
+                .as_ref()
+                .map(metadata_to_proto)
+                .transpose()
+                .unwrap(),
+            items: record.outcomes.iter().map(item_to_proto).collect(),
+            staged_blocks: record
+                .staged_pages
+                .iter()
+                .map(|page| v1::WalStagedBlock {
+                    object_id: page.object_id,
+                    block: page.bytes.clone(),
+                    routing_bucket: None,
+                })
+                .collect(),
+        };
+        let mut encoded = Vec::with_capacity(message.encoded_len());
+        message.encode(&mut encoded).unwrap();
+        encoded
+    }
+
+    fn record_with(command: Option<Command>) -> WriteAheadLogRecord {
+        WriteAheadLogRecord {
+            shard_id: 7,
+            sequence: 42,
+            command,
+            metadata: None,
+            staged_pages: Vec::new(),
+            outcomes: Vec::new(),
+        }
+    }
+
+    fn cases() -> Vec<(&'static str, WriteAheadLogRecord)> {
+        let long_key = "k".repeat(300);
+        let mut with_metadata = record_with(Some(Command::StringSet {
+            key: "m".to_string(),
+            value: vec![1, 2, 3],
+        }));
+        with_metadata.metadata = Some(WriteAheadLogRecordMetadata {
+            version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+            timestamp_ms: 1_787_270_070_192,
+            items: Vec::new(),
+            batch_id: Some(11),
+            batch_size: Some(3),
+            batch_index: Some(1),
+        });
+        let mut with_pages = record_with(Some(Command::StringSet {
+            key: "p".to_string(),
+            value: vec![9; 10],
+        }));
+        with_pages.staged_pages = vec![StagedPage {
+            object_id: 900,
+            bytes: vec![7; 4096],
+        }];
+        let mut with_outcomes = record_with(Some(Command::StringSet {
+            key: "o".to_string(),
+            value: vec![4; 20],
+        }));
+        with_outcomes.outcomes = vec![crate::wal::WalOutcomeItem {
+            kind: "page".to_string(),
+            object_key: "tenant/1/object/9".to_string(),
+            component: Some("body".to_string()),
+            object_id: 9,
+            routing_bucket: 8539,
+            address: None,
+            // An outcome carries a payload of its own, so one case has to populate it.
+            value: Some(vec![8; 128]),
+            ttl: Some(60_000),
+            deleted: false,
+            meta: false,
+        }];
+        let mut everything = record_with(Some(Command::HashSet {
+            key: "k".to_string(),
+            field: "f".to_string(),
+            value: vec![2; 64],
+        }));
+        everything.metadata = Some(WriteAheadLogRecordMetadata {
+            version: crate::wal::WRITE_AHEAD_LOG_FORMAT_VERSION,
+            timestamp_ms: 1_787_270_070_192,
+            items: Vec::new(),
+            batch_id: Some(4),
+            batch_size: Some(2),
+            batch_index: Some(0),
+        });
+        everything.outcomes = vec![crate::wal::WalOutcomeItem {
+            kind: "page".to_string(),
+            object_key: "tenant/1/object/10".to_string(),
+            component: None,
+            object_id: 10,
+            routing_bucket: 1,
+            address: None,
+            value: None,
+            ttl: None,
+            deleted: true,
+            meta: true,
+        }];
+        everything.staged_pages = vec![
+            StagedPage {
+                object_id: 10,
+                bytes: vec![1; 4096],
+            },
+            StagedPage {
+                object_id: 11,
+                bytes: Vec::new(),
+            },
+        ];
+        let mut zeroed = record_with(Some(Command::StringSet {
+            key: "z".to_string(),
+            value: vec![0],
+        }));
+        zeroed.shard_id = 0;
+        zeroed.sequence = 0;
+
+        vec![
+            (
+                "string set",
+                record_with(Some(Command::StringSet {
+                    key: "key".to_string(),
+                    value: vec![1, 2, 3, 4],
+                })),
+            ),
+            (
+                "string set, empty value",
+                record_with(Some(Command::StringSet {
+                    key: "key".to_string(),
+                    value: Vec::new(),
+                })),
+            ),
+            (
+                "string set, empty key",
+                record_with(Some(Command::StringSet {
+                    key: String::new(),
+                    value: vec![5],
+                })),
+            ),
+            (
+                "string set, both empty",
+                record_with(Some(Command::StringSet {
+                    key: String::new(),
+                    value: Vec::new(),
+                })),
+            ),
+            (
+                "string set, key past one varint byte",
+                record_with(Some(Command::StringSet {
+                    key: long_key,
+                    value: vec![6; 5000],
+                })),
+            ),
+            (
+                "string set ex, ttl set",
+                record_with(Some(Command::StringSetEx {
+                    key: "key".to_string(),
+                    value: vec![1, 2],
+                    ttl_ms: 60_000,
+                })),
+            ),
+            // The trap the arm list documents: a zero TTL cannot round-trip through the modelled
+            // form, so it must go verbatim. If the borrowing encoder ever disagreed with
+            // `command_to_proto` about which arm this takes, this case is where it would show.
+            (
+                "string set ex, zero ttl goes verbatim",
+                record_with(Some(Command::StringSetEx {
+                    key: "key".to_string(),
+                    value: vec![1, 2],
+                    ttl_ms: 0,
+                })),
+            ),
+            (
+                "hash set",
+                record_with(Some(Command::HashSet {
+                    key: "key".to_string(),
+                    field: "field".to_string(),
+                    value: vec![3; 100],
+                })),
+            ),
+            (
+                "hash set, empty field",
+                record_with(Some(Command::HashSet {
+                    key: "key".to_string(),
+                    field: String::new(),
+                    value: vec![3],
+                })),
+            ),
+            (
+                "not modelled, goes verbatim",
+                record_with(Some(Command::StringDelete {
+                    key: "key".to_string(),
+                })),
+            ),
+            ("no command", record_with(None)),
+            ("with outcomes", with_outcomes),
+            // Every tag at once: the hand-written head, the generated tail, and the hand-written
+            // field six behind it. If the three ever stopped writing in tag order, this is the
+            // case that says so.
+            ("every field populated", everything),
+            ("zero shard and sequence", zeroed),
+            ("with metadata", with_metadata),
+            ("with staged pages", with_pages),
+        ]
+    }
+
+    /// The head written by hand must be byte for byte what the owned message produced.
+    ///
+    /// Only the body is compared: the marker and the escaping around it are framing, shared by
+    /// both paths and untouched by this change.
+    #[test]
+    fn the_borrowing_encoder_writes_the_same_bytes() {
+        for (label, record) in cases() {
+            let parts = record_parts(&record).expect("parts");
+            let mut ours = Vec::with_capacity(parts.len);
+            parts.put(&record, &mut ours).expect("put");
+            let theirs = owned_bytes(&record);
+            assert_eq!(ours, theirs, "bytes differ for {label}");
+            // The reserved length has to be exact, or the append allocates twice.
+            assert_eq!(parts.len, ours.len(), "reserved length wrong for {label}");
+            assert_eq!(
+                parts.len,
+                theirs.len(),
+                "reserved length disagrees with the message for {label}"
+            );
+        }
+    }
+
+    /// And what it writes still decodes to the record that went in.
+    ///
+    /// Byte equality already implies this, but only while the case list covers every arm. This
+    /// asserts the property directly, so a case added without a matching arm still fails.
+    #[test]
+    fn what_it_writes_decodes_back() {
+        for (label, record) in cases() {
+            let encoded = encode(&record).expect("encode");
+            let decoded = decode(&encoded).expect("decode");
+            assert_eq!(decoded.shard_id, record.shard_id, "shard for {label}");
+            assert_eq!(decoded.sequence, record.sequence, "sequence for {label}");
+            assert_eq!(
+                serde_json::to_vec(&decoded.command).unwrap(),
+                serde_json::to_vec(&record.command).unwrap(),
+                "command for {label}"
+            );
+            assert_eq!(
+                decoded.staged_pages.len(),
+                record.staged_pages.len(),
+                "staged pages for {label}"
+            );
+        }
+    }
 }
