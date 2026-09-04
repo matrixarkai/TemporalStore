@@ -15087,3 +15087,102 @@ fn what_a_feature_write_costs_against_its_series() {
         "the flat control reported {flat:.2}x -- the probe invents amplification"
     );
 }
+
+/// The four commands that hand a WHOLE address list to `sync_bucket_index_object_pages`
+/// (execute_on_shard lines ~1334, ~1402, ~1566, ~1727) -- do they all cost their series?
+///
+/// FeatureAppend is carried as a KNOWN-amplifying control (15.20x, mx#793) and SetAdd as the
+/// flat one. Source agreement is not evidence: the same survey shape has twice reported a
+/// command as cheap when its work had merely moved somewhere the grep could not see.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn which_series_writers_cost_their_series() {
+    const REPS: usize = 20;
+    let cost = |family: &str, fill: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let make = |i: usize| -> Command {
+            let ts = 1_000 + i as u64;
+            match family {
+                "SetAdd" => Command::SetAdd {
+                    key: "s".to_string(),
+                    member: format!("m{i:06}").into_bytes(),
+                },
+                "FeatureAppend" => Command::FeatureAppend {
+                    key: "f".to_string(),
+                    points: vec![FeaturePoint { timestamp_ms: ts, value: vec![b'v'; 8] }],
+                },
+                "FeatureAppendWithPolicy" => Command::FeatureAppendWithPolicy {
+                    key: "fp".to_string(),
+                    points: vec![FeaturePoint { timestamp_ms: ts, value: vec![b'v'; 8] }],
+                    policy: FeatureWritePolicy::Upsert,
+                },
+                "FeatureReplace" => Command::FeatureReplace {
+                    key: "fr".to_string(),
+                    start_ms: ts,
+                    end_ms: ts,
+                    points: vec![FeaturePoint { timestamp_ms: ts, value: vec![b'v'; 8] }],
+                },
+                "SequenceAdd" => Command::SequenceAdd {
+                    key: "sq".to_string(),
+                    rows: vec![SequenceFeatureRow {
+                        timestamp_ms: ts,
+                        gid: i as u64,
+                        action_type: 1,
+                        duration: 2,
+                        author_id: 3,
+                    }],
+                },
+                other => panic!("unknown family {other}"),
+            }
+        };
+        for i in 0..fill {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+            assert!(out.status.ok, "{family} fill refused: {:?}", out.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(fill + i) });
+            assert!(out.status.ok, "{family} probe refused: {:?}", out.status);
+        }
+        probe.stop().alloc_bytes / REPS as u64
+    };
+
+    println!("  family                    bytes/write @200     @3200      ratio");
+    let mut amplifying = 0.0f64;
+    let mut flat = 0.0f64;
+    for family in [
+        "SetAdd",
+        "FeatureAppend",
+        "FeatureAppendWithPolicy",
+        "FeatureReplace",
+        "SequenceAdd",
+    ] {
+        let small = cost(family, 200);
+        let large = cost(family, 3200);
+        assert!(small > 0, "{family}: measured zero bytes, the probe never reached the path");
+        let ratio = large as f64 / small as f64;
+        match family {
+            "FeatureAppend" => amplifying = ratio,
+            "SetAdd" => flat = ratio,
+            _ => {}
+        }
+        println!("  {family:24}  {small:10}  {large:10}   {ratio:8.2}x");
+    }
+    assert!(
+        amplifying > 3.0,
+        "FeatureAppend is known to cost its series (15.20x); it reported {amplifying:.2}x, so \
+         this probe cannot see amplification and no row above means anything"
+    );
+    assert!(
+        flat < 1.5,
+        "SetAdd declares its component and must stay flat; it reported {flat:.2}x, so this probe \
+         reports amplification where there is none"
+    );
+}
