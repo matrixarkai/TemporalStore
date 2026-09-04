@@ -301,6 +301,22 @@ NAV_JS = r'''<script>
    a copier defined after that line would not exist on those pages. */
 (function () {
   "use strict";
+  /* Why a request was refused, in the words the edge used. A scope refusal answers
+     {"error": "insufficient_scope", "required": ["admin:api_key"]}, and showing the code alone
+     leaves the operator guessing at the one thing the answer already contained -- and the scope
+     name is exactly the string to tick when issuing the key.
+
+     `detail` still wins where there is one: it names the setting and the reason. The scope is
+     appended to that rather than replacing it. */
+  window.__matrixarkWhy = function (body, fallback) {
+    body = body || {};
+    var text = body.detail || body.error || fallback;
+    if (body.required && body.required.length) {
+      text += " — this needs " + [].concat(body.required).join(" or ");
+    }
+    return text;
+  };
+
   window.__matrixarkCopyText = function (text) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1621,7 +1637,7 @@ function liveStream(options) {
       .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, body: b }; }); })
       .then(function (res) {
         if (!res.ok) {
-          say($("polMsg"), res.body.detail || res.body.error || "Save failed.", "err");
+          say($("polMsg"), window.__matrixarkWhy(res.body, "Save failed."), "err");
           return;
         }
         policyView = res.body;
@@ -1809,7 +1825,7 @@ function liveStream(options) {
       .then(function (res) {
         $("save").disabled = false;
         if (!res.ok) {
-          say($("saveMsg"), res.body.detail || res.body.error || "Save failed.", "err");
+          say($("saveMsg"), window.__matrixarkWhy(res.body, "Save failed."), "err");
           return;
         }
         var restart = res.body.restart_required || [];
@@ -2229,7 +2245,7 @@ function liveStream(options) {
       .then(function (res) {
         $("importCfg").disabled = false;
         if (!res.ok) {
-          say($("importMsg"), res.b.detail || res.b.error || failure(res.s), "err");
+          say($("importMsg"), window.__matrixarkWhy(res.b, failure(res.s)), "err");
           return;
         }
         var n = Object.keys(settings).length;
@@ -2630,7 +2646,7 @@ CATALOG_JS = r"""
         if (!res.ok) {
           say($("listMsg"), res.status === 403
             ? "This key cannot change skills. It needs skill:manage."
-            : (res.body.detail || res.body.error || "Could not update the skill."), "err");
+            : window.__matrixarkWhy(res.body, "Could not update the skill."), "err");
           return;
         }
         /* load() clears the message area, so refresh first and confirm after -- otherwise the
