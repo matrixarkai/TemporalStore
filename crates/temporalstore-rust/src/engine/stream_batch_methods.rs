@@ -344,7 +344,7 @@ impl TemporalEngine {
                 delta_command_keys.extend(object_keys.iter().cloned());
                 match (
                     &mut batch_upsert_components,
-                    command_upsert_components(&command_for_post_write),
+                    command_upsert_components(&command_for_post_write, shard),
                 ) {
                     (Some(collected), Some(components)) => collected.extend(components),
                     (state, _) => *state = None,
