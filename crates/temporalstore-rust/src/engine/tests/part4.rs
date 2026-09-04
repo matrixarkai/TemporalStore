@@ -15392,3 +15392,125 @@ fn what_one_entry_costs_in_each_structure() {
     println!("  around it, and runs high -- the two columns are printed together so the");
     println!("  difference cannot be mistaken for noise.");
 }
+
+/// Does a NARROW read pay for the whole collection?
+///
+/// Every read here asks for a small, fixed-size answer from a collection that grows 16x. A cost
+/// that grows with the collection means the read materialises what it does not return.
+///
+/// Two-sided control, both asserted:
+/// * `HashGet` fetches one field and must stay flat.
+/// * `ListRangeFull` asks for every element, so it SHOULD scale -- if it does not, this probe
+///   cannot see scaling and the narrow rows below prove nothing.
+///
+/// Caveat this probe cannot escape: an allocation probe cannot see a scan that allocates
+/// nothing. A lazy range walk over 3 200 entries costs the same bytes as one over 10. So a flat
+/// row here means "materialises nothing extra", NOT "reads nothing extra".
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn does_a_narrow_read_pay_for_the_whole_collection() {
+    const REPS: usize = 20;
+    let cost = |kind: &str, fill: usize| -> (u64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..fill {
+            let command = match kind {
+                "HashGet" => Command::HashSet {
+                    key: "k".to_string(),
+                    field: format!("f{i:07}"),
+                    value: vec![b'v'; 32],
+                },
+                "ListRangeFull" | "ListRangeNarrow" => Command::ListPush {
+                    key: "k".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                    left: false,
+                },
+                "ZSetRangeNarrow" => Command::ZSetAdd {
+                    key: "k".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                    score: i as f64,
+                },
+                "SetMembersAll" => Command::SetAdd {
+                    key: "k".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                },
+                other => panic!("unknown kind {other}"),
+            };
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(out.status.ok, "{kind} fill refused: {:?}", out.status);
+        }
+        let read = || -> Command {
+            match kind {
+                "HashGet" => Command::HashGet {
+                    key: "k".to_string(),
+                    field: "f0000001".to_string(),
+                },
+                "ListRangeFull" => Command::ListRange { key: "k".to_string(), start: 0, stop: -1 },
+                "ListRangeNarrow" => Command::ListRange { key: "k".to_string(), start: 0, stop: 9 },
+                "ZSetRangeNarrow" => Command::ZSetRangeByScore {
+                    key: "k".to_string(),
+                    min: 10.0,
+                    max: 19.0,
+                    min_exclusive: false,
+                    max_exclusive: false,
+                    rev: false,
+                },
+                "SetMembersAll" => Command::SetMembers { key: "k".to_string() },
+                other => panic!("unknown kind {other}"),
+            }
+        };
+        // How many items does the answer actually carry? A read that returns nothing would look
+        // cheap for the wrong reason.
+        let returned = match engine
+            .execute(ExecuteRequest { shard_id: 1, command: read() })
+            .response
+        {
+            CommandResponse::Members { members } => members.len(),
+            CommandResponse::Bytes { value } => value.map(|_| 1).unwrap_or(0),
+            CommandResponse::HashEntries { entries } => entries.len(),
+            other => panic!("{kind}: unexpected response {other:?}"),
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..REPS {
+            engine.execute(ExecuteRequest { shard_id: 1, command: read() });
+        }
+        (probe.stop().alloc_bytes / REPS as u64, returned)
+    };
+
+    println!("  read                 bytes @200   bytes @3200    ratio   items returned");
+    let mut flat = 0.0f64;
+    let mut scaling = 0.0f64;
+    for kind in [
+        "HashGet",
+        "ListRangeFull",
+        "ListRangeNarrow",
+        "ZSetRangeNarrow",
+        "SetMembersAll",
+    ] {
+        let (small, small_items) = cost(kind, 200);
+        let (large, large_items) = cost(kind, 3200);
+        assert!(small > 0, "{kind}: measured zero bytes");
+        assert!(large_items > 0, "{kind}: returned nothing at 3200, so its cost means nothing");
+        let ratio = large as f64 / small as f64;
+        match kind {
+            "HashGet" => flat = ratio,
+            "ListRangeFull" => scaling = ratio,
+            _ => {}
+        }
+        println!(
+            "  {kind:18}  {small:10}  {large:12}   {ratio:6.2}x   {small_items} -> {large_items}",
+        );
+    }
+    assert!(flat < 1.5, "HashGet fetches ONE field and reported {flat:.2}x");
+    assert!(
+        scaling > 3.0,
+        "ListRangeFull asks for every element and reported {scaling:.2}x, so this probe cannot \
+         see a read scale and no narrow row above means anything"
+    );
+}
