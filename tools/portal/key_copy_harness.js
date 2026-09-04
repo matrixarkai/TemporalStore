@@ -52,6 +52,8 @@ function boot(clipboard) {
   const els = new Map();
   const created = [];
   const timers = [];
+  const asked = [];              // every window.confirm message, in order
+  let answer = true;             // what the person clicks in the dialog
 
   function makeEl(id) {
     return {
@@ -121,6 +123,7 @@ function boot(clipboard) {
     setTimeout(fn) { timers.push(fn); return timers.length; },
     setInterval: () => 0, clearInterval() {}, clearTimeout() {},
     wireTabs() {}, requestAnimationFrame: () => 0,
+    confirm(message) { asked.push(String(message)); return answer; },
     Number, JSON, String, Math, Date, Object, Array, Promise, RegExp, Error, isNaN,
     encodeURIComponent, decodeURIComponent, parseInt, parseFloat, console,
     TextDecoder: function () { this.decode = () => ""; },
@@ -154,7 +157,8 @@ function boot(clipboard) {
   });
 
   return {
-    el, created, timers,
+    el, created, timers, asked,
+    answerDialogs(value) { answer = value; },
     setCreateResponse(v) { createResponse = v; },
     create() {
       /* Both are required, and createKey returns quietly without either -- which would leave the
@@ -273,6 +277,38 @@ async function quiet() { for (let i = 0; i < 60; i += 1) { await settle(); } }
     ok("E it copies the NEW key, not the one it replaced",
        cb.seen.length === before + 1 && cb.seen[cb.seen.length - 1] === ROTATED_KEY,
        JSON.stringify(cb.seen));
+  }
+
+  /* ---- G. rotation asks before it stops the key working -------------------------------------- */
+  {
+    const cb = clipboardThat("resolve");
+    const page = boot(cb.api);
+    page.create();
+    await quiet();
+
+    const rotate = () => page.created.filter((c) => c.textContent === "Rotate")[0];
+
+    /* Declining must leave the key alone. A dialog that is shown and ignored is the same button
+       it was before, with an extra click. */
+    page.answerDialogs(false);
+    const before = page.el("createKeyOut").innerHTML;
+    rotate().onclick({});
+    await quiet();
+    ok("G rotating asks first", page.asked.some((m) => /Rotate/.test(m)),
+       JSON.stringify(page.asked));
+    ok("G the question says the key stops working, not just the word rotate",
+       page.asked.some((m) => /stops working/.test(m)), JSON.stringify(page.asked));
+    ok("G answering no rotates nothing",
+       page.el("createKeyOut").innerHTML === before,
+       JSON.stringify(page.el("createKeyOut").innerHTML).slice(0, 160));
+
+    /* And answering yes still rotates. */
+    page.answerDialogs(true);
+    rotate().onclick({});
+    await quiet();
+    ok("G answering yes still rotates",
+       page.el("createKeyOut").innerHTML.indexOf(ROTATED_KEY) >= 0,
+       JSON.stringify(page.el("createKeyOut").innerHTML).slice(0, 200));
   }
 
   /* ---- F. the curl button shares the honest copier ------------------------------------------ */
