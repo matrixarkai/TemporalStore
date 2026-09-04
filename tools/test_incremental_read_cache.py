@@ -190,7 +190,16 @@ class IncrementalReadCacheCase(unittest.TestCase):
         base = json.loads(adapter._durable_read_cache_path().read_text(encoding="utf-8"))
         tail = [l for l in adapter._durable_read_cache_delta_path().read_text(
             encoding="utf-8").splitlines() if l.strip()]
-        self.assertEqual(head["record_count"], len(base["records"]))
+        # `record_count` counts DATA records, which is what the load path recovers and compares
+        # after expansion. The stored array is longer by the intern sidecars it carries, so count
+        # what the head is actually describing rather than the raw array length.
+        stored = [r for r in base["records"]
+                  if str(r.get("record_type") or "") != A.INTERN_DICT_RECORD_TYPE]
+        self.assertEqual(head["record_count"], len(stored))
+        # Stronger than the length check it replaces: expanding the array has to yield exactly the
+        # count the head claims, which a stray sidecar or a dropped record would break.
+        self.assertEqual(head["record_count"],
+                         len(A.expand_interned_records(list(base["records"]))))
         self.assertEqual(head["delta_count"], len(tail))
         self.assertEqual(self.SEED + 6, head["record_count"] + head["delta_count"])
 
