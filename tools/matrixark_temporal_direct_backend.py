@@ -3,6 +3,12 @@
 """_TemporalDirectBackendMixin methods split from matrixark_mcp_temporal_adapters.MatrixArkTemporalStoreDirectAdapter (mixin)."""
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -78,7 +84,7 @@ class _TemporalDirectBackendMixin:
 
     def _ensure_direct_write_queue_fields(self) -> None:
         if not hasattr(self, "_direct_write_queue_enabled"):
-            self._direct_write_queue_enabled = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
+            self._direct_write_queue_enabled = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE", False)
         if not hasattr(self, "_direct_write_queue_max_records"):
             self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
         if not hasattr(self, "_direct_write_queue_put_timeout_s"):
@@ -90,13 +96,13 @@ class _TemporalDirectBackendMixin:
         if not hasattr(self, "_direct_write_queue_drain_max_batches"):
             self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
         if not hasattr(self, "_direct_write_queue_allow_sync_context"):
-            self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
+            self._direct_write_queue_allow_sync_context = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
         if not hasattr(self, "_direct_write_queue_autostart"):
             self._direct_write_queue_autostart = True
         if not hasattr(self, "_native_side_index_assume_fresh"):
-            self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
+            self._native_side_index_assume_fresh = env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
         if not hasattr(self, "_direct_raw_ingestion_queue_enabled"):
-            self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
+            self._direct_raw_ingestion_queue_enabled = env_bool("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", False)
         if not hasattr(self, "_direct_write_queue_key"):
             self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         if not hasattr(self, "_direct_write_queue_done_key"):
@@ -1556,7 +1562,7 @@ class _TemporalDirectBackendMixin:
 
     def _context_event_time_index_entries(self, records: list[Json]) -> list[Json]:
         entries: list[Json] = []
-        full_payload = os.environ.get("MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
+        full_payload = env_bool("MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD", False)
         for record in records:
             if record.get("record_type") != "context_event":
                 continue
