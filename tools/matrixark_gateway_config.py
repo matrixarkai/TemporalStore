@@ -1092,26 +1092,28 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
             coerced[key] = ""
         else:
             coerced[key] = _coerce(SETTINGS_BY_KEY[key], raw)
+            # The one thing that makes assignment into the environment raise. Refused here, with
+            # the other value checks, so that neither half of the write can fail once it starts.
+            if "\x00" in coerced[key]:
+                raise InvalidValue("%s must not contain a NUL byte" % key)
     # The *.api_key_env settings decide where the secrets land, so fold the whole patch in before
     # resolving any target name -- otherwise a single call that sets both the key and its variable
     # name would write the key to the OLD variable.
     values.update(coerced)
 
     applied: List[Json] = []
+    # What the environment would become, worked out but not yet done. The write to disk happens
+    # first: if it fails, the running process must not already be carrying settings the operator
+    # has just been told were not saved.
+    env_ops: List[Tuple[str, Optional[str]]] = []
     for key in sorted(coerced):
         setting = SETTINGS_BY_KEY[key]
         value = coerced[key]
         name = _env_name(setting, values)
         if name:
-            if value == "":
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+            env_ops.append((name, None if value == "" else value))
         if key == "extraction.provider":
-            if value:
-                os.environ["MATRIXARK_EXTRACTION_PROVIDER"] = value
-            else:
-                os.environ.pop("MATRIXARK_EXTRACTION_PROVIDER", None)
+            env_ops.append(("MATRIXARK_EXTRACTION_PROVIDER", value or None))
         # A value the engine will raise is reported back with what it will really be. The
         # write is still accepted -- the engine takes it and raises it, and refusing here would be
         # this file inventing a stricter rule than the thing it configures.
@@ -1165,6 +1167,14 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
     document["updated_at"] = time.time()
     document["updated_by"] = actor or "portal"
     _store(document)
+
+    # Only now. _store is the half that can fail; assignment into the environment is the half that
+    # cannot be undone, and it has been checked for the one input that would make it raise.
+    for name, value in env_ops:
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
 
     restart_required = sorted({e["key"] for e in applied if not e["in_effect"]})
     return {
