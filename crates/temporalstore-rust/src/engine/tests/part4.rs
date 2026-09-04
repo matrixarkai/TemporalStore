@@ -14871,3 +14871,137 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
          ({tail_seq}); the component named {seq}"
     );
 }
+
+/// Does REMOVING one entry cost the size of the collection it leaves?
+///
+/// `capture_key_states` runs when membership shrinks, and its own comment says it "serializes
+/// every entry the per-key maps hold for the key". Adds were measured by
+/// `which_write_paths_cost_their_collection`; this is the other axis.
+///
+/// Two-sided control: ControlStateIncrement is known to amplify (7.57x) and SetAdd is known flat
+/// (1.03x since the component declaration). A probe that cannot show BOTH states is not
+/// measuring anything, so both are asserted.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn which_removals_cost_their_collection() {
+    const REPS: usize = 20;
+    let fill = |engine: &TemporalEngine, family: &str, n: usize| {
+        for i in 0..n {
+            let command = match family {
+                "SetRemove" | "SetAdd" => Command::SetAdd {
+                    key: "k".to_string(),
+                    member: format!("m{i:06}").into_bytes(),
+                },
+                "ListPop" => Command::ListPush {
+                    key: "k".to_string(),
+                    member: format!("m{i:06}").into_bytes(),
+                    left: false,
+                },
+                "ZSetRemove" => Command::ZSetAdd {
+                    key: "k".to_string(),
+                    member: format!("m{i:06}").into_bytes(),
+                    score: i as f64,
+                },
+                "HashDelete" => Command::HashSet {
+                    key: "k".to_string(),
+                    field: format!("f{i:06}"),
+                    value: vec![b'v'; 32],
+                },
+                "ControlStateIncrement" => Command::ControlStateIncrement {
+                    key: "k".to_string(),
+                    timestamp_ms: 1_000 + i as u64,
+                    amount: 1,
+                },
+                other => panic!("unknown family {other}"),
+            };
+            engine.execute(ExecuteRequest { shard_id: 1, command });
+        }
+    };
+    let probed = |family: &str, i: usize, fill_n: usize| -> Command {
+        match family {
+            "SetRemove" => Command::SetRemove {
+                key: "k".to_string(),
+                member: format!("m{i:06}").into_bytes(),
+            },
+            "ListPop" => Command::ListPop {
+                key: "k".to_string(),
+                left: false,
+            },
+            "ZSetRemove" => Command::ZSetRemove {
+                key: "k".to_string(),
+                member: format!("m{i:06}").into_bytes(),
+            },
+            "HashDelete" => Command::HashDelete {
+                key: "k".to_string(),
+                field: format!("f{i:06}"),
+            },
+            // The two controls keep ADDING -- their known behaviour is on the add path.
+            "SetAdd" => Command::SetAdd {
+                key: "k".to_string(),
+                member: format!("m{:06}", fill_n + i).into_bytes(),
+            },
+            "ControlStateIncrement" => Command::ControlStateIncrement {
+                key: "k".to_string(),
+                timestamp_ms: 900_000 + i as u64,
+                amount: 1,
+            },
+            other => panic!("unknown family {other}"),
+        }
+    };
+
+    let cost = |family: &str, n: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        fill(&engine, family, n);
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: probed(family, i, n),
+            });
+            assert!(out.status.ok, "{family} probe write refused: {:?}", out.status);
+        }
+        probe.stop().alloc_bytes / REPS as u64
+    };
+
+    println!("  family                  bytes/op @200   @3200      ratio");
+    let mut amplifying_control = 0.0f64;
+    let mut flat_control = 0.0f64;
+    for family in [
+        "ControlStateIncrement",
+        "SetAdd",
+        "SetRemove",
+        "ListPop",
+        "ZSetRemove",
+        "HashDelete",
+    ] {
+        let small = cost(family, 200);
+        let large = cost(family, 3200);
+        assert!(small > 0, "{family}: measured zero bytes, the probe never reached the path");
+        let ratio = large as f64 / small as f64;
+        match family {
+            "ControlStateIncrement" => amplifying_control = ratio,
+            "SetAdd" => flat_control = ratio,
+            _ => {}
+        }
+        println!("  {family:22}  {small:10}  {large:10}   {ratio:8.2}x");
+    }
+    assert!(
+        amplifying_control > 3.0,
+        "the amplifying control reported {amplifying_control:.2}x -- the probe cannot see \
+         amplification, so no row above means anything"
+    );
+    assert!(
+        flat_control < 1.5,
+        "the flat control reported {flat_control:.2}x -- the probe reports amplification where \
+         there is none, so no row above means anything"
+    );
+    println!("  Ratio near 1 => the removal is incremental. Ratio rising with the collection");
+    println!("  => removing one entry costs the size of what remains.");
+}
