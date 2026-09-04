@@ -101,28 +101,188 @@ fn encode_hex(bytes: &[u8]) -> String {
 /// non-zero, so a zero-TTL `StringSetEx` would come back as a plain `StringSet`. It goes verbatim
 /// instead -- a command that cannot round-trip through a modelled arm must not use one.
 pub(crate) fn command_to_proto(command: &Command) -> io::Result<v1::wal_command::Kind> {
-    Ok(match command {
-        Command::StringSet { key, value } => v1::wal_command::Kind::StringSet(v1::StringSet {
-            key: key.clone(),
-            value: value.clone(),
-            ttl_ms: 0,
-        }),
-        Command::StringSetEx { key, value, ttl_ms } if *ttl_ms > 0 => {
+    Ok(match command_encoding(command)? {
+        CommandEncoding::StringSet { key, value, ttl_ms } => {
             v1::wal_command::Kind::StringSet(v1::StringSet {
-                key: key.clone(),
-                value: value.clone(),
-                ttl_ms: *ttl_ms,
+                key: key.to_owned(),
+                value: value.to_vec(),
+                ttl_ms,
             })
         }
-        Command::HashSet { key, field, value } => v1::wal_command::Kind::HashSet(v1::HashSet {
-            key: key.clone(),
-            field: field.clone(),
-            value: value.clone(),
-        }),
-        other => v1::wal_command::Kind::Verbatim(
-            serde_json::to_vec(other).map_err(io::Error::other)?,
-        ),
+        CommandEncoding::HashSet { key, field, value } => {
+            v1::wal_command::Kind::HashSet(v1::HashSet {
+                key: key.to_owned(),
+                field: field.to_owned(),
+                value: value.to_vec(),
+            })
+        }
+        CommandEncoding::Owned(command) => command.kind.expect("verbatim arm always sets a kind"),
     })
+}
+
+/// A command in the shape it will be written in, borrowing its payload instead of owning a copy.
+///
+/// Building the owned message cost the payload twice on every write: once to fill the message and
+/// once to serialise it. At a four-kilobyte value that is four kilobytes spent to describe four
+/// kilobytes. The three modelled arms borrow their key and value here, so the write
+/// copies them only into the buffer that goes to disk.
+///
+/// The verbatim arm still owns its bytes, and that is not an oversight: its JSON does not exist
+/// until it is built, so there is nothing to borrow.
+pub(crate) enum CommandEncoding<'a> {
+    StringSet {
+        key: &'a str,
+        value: &'a [u8],
+        ttl_ms: u64,
+    },
+    HashSet {
+        key: &'a str,
+        field: &'a str,
+        value: &'a [u8],
+    },
+    Owned(v1::WalCommand),
+}
+
+/// Which arm a command takes. This is the ONLY place that decides, and `command_to_proto` is
+/// written on top of it, so the two cannot answer differently -- the zero-TTL `StringSetEx` trap
+/// documented above is decided once.
+pub(crate) fn command_encoding(command: &Command) -> io::Result<CommandEncoding<'_>> {
+    Ok(match command {
+        Command::StringSet { key, value } => CommandEncoding::StringSet {
+            key,
+            value,
+            ttl_ms: 0,
+        },
+        Command::StringSetEx { key, value, ttl_ms } if *ttl_ms > 0 => CommandEncoding::StringSet {
+            key,
+            value,
+            ttl_ms: *ttl_ms,
+        },
+        Command::HashSet { key, field, value } => CommandEncoding::HashSet { key, field, value },
+        other => CommandEncoding::Owned(v1::WalCommand {
+            kind: Some(v1::wal_command::Kind::Verbatim(
+                serde_json::to_vec(other).map_err(io::Error::other)?,
+            )),
+        }),
+    })
+}
+
+/// Bytes a length-delimited field occupies: its key, its length, and its payload.
+pub(crate) fn len_delimited_len(tag: u32, payload_len: usize) -> usize {
+    prost::encoding::key_len(tag)
+        + prost::encoding::encoded_len_varint(payload_len as u64)
+        + payload_len
+}
+
+/// Bytes a varint field occupies, or none at all when the value is zero.
+///
+/// proto3 omits a scalar field holding its default, and the generated encoder does the same. A
+/// hand-written field that emitted the zero would still decode, but it would no longer produce
+/// the same bytes as the message it replaces -- which is the property the tests check.
+pub(crate) fn varint_field_len(tag: u32, value: u64) -> usize {
+    if value == 0 {
+        return 0;
+    }
+    prost::encoding::key_len(tag) + prost::encoding::encoded_len_varint(value)
+}
+
+pub(crate) fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
+    if value == 0 {
+        return;
+    }
+    prost::encoding::encode_key(tag, prost::encoding::WireType::Varint, out);
+    prost::encoding::encode_varint(value, out);
+}
+
+/// Write a staged page as field `tag`, its bytes borrowed straight into `out`.
+pub(crate) fn put_staged_block(tag: u32, page: &crate::wal::StagedPage, out: &mut Vec<u8>) {
+    let body = varint_field_len(1, page.object_id)
+        + if page.bytes.is_empty() {
+            0
+        } else {
+            len_delimited_len(2, page.bytes.len())
+        };
+    prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
+    prost::encoding::encode_varint(body as u64, out);
+    put_varint_field(1, page.object_id, out);
+    put_len_delimited(2, &page.bytes, out);
+}
+
+fn put_len_delimited(tag: u32, payload: &[u8], out: &mut Vec<u8>) {
+    if payload.is_empty() {
+        return;
+    }
+    prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
+    prost::encoding::encode_varint(payload.len() as u64, out);
+    out.extend_from_slice(payload);
+}
+
+fn len_delimited_len_or_none(tag: u32, payload_len: usize) -> usize {
+    if payload_len == 0 {
+        return 0;
+    }
+    len_delimited_len(tag, payload_len)
+}
+
+impl CommandEncoding<'_> {
+    /// Bytes of the `WalCommand` body -- the single oneof field, with no outer length.
+    fn body_len(&self) -> usize {
+        match self {
+            Self::StringSet { key, value, ttl_ms } => {
+                let inner = len_delimited_len_or_none(1, key.len())
+                    + len_delimited_len_or_none(2, value.len())
+                    + varint_field_len(3, *ttl_ms);
+                len_delimited_len(1, inner)
+            }
+            Self::HashSet { key, field, value } => {
+                let inner = len_delimited_len_or_none(1, key.len())
+                    + len_delimited_len_or_none(2, field.len())
+                    + len_delimited_len_or_none(3, value.len());
+                len_delimited_len(2, inner)
+            }
+            Self::Owned(command) => prost::Message::encoded_len(command),
+        }
+    }
+
+    /// Bytes this command occupies as field `tag` of the record that carries it.
+    pub(crate) fn encoded_len_at(&self, tag: u32) -> usize {
+        len_delimited_len(tag, self.body_len())
+    }
+
+    fn put_body(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::StringSet { key, value, ttl_ms } => {
+                let inner = len_delimited_len_or_none(1, key.len())
+                    + len_delimited_len_or_none(2, value.len())
+                    + varint_field_len(3, *ttl_ms);
+                prost::encoding::encode_key(1, prost::encoding::WireType::LengthDelimited, out);
+                prost::encoding::encode_varint(inner as u64, out);
+                put_len_delimited(1, key.as_bytes(), out);
+                put_len_delimited(2, value, out);
+                put_varint_field(3, *ttl_ms, out);
+            }
+            Self::HashSet { key, field, value } => {
+                let inner = len_delimited_len_or_none(1, key.len())
+                    + len_delimited_len_or_none(2, field.len())
+                    + len_delimited_len_or_none(3, value.len());
+                prost::encoding::encode_key(2, prost::encoding::WireType::LengthDelimited, out);
+                prost::encoding::encode_varint(inner as u64, out);
+                put_len_delimited(1, key.as_bytes(), out);
+                put_len_delimited(2, field.as_bytes(), out);
+                put_len_delimited(3, value, out);
+            }
+            Self::Owned(command) => {
+                prost::Message::encode_raw(command, out);
+            }
+        }
+    }
+
+    /// Write this command as field `tag`, payload borrowed straight into `out`.
+    pub(crate) fn put_at(&self, tag: u32, out: &mut Vec<u8>) {
+        prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
+        prost::encoding::encode_varint(self.body_len() as u64, out);
+        self.put_body(out);
+    }
 }
 
 pub(crate) fn command_from_proto(kind: v1::wal_command::Kind) -> io::Result<Command> {
