@@ -15186,3 +15186,114 @@ fn which_series_writers_cost_their_series() {
          reports amplification where there is none"
     );
 }
+
+/// Does a counter write get more expensive with the NUMBER OF WRITES, at a FIXED series size?
+///
+/// The 8h soak shows ControlStateIncrement rising 5,857 -> 8,291 bytes over two hours while its
+/// series is pinned at 512 timestamps by construction. If that is real, cost grows with writes
+/// rather than with data -- an axis no fill-and-measure probe has tested, because every other
+/// probe here grows the collection it measures.
+///
+/// Both arms establish the SAME 512-point series first; only the number of subsequent writes
+/// differs. ControlStateSetAndGet rides along to finish the candidate list.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn does_a_counter_write_cost_more_after_many_writes() {
+    const REPS: usize = 20;
+    const SERIES: u64 = 512;
+    let cost = |family: &str, extra_writes: usize| -> (u64, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let make = |i: usize| -> Command {
+            let ts = 1_000 + (i as u64 % SERIES);
+            match family {
+                "ControlStateIncrement" => Command::ControlStateIncrement {
+                    key: "c".to_string(),
+                    timestamp_ms: ts,
+                    amount: 1,
+                },
+                "ControlStateSetAndGet" => Command::ControlStateSetAndGet {
+                    family: ControlStateFamily::Counter,
+                    key: "c".to_string(),
+                    timestamp_ms: ts,
+                    amount: 1,
+                    start_ms: 0,
+                    end_ms: 1_000_000,
+                    aggregator: "sum".to_string(),
+                },
+                other => panic!("unknown family {other}"),
+            }
+        };
+        // Establish the series: SERIES distinct timestamps, identical in both arms.
+        for i in 0..SERIES as usize {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+            assert!(out.status.ok, "{family} seed refused: {:?}", out.status);
+        }
+        // Then only the WRITE COUNT differs -- every one lands on an existing timestamp.
+        for i in 0..extra_writes {
+            engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+            assert!(out.status.ok, "{family} probe refused: {:?}", out.status);
+        }
+        let bytes = probe.stop().alloc_bytes / REPS as u64;
+        // The series really is still SERIES points, so this cannot be a size effect in disguise.
+        //
+        // ControlStateSetAndGet files under `control_state_family_key(family, key)` --
+        // "control_state:h:c" -- NOT the bare key. Reading the bare key returned 0 and the row
+        // was meaningless; the cost was real but measured a path nothing verified.
+        let read_key = match family {
+            "ControlStateSetAndGet" => "control_state:h:c".to_string(),
+            _ => "c".to_string(),
+        };
+        let count = match engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateCount {
+                    key: read_key.clone(),
+                    start_ms: 0,
+                    end_ms: 1_000_000,
+                },
+            })
+            .response
+        {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected a count, got {other:?}"),
+        };
+        // ASSERT, do not print: a printed answer cannot fail, which is how the unvalidated row
+        // got reported in the first place.
+        assert!(
+            count > 0,
+            "{family}: read back 0 from {read_key}, so the measured cost belongs to a path this              probe cannot confirm wrote anything"
+        );
+        (bytes, count)
+    };
+
+    println!("  family                   +200 writes    +3200 writes    ratio   (series fixed at {SERIES})");
+    for family in ["ControlStateIncrement", "ControlStateSetAndGet"] {
+        let (small, small_n) = cost(family, 200);
+        let (large, large_n) = cost(family, 3200);
+        assert!(small > 0, "{family}: measured zero bytes");
+        let ratio = large as f64 / small as f64;
+        println!(
+            "  {family:22}  {small:11}  {large:14}   {ratio:6.2}x   (sums {small_n} / {large_n})",
+        );
+        // The guard, not just the report: a counter write must not get dearer because the
+        // process has done more writes. Printing a ratio nobody asserts on cannot fail.
+        assert!(
+            ratio < 1.5,
+            "{family} cost {ratio:.2}x more after 16x the writes at an UNCHANGED {SERIES}-point              series ({small} -> {large} bytes), so its cost now tracks writes rather than data"
+        );
+    }
+    println!("  A ratio near 1 => cost depends on the DATA, and the soak's rise is something else.");
+    println!("  A ratio above 1 => cost grows with WRITES at fixed data size, which no");
+    println!("  fill-and-measure probe in this file could have seen.");
+}
