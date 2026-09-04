@@ -568,6 +568,14 @@ impl TemporalStoreClient {
             .inner
             .route_cache_hits
             .load(std::sync::atomic::Ordering::Relaxed);
+        stats.execute_requests += self
+            .inner
+            .execute_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
+        stats.batch_execute_requests += self
+            .inner
+            .batch_execute_requests
+            .load(std::sync::atomic::Ordering::Relaxed);
         stats
     }
 

@@ -702,6 +702,46 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
 }
 
 #[test]
+fn the_execute_counters_survive_the_move_off_the_stats_lock() {
+    // These are counted in atomics and added back when the stats are read. Nothing else checks
+    // that the adding-back happens, and if it stopped they would read zero forever -- the counter
+    // still incrementing, the report still answering, and the number simply always 0.
+    let client = TemporalStoreClient::new("127.0.0.1:1");
+    let table = client.open_table("ns", "tbl", TableOptions::default());
+
+    assert_eq!(client.stats().execute_requests, 0, "nothing executed yet");
+    assert_eq!(client.stats().batch_execute_requests, 0);
+
+    // There is no backend, so these fail -- but the count is taken before the attempt, which is
+    // what makes a failing execute countable at all.
+    let _ = table.execute(Command::StringGet {
+        key: "k".to_string(),
+    });
+    let _ = table.execute(Command::StringGet {
+        key: "k2".to_string(),
+    });
+    assert_eq!(
+        client.stats().execute_requests,
+        2,
+        "two executes must be reported -- zero here means the atomic is no longer folded into          the stats the report reads"
+    );
+
+    let _ = table.batch_execute(vec![Command::StringGet {
+        key: "k".to_string(),
+    }]);
+    assert_eq!(
+        client.stats().batch_execute_requests,
+        1,
+        "batch executes are counted separately and must be folded in too"
+    );
+    assert_eq!(
+        client.stats().execute_requests,
+        2,
+        "a batch must not be counted as a plain execute as well"
+    );
+}
+
+#[test]
 fn a_split_table_routes_keys_over_its_new_shard_count() {
     // `shard_id_for_key` reads the table's options through the per-thread snapshot. A table that
     // is re-synced after a split has more shards, and a handle taken before that must pick the
