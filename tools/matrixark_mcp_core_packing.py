@@ -615,6 +615,19 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     elif not ref_type and record_type == "context_segment":
         ref_type = "segment"
     context_class = str(candidate.get("context_class") or metadata.get("context_class") or ref_type)
+    # These four answers need nothing beyond context_class and ref_type, and they are almost all
+    # of the traffic: over one retrieve, 84,841 of 88,340 calls (96%) end here -- 63,328
+    # skill_section and 21,513 resource_chunk. Deciding them before the block below, rather than
+    # after it, is what keeps a chunk from paying for three set comprehensions and a dozen lookups
+    # it never reads. Measured at 27.8% of a retrieve spent in this function.
+    if context_class == "resource_entity_fact":
+        return "resource_entity_fact"
+    if context_class == "resource_fact":
+        return "resource_fact"
+    if ref_type == "resource_chunk":
+        return "resource_chunk"
+    if ref_type == "skill_section":
+        return "skill_section"
     memory_scope = str(candidate.get("memory_scope") or metadata.get("memory_scope") or "")
     session_continuity = str(candidate.get("session_continuity") or metadata.get("session_continuity") or "")
     profile_memory_class = str(candidate.get("profile_memory_class") or metadata.get("profile_memory_class") or "").strip().lower()
@@ -667,14 +680,6 @@ def candidate_memory_layer_name(candidate: Json) -> str:
         or any("memory_feature" in layer for layer in source_memory_layers)
         or event_type == "memory_feature"
     )
-    if context_class == "resource_entity_fact":
-        return "resource_entity_fact"
-    if context_class == "resource_fact":
-        return "resource_fact"
-    if ref_type == "resource_chunk":
-        return "resource_chunk"
-    if ref_type == "skill_section":
-        return "skill_section"
     if ref_type == "compression" or context_class == "compression":
         if memory_scope == "user_profile" and session_continuity == "cross_session":
             if is_codex_outcome_memory:
