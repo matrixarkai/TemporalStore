@@ -1858,6 +1858,15 @@ def _shared_live_parts() -> Json:
         warnings = len(_model_config_snapshot().get("warnings") or [])
     except Exception:
         warnings = 0
+    try:
+        # When the stored configuration was last written, so an open portal can notice a change
+        # made in another tab or by another operator instead of waiting for its own slow timer.
+        # The fact and the time only -- no values; those stay behind the admin-gated read.
+        changed_at = float(_gwconfig.load().get("updated_at") or 0.0)
+    except Exception:
+        # Absent rather than 0: never written and could not tell are different, and a page that
+        # treated "could not tell" as a change would re-read on every tick.
+        changed_at = None
     _LIVE_SHARED = {
         "traffic": {
             "total_requests": traffic.get("total_requests", 0),
@@ -1870,6 +1879,7 @@ def _shared_live_parts() -> Json:
         },
         "imports": imports,
         "warnings": warnings,
+        "config_changed_at": changed_at,
     }
     _LIVE_SHARED_AT = now
     return _LIVE_SHARED
@@ -2000,6 +2010,7 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
         "traffic": shared["traffic"],
         "imports": shared["imports"],
         "warnings": shared["warnings"],
+        "config_changed_at": shared.get("config_changed_at"),
         "embedding": embedding,
         # Absent when nothing has looked yet. "not known" and "unreachable" are different answers
         # and the strip renders them differently.

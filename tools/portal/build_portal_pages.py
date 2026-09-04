@@ -921,6 +921,7 @@ function liveStream(options) {
   var loaded = null;      /* last GET /v1/admin/config payload */
   var fields = {};        /* setting key -> field descriptor from the server */
   var edits = {};         /* setting key -> value typed/reset since the last load */
+  var lastConfigAt = null;
   var timer = null;
 
   function auth() {
@@ -2295,6 +2296,32 @@ function liveStream(options) {
         }
       },
       onFrame: function (frame) {
+        /* Somebody else changed this configuration.
+
+           This page is the one holding an editable form, so reloading is not automatically the
+           kind thing to do: it would discard whatever the person here has typed and not saved.
+           Two operators on the same deployment is exactly when that happens.
+
+           With nothing unsaved, take their change -- the form is showing stale values and there
+           is nothing to lose. With unsaved edits, say so and leave the edits alone. Saving from
+           here would overwrite what they just set, and the person deserves to know that before
+           they press the button rather than after. */
+        var configAt = frame.config_changed_at;
+        if (configAt != null) {
+          if (lastConfigAt !== null && configAt !== lastConfigAt) {
+            lastConfigAt = configAt;
+            if (Object.keys(pendingPatch()).length) {
+              say($("saveMsg"),
+                "Someone changed this configuration elsewhere. Your unsaved edits are still here, "
+                + "and saving now will overwrite theirs. Discard changes to see what they set.",
+                "warn");
+            } else if (!document.hidden && $("key").value.trim()) {
+              load();
+            }
+          } else {
+            lastConfigAt = configAt;
+          }
+        }
         renderLiveTraffic(frame.traffic);
         renderFailures((frame.traffic || {}).recent_failures);
         if (frame.embedding) { renderEncoding(frame.embedding); }
@@ -2986,6 +3013,7 @@ function liveStream(options) {
 
   /* ---------- diagnostics ---------- */
   var lastReport = null;
+  var lastConfigChangedAt = null;
   var lastFrame = null;
 
   function compactConfig(config) {
@@ -3108,6 +3136,25 @@ function liveStream(options) {
         }
       },
       onFrame: function (frame) {
+        /* A configuration write in another tab, or by another operator, used to take up to a full
+           minute to show here -- the checklist rows that exist to say what is misconfigured were the
+           ones going stale. The frame carries when the stored configuration was last written, so a
+           change is picked up on the next tick instead.
+
+           The first frame only records the value: on load the checklist has just been read, and
+           treating the first sighting as a change would re-read it immediately for nothing.
+
+           The slow timer stays. This list counts records and requests as well as reading settings,
+           and those move without anyone writing configuration. */
+        var seen = frame.config_changed_at;
+        if (seen != null) {
+          if (lastConfigChangedAt !== null && seen !== lastConfigChangedAt) {
+            lastConfigChangedAt = seen;
+            if (!document.hidden && $("key").value.trim()) { load(); }
+          } else {
+            lastConfigChangedAt = seen;
+          }
+        }
         /* Kept for the diagnostics bundle. The failure timeline exists only on the frame, and
            it answers "when did this start" -- which is the question a bundle is sent to
            answer. */
