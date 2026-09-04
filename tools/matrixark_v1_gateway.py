@@ -787,6 +787,27 @@ def _usage_rows_visible_to(record: Optional[Json], rows: list, tenant: Optional[
             if row.get("tenant_id") == tenant and row.get("account_id") == account]
 
 
+_ADMIN_WRITE_SCOPES = {"admin:api_key"}
+
+
+def _admin_write_denied(record: Optional[Json]) -> Optional[Json]:
+    """403 payload when the key may not CHANGE anything, else ``None``.
+
+    Same shape and the same dev/legacy posture as ``_usage_read_denied``, over a narrower set. The
+    scope catalogue this gateway serves calls ``admin:audit`` "Read the audit log", and it was
+    authorising configuration writes and ingestion. A scope presented as read-only has to be
+    read-only, or the label is the lie.
+    """
+    if record is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:  # legacy/unrestricted key
+        return None
+    if _ADMIN_WRITE_SCOPES.intersection(scopes):
+        return None
+    return {"error": "insufficient_scope", "required": sorted(_ADMIN_WRITE_SCOPES)}
+
+
 def _usage_read_denied(record: Optional[Json]) -> Optional[Json]:
     """403 payload when the key may not read usage, else ``None``.
 
@@ -1404,7 +1425,8 @@ SCOPE_CATALOG: List[Json] = [
      "detail": "Create, rotate and revoke API keys, and read per-key usage. This is the scope the "
                "portal's own admin actions need."},
     {"scope": "admin:audit", "label": "Read the audit log",
-     "detail": "Read admin activity, and per-key usage."},
+     "detail": "Read admin activity, and per-key usage. Reading only: changing configuration or "
+               "starting an import needs admin:api_key."},
 ]
 
 # Four shapes that cover almost every key anyone actually issues. Named for the job rather than the
@@ -3804,7 +3826,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
-            denied = _usage_read_denied(key_record)
+            denied = _admin_write_denied(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
             raw, too_big = await _read_body_capped(receive, 1 << 18)
@@ -3837,7 +3859,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
-            denied = _usage_read_denied(key_record)
+            denied = _admin_write_denied(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
             raw, too_big = await _read_body_capped(receive, 1 << 16)
@@ -4250,7 +4272,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
-            denied = _usage_read_denied(key_record)
+            denied = _admin_write_denied(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
             raw, too_big = await _read_body_capped(receive, 1 << 20)
@@ -4303,7 +4325,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
             if not allowed:
                 return await _json(send, 401, {"error": "unauthorized"})
-            denied = _usage_read_denied(key_record)
+            denied = _admin_write_denied(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
             raw, too_big = await _read_body_capped(receive, MAX_BATCH_RECORDS_BYTES)

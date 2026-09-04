@@ -554,5 +554,95 @@ class MetricsRouteTest(_PortalTest):
         self.assertIn('route="other"', text)
 
 
+class AdminWritesNeedAScopeThatMayWriteTest(_PortalTest):
+    """`admin:audit` is "Read the audit log" in the catalogue this gateway serves, and it was
+    authorising configuration writes and ingestion.
+
+    Every refusal below is paired with the same key doing something it is entitled to do, because
+    a key that is refused everything would satisfy the refusals on its own.
+    """
+
+    AUDIT = "testkey_audit_only"        # "Read the audit log", and nothing else
+    MANAGE = "testkey_manages_keys"     # admin:api_key -- what the portal's own actions carry
+    LEGACY = "testkey_legacy_plain"     # no scopes at all: unrestricted, by documented design
+
+    def setUp(self) -> None:
+        super().setUp()
+        hashed = {
+            gw._secret_hash(self.AUDIT): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["admin:audit"]},
+            gw._secret_hash(self.MANAGE): {
+                "tenant_id": "t", "account_id": "acct", "scopes": ["admin:api_key"]},
+            gw._secret_hash(self.LEGACY): {"tenant_id": "t", "account_id": "acct"},
+        }
+        self.app = gw.make_v1_app(
+            self.server, gw.GatewayConfig.from_env({"enforced": True, "hashed_api_keys": hashed}))
+
+    def _as(self, key):
+        return {"Authorization": "Bearer " + key}
+
+    def _post(self, key, path, body):
+        return drive(self.app, method="POST", path=path, headers=self._as(key), body=body)
+
+    SETTINGS = {"settings": {"extraction.model": "deepseek-chat"}}
+
+    # ---- the control: the reading key is a working key ---------------------------------------
+
+    def test_an_audit_key_still_reads_what_it_is_for(self) -> None:
+        status, _, _ = drive(self.app, method="GET", path="/v1/admin/api_key_usage",
+                             headers=self._as(self.AUDIT))
+        self.assertEqual(200, status)
+
+    # ---- what it must not do ------------------------------------------------------------------
+
+    def test_an_audit_key_cannot_rewrite_the_configuration(self) -> None:
+        status, _, body = self._post(self.AUDIT, "/v1/admin/config", self.SETTINGS)
+        self.assertEqual(403, status)
+        payload = json.loads(body)
+        self.assertEqual("insufficient_scope", payload["error"])
+        self.assertEqual(["admin:api_key"], payload["required"])
+        self.assertNotIn("MATRIXARK_EXTRACTION_MODEL", os.environ)
+
+    def test_an_audit_key_cannot_apply_a_preset(self) -> None:
+        status, _, _ = self._post(self.AUDIT, "/v1/admin/config/preset", {"preset": "deepseek"})
+        self.assertEqual(403, status)
+
+    def test_an_audit_key_cannot_start_an_import(self) -> None:
+        status, _, _ = self._post(self.AUDIT, "/v1/admin/ingestion/jobs", {"paths": ["."]})
+        self.assertEqual(403, status)
+
+    def test_an_audit_key_cannot_submit_records(self) -> None:
+        status, _, _ = self._post(self.AUDIT, "/v1/admin/ingestion/records",
+                                  {"records": [{"text": "hello"}]})
+        self.assertEqual(403, status)
+
+    # ---- what a managing key may still do -----------------------------------------------------
+
+    def test_a_managing_key_may_rewrite_the_configuration(self) -> None:
+        """Otherwise the checks above would pass just as well with the route bricked."""
+        status, _, _ = self._post(self.MANAGE, "/v1/admin/config", self.SETTINGS)
+        self.assertNotEqual(403, status)
+
+    # ---- the two POSTs that change nothing ----------------------------------------------------
+
+    def test_a_reading_key_may_still_ask_what_a_plan_would_do(self) -> None:
+        """It composes a plan without touching this process; needing a write scope to look would
+        be its own mistake."""
+        status, _, _ = self._post(self.AUDIT, "/v1/admin/deployment/plan", {})
+        self.assertNotEqual(403, status)
+
+    def test_a_reading_key_may_still_probe_the_configured_endpoints(self) -> None:
+        status, _, _ = self._post(self.AUDIT, "/v1/admin/config/test", {})
+        self.assertNotEqual(403, status)
+
+    # ---- the posture that is deliberately unchanged --------------------------------------------
+
+    def test_a_legacy_unrestricted_key_is_unaffected(self) -> None:
+        """A key with no scopes is unrestricted everywhere else at this edge, and narrowing it
+        here would change what those deployments can do without anybody asking."""
+        status, _, _ = self._post(self.LEGACY, "/v1/admin/config", self.SETTINGS)
+        self.assertNotEqual(403, status)
+
+
 if __name__ == "__main__":
     unittest.main()
