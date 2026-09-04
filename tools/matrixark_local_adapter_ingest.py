@@ -43,23 +43,6 @@ def _context_debug_records_enabled() -> bool:
     except Exception:  # pragma: no cover - policy module absent
         return False
     return bool(context_debug_records_enabled())
-
-
-def _segment_access_scope_enabled() -> bool:
-    """Gate: write context_segment records WITH a tenant/user/session access_scope so a
-    scored segment passes access_scope_matches_before_scoring instead of being dropped
-    scope-less. Default ON; set MATRIXARK_SEGMENT_ACCESS_SCOPE=0 to restore prior behavior."""
-    return str(_os.environ.get("MATRIXARK_SEGMENT_ACCESS_SCOPE", "1")).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _value_entity_capture_enabled() -> bool:
-    """Gate: mint a scoped, embedded fact entity for any assistant message stating an exact
-    value (number+unit, count, hex hash, ALL_CAPS/dotted flag) that the topic segmenter and
-    entity extractor skipped, with its state text NOT truncated before the value token.
-    Default ON; set MATRIXARK_VALUE_ENTITY_CAPTURE=0 to restore prior behavior."""
-    return str(_os.environ.get("MATRIXARK_VALUE_ENTITY_CAPTURE", "1")).strip().lower() not in {"0", "false", "no", "off"}
-
-
 _VALUE_TOKEN_RE = _re.compile(
     r"(?:\b0x[0-9a-fA-F]{6,}\b)"
     r"|(?:\b[0-9a-f]{7,40}\b)"
@@ -3267,88 +3250,87 @@ class _LocalAdapterIngestMixin:
         # value (number+unit, count, hex hash, ALL_CAPS/dotted flag) that the topic segmenter
         # and entity extractor skipped, so the value token stays a selectable retrieval
         # candidate and its state text is NOT truncated before the value. Mirrors
-        # session_entity_record; gated by MATRIXARK_VALUE_ENTITY_CAPTURE (default on).
-        if _value_entity_capture_enabled():
-            _seen_value_texts: set = set()
-            for _vindex, _vmessage, _vevent_text, _vevent_hash in event_rows:
-                if normalize_message_role(_vmessage.get("role")) != "assistant":
-                    continue
-                _vcontent = str(_vmessage.get("content") or "").strip()
-                if not _line_has_exact_value(_vcontent):
-                    continue
-                _vnorm = _vcontent.lower()
-                if _vnorm in _seen_value_texts:
-                    continue
-                # Mint a dedicated clean-state value entity even when the line is also folded
-                # into another (often non-surfacing / truncated) extraction entity: the point
-                # is to give exact-value facts their own selectable, untruncated candidate.
-                _seen_value_texts.add(_vnorm)
-                _value_state = f"assistant: {_vcontent}"
-                _value_entity_hash = stable_hash(f"{batch_id_hash}:value_entity:{_vindex}:{_vevent_text}")
-                _value_entity_record = {
-                    "record_type": "context_entity",
-                    "entity_hash": _value_entity_hash,
-                    "batch_id_hash": batch_id_hash,
+        # session_entity_record.
+        _seen_value_texts: set = set()
+        for _vindex, _vmessage, _vevent_text, _vevent_hash in event_rows:
+            if normalize_message_role(_vmessage.get("role")) != "assistant":
+                continue
+            _vcontent = str(_vmessage.get("content") or "").strip()
+            if not _line_has_exact_value(_vcontent):
+                continue
+            _vnorm = _vcontent.lower()
+            if _vnorm in _seen_value_texts:
+                continue
+            # Mint a dedicated clean-state value entity even when the line is also folded
+            # into another (often non-surfacing / truncated) extraction entity: the point
+            # is to give exact-value facts their own selectable, untruncated candidate.
+            _seen_value_texts.add(_vnorm)
+            _value_state = f"assistant: {_vcontent}"
+            _value_entity_hash = stable_hash(f"{batch_id_hash}:value_entity:{_vindex}:{_vevent_text}")
+            _value_entity_record = {
+                "record_type": "context_entity",
+                "entity_hash": _value_entity_hash,
+                "batch_id_hash": batch_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "scope": envelope["scope"],
+                "access_scope": envelope["scope"],
+                "entity_type": "exact_value_fact",
+                "entity_name": _value_entity_name(_vcontent),
+                "state": _value_state,
+                "previous_state": "",
+                "confidence": 1.0,
+                "operator": "observed",
+                "source_refs": [],
+                "source_event_ids": [_vevent_hash],
+                "source_roles": ["assistant"],
+                "source_role_counts": {"assistant": 1},
+                "extraction_context_event_ids": extraction_context_event_ids,
+                "field_patches": [],
+                "patch_results": [],
+                "update_mode": "value_capture",
+                "memory_scope": "session",
+                "session_continuity": "same_session",
+                "extraction_phase": extraction_phase,
+                "final_session_boundary": final_session_boundary,
+                "updated_at_ms": envelope["ingestion_time_ms"],
+            }
+            records_to_append.append(_value_entity_record)
+            for _value_index_name in candidate_index_terms(_value_entity_record, {}, {}):
+                _value_index = context_index_posting_record(
+                    index_name=_value_index_name,
+                    data_model="context_entity",
+                    ref_type="entity",
+                    ref_hashes=[_value_entity_hash],
+                    batch_id_hash=batch_id_hash,
+                    node_hash=node_hash,
+                    scope=envelope["scope"],
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
+                _value_index["access_scope"] = envelope["scope"]
+                _value_index["memory_scope"] = "session"
+                _value_index["session_continuity"] = "same_session"
+                _value_index.pop("index_hash", None)
+                records_to_append.append(_value_index)
+                entity_index_write_count += 1
+            _value_vector = embedding_for_text("exact_value_fact " + _value_state)
+            records_to_append.append(
+                compact_context_embedding_record({
+                    "record_type": "context_embedding",
+                    "embedding_type": "entity_state",
+                    "ref_type": "entity",
+                    "ref_hash": _value_entity_hash,
                     "node_hash": node_hash,
                     "node_path": node_path,
+                    "dim": len(_value_vector),
+                    "model": embedding_model_name(),
+                    "vector": _value_vector,
                     "scope": envelope["scope"],
-                    "access_scope": envelope["scope"],
-                    "entity_type": "exact_value_fact",
-                    "entity_name": _value_entity_name(_vcontent),
-                    "state": _value_state,
-                    "previous_state": "",
-                    "confidence": 1.0,
-                    "operator": "observed",
-                    "source_refs": [],
                     "source_event_ids": [_vevent_hash],
                     "source_roles": ["assistant"],
                     "source_role_counts": {"assistant": 1},
-                    "extraction_context_event_ids": extraction_context_event_ids,
-                    "field_patches": [],
-                    "patch_results": [],
-                    "update_mode": "value_capture",
-                    "memory_scope": "session",
-                    "session_continuity": "same_session",
-                    "extraction_phase": extraction_phase,
-                    "final_session_boundary": final_session_boundary,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-                records_to_append.append(_value_entity_record)
-                for _value_index_name in candidate_index_terms(_value_entity_record, {}, {}):
-                    _value_index = context_index_posting_record(
-                        index_name=_value_index_name,
-                        data_model="context_entity",
-                        ref_type="entity",
-                        ref_hashes=[_value_entity_hash],
-                        batch_id_hash=batch_id_hash,
-                        node_hash=node_hash,
-                        scope=envelope["scope"],
-                        updated_at_ms=envelope["ingestion_time_ms"],
-                    )
-                    _value_index["access_scope"] = envelope["scope"]
-                    _value_index["memory_scope"] = "session"
-                    _value_index["session_continuity"] = "same_session"
-                    _value_index.pop("index_hash", None)
-                    records_to_append.append(_value_index)
-                    entity_index_write_count += 1
-                _value_vector = embedding_for_text("exact_value_fact " + _value_state)
-                records_to_append.append(
-                    compact_context_embedding_record({
-                        "record_type": "context_embedding",
-                        "embedding_type": "entity_state",
-                        "ref_type": "entity",
-                        "ref_hash": _value_entity_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "dim": len(_value_vector),
-                        "model": embedding_model_name(),
-                        "vector": _value_vector,
-                        "scope": envelope["scope"],
-                        "source_event_ids": [_vevent_hash],
-                        "source_roles": ["assistant"],
-                        "source_role_counts": {"assistant": 1},
-                    })
-                )
+                })
+            )
 
         segment_hashes = []
         for segment in (extraction["segments"] if _segments_enabled(envelope.get("scope")) else []):
@@ -3386,7 +3368,7 @@ class _LocalAdapterIngestMixin:
                 "node_hash": node_hash,
                 "node_path": node_path,
                 "scope": envelope["scope"],
-                **({"access_scope": envelope["scope"]} if _segment_access_scope_enabled() else {}),
+                "access_scope": envelope["scope"],
                 "topic": segment["topic"],
                 "coordinate_tuples": segment["coordinate_tuples"],
                 "message_indexes": segment["message_indexes"],

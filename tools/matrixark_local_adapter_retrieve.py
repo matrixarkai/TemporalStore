@@ -10,7 +10,7 @@ except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
 
-# --- Lexical exact-recall lane (gated by MATRIXARK_LEXICAL_EXACT_RECALL, default ON) -----------
+# --- Lexical exact-recall lane -----------------------------------------------------------------
 # Dense (MiniLM) similarity under-weights rare/exact tokens -- numbers, units, counts, version
 # strings, hex hashes, and capitalized proper names / acronyms. When a query names such a token,
 # the record carrying it can be pruned by tree/node placement before it is ever scored, so the
@@ -39,14 +39,6 @@ _EMBEDDING_OWNER_REFS = {
     "resource_chunk": ("resource_chunk", "chunk_hash"),
     "skill_section": ("skill_section", "section_hash"),
 }
-
-def lexical_exact_recall_enabled() -> bool:
-    """Feature gate. Default ON; set MATRIXARK_LEXICAL_EXACT_RECALL=0 to restore exact prior behavior."""
-    return str(_os.environ.get("MATRIXARK_LEXICAL_EXACT_RECALL", "1")).strip().lower() not in {
-        "0", "false", "no", "off", "",
-    }
-
-
 def lexical_exact_recall_query_tokens(query: object) -> set:
     """Rare/exact query tokens worth a lexical recall lane: numeric/version/hash tokens always, and
     capitalized proper-name/acronym tokens when not the leading word. Common words are excluded so
@@ -609,11 +601,7 @@ class _LocalAdapterRetrieveMixin:
         query_terms = {term for term in tokens(retrieval_query) if len(term) > 2}
         # Lexical exact-recall lane: rare/exact tokens the dense encoder under-weights. Empty for
         # ordinary phrasings, so this is a no-op unless the query actually names an exact token.
-        lexical_exact_tokens = (
-            lexical_exact_recall_query_tokens(retrieval_query)
-            if lexical_exact_recall_enabled()
-            else set()
-        )
+        lexical_exact_tokens = lexical_exact_recall_query_tokens(retrieval_query)
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
             raise MatrixArkError("reference_time_ms must be an integer")

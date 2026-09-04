@@ -166,9 +166,10 @@ class InterningCase(_FlagGuard):
             self._ingest_turns(server, 40)
             original = adapter._read_raw_records()
         encoded = A.encode_interned_records(original, set())
-        # the encoded form is genuinely interned: dict records exist and some data record hides a field
-        # behind either the legacy per-field token map (_im) or the bundle token (_imb).
-        token_key = A.INTERN_BUNDLE_TOKEN_KEY if A.INTERN_METADATA_BUNDLE else A.INTERN_TOKEN_KEY
+        # the encoded form is genuinely interned: dict records exist and some data record hides a
+        # field behind the bundle token (_imb). The per-field map (_im) is still READ, so the
+        # round-trip below still asserts it is absent after expansion, but it is no longer written.
+        token_key = A.INTERN_BUNDLE_TOKEN_KEY
         self.assertTrue(any(r.get("record_type") == A.INTERN_DICT_RECORD_TYPE for r in encoded))
         self.assertTrue(any(token_key in r for r in encoded if isinstance(r, dict)))
         self.assertTrue(any("storage_route" not in r for r in encoded
@@ -207,25 +208,23 @@ class InterningCase(_FlagGuard):
             raw_lines = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         self.assertTrue(any(r.get("record_type") == A.INTERN_DICT_RECORD_TYPE for r in raw_lines),
                         "expected durable intern-dict records on disk")
-        if A.INTERN_METADATA_BUNDLE:
-            # Bundle format: the data line carries a single bundle token (_imb) and every bundled field
-            # is elided from the line; the full bundle lives once in the sidecar dict record.
-            bundles = {r.get("im_token"): r.get("im_bundle") for r in raw_lines
-                       if isinstance(r, dict) and r.get("record_type") == A.INTERN_DICT_RECORD_TYPE
-                       and isinstance(r.get("im_bundle"), dict)}
-            interned_data = [r for r in raw_lines if isinstance(r, dict) and A.INTERN_BUNDLE_TOKEN_KEY in r]
-            self.assertTrue(interned_data, "expected bundle-interned data records on disk")
-            for r in interned_data:
-                bundle = bundles.get(r[A.INTERN_BUNDLE_TOKEN_KEY])
-                self.assertIsInstance(bundle, dict, "bundle token must resolve to a sidecar bundle")
-                for field in bundle:  # every bundled field is elided from the data line
-                    self.assertNotIn(field, r)
-        else:
-            interned_data = [r for r in raw_lines if isinstance(r, dict) and A.INTERN_TOKEN_KEY in r]
-            self.assertTrue(interned_data, "expected interned data records on disk")
-            for r in interned_data:  # the interned field is elided from the data line
-                for field in r[A.INTERN_TOKEN_KEY]:
-                    self.assertNotIn(field, r)
+        # The data line carries a single bundle token (_imb) and every bundled field is elided
+        # from the line; the full bundle lives once in the sidecar dict record.
+        bundles = {r.get("im_token"): r.get("im_bundle") for r in raw_lines
+                   if isinstance(r, dict) and r.get("record_type") == A.INTERN_DICT_RECORD_TYPE
+                   and isinstance(r.get("im_bundle"), dict)}
+        interned_data = [r for r in raw_lines if isinstance(r, dict) and A.INTERN_BUNDLE_TOKEN_KEY in r]
+        self.assertTrue(interned_data, "expected bundle-interned data records on disk")
+        for r in interned_data:
+            bundle = bundles.get(r[A.INTERN_BUNDLE_TOKEN_KEY])
+            self.assertIsInstance(bundle, dict, "bundle token must resolve to a sidecar bundle")
+            for field in bundle:  # every bundled field is elided from the data line
+                self.assertNotIn(field, r)
+        # Nothing writes the per-field map any more.
+        self.assertEqual(
+            [], [r for r in raw_lines if isinstance(r, dict) and A.INTERN_TOKEN_KEY in r],
+            "the per-field intern map is a read-only format now and must not be written",
+        )
 
     def test_flag_off_is_byte_identical_to_today(self):
         """With interning OFF, no dict records and no token key are ever written."""

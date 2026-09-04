@@ -533,14 +533,16 @@ INTERN_METADATA_FIELDS = (
 INTERN_DICT_RECORD_TYPE = "matrixark_intern_dict"
 INTERN_TOKEN_KEY = "_im"  # legacy per-record map {field_name: token} (Phase-1 format)
 
-# Phase-2 -- bundle interning. The per-field ``_im`` map repeats the field NAMES on every interned
-# record (measured ~8% of on-disk memory just for the token map). Because the whole eligible-field
-# bundle is near-constant per store, we hash the WHOLE {field: value} bundle to a single token and
-# carry only that token (``_imb``) on the data line; the sidecar dict stores the full bundle once per
-# distinct token. This subsumes the per-field format (which is still read for backward compatibility)
-# and collapses the token-map overhead to a single short hash per record. Gated independently so it can
-# be turned off to fall back to the Phase-1 per-field format.
-INTERN_METADATA_BUNDLE = bool_env("MATRIXARK_INTERN_METADATA_BUNDLE", True)
+# Bundle interning. The per-field ``_im`` map repeated the field NAMES on every interned record
+# (measured ~8% of on-disk memory just for the token map). Because the whole eligible-field bundle
+# is near-constant per store, the WHOLE {field: value} bundle hashes to a single token and only
+# that token (``_imb``) rides on the data line; the sidecar dict stores the bundle once per distinct
+# token.
+#
+# The per-field format is still READ -- an old log expands unchanged, which is what backward
+# compatibility requires. It is no longer WRITTEN. The switch that fell back to it kept a second
+# durable encoding alive on the write side, and nothing chose it: no test set it, the portal never
+# offered it, and the format it produced is one this reader already understands.
 INTERN_BUNDLE_TOKEN_KEY = "_imb"  # bundle token -> sidecar {im_token, im_bundle: {field: value}}
 INTERN_BUNDLE_EMIT_KEY = "__bundle__"  # emitted-token namespace for bundle sidecars
 
@@ -598,11 +600,6 @@ def _model_registry_identity(record: Json) -> tuple[Any, ...]:
     )
 
 
-def _intern_token_for_value(value: Any) -> str:
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return _hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
-
-
 def _intern_token_for_bundle(bundle: dict[str, Any]) -> str:
     canonical = json.dumps(bundle, sort_keys=True, separators=(",", ":"))
     return _hashlib.blake2b(canonical.encode("utf-8"), digest_size=6).hexdigest()
@@ -629,42 +626,19 @@ def encode_interned_records(records: list[Json], emitted_tokens: set[tuple[str, 
         if not present:
             encoded_records.append(record)
             continue
-        if INTERN_METADATA_BUNDLE:
-            token = _intern_token_for_bundle(present)
-            key = (INTERN_BUNDLE_EMIT_KEY, token)
-            if key not in emitted_tokens:
-                emitted_tokens.add(key)
-                dict_records.append({
-                    "record_type": INTERN_DICT_RECORD_TYPE,
-                    "im_token": token,
-                    "im_bundle": present,
-                })
-            encoded = dict(record)
-            for field in present:
-                encoded.pop(field, None)
-            encoded[INTERN_BUNDLE_TOKEN_KEY] = token
-            encoded_records.append(encoded)
-            continue
-        # Legacy Phase-1 per-field format (bundle flag OFF).
-        token_map: dict[str, str] = {}
+        token = _intern_token_for_bundle(present)
+        key = (INTERN_BUNDLE_EMIT_KEY, token)
+        if key not in emitted_tokens:
+            emitted_tokens.add(key)
+            dict_records.append({
+                "record_type": INTERN_DICT_RECORD_TYPE,
+                "im_token": token,
+                "im_bundle": present,
+            })
         encoded = dict(record)
-        for field, value in present.items():
-            token = _intern_token_for_value(value)
-            token_map[field] = token
-            key = (field, token)
-            if key not in emitted_tokens:
-                emitted_tokens.add(key)
-                dict_records.append({
-                    "record_type": INTERN_DICT_RECORD_TYPE,
-                    "im_field": field,
-                    "im_token": token,
-                    "im_value": value,
-                })
+        for field in present:
             encoded.pop(field, None)
-        existing = encoded.get(INTERN_TOKEN_KEY)
-        merged = dict(existing) if isinstance(existing, dict) else {}
-        merged.update(token_map)
-        encoded[INTERN_TOKEN_KEY] = merged
+        encoded[INTERN_BUNDLE_TOKEN_KEY] = token
         encoded_records.append(encoded)
     return dict_records + encoded_records
 

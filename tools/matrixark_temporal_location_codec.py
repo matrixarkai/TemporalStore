@@ -24,8 +24,9 @@ Two decisions are load-bearing:
 * **A location whose base is not the reader's own record log stays a dict.** Readers already skip
   foreign bases; compacting one would assert something the form cannot express.
 
-Decoding accepts both shapes, so a store written before this reads unchanged, and
-``MATRIXARK_COMPACT_LOCATIONS=0`` returns the writer to the long form without touching readers.
+Decoding accepts both shapes, so a store written before this reads unchanged. The writer has
+no switch back: the long form is what the compact form replaced, and a way to re-emit it kept
+a second encoding alive that no reader treated differently.
 """
 
 from __future__ import annotations
@@ -35,22 +36,10 @@ from typing import Any
 
 SHARD_DIGITS = 6
 FIELD_DIGITS = 20
-
-
-def compact_locations_enabled() -> bool:
-    """ON by default; ``MATRIXARK_COMPACT_LOCATIONS=0`` is the escape hatch."""
-    return os.environ.get("MATRIXARK_COMPACT_LOCATIONS", "1").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
-
-
 def compact_location(key: str, field: str, base: str) -> Any:
     """``(key, field)`` as ``"shard:offset"`` when it belongs to ``base``, else the dict as-is."""
     original = {"key": key, "field": field}
-    if not compact_locations_enabled() or not base:
+    if not base:
         return original
     if not key.startswith(base + ":"):
         return original

@@ -29,15 +29,6 @@ _ROUTE_KEYS_WORTH_STORING = (
 # one add, they cost 25 index postings x ~280 bytes -- about 7 KB per add to say the same thing
 # three more times. The one place that reads them consults `placement_key` first and falls through
 # to `routing_key` / `partition_key` only when it is absent, which it is not.
-
-
-def _drop_derivable_route_enabled() -> bool:
-    """ON by default; MATRIXARK_DROP_DERIVABLE_ROUTE=0 keeps the old persisted route."""
-    return os.environ.get("MATRIXARK_DROP_DERIVABLE_ROUTE", "1").strip().lower() not in {
-        "0", "false", "no", "off",
-    }
-
-
 def _placement_is_derivable(record: Json) -> bool:
     """Can this record's placement be rebuilt from what it already carries?
 
@@ -199,7 +190,7 @@ def slim_persisted_storage_route(record: Json) -> Json:
     #
     # Measured over 300 ingests by walking the page segments, `storage_route` cost 1.76 KB per add
     # across records, and 161 bytes on every one of the ~10 index postings an add writes.
-    if _drop_derivable_route_enabled() and _placement_is_derivable(record):
+    if _placement_is_derivable(record):
         slim = dict(record)
         slim.pop("storage_route", None)
         slim.pop("posting_policy", None)
