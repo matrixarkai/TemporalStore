@@ -4516,6 +4516,11 @@ API_BODY = """
       scope column is what a key must carry.</div>
   </section>
 
+  <!-- Empty until the catalogue arrives. It carries role="tablist" in the static body because
+       the builder injects the shared tab switcher only into pages that declare one, and a strip
+       built after a fetch would not be there to see. -->
+  <div class="tabs" role="tablist" aria-label="API groups" id="routeTabs"></div>
+  <div id="crossGroup"></div>
   <div id="routes"><div class="empty">Loading…</div></div>
 """
 
@@ -4611,6 +4616,21 @@ API_JS = r"""
   (window.__matrixarkFrameQueue = window.__matrixarkFrameQueue || []).push(
     function (frame) { paintTraffic((frame || {}).traffic); });
 
+  /* Which group is showing. Kept across re-renders: the list is rebuilt on every keystroke in
+     the filter, and losing the open tab each time would make the strip unusable. */
+  var activeGroup = "";
+
+  function paneId(group) {
+    /* A pane id the switcher can find. Group names have spaces ("Portal pages"), and the switcher
+       matches on `pane-` + the button's data-pane, so both sides use the same slug. */
+    return String(group).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  }
+
+  function matches(route, query) {
+    return !query || (route.method + " " + route.path + " " + (route.scope || "") + " " +
+      route.summary).toLowerCase().indexOf(query) >= 0;
+  }
+
   function render() {
     var query = $("filter").value.trim().toLowerCase();
     var groups = {};
@@ -4618,19 +4638,83 @@ API_JS = r"""
       (groups[route.group] = groups[route.group] || []).push([route, index]);
     });
     var order = Object.keys(groups);
-    var html = order.map(function (group) {
-      var rows = groups[group].filter(function (pair) {
-        return !query || (pair[0].method + " " + pair[0].path + " " + (pair[0].scope || "") + " " +
-          pair[0].summary).toLowerCase().indexOf(query) >= 0;
-      });
-      if (!rows.length) { return ""; }
-      return "<section><h2>" + esc(group) + " <span class='aux'>" + rows.length + " route" +
-        (rows.length === 1 ? "" : "s") + "</span></h2>" +
-        rows.map(function (pair) { return routeHtml(pair[0], pair[1]); }).join("") + "</section>";
+    if (!order.length) {
+      $("routeTabs").innerHTML = "";
+      $("crossGroup").innerHTML = "";
+      $("routes").innerHTML = '<section><div class="empty">No routes to show.</div></section>';
+      return;
+    }
+    if (order.indexOf(activeGroup) < 0) { activeGroup = order[0]; }
+
+    /* Matches per group under the CURRENT query, so the counts on the tabs describe what a click
+       would actually show rather than the size of the group. */
+    var hits = {};
+    var total = 0;
+    order.forEach(function (group) {
+      hits[group] = groups[group].filter(function (pair) { return matches(pair[0], query); });
+      total += hits[group].length;
+    });
+
+    $("routeTabs").innerHTML = order.map(function (group) {
+      var n = hits[group].length;
+      return '<button type="button" role="tab" id="tab-' + esc(paneId(group)) +
+        '" aria-controls="pane-' + esc(paneId(group)) + '" data-pane="' + esc(paneId(group)) +
+        '" aria-selected="' + (group === activeGroup ? "true" : "false") + '"' +
+        (group === activeGroup ? "" : ' tabindex="-1"') + '>' + esc(group) +
+        "<span class='aux'> " + n + "</span></button>";
     }).join("");
-    $("routes").innerHTML = html ||
-      '<section><div class="empty">Nothing matches that.</div></section>';
+
+    $("routes").innerHTML = order.map(function (group) {
+      var rows = hits[group];
+      var body = rows.length
+        ? rows.map(function (pair) { return routeHtml(pair[0], pair[1]); }).join("")
+        : '<div class="empty">' + (query ? "Nothing in this group matches that."
+                                         : "No routes in this group.") + "</div>";
+      return '<section class="pane" role="tabpanel" aria-labelledby="tab-' + esc(paneId(group)) +
+        '" id="pane-' + esc(paneId(group)) + '"' + (group === activeGroup ? "" : " hidden") + ">" +
+        body + "</section>";
+    }).join("");
+
+    /* The filter searches every group. Restricting it to the open tab would hide matches in the
+       other five and read as "nothing matches that", which is the worst answer to give somebody
+       searching a reference -- so when the open tab has none and others do, say where they are. */
+    var elsewhere = total - hits[activeGroup].length;
+    if (query && !hits[activeGroup].length && elsewhere > 0) {
+      var first = order.filter(function (g) { return hits[g].length; })[0];
+      $("crossGroup").innerHTML = '<div class="msg info">' + elsewhere + " match" +
+        (elsewhere === 1 ? "" : "es") + " in other groups. " +
+        '<button type="button" class="link" data-goto="' + esc(paneId(first)) + '">Show ' +
+        esc(first) + "</button></div>";
+    } else {
+      $("crossGroup").innerHTML = "";
+    }
+
+    /* Called after every render: the buttons are new elements each time, so the listeners the
+       switcher attached to the old ones went with them. */
+    if (window.wireTabs) {
+      window.wireTabs(function (pane) {
+        /* The switcher calls this once while wiring, for the tab that is already selected. Without
+           this guard that call re-renders, which re-wires, which calls it again -- the page died
+           of a stack overflow on load. Only an actual change to another group redraws. */
+        var next = null;
+        for (var i = 0; i < order.length; i++) {
+          if (paneId(order[i]) === pane) { next = order[i]; break; }
+        }
+        if (next === null || next === activeGroup) { return; }
+        activeGroup = next;
+        render();
+      });
+    }
   }
+
+  $("crossGroup").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-goto]") : null;
+    if (!button) { return; }
+    for (var i = 0; i < ROUTES.length; i++) {
+      if (paneId(ROUTES[i].group) === button.dataset.goto) { activeGroup = ROUTES[i].group; break; }
+    }
+    render();
+  });
 
   /* A re-render replaces every cell, so the counters have to go back on. Without this, filtering
      blanks them until the next frame. */

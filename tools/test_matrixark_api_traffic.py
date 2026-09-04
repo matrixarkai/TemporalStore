@@ -137,5 +137,46 @@ class EveryPageThatAsksForFramesGetsThemTest(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed; the page JS cannot be run")
+class TheApiSurfaceIsGroupedIntoTabsTest(unittest.TestCase):
+    """55 routes in six groups arrived as one column; Administration alone is 21 of them.
+
+    Two behaviours here cannot be read off the source. The list is rebuilt on every keystroke, so
+    whether the open tab survives a re-render is behaviour. And the text filter searches every
+    group while one pane is visible -- a filter quietly restricted to the open tab would answer
+    "nothing matches that" while holding the match one tab away, which is the worst answer a
+    reference page can give.
+    """
+
+    def _run(self):
+        return subprocess.run(
+            ["node", os.path.join(PORTAL, "api_tabs_harness.js"),
+             os.path.join(PORTAL, "api_portal.html")],
+            capture_output=True, text=True, timeout=180)
+
+    def test_the_tabs_work(self) -> None:
+        proc = self._run()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_the_filter_searches_every_group(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   the filter searched every group, not just the open one", out, out)
+
+    def test_the_open_tab_survives_a_keystroke(self) -> None:
+        """The list is rebuilt on every keystroke; losing the tab each time makes it unusable."""
+        out = self._run().stdout
+        self.assertIn("ok   the open tab survives a keystroke", out, out)
+
+    def test_matches_in_another_group_are_pointed_at(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   it says the matches are in another group", out, out)
+
+    def test_the_notice_is_not_shown_when_the_open_group_has_matches(self) -> None:
+        """Announcing "matches elsewhere" over a list full of matches is noise."""
+        out = self._run().stdout
+        self.assertIn("ok   the shared term really does match two groups", out, out)
+        self.assertIn("ok   a match in the open group is not announced as elsewhere", out, out)
+
+
 if __name__ == "__main__":
     unittest.main()
