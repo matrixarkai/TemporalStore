@@ -1863,12 +1863,20 @@ function liveStream(options) {
         }
         var restart = res.body.restart_required || [];
         var one = restart.length === 1;
+        /* "live now" is true of the worker that served this request. A live setting is read from
+           the environment per call, and only this process's environment was written, so with
+           several workers the rest keep the old value until they restart. */
+        var workers = res.body.workers || 1;
+        var elsewhere = workers > 1
+          ? " This worker has it now; the other " + (workers - 1) +
+            (workers === 2 ? " picks it up" : " pick it up") + " when they restart."
+          : "";
         say($("saveMsg"), restart.length
           ? "Saved. " + restart.length + " setting" + (one ? "" : "s") + " (" +
             restart.join(", ") + ") " + (one ? "is" : "are") + " read once at startup — restart " +
             "the gateway for " + (one ? "it" : "them") + " to take effect. Everything else is " +
-            "live now."
-          : "Saved and live now.", restart.length ? "info" : "ok");
+            "live now." + elsewhere
+          : "Saved and live now." + elsewhere, restart.length || workers > 1 ? "info" : "ok");
         load();
       })
       .catch(function () {

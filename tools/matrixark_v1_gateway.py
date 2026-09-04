@@ -2795,24 +2795,16 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
     return checks
 
 
-def _single_writer_warning(
-    argv: Optional[list] = None, env: Optional[dict] = None
-) -> Optional[str]:
-    """Warn when the worker count would silently split a tenant's memory across separate stores.
+def _worker_count(argv: Optional[list] = None, env: Optional[dict] = None) -> int:
+    """How many workers this deployment was started with; 1 when nothing says otherwise.
 
-    With the spawning MCP backend each uvicorn worker starts its OWN `--serve` proxy child over a
-    pipe (see matrixark_mcp_rust_proxy_process.ensure_lane_process -- there is no code path that
-    dials an existing proxy), and that child owns an embedded store. So `--workers 4` is four
-    independent stores: a memory written through one worker is invisible to the other three, with no
-    error at any layer.
-
-    A worker count above one is only safe when the workers share a store: a real TS_META_ADDR
-    (distributed routing) or an explicit TS_STORAGE_BACKEND. Returns the warning text, or None when
-    the configuration is safe -- returning it rather than printing keeps this unit-testable.
+    Read from the command line, then WEB_CONCURRENCY. Lifted out of the split-store warning so
+    there is one answer to the question: that warning is about workers not sharing a STORE, and a
+    configuration write has its own reason to care -- a live setting is applied to the environment
+    of whichever worker served the request, and no other.
     """
     argv = list(sys.argv if argv is None else argv)
     env = dict(os.environ if env is None else env)
-
     workers = 0
     for index, token in enumerate(argv):
         if token == "--workers" and index + 1 < len(argv):
@@ -2830,6 +2822,26 @@ def _single_writer_warning(
             workers = int(str(env.get("WEB_CONCURRENCY", "")).strip() or "0")
         except ValueError:
             workers = 0
+    return workers if workers > 0 else 1
+
+
+def _single_writer_warning(
+    argv: Optional[list] = None, env: Optional[dict] = None
+) -> Optional[str]:
+    """Warn when the worker count would silently split a tenant's memory across separate stores.
+
+    With the spawning MCP backend each uvicorn worker starts its OWN `--serve` proxy child over a
+    pipe (see matrixark_mcp_rust_proxy_process.ensure_lane_process -- there is no code path that
+    dials an existing proxy), and that child owns an embedded store. So `--workers 4` is four
+    independent stores: a memory written through one worker is invisible to the other three, with no
+    error at any layer.
+
+    A worker count above one is only safe when the workers share a store: a real TS_META_ADDR
+    (distributed routing) or an explicit TS_STORAGE_BACKEND. Returns the warning text, or None when
+    the configuration is safe -- returning it rather than printing keeps this unit-testable.
+    """
+    env = dict(os.environ if env is None else env)
+    workers = _worker_count(argv, env)
     if workers <= 1:
         return None
 
@@ -3857,6 +3869,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             except OSError as exc:
                 return await _json(send, 500, {"error": "config_write_failed", "detail": str(exc)})
             result["config"] = _model_config_snapshot()
+            # A live setting is applied to the environment of THIS worker, and read per call from
+            # the environment of whichever worker serves the next request. With more than one, the
+            # write is in effect for a fraction of traffic until they are all restarted -- so the
+            # answer says how many there are rather than letting the page claim "live now".
+            result["workers"] = _worker_count()
             return await _json(send, 200, result)
 
         # ---- apply a provider preset (auth + admin scope) -------------------------------------
