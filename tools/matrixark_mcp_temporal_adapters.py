@@ -2538,8 +2538,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # land in the store and become retrievable on later turns. The pure-local
         # JSONL adapter is unaffected (it keeps _local_jsonl_enabled and is not
         # this class); the fast direct-ingest path calls _append_many_materialized
-        # itself (never append), so there is no double write. Disable with
-        # MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND=0 as an escape hatch.
+        # itself (never append), so there is no double write. There is no switch off: what the
+        # off position restored is the state described below, where an ingest carrying a
+        # ttl_seconds stored a record nothing would ever expire.
         #
         # Per-ingestion stamping runs HERE, in the same order as
         # MatrixArkLocalAdapter.append_many, because it was being skipped entirely on every
@@ -2569,10 +2570,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         route_to_backend = (
             callable(append_backend)
             and not getattr(self, "_local_jsonl_enabled", False)
-            and os.environ.get(
-                "MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND", "1"
-            ).strip().lower()
-            not in {"0", "false", "no"}
         )
         if route_to_backend:
             append_backend(materialized, allow_queue=False)

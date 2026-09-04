@@ -244,11 +244,11 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
         # set (thousands of records) before scoring, which routinely exceeds the old
         # 5000ms ceiling and made the server discard the real ContextPack for an empty
         # deadline_fallback_pack (silent recall collapse: refs computed but dropped).
-        # Raised to match the ingest deadline (30000ms); still fully overridable via
-        # MATRIXARK_RETRIEVE_TIMEOUT_MS / MATRIXARK_RETRIEVAL_TIMEOUT_MS (set to 5000 to
-        # restore prior behavior). Actual warm/cold retrieve latency stays well under
-        # this ceiling; this only prevents premature abort of an in-flight retrieve.
-        "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVE_TIMEOUT_MS", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "30000"))),
+        # Raised to match the ingest deadline (30000ms); overridable via
+        # MATRIXARK_RETRIEVAL_TIMEOUT_MS, the one spelling every caller in the tree uses. Actual
+        # warm/cold retrieve latency stays well under this ceiling; this only prevents premature
+        # abort of an in-flight retrieve.
+        "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "30000")),
         "matrixark_feedback": int(os.environ.get("MATRIXARK_FEEDBACK_TIMEOUT_MS", "15000")),
         "matrixark_replay": int(os.environ.get("MATRIXARK_REPLAY_TIMEOUT_MS", "10000")),
         "matrixark_admin": int(os.environ.get("MATRIXARK_ADMIN_TIMEOUT_MS", "10000")),
