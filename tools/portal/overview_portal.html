@@ -498,7 +498,7 @@
      opening a second one to the same endpoint. */
   window.__matrixarkLive = "page";
 
-/* ---------- the live stream ---------- */
+  /* ---------- the live stream ---------- */
 /* Read over fetch() rather than with EventSource, which cannot set an Authorization header --
    the alternative is the key in a query string, and a credential in a URL ends up in every access
    log and proxy trace between here and the gateway. Same wire format either way; only the
@@ -527,6 +527,9 @@ function liveStream(options) {
 
   function open() {
     if (stopped) { return; }
+    /* Same rule as the strip, which never reaches these two pages: they claim __matrixarkLive, so
+       the strip's script returns before registering it. */
+    if (document.hidden) { controller = null; return; }
     controller = new AbortController();
     onState("connecting");
     fetch("/v1/admin/events", { headers: headers(), signal: controller.signal })
@@ -557,6 +560,18 @@ function liveStream(options) {
   }
 
   open();
+  /* A hidden tab holds a connection open for nobody. Drop it, reconnect on return -- the same
+     rule the strip follows, and until now the two pages that run their own stream followed
+     neither: the strip stands down for them, and this registered only pagehide. */
+  document.addEventListener("visibilitychange", function () {
+    if (stopped) { return; }
+    if (document.hidden) {
+      if (controller) { controller.abort(); controller = null; }
+    } else if (!controller) {
+      backoff = 1000;
+      open();
+    }
+  });
   window.addEventListener("pagehide", function () {
     stopped = true;
     if (controller) { controller.abort(); }
@@ -571,6 +586,7 @@ function liveStream(options) {
     stop: function () { stopped = true; if (controller) { controller.abort(); } }
   };
 }
+
 
   function auth() {
     var k = $("key").value.trim();
@@ -1084,6 +1100,11 @@ function liveStream(options) {
   var controller = null, backoff = 1000, buffer = "";
 
   function open() {
+    /* The drop below aborts the request; the abort rejects the fetch; the catch schedules another
+       open(). Without this the connection came back one backoff later with the tab still hidden,
+       so the rule this file states was true for about a second at a time. Left null so the
+       visibility handler's `!controller` test is what brings it back. */
+    if (document.hidden) { controller = null; return; }
     var k = key();
     if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
     controller = new AbortController();
