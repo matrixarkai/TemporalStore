@@ -83,10 +83,11 @@ DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").st
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 CONTEXT_TELEMETRY_WRITE_MODE = os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "inline").strip().lower()
-ENABLE_CONTEXT_DEBUG_RECORDS = env_bool("MATRIXARK_CONTEXT_DEBUG_RECORDS", False)
-ENABLE_CONTEXT_REPLAY = env_bool("MATRIXARK_ENABLE_REPLAY", False)
-ENABLE_SUMMARY_REFRESH_AUDIT = env_bool("MATRIXARK_SUMMARY_REFRESH_AUDIT", False)
-ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = env_bool("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", False)
+# These four, and four more below, are defined here AND in matrixark_mcp_runtime_config. See the
+# single-source note beside DEFAULT_MAX_CONTEXT_TOKENS further down: that constant was read from
+# the same variable in both modules with different fallbacks, and an operator who set nothing got
+# one answer through core paths and another through runtime-config paths. Same shape, same file --
+# so take the value from there rather than writing a second literal that can drift the same way.
 SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000"))
 SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64"))
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
@@ -99,7 +100,7 @@ SUMMARY_REFRESH_MAX_BACKOFF_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_M
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
 MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
-MATRIXARK_ALLOW_LOCAL_BACKEND = env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)
+# MATRIXARK_ALLOW_LOCAL_BACKEND comes from matrixark_mcp_runtime_config, above.
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
 MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
@@ -114,15 +115,29 @@ BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_REA
 # still honour MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS when it is set.
 try:
     from tools.matrixark_mcp_runtime_config import (
+        AUDIT_DEBUG_PAYLOAD,
+        CONTEXT_PACK_DEBUG_REFS,
+        ENABLE_CONTEXT_DEBUG_RECORDS,
+        ENABLE_CONTEXT_REPLAY,
+        ENABLE_LLM_MERGE_OPERATOR,
+        ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS,
+        ENABLE_SUMMARY_REFRESH_AUDIT,
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_runtime_config import (
+        AUDIT_DEBUG_PAYLOAD,
+        CONTEXT_PACK_DEBUG_REFS,
+        ENABLE_CONTEXT_DEBUG_RECORDS,
+        ENABLE_CONTEXT_REPLAY,
+        ENABLE_LLM_MERGE_OPERATOR,
+        ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS,
+        ENABLE_SUMMARY_REFRESH_AUDIT,
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 DEFAULT_MAX_CONTEXT_TOKENS = _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS
-CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
-AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 CONTEXT_PACK_DEBUG_LINEAGE = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", False)
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
@@ -297,7 +312,7 @@ SUMMARY_LLM_PROVIDER = os.environ.get(
 ).strip().lower().replace("-", "_")
 SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", EXTRACTION_LLM_MODEL)
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
-ENABLE_LLM_MERGE_OPERATOR = env_bool("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", False)
+# ENABLE_LLM_MERGE_OPERATOR comes from matrixark_mcp_runtime_config, above.
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
