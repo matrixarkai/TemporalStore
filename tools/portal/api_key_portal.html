@@ -148,25 +148,25 @@
     <p class="hint">The admin key is held in <code>sessionStorage</code> for this tab only and is sent as
       <code>Authorization: Bearer &lt;key&gt;</code>. It is never written into the page source or persisted to disk.
       It must carry the <code>admin:api_key</code> scope (usage reads also accept <code>admin:audit</code>).</p>
-    <label>Admin API key <span class="opt">(bearer — held in sessionStorage)</span></label>
+    <label for="adminKey">Admin API key <span class="opt">(bearer — held in sessionStorage)</span></label>
     <input id="adminKey" type="password" placeholder="sk_live_… / mk_… admin-scoped key" autocomplete="off">
     <div class="row">
       <div>
-        <label>Key-management API base <span class="opt">(serves <code>/api/admin/*</code>; blank = same origin)</span></label>
+        <label for="mgmtBase">Key-management API base <span class="opt">(serves <code>/api/admin/*</code>; blank = same origin)</span></label>
         <input id="mgmtBase" type="text" placeholder="https://portal-host:8080" autocomplete="off">
       </div>
       <div>
-        <label>Gateway base <span class="opt">(serves <code>/v1/admin/api_key_usage</code>; blank = same origin)</span></label>
+        <label for="gwBase">Gateway base <span class="opt">(serves <code>/v1/admin/api_key_usage</code>; blank = same origin)</span></label>
         <input id="gwBase" type="text" placeholder="https://gateway-host:8080" autocomplete="off">
       </div>
     </div>
     <div class="row">
       <div>
-        <label>Account ID <span class="opt">(scopes the list/create views)</span></label>
+        <label for="ctxAccount">Account ID <span class="opt">(scopes the list/create views)</span></label>
         <input id="ctxAccount" type="text" placeholder="acct_local" autocomplete="off">
       </div>
       <div>
-        <label>Tenant ID <span class="opt">(scopes the list/create views)</span></label>
+        <label for="ctxTenant">Tenant ID <span class="opt">(scopes the list/create views)</span></label>
         <input id="ctxTenant" type="text" placeholder="tenantA" autocomplete="off">
       </div>
     </div>
@@ -196,44 +196,44 @@
       MatrixArk stores only its hash.</p>
     <div class="row">
       <div>
-        <label>Tenant ID <span class="opt">(defaults to the connection tenant)</span></label>
+        <label for="ckTenant">Tenant ID <span class="opt">(defaults to the connection tenant)</span></label>
         <input id="ckTenant" type="text" placeholder="tenantA">
       </div>
       <div>
-        <label>Account ID <span class="opt">(defaults to the connection account)</span></label>
+        <label for="ckAccount">Account ID <span class="opt">(defaults to the connection account)</span></label>
         <input id="ckAccount" type="text" placeholder="acct_local">
       </div>
     </div>
-    <label>What is this key for?</label>
-    <div id="scopePresets" class="scope-presets"><span class="hint">Connect above to load the
+    <label id="scopePresetsLabel">What is this key for?</label>
+    <div id="scopePresets" role="group" aria-labelledby="scopePresetsLabel" class="scope-presets"><span class="hint">Connect above to load the
       scope catalogue.</span></div>
-    <label style="margin-top:14px">Scopes <span class="opt">(tick what this key may do)</span></label>
-    <div id="scopeList" class="scope-list"></div>
-    <label style="margin-top:10px">Scopes, as sent <span class="opt">(editable)</span></label>
+    <label id="scopeListLabel" style="margin-top:14px">Scopes <span class="opt">(tick what this key may do)</span></label>
+    <div id="scopeList" role="group" aria-labelledby="scopeListLabel" class="scope-list"></div>
+    <label for="ckScopes" style="margin-top:10px">Scopes, as sent <span class="opt">(editable)</span></label>
     <input id="ckScopes" type="text" value="context:ingest,context:retrieve,context:feedback,resource:read,skill:read">
     <div class="row3">
       <div>
-        <label>Role <span class="opt"></span></label>
+        <label for="ckRole">Role <span class="opt"></span></label>
         <input id="ckRole" type="text" value="service">
       </div>
       <div>
-        <label>Display name <span class="opt"></span></label>
+        <label for="ckDisplay">Display name <span class="opt"></span></label>
         <input id="ckDisplay" type="text" placeholder="team ingest key">
       </div>
       <div>
-        <label>Key prefix <span class="opt"></span></label>
+        <label for="ckPrefix">Key prefix <span class="opt"></span></label>
         <input id="ckPrefix" type="text" value="sk_live">
       </div>
     </div>
-    <label>Allowed user IDs <span class="opt">(comma-separated; blank = no per-user restriction)</span></label>
+    <label for="ckUsers">Allowed user IDs <span class="opt">(comma-separated; blank = no per-user restriction)</span></label>
     <input id="ckUsers" type="text" placeholder="alice,bob">
     <div class="row">
       <div>
-        <label>Request quota <span class="opt">(max requests per window; blank/0 = unlimited)</span></label>
+        <label for="ckQuota">Request quota <span class="opt">(max requests per window; blank/0 = unlimited)</span></label>
         <input id="ckQuota" type="number" min="0" placeholder="unlimited">
       </div>
       <div>
-        <label>Quota window seconds <span class="opt">(blank = per-process lifetime window)</span></label>
+        <label for="ckWindow">Quota window seconds <span class="opt">(blank = per-process lifetime window)</span></label>
         <input id="ckWindow" type="number" min="0" step="1" placeholder="e.g. 60">
       </div>
     </div>
