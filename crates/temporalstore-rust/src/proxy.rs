@@ -4357,6 +4357,60 @@ mod tests {
     }
 
     #[test]
+    fn a_zero_inflight_quota_admits_everything_because_that_is_the_default() {
+        // `max_inflight_requests` and `max_inflight_write_requests` default to 0, and 0 here means
+        // NO LIMIT -- so this is what every deployment that never sets a quota runs.
+        //
+        // The engine's admission limits use the opposite convention: a limit of 0 there refuses
+        // the request ("<label> is zero"). Both are right where they are -- the engine only holds
+        // limits somebody configured, while these two are zero until somebody does -- but the
+        // conventions are opposite on two admission paths, and carrying one across would make
+        // every default deployment refuse all traffic. Nothing asserted this direction before.
+        let proxy = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 0,
+            max_inflight_write_requests: 0,
+            ..ProxyOptions::default()
+        });
+        let commands = [Command::StringSet {
+            key: "k".to_string(),
+            value: b"v".to_vec(),
+        }];
+
+        // Hold them all at once: a quota that counted would refuse long before this.
+        let mut held = Vec::new();
+        for _ in 0..256 {
+            match proxy.admit(Some("ns"), &commands) {
+                Ok(guard) => held.push(guard),
+                Err(status) => panic!(
+                    "a zero quota must admit everything, refused after {} with {}",
+                    held.len(),
+                    status.code
+                ),
+            }
+        }
+        assert_eq!(held.len(), 256);
+        drop(held);
+
+        // Positive control: with a real limit the same calls ARE refused, so the assertion above
+        // is not passing because admission stopped working.
+        let bounded = scoped_proxy(ProxyOptions {
+            max_inflight_requests: 1,
+            ..ProxyOptions::default()
+        });
+        let first = bounded.admit(Some("ns"), &commands).expect("first fits");
+        let second = bounded.admit(Some("ns"), &commands);
+        assert!(
+            second.is_err(),
+            "a limit of one must refuse the second while the first is held"
+        );
+        drop(first);
+        assert!(
+            bounded.admit(Some("ns"), &commands).is_ok(),
+            "and admit again once the slot is released"
+        );
+    }
+
+    #[test]
     fn proxy_inflight_quota_rejects_only_while_slots_are_held() {
         let proxy = scoped_proxy(ProxyOptions {
             max_inflight_requests: 1,
