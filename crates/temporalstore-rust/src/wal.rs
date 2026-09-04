@@ -4963,18 +4963,20 @@ mod tests {
                 )
                 .unwrap();
 
+            // Built BEFORE the probe starts. Constructing the command is the caller's cost, not
+            // the append's, and a `format!` plus a `clone` inside the window put two allocations a
+            // write on the append's account that it never paid.
             let runs = 200usize;
+            let commands = (0..runs)
+                .map(|index| Command::StringSet {
+                    key: format!("k{index:06}"),
+                    value: value.clone(),
+                })
+                .collect::<Vec<_>>();
+
             let probe = crate::alloc_probe::Probe::start();
-            for index in 0..runs {
-                store
-                    .append(
-                        1,
-                        Command::StringSet {
-                            key: format!("k{index:06}"),
-                            value: value.clone(),
-                        },
-                    )
-                    .unwrap();
+            for command in commands {
+                store.append(1, command).unwrap();
             }
             let counts = probe.stop();
 
