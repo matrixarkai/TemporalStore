@@ -32,6 +32,13 @@
   .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:18px 0}
   .card > h2 + .hint{margin-top:.25em}
   .hint{color:var(--muted);font-size:13.5px;margin:.2em 0 .8em}
+  /* Shut by default: it answers a question you have once, and every later visit is spent by
+     somebody who already holds a key. */
+  .firstkey{margin:-.4em 0 .9em}
+  .firstkey summary{cursor:pointer;color:var(--accent);font-size:13.5px}
+  .firstkey-cmd{background:var(--code-bg);color:var(--code-fg);padding:11px 13px;border-radius:9px;
+                font-family:var(--mono);font-size:12.5px;line-height:1.55;overflow-x:auto;
+                white-space:pre;margin:.4em 0 .6em}
   label{display:block;font-size:13px;font-weight:650;margin:10px 0 4px;color:var(--fg)}
   label .opt{font-weight:400;color:var(--muted)}
   input,select,textarea{width:100%;font-family:var(--sans);font-size:14px;padding:8px 10px;border:1px solid var(--line);
@@ -150,6 +157,23 @@
       It must carry the <code>admin:api_key</code> scope (usage reads also accept <code>admin:audit</code>).</p>
     <label for="adminKey">Admin API key <span class="opt">(bearer — held in sessionStorage)</span></label>
     <input id="adminKey" type="password" placeholder="sk_live_… / mk_… admin-scoped key" autocomplete="off">
+    <!-- A deployment enforcing keys has none until somebody mints one, and this page cannot mint
+         the first: minting is an admin call and needs a key already. Without this, the first thing
+         a new customer meets is a page asking for something they have no way to obtain. -->
+    <details class="firstkey">
+      <summary>No key yet?</summary>
+      <p class="hint">This page cannot mint the first one — creating a key is itself an
+        admin-scoped call. Run this wherever the gateway reads its keystore, then paste what it
+        prints:</p>
+      <pre class="firstkey-cmd">python3 tools/matrixark_provision_api_key.py \
+  --tenant-id tenantA --account-id acct_local \
+  --scopes admin:api_key,admin:audit,portal:read \
+  --store "$MATRIXARK_API_KEYS_HASHED_FILE"</pre>
+      <p class="hint">The key is printed once and only its hash is stored, so copy it before the
+        terminal scrolls. <code>--scopes</code> is not optional in practice: left off, the tool
+        mints the four <code>context:*</code> scopes, and a key carrying those is refused by this
+        page with no hint as to why.</p>
+    </details>
     <div class="row">
       <div>
         <label for="mgmtBase">Key-management API base <span class="opt">(serves <code>/api/admin/*</code>; blank = same origin)</span></label>
