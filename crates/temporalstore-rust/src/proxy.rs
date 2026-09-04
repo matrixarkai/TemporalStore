@@ -2052,9 +2052,24 @@ fn context_drop_key(scope: &context::ProxyContextScope) -> String {
 /// while one that may have applied has to be reconciled, and retrying it is how a write gets
 /// counted twice. The proxy knows which it was; the caller could not find out.
 fn proxy_client_error_code(err: &crate::client::ClientError) -> &'static str {
+    // Every variant named, with no `_` arm on purpose. The arm this replaces sent four different
+    // conditions back as one code, and a new `ClientError` variant would have joined them without
+    // anyone deciding that it should. Adding one now stops the build until someone says what the
+    // caller is told.
     match err {
+        // Distinct because the caller's decision differs: a write that provably did not apply is
+        // free to retry, one that may have applied is not. `a_caller_can_tell_an_unknown_write_
+        // from_a_failed_one` covers this.
         crate::client::ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
-        _ => "server_error",
+        // The caller's own request is wrong; nothing on this side will make it work, so it is not
+        // reported as a server-side failure.
+        crate::client::ClientError::InvalidRequest(_) => "invalid_request",
+        // The rest are this side's problem as far as the caller is concerned -- the backend
+        // refused after the client had already retried what was retryable, the transport failed,
+        // or the answer did not parse.
+        crate::client::ClientError::Status(_)
+        | crate::client::ClientError::Http(_)
+        | crate::client::ClientError::UnexpectedResponse { .. } => "server_error",
     }
 }
 
@@ -7107,6 +7122,43 @@ mod tests {
             hits.load(Ordering::SeqCst) - before,
             1,
             "a request that timed out on a pooled socket must not be sent again on a fresh one"
+        );
+    }
+
+    #[test]
+    fn the_proxy_names_every_client_error_it_can_return() {
+        // The mapping has no `_` arm, so adding a `ClientError` variant stops the build until
+        // someone decides what the caller is told. This pins what the existing ones say, and in
+        // particular that a caller's own bad request is not reported as a server-side failure --
+        // there is nothing on this side to retry for it.
+        use crate::client::ClientError;
+
+        assert_eq!(
+            proxy_client_error_code(&ClientError::InvalidRequest("bad".to_string())),
+            "invalid_request",
+            "a request the caller got wrong is the caller's to fix"
+        );
+        assert_eq!(
+            proxy_client_error_code(&ClientError::WriteOutcomeUnknown(
+                "unknown".to_string()
+            )),
+            "write_outcome_unknown",
+            "kept distinct so a caller does not retry a write that may have applied"
+        );
+        assert_eq!(
+            proxy_client_error_code(&ClientError::Status("refused".to_string())),
+            "server_error"
+        );
+
+        // The two that share `server_error` are not the same condition, so if either is ever
+        // given its own code this says which one moved.
+        assert_eq!(
+            proxy_client_error_code(&ClientError::Status("x".to_string())),
+            proxy_client_error_code(&ClientError::UnexpectedResponse {
+                operation: "exists",
+                response: CommandResponse::Empty,
+            }),
+            "a backend refusal and an unparseable answer both read as server_error today"
         );
     }
 
