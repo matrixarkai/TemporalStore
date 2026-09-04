@@ -32,21 +32,47 @@ from pathlib import Path
 
 BASELINE = Path(__file__).with_name("python_suite_baseline.json")
 NAME = re.compile(r"^(?:FAIL|ERROR): (\S+)")
+# Verbose output names each test before its outcome. With a docstring the outcome lands on the
+# NEXT line ("name (Class)" / "the docstring ... skipped"), so the name is remembered rather than
+# read off the outcome line.
+STARTED = re.compile(r"^(\S+) \(")
 
 
-def failing_names() -> set[str]:
+def suite_result() -> tuple[set[str], set[str]]:
+    """(failing names, skipped names) from one full run.
+
+    Skipped names are collected because a test that stops RUNNING also stops being reported as
+    failing. Without them `baseline - failing` cannot tell "someone fixed it" from "it no longer
+    runs here", and the difference matters: banking the second kind removes a test from the gate
+    permanently while it sits unexercised. Eleven names read as fixed on 2026-09-03 and every one
+    was a skip -- five on a module absent from the repo, six on a native proxy binary CI does not
+    build.
+    """
     result = subprocess.run(
-        [sys.executable, "-m", "unittest", "discover", "-s", ".", "-p", "test_*.py"],
+        [sys.executable, "-m", "unittest", "discover", "-v", "-s", ".", "-p", "test_*.py"],
         cwd=str(Path(__file__).parent),
         capture_output=True,
         text=True,
     )
-    names = set()
+    failing: set[str] = set()
+    skipped: set[str] = set()
+    started = ""
     for line in (result.stderr + result.stdout).splitlines():
-        found = NAME.match(line.strip())
+        stripped = line.strip()
+        found = NAME.match(stripped)
         if found:
-            names.add(found.group(1))
-    return names
+            failing.add(found.group(1))
+            continue
+        begun = STARTED.match(stripped)
+        if begun:
+            started = begun.group(1)
+        if " ... skipped" in stripped and started:
+            skipped.add(started)
+    return failing, skipped
+
+
+def failing_names() -> set[str]:
+    return suite_result()[0]
 
 
 def main() -> int:
@@ -54,7 +80,7 @@ def main() -> int:
     parser.add_argument("--record", action="store_true", help="rewrite the baseline")
     args = parser.parse_args()
 
-    current = failing_names()
+    current, skipped = suite_result()
 
     if args.record:
         BASELINE.write_text(
@@ -82,14 +108,23 @@ def main() -> int:
         # actually showed up.
         print("\n%d new failure(s); confirming on a second run..." % len(added))
         added = sorted(set(added) & failing_names())
-    fixed = sorted(known - current)
+    # A name can leave the failing set two ways, and only one of them is good news.
+    gone = known - current
+    stopped = sorted(gone & skipped)
+    fixed = sorted(gone - skipped)
 
-    print("failing now: %d   baseline: %d" % (len(current), len(known)))
+    print("failing now: %d   baseline: %d   skipped: %d" % (len(current), len(known), len(skipped)))
     if fixed:
         print("\nfixed since the baseline (%d):" % len(fixed))
         for name in fixed[:20]:
             print("   %s" % name)
         print("\n   ...rerun with --record to bank these.")
+    if stopped:
+        print("\nno longer FAILING because they no longer RUN (%d):" % len(stopped))
+        for name in stopped[:20]:
+            print("   %s" % name)
+        print("\n   These are skipped, not fixed. Banking them drops them from the gate while")
+        print("   they sit unexercised -- make them run, or leave them in the baseline.")
     if added:
         print("\nNEW failures (%d):" % len(added))
         for name in added:
