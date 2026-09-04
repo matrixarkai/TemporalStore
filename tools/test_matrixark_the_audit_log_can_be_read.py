@@ -30,7 +30,6 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import matrixark_v1_gateway as gw  # noqa: E402
-from test_matrixark_v1_gateway import drive  # noqa: E402
 
 AUDIT = "k-audit"
 KEYMGR = "k-keys"
@@ -64,6 +63,18 @@ class _Server:
         return {"jsonrpc": "2.0", "id": body.get("id"), "result": {}}
 
 
+def _drive(*args, **kwargs):
+    """The gateway suite's request driver, imported when it is called rather than at import time.
+
+    Under `unittest discover` a test module is reachable as both `tools.X` and bare `X`, so one
+    test module importing another at module level pulls a second copy into the run and shifts what
+    every later module sees. That has cost an afternoon before, showing up as CI failures in tests
+    the branch never touched -- see test_matrixark_no_cross_test_imports.
+    """
+    from test_matrixark_v1_gateway import drive
+    return drive(*args, **kwargs)
+
+
 def _app(server=None):
     hashed = {
         gw._secret_hash(AUDIT): {"tenant_id": "t", "account_id": "acct",
@@ -81,13 +92,13 @@ def _as(key):
 
 
 def _get(app, path, key=AUDIT):
-    return drive(app, method="GET", path=path, headers=_as(key))
+    return _drive(app, method="GET", path=path, headers=_as(key))
 
 
 class ItIsReachableAtAllTest(unittest.TestCase):
 
     def test_it_needs_a_key(self) -> None:
-        status, _h, _b = drive(_app(), method="GET", path="/v1/admin/audit")
+        status, _h, _b = _drive(_app(), method="GET", path="/v1/admin/audit")
         self.assertEqual(401, status)
 
     def test_an_audit_key_reads_it(self) -> None:
