@@ -787,6 +787,39 @@ def _usage_rows_visible_to(record: Optional[Json], rows: list, tenant: Optional[
             if row.get("tenant_id") == tenant and row.get("account_id") == account]
 
 
+_AUDIT_READ_SCOPES = {"admin:audit"}
+
+
+def _audit_read_denied(record: Optional[Json]) -> Optional[Json]:
+    """403 payload when the key may not read the audit log, else ``None``.
+
+    Narrower than ``_usage_read_denied`` on purpose. That gate admits ``admin:api_key`` as well,
+    which is right for usage counters -- a key manager needs to see what their keys are doing. The
+    audit log is the record of who reached for what and was refused, the catalogue publishes
+    ``admin:audit`` as "Read the audit log", and a scope that names one thing should be the thing
+    that opens it. Same dev/legacy posture as its neighbours.
+    """
+    if record is None:
+        return None
+    scopes = record.get("scopes")
+    if scopes is None:
+        return None
+    if _AUDIT_READ_SCOPES.intersection(set(scopes)):
+        return None
+    return {"error": "insufficient_scope", "required": sorted(_AUDIT_READ_SCOPES)}
+
+
+def _audit_recording_mode() -> str:
+    """What this worker is doing with audit records right now.
+
+    Reported, not acted on: an empty log means "nothing happened" or "nothing is kept", and only
+    this tells them apart. The value is frozen for the MCP server at its construction, so what this
+    reports is the mode a change would take effect under after a restart -- which is what the
+    setting's own help says.
+    """
+    return (os.environ.get("MATRIXARK_AUDIT_MODE", "off").strip().lower() or "off")
+
+
 _ADMIN_WRITE_SCOPES = {"admin:api_key"}
 
 
@@ -1739,6 +1772,11 @@ ROUTE_DOCS: List[Json] = [
      "query": "user_id=alice"},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/scopes", "scope": "admin",
      "summary": "What each scope permits, plus four ready-made key shapes."},
+    {"group": "Administration", "method": "GET", "path": "/v1/admin/audit", "scope": "admin",
+     "summary": "Recent audit records for this tenant, newest first, with the recording mode "
+                "beside them. Requires a key carrying admin:audit. An empty list with recording "
+                "\"off\" means nothing is being kept, not that nothing happened.",
+     "query": "limit (1-500, default 100)"},
     {"group": "Administration", "method": "GET", "path": "/v1/admin/api_key_usage",
      "scope": "admin", "summary": "Per-key edge counters: totals, ingest/retrieve split, bytes, "
                                   "first and last use."},
@@ -3728,6 +3766,49 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 return await _json(send, 403, denied)
             usage = _usage_rows_visible_to(key_record, meter.snapshot(), tenant, account)
             return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
+
+        # ---- the audit log (auth + admin:audit) ------------------------------------------------
+        # The scope catalogue publishes admin:audit as "Read the audit log" and nothing served one.
+        # The records existed and the tool that reads them back existed; no route reached it, so the
+        # trail was write-only and the scope opened nothing the usage scope did not.
+        #
+        # The tenant check lives in the tool (ensure_identity_can_manage), and the identity it
+        # checks is the one injected here -- the caller's own, never anything they sent.
+        if method == "GET" and path == "/v1/admin/audit":
+            allowed, key, tenant, account, key_record = _authorize(scope.get("headers", []), cfg)
+            if not allowed:
+                return await _json(send, 401, {"error": "unauthorized"})
+            denied = _audit_read_denied(key_record)
+            if denied is not None:
+                return await _json(send, 403, denied)
+            params = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            try:
+                limit = int((params.get("limit") or ["100"])[0])
+            except Exception:
+                limit = 100
+            # The tool reads the whole record log and filters, so the ceiling is on what comes
+            # back, not on what it costs to get it. This is a page a person opens, not one that
+            # polls.
+            limit = min(max(limit, 1), 500)
+            args: Json = {"scope": {}, "limit": limit}
+            _apply_identity(args, key, tenant, account)
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(server.call_tool, "matrixark_admin_audit", args),
+                    cfg.backend_timeout)
+            except Exception as exc:
+                return await _json(send, 502,
+                                   {"error": "backend_unavailable", "detail": str(exc)})
+            rows = (result or {}).get("audit_logs") if isinstance(result, dict) else None
+            rows = rows if isinstance(rows, list) else []
+            return await _json(send, 200, {
+                "status": "ok",
+                "audit_logs": rows,
+                "count": len(rows),
+                # Without this an empty list reads as "nothing to worry about". Off means every
+                # record -- including every refusal -- was discarded before it reached storage.
+                "recording": _audit_recording_mode(),
+            })
 
         # ---- effective model configuration (auth + admin scope) ------------------------------
         # Which extraction/embedding endpoints this deployment actually talks to, plus the skill

@@ -73,6 +73,7 @@ _EXACT_ROUTES = frozenset({
     # other unmatched path.
     "/v1/admin/deployment", "/v1/admin/deployment/plan",
     "/v1/admin/api_key_usage", "/v1/admin/ingestion/jobs",
+    "/v1/admin/audit",
 })
 
 
