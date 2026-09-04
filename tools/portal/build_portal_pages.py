@@ -32,6 +32,12 @@ if not match:
 BASE_CSS = match.group(1)
 
 NAV_CSS = """
+  /* Named for a screen reader, absent for everyone else. The heading beside a control can
+     already say what it is for, in which case a second visible copy is noise -- but a
+     heading is not a name, and announced on its own the control has none. Clipped rather
+     than display:none, which would take it out of the accessibility tree as well. */
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+           clip:rect(0 0 0 0);white-space:nowrap;border:0}
   /* shared portal nav (same markup on every page; both portal stylesheets define these vars) */
   .portalnav{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 20px;padding-bottom:2px;
              border-bottom:1px solid var(--line)}
@@ -693,7 +699,7 @@ HEAD = """<!doctype html>
 </style>
 </head>
 <body>
-<div class="wrap">
+<main class="wrap">
 """
 
 # ================================================================================================
@@ -4789,6 +4795,7 @@ API_BODY = """
 
   <section>
     <h2>Filter</h2>
+    <label class="sr-only" for="filter">Filter routes</label>
     <input id="filter" type="search" placeholder="path, method, scope or description" spellcheck="false" autocomplete="off">
     <div class="hint">Reading this page needs nothing. Each route enforces its own access — the
       scope column is what a key must carry.</div>
@@ -5031,7 +5038,7 @@ API_JS = r"""
 
 
 TAIL = """
-</div>
+</main>
 %(js)s
 %(navjs)s
 </body>
