@@ -50,6 +50,15 @@ Json = Dict[str, Any]
 # be overwritten by the stored file.
 _BOOT_ENV: Dict[str, str] = dict(os.environ)
 
+# What each `applies == "restart"` setting was actually running as, recorded by apply_boot() once
+# the stored file has been folded into the environment. Those settings are read into module
+# constants at import and never re-read, so this is the only moment their effective value is
+# knowable -- and without it "has this been changed since startup?" cannot be answered at all.
+#
+# Empty means nobody called apply_boot (a test, a tool importing this module). Then nothing is
+# reported as pending: missing evidence is not evidence of a pending change.
+_BOOT_EFFECTIVE: Dict[str, str] = {}
+
 _TRUTHY = {"1", "true", "yes", "on"}
 
 # Floors the ENGINE applies, by variable. These are not a policy this file invents -- the accessors
@@ -892,6 +901,7 @@ def apply_boot(document: Optional[Json] = None) -> List[str]:
     document = load() if document is None else document
     values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
     seeded: List[str] = []
+    _BOOT_EFFECTIVE.clear()
     for setting in SETTINGS:
         if setting.key not in values:
             continue
@@ -908,6 +918,11 @@ def apply_boot(document: Optional[Json] = None) -> List[str]:
     if "extraction.provider" in values and "MATRIXARK_EXTRACTION_PROVIDER" not in _BOOT_ENV:
         os.environ["MATRIXARK_EXTRACTION_PROVIDER"] = values["extraction.provider"]
         seeded.append("MATRIXARK_EXTRACTION_PROVIDER")
+    # After the seeding, because this has to be the value the process will actually read -- the
+    # stored one where it was applied, the launcher's where that took precedence.
+    for setting in SETTINGS:
+        if setting.applies == "restart":
+            _BOOT_EFFECTIVE[setting.key] = _effective(setting, values)[0]
     return seeded
 
 
@@ -954,6 +969,20 @@ def _override_layers_by_env() -> Dict[str, List[str]]:
     return out
 
 
+def _is_pending_restart(setting: "Setting", value: str) -> bool:
+    """Stored value differs from the one this process started with.
+
+    False when there is nothing to compare: a setting that applies live is never pending, and a
+    process that never called apply_boot has no record of what it started with. Reporting a change
+    on missing evidence would put an alarm on every deployment that imports this module.
+    """
+    if setting.applies != "restart":
+        return False
+    if setting.key not in _BOOT_EFFECTIVE:
+        return False
+    return str(value) != _BOOT_EFFECTIVE[setting.key]
+
+
 def snapshot(include_catalog: bool = True) -> Json:
     """The full settable-config view for the portal: effective value, where it came from, and when
     a change takes effect. Secret VALUES are never present -- only ``configured``."""
@@ -994,6 +1023,10 @@ def snapshot(include_catalog: bool = True) -> Json:
             # what the value currently is or where it came from.
             "boot_pinned": bool(_env_name(setting, values)
                                 and _env_name(setting, values) in _BOOT_ENV),
+            # Changed since this process started, and frozen at import, so the deployment is still
+            # running the old value. Distinct from the `applies` badge, which says what KIND of
+            # setting this is and says it before anybody touches anything.
+            "pending_restart": _is_pending_restart(setting, value),
         }
         if setting.secret:
             entry["configured"] = bool(value)
@@ -1004,6 +1037,11 @@ def snapshot(include_catalog: bool = True) -> Json:
     result: Json = {
         "status": "ok",
         "essential_keys": sorted(ESSENTIAL_KEYS),
+        # Which settings have been written since this process started and are still not in effect.
+        # The write that made each of them said so once, to whoever made it; this says it to
+        # whoever looks next.
+        "pending_restart": sorted(entry["key"] for group in groups.values() for entry in group
+                                  if entry.get("pending_restart")),
         "config_file": config_path(),
         "updated_at": document.get("updated_at"),
         "updated_by": document.get("updated_by"),
