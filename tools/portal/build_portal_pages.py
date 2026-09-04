@@ -2986,6 +2986,7 @@ function liveStream(options) {
 
   /* ---------- diagnostics ---------- */
   var lastReport = null;
+  var lastConfigChangedAt = null;
   var lastFrame = null;
 
   function compactConfig(config) {
@@ -3108,6 +3109,25 @@ function liveStream(options) {
         }
       },
       onFrame: function (frame) {
+        /* A configuration write in another tab, or by another operator, used to take up to a full
+           minute to show here -- the checklist rows that exist to say what is misconfigured were the
+           ones going stale. The frame carries when the stored configuration was last written, so a
+           change is picked up on the next tick instead.
+
+           The first frame only records the value: on load the checklist has just been read, and
+           treating the first sighting as a change would re-read it immediately for nothing.
+
+           The slow timer stays. This list counts records and requests as well as reading settings,
+           and those move without anyone writing configuration. */
+        var seen = frame.config_changed_at;
+        if (seen != null) {
+          if (lastConfigChangedAt !== null && seen !== lastConfigChangedAt) {
+            lastConfigChangedAt = seen;
+            if (!document.hidden && $("key").value.trim()) { load(); }
+          } else {
+            lastConfigChangedAt = seen;
+          }
+        }
         /* Kept for the diagnostics bundle. The failure timeline exists only on the frame, and
            it answers "when did this start" -- which is the question a bundle is sent to
            answer. */
