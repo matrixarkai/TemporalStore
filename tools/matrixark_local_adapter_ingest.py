@@ -13,6 +13,13 @@ import warnings as _warnings
 _PROFILE_SCOPE_WARNED: set = set()
 
 
+
+#: How much of a skill's text its manifest carries as a preview.
+#:
+#: Not MAX_CONTEXT_REF_CHARS (4096): that is what a served context ref may reach, and a manifest
+#: preview is not a ref. 260 is what the codex hook's own text_preview uses.
+SKILL_PREVIEW_CHARS = 260
+
 def _segments_enabled(scope) -> bool:
     """Whether this tenant materialises context_segment rows (default OFF).
 
@@ -822,7 +829,21 @@ class _LocalAdapterIngestMixin:
                             "outputs": parsed_skill.metadata.get("outputs", []),
                             "access_scope": access_scope,
                             "deployment_scope": deployment_scope,
-                            "text_preview": clip_context_text(parsed_skill.text),
+                            # A preview, at a preview's size. clip_context_text defaults to
+                            # MAX_CONTEXT_REF_CHARS (4096) -- what a served context REF may reach,
+                            # because a ref carries content. This is not a ref. At the default it
+                            # was 29% of the ~11 KB per document the index costs, and the index
+                            # cost is FLAT in document size, so on small skills that is ~10% of
+                            # everything stored at production embedding width.
+                            #
+                            # Nothing that serves skills reads it: list_skills emits 24 manifest
+                            # fields without it, the index-term path reads name/triggers/tools, and
+                            # a runtime probe over list_skills + retrieve saw it asked for zero
+                            # times. It stays because matrixark_http falls back to it for display,
+                            # which is what a preview is for -- and 260 chars is the size the
+                            # codex hook's own text_preview uses.
+                            "text_preview": clip_context_text(
+                                parsed_skill.text, max_chars=SKILL_PREVIEW_CHARS),
                             "token_estimate": parsed_skill.token_estimate,
                             "metadata": skill_serving_metadata,
                             "scope": resource_record_scope,
