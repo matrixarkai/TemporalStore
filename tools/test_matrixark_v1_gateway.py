@@ -1077,6 +1077,9 @@ class UsageMeterTest(unittest.TestCase):
 
     DATA_KEY = "testkey_usage_data"          # context scopes only, NO admin scope
     ADMIN_KEY = "testkey_usage_admin"        # carries admin:api_key -> may read usage
+    OTHER_KEY = "testkey_usage_other"        # a DIFFERENT tenant; no test below drives it except
+                                             # the cross-tenant one, so no other count changes
+    LEGACY_KEY = "testkey_usage_legacy"      # scopes=None -> unrestricted, by documented design
 
     _DATA_SCOPES = ["context:ingest", "context:retrieve"]
 
@@ -1087,6 +1090,11 @@ class UsageMeterTest(unittest.TestCase):
             gw._secret_hash(self.ADMIN_KEY): {
                 "tenant_id": "t", "account_id": "acct",
                 "scopes": ["admin:api_key", "context:retrieve"]},
+            gw._secret_hash(self.OTHER_KEY): {
+                "tenant_id": "other_t", "account_id": "other_acct",
+                "scopes": list(self._DATA_SCOPES)},
+            gw._secret_hash(self.LEGACY_KEY): {
+                "tenant_id": "t", "account_id": "acct"},        # no "scopes" -> unrestricted
         }
 
     def setUp(self):
@@ -1127,6 +1135,39 @@ class UsageMeterTest(unittest.TestCase):
         blob = json.dumps(payload)
         self.assertNotIn(self.DATA_KEY, blob)                          # never leak the plaintext key
         self.assertIn(gw._secret_hash(self.DATA_KEY), blob)
+
+    def test_usage_read_returns_only_the_callers_own_tenant(self):
+        """The snapshot is deployment-wide. Returning it whole told one tenant how much traffic
+        every other tenant was doing -- key hash, request counts and bytes."""
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.DATA_KEY))
+        for _ in range(4):
+            drive(self.app, path="/v1/ingest", body={"records": [1, 2, 3]},
+                  headers=self._bearer(self.OTHER_KEY))
+
+        st, payload = self._usage(self.ADMIN_KEY)
+        self.assertEqual(200, st)
+        # The control: the caller's OWN row must still be there, or a filter returning nothing at
+        # all would pass the check below without meaning anything.
+        own = [r for r in payload["usage"] if r["api_key_hash"] == gw._secret_hash(self.DATA_KEY)]
+        self.assertEqual(1, len(own), payload["usage"])
+        self.assertEqual(1, own[0]["total"])
+
+        foreign = [r for r in payload["usage"] if r["tenant_id"] != "t"]
+        self.assertEqual([], foreign,
+                         "another tenant's usage was returned to an admin of this one: %r" % foreign)
+        self.assertEqual(1, payload["count"])
+        blob = json.dumps(payload)
+        self.assertNotIn("other_t", blob)
+        self.assertNotIn(gw._secret_hash(self.OTHER_KEY), blob)
+
+    def test_a_legacy_unrestricted_key_still_reads_the_whole_snapshot(self):
+        """Unchanged on purpose: a key with no scopes is unrestricted everywhere else at this
+        edge, and narrowing it here would change what those deployments see."""
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.DATA_KEY))
+        drive(self.app, path="/v1/ingest", body={"records": [1]}, headers=self._bearer(self.OTHER_KEY))
+        st, payload = self._usage(self.LEGACY_KEY)
+        self.assertEqual(200, st)
+        self.assertEqual(2, payload["count"], payload["usage"])
 
     def test_non_admin_key_cannot_read_usage_403(self):
         st, payload = self._usage(self.DATA_KEY)
