@@ -14378,3 +14378,119 @@ fn a_filtered_sequence_query_returns_fewer_rows_than_match() {
         "the matching rows exist -- a scan wide enough returns all {MATCHING} of them"
     );
 }
+
+/// One counter increment rewrites the WHOLE counter series.
+///
+/// `persist_control_state_page` runs on every `ControlStateIncrement` and calls
+/// `serde_json::to_vec(series)` -- its own comment calls this "the O(series) per-write
+/// whole-series page rewrite (the write-amplification source)". The cure already exists
+/// behind `control_coalesce_persist`, which is off by default.
+///
+/// This is a paired A/B: both arms run async_storage (the flag is gated on it), same series,
+/// same increments; the ONLY difference is the flag. Serializing a whole series is ONE big
+/// allocation, so an allocation COUNT cannot see this defect -- only bytes can.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn a_counter_increment_rewrites_the_whole_series() {
+    const REPS: usize = 20;
+    let arm = |points: usize, coalesce: bool| -> (f64, u64, i64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let mut config = Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        };
+        if coalesce {
+            config
+                .extend_config
+                .insert("control_coalesce_persist".to_string(), "on".to_string());
+        }
+        assert!(
+            engine.set_config(SetConfigRequest { shard_id: 1, config }).ok,
+            "set_config must be accepted, or the arms are not what they claim to be"
+        );
+        for i in 0..points {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateIncrement {
+                    key: "c".to_string(),
+                    timestamp_ms: 1_000 + i as u64,
+                    amount: 1,
+                },
+            });
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ControlStateIncrement {
+                    key: "c".to_string(),
+                    timestamp_ms: 900_000 + i as u64,
+                    amount: 1,
+                },
+            });
+        }
+        let counts = probe.stop();
+        // Both arms must still ANSWER -- otherwise a "cheap" arm is only a broken one.
+        let check = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ControlStateCount {
+                key: "c".to_string(),
+                start_ms: 0,
+                end_ms: 1_000_000,
+            },
+        });
+        let value = match check.response {
+            CommandResponse::Integer { value } => value,
+            other => panic!("expected an integer count, got {other:?}"),
+        };
+        (counts.allocs as f64 / REPS as f64, counts.alloc_bytes / REPS as u64, value)
+    };
+
+    let sizes = [200usize, 800, 3200];
+    let mut default_bytes = Vec::new();
+    let mut coalesced_bytes = Vec::new();
+    println!("  points   default allocs/bytes     coalesced allocs/bytes   bytes saved");
+    for points in sizes {
+        let (da, db, dv) = arm(points, false);
+        let (ca, cb, cv) = arm(points, true);
+        let expected = points as i64 + REPS as i64;
+        assert_eq!(dv, expected, "default arm must answer correctly");
+        assert_eq!(cv, expected, "coalesced arm must answer correctly");
+        println!(
+            "  {points:6}   {da:6.1}/{db:<14}   {ca:6.1}/{cb:<14}   {:8.2}x",
+            if cb > 0 { db as f64 / cb as f64 } else { 0.0 }
+        );
+        default_bytes.push(db);
+        coalesced_bytes.push(cb);
+    }
+
+    // The cure: cost per increment does not depend on how long the series already is.
+    assert_eq!(
+        coalesced_bytes[0], coalesced_bytes[2],
+        "with control_coalesce_persist the per-increment bytes must not depend on series length \
+         (got {} at {} points vs {} at {} points)",
+        coalesced_bytes[0], sizes[0], coalesced_bytes[2], sizes[2]
+    );
+    // The defect: without it, a 16x longer series makes one increment cost multiples more.
+    assert!(
+        default_bytes[2] > default_bytes[0] * 5,
+        "the default path rewrites the whole series, so a {}x longer series must cost far more \
+         per increment (got {} vs {} bytes)",
+        sizes[2] / sizes[0],
+        default_bytes[2],
+        default_bytes[0]
+    );
+    // And the gap must widen -- that is what makes it O(series) rather than a fixed surcharge.
+    assert!(
+        default_bytes[2] / coalesced_bytes[2] > default_bytes[0] / coalesced_bytes[0],
+        "the saving must GROW with series length"
+    );
+}
