@@ -28,7 +28,8 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 PORTAL = os.path.join(TOOLS, "portal")
 HARNESS = os.path.join(PORTAL, "tabs_harness.js")
 
-TABBED = ["setup_portal.html", "explore_portal.html", "api_key_portal.html"]
+TABBED = ["setup_portal.html", "explore_portal.html", "api_key_portal.html",
+          "catalog_portal.html"]
 
 # Every heading the setup page carried before it was grouped into panes.
 SETUP_HEADINGS = [
@@ -182,6 +183,44 @@ class TheHandMaintainedPagesGetTheHelperTest(unittest.TestCase):
         self.assertIn("Connection", above,
                       "the connection panel moved behind a tab, so the other tabs look broken "
                       "until you find it")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is not installed; the page JS cannot be run")
+class TheCatalogueSplitsIntoTabsTest(unittest.TestCase):
+    """Skills and Resources were two full-width lists stacked one above the other.
+
+    One filter covers both while only one is visible, so the case that matters is a query matching
+    the tab you are NOT looking at: an empty list reads as "nothing found" while the match sits one
+    tab away. The counts are matches under the current query, and the page says where they are.
+    """
+
+    def _run(self):
+        return subprocess.run(
+            ["node", os.path.join(PORTAL, "catalog_tabs_harness.js"),
+             os.path.join(PORTAL, "catalog_portal.html")],
+            capture_output=True, text=True, timeout=180)
+
+    def test_the_tabs_work(self) -> None:
+        proc = self._run()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_clicking_actually_switches(self) -> None:
+        """Without this the counts and the notice pass while the tabs are wired to nothing."""
+        out = self._run().stdout
+        self.assertIn("ok   clicking a tab switches the visible list", out, out)
+
+    def test_the_filter_covers_both_lists(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   the filter searched both lists", out, out)
+
+    def test_a_match_in_the_other_list_is_pointed_at(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   it says the match is in the other list", out, out)
+
+    def test_it_stays_quiet_when_the_open_list_has_matches(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   the shared term matches both lists", out, out)
+        self.assertIn("ok   a match in the open list is not announced as elsewhere", out, out)
 
 
 if __name__ == "__main__":
