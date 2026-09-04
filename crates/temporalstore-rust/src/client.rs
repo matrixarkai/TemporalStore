@@ -922,6 +922,30 @@ impl TemporalStoreClient {
         })
     }
 
+    /// The cached table, taking the names by value.
+    ///
+    /// A hit moves them into the table it returns; a miss hands them back so the caller can open
+    /// the table without having cloned them for a fallback that is almost never taken. The
+    /// caller used to clone both on every request to keep them for that case.
+    pub(crate) fn cached_table_or_names(
+        &self,
+        namespace: String,
+        table_name: String,
+    ) -> Result<TemporalStoreTable, (String, String)> {
+        let combined_name = table_combine_name(&namespace, &table_name);
+        let Some(options) = self.with_tables(|tables| tables.get(&combined_name).cloned()) else {
+            return Err((namespace, table_name));
+        };
+        Ok(TemporalStoreTable {
+            client: self.clone(),
+            namespace,
+            table_name,
+            shard_id: self.inner.options.default_shard_id,
+            options,
+            combined_name,
+        })
+    }
+
     pub fn cached_table(
         &self,
         namespace: impl Into<String>,
@@ -1833,7 +1857,13 @@ impl TemporalStorePipeline {
 }
 
 fn table_combine_name(namespace: &str, table_name: &str) -> String {
-    format!("{namespace}/{table_name}")
+    // Built by hand rather than with `format!`, which allocates twice. This runs on every
+    // namespaced request.
+    let mut combined = String::with_capacity(namespace.len() + 1 + table_name.len());
+    combined.push_str(namespace);
+    combined.push('/');
+    combined.push_str(table_name);
+    combined
 }
 
 fn client_partition_id_for_offset(options: &TableOptions, offset: u64) -> ShardId {

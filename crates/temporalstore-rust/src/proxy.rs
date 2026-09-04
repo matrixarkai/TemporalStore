@@ -1215,10 +1215,10 @@ impl ProxyService {
         table_name: String,
     ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
         self.with_client(|client| {
-            client
-                .cached_table(namespace.clone(), table_name.clone())
-                .map(Ok)
-                .unwrap_or_else(|| client.open_table_from_meta(namespace, table_name))
+            match client.cached_table_or_names(namespace, table_name) {
+                Ok(table) => Ok(table),
+                Err((namespace, table_name)) => client.open_table_from_meta(namespace, table_name),
+            }
         })
     }
 
@@ -3368,6 +3368,135 @@ mod tests {
         println!(
             "BENCH shard_id_for_key threads={threads} ops={ops} ns_per_op={}",
             elapsed.as_nanos() / ops
+        );
+    }
+
+    /// A budget on what serving one namespaced request allocates.
+    ///
+    /// Only compiled with `alloc-probe`, because without the counting allocator every count reads
+    /// zero and an upper bound like this would pass while measuring nothing. The canary asserts
+    /// the allocator is really there before the budget is trusted.
+    #[cfg(feature = "alloc-probe")]
+    #[test]
+    fn serving_a_table_request_stays_within_its_allocation_budget() {
+        let canary = crate::alloc_probe::Probe::start();
+        let sink: Vec<u8> = Vec::with_capacity(8192);
+        assert!(
+            canary.stop().allocs > 0,
+            "counting allocator not installed despite the feature being on"
+        );
+        drop(sink);
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let _seeded = proxy
+            .client()
+            .open_table("ns", "tbl", crate::client::TableOptions::default());
+        // Warm the path: the first call fills caches, which is not per-request cost.
+        let _ = proxy.table_for_request("ns".to_string(), "tbl".to_string());
+
+        const ITERS: u64 = 200;
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let table = proxy.table_for_request("ns".to_string(), "tbl".to_string());
+            std::hint::black_box(&table);
+        }
+        let counts = probe.stop();
+        let per_call = counts.allocs / ITERS;
+
+        // The two the caller makes for the names, and one for the cache key. It was five: the
+        // names were cloned so a miss could still use them, and the key was built with `format!`,
+        // which allocates twice.
+        assert!(
+            per_call <= 3,
+            "serving a cached table request allocated {per_call} times, budget 3"
+        );
+        // Zero would mean the measurement stopped working, not that the path got free.
+        assert!(
+            per_call > 0,
+            "measured zero allocations, so this budget is not measuring anything"
+        );
+    }
+
+    /// What one proxy request allocates, by path.
+    ///
+    /// Latency work on these paths took the locks off them; this asks the other question, which
+    /// no benchmark here answered: how much a request allocates and where. Allocation is both
+    /// memory and time -- it is the remaining cost on the table path now the locks are gone.
+    ///
+    ///   cargo test --features alloc-probe --lib what_a_proxy_request_allocates -- --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore]
+    fn what_a_proxy_request_allocates() {
+        // Without the feature the allocator is not installed and every count reads zero, which
+        // would pass any budget. Fail loudly instead.
+        let canary = crate::alloc_probe::Probe::start();
+        let sink: Vec<u8> = Vec::with_capacity(8192);
+        assert!(
+            canary.stop().allocs > 0,
+            "counting allocator not installed -- rerun with `--features alloc-probe`"
+        );
+        drop(sink);
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let _seeded = proxy
+            .client()
+            .open_table("ns", "tbl", crate::client::TableOptions::default());
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1".to_string());
+        let scope = context_scope("acct", "t");
+
+        const ITERS: usize = 200;
+        let mut rows: Vec<(&str, u64, u64)> = Vec::new();
+
+        // Warm every path first: the first call through each fills caches, and counting that
+        // would report setup as if it were per-request cost.
+        let _ = proxy.admit(Some("ns"), &[Command::StringGet { key: "k".to_string() }]);
+        let _ = proxy.table_for_request("ns".to_string(), "tbl".to_string());
+        let _ = proxy.admit_context(&scope, false);
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let guard = proxy.admit(Some("ns"), &[Command::StringGet { key: "k".to_string() }]);
+            std::hint::black_box(&guard);
+        }
+        let counts = probe.stop();
+        rows.push(("admit, one command", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let table = proxy.table_for_request("ns".to_string(), "tbl".to_string());
+            std::hint::black_box(&table);
+        }
+        let counts = probe.stop();
+        rows.push(("table_for_request", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let guard = proxy.admit_context(&scope, false);
+            std::hint::black_box(&guard);
+        }
+        let counts = probe.stop();
+        rows.push(("admit_context", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let addr = proxy.client().shard_primary_addr(1, false);
+            std::hint::black_box(&addr);
+        }
+        let counts = probe.stop();
+        rows.push(("cached route lookup", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        println!();
+        println!("  path                    allocs/call   bytes/call");
+        for (name, allocs, bytes) in &rows {
+            println!("  {name:<22}  {allocs:>10}   {bytes:>10}");
+        }
+        println!();
+
+        assert!(
+            rows.iter().any(|(_, allocs, _)| *allocs > 0),
+            "every path reported zero allocations, which means this measured nothing"
         );
     }
 
