@@ -477,6 +477,36 @@
     return (s || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
   }
 
+  /* One copier for the three things worth copying, reporting what actually happened. The inline
+     version this replaces said "Copied" whether or not a clipboard existed, and never looked at
+     the promise writeText returns -- so a rejected write (an insecure origin, an unfocused
+     document, a denied permission) also read as "Copied". That is a small annoyance for a curl
+     command and the entire loss for a key shown once.
+
+     It says so on the button rather than in the message area, because that area carries the
+     reason a key was not created and overwriting it would hide one failure with another. */
+  function copyText(text, buttonId, done) {
+    var button = $(buttonId);
+    if (!button) { return; }
+    var restore = button.textContent;
+    function settled(ok) {
+      button.textContent = ok ? done : "Copy failed";
+      window.setTimeout(function () { button.textContent = restore; }, 1400);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { settled(true); },
+                                                 function () { settled(false); });
+        return;
+      }
+    } catch (e) { /* falls through to the failure path below */ }
+    /* No clipboard API at all -- an http:// origin, which a self-hosted portal often is. The text
+       is on the page either way, so saying the copy failed beats a button that does nothing. */
+    settled(false);
+  }
+  /* The scope catalogue runs in a later script block with its own scope. */
+  window.__matrixarkCopy = copyText;
+
   // ---- create ----------------------------------------------------------------------------------
   function createKey() {
     hideMsg("createMsg");
@@ -503,9 +533,22 @@
       .then(function (data) {
         var r = unwrap(data);
         out.className = "keyout show";
+        /* Offered only when there is a key to copy. The server can answer without one, and this
+           page renders "(not returned)" for that -- a button there would put that string on the
+           clipboard and look like it had worked. */
+        var secret = r.api_key || "";
         out.innerHTML = "<div>api_key_id: <strong>" + escapeHtml(r.api_key_id || "") + "</strong></div>" +
-          "<div style='margin-top:6px'>api_key: " + escapeHtml(r.api_key || "(not returned)") + "</div>" +
+          "<div style='margin-top:6px'>api_key: " + escapeHtml(secret || "(not returned)") +
+          (secret ? " <button type='button' class='mini' id='copyNewKey'>Copy key</button>" : "") +
+          "</div>" +
           "<div class='warn-line'>Copy this key now — it is shown only once. MatrixArk stores only its hash.</div>";
+        if (secret) {
+          /* The secret alone: sweeping up the id or the warning gives a clipboard that fails when
+             pasted into a config file, later and somewhere else. */
+          $("copyNewKey").addEventListener("click", function () {
+            copyText(secret, "copyNewKey", "Copied");
+          });
+        }
         showMsg("createMsg", "ok", "Created " + (r.api_key_id || "key") + ".");
         listKeys();
       })
@@ -582,9 +625,18 @@
         var r = unwrap(data);
         var out = $("createKeyOut");
         out.className = "keyout show";
+        /* Rotation shows a secret on the same terms as creation, so it gets the same button. */
+        var rotated = r.api_key || "";
         out.innerHTML = "<div>Rotated " + escapeHtml(id) + " → <strong>" + escapeHtml(r.api_key_id || "") + "</strong></div>" +
-          "<div style='margin-top:6px'>new api_key: " + escapeHtml(r.api_key || "(not returned)") + "</div>" +
+          "<div style='margin-top:6px'>new api_key: " + escapeHtml(rotated || "(not returned)") +
+          (rotated ? " <button type='button' class='mini' id='copyRotatedKey'>Copy key</button>" : "") +
+          "</div>" +
           "<div class='warn-line'>Copy the new key now — shown only once.</div>";
+        if (rotated) {
+          $("copyRotatedKey").addEventListener("click", function () {
+            copyText(rotated, "copyRotatedKey", "Copied");
+          });
+        }
         showMsg("listMsg", "ok", "Rotated " + id + ".");
         listKeys();
       })
@@ -808,9 +860,7 @@
         "  -H \"Authorization: Bearer $MATRIXARK_ADMIN_KEY\" \\\n" +
         "  -H 'Content-Type: application/json' \\\n  -d '" +
         JSON.stringify(payload) + "'\n";
-      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-      copy.textContent = "Copied";
-      setTimeout(function () { copy.textContent = "Copy as curl"; }, 1400);
+      window.__matrixarkCopy(text, "copyCurl", "Copied");
     });
   }
 
