@@ -177,6 +177,36 @@ class DaemonPingTimeoutTest(unittest.TestCase):
         self.assertTrue(answer.get("ok"))
         self.assertGreaterEqual(elapsed_s, 3.0)
 
+    def test_health_survives_an_engine_restart(self) -> None:
+        """A daemon whose engine is momentarily gone can still serve the next request.
+
+        `_ensure_proxy` starts one on demand, so answering "dead" here is what makes every
+        caller start its own proxy -- and a second daemon unlinks this one's socket on bind,
+        leaving the losers reloading the store per call.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            daemon = proxy_daemon.RustProxyDaemon(
+                proxy_path=Path("/bin/cat"),  # executable; never driven in this test
+                socket_path=Path(os.path.join(tmp, "health.sock")),
+                log_path=Path(os.path.join(tmp, "daemon.log")),
+            )
+            daemon._proc = None
+            self.assertTrue(daemon._health_ok(), "no engine yet is still a serving socket")
+
+            # A held lock stands in for a request in flight. Health must not queue behind
+            # it: a cold load takes tens of seconds, and a ping that waits that long is
+            # indistinguishable from a dead daemon.
+            daemon._lock.acquire()
+            try:
+                started = time.monotonic()
+                self.assertTrue(daemon._health_ok())
+                self.assertLess(time.monotonic() - started, 1.0)
+            finally:
+                daemon._lock.release()
+
+            daemon.proxy_path = Path(os.path.join(tmp, "not-a-binary"))
+            self.assertFalse(daemon._health_ok(), "an engine that cannot start is not healthy")
+
     def test_ping_timeout_is_configurable_and_bounded(self) -> None:
         previous = os.environ.get("MATRIXARK_RUST_PROXY_PING_TIMEOUT_MS")
         self.addCleanup(

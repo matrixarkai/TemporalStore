@@ -113,6 +113,21 @@ class RustProxyDaemon:
                 proc.kill()
         self._write_log({"event": "proxy_stopped", "returncode": proc.returncode})
 
+    def _health_ok(self) -> bool:
+        """Whether this socket can serve the next request.
+
+        Deliberately lock-free. Taking the daemon lock here would queue the health check
+        behind an in-flight request, and a cold load takes tens of seconds -- long enough
+        that every ping times out and reads as a dead daemon, which is the very thing this
+        answer exists to prevent. A live engine is healthy; no engine is still healthy,
+        because `_ensure_proxy` starts one on the next request. The condition worth
+        reporting is an engine that cannot be started at all.
+        """
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            return True
+        return os.access(str(self.proxy_path), os.X_OK)
+
     def _ensure_proxy(self) -> None:
         proc = self._proc
         if proc is not None and proc.poll() is None:
@@ -236,13 +251,19 @@ class RustProxyDaemon:
                 self._send(file, {"ok": False, "error": f"invalid json: {exc}"})
                 return
             if request.get("op") == "__daemon_health":
-                proc = self._proc
                 self._send(
                     file,
                     {
-                        "ok": bool(proc is not None and proc.poll() is None),
+                        # Health is about whether this socket will serve the next request,
+                        # not about whether an engine happens to be running right now. The
+                        # engine is restarted on demand by `_ensure_proxy`, and callers read
+                        # an unhealthy answer as "no daemon" and start their OWN -- which
+                        # unlinks this socket on bind and leaves them reloading the store per
+                        # invocation. Reporting "dead" while the engine restarts is what
+                        # turns a one-second gap into a spawn storm.
+                        "ok": self._health_ok(),
                         "mode": "rust_proxy_daemon",
-                        "proxy_pid": None if proc is None else proc.pid,
+                        "proxy_pid": None if self._proc is None else self._proc.pid,
                         "socket": str(self.socket_path),
                     },
                 )
