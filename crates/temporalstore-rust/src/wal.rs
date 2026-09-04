@@ -5312,6 +5312,79 @@ mod tests {
     /// Measured as the DELTA between records rather than the file size: the log preallocates in
     /// large steps, so file size answers a different question.
     #[test]
+    /// What a batch costs on disk each way, as the batch grows.
+    ///
+    /// The comparison tree pays its record envelope once per COMMIT: its logger accumulates items
+    /// and serialises all of them into a single stream append, so at N items per commit the
+    /// envelope is amortised N ways. Written as N records ours is paid N times, and the three
+    /// batch fields are added to every record on top.
+    ///
+    /// This measures both, so the amortisation is a number rather than an argument.
+    #[test]
+    #[ignore]
+    fn what_a_batch_costs_each_way() {
+        for items in [1usize, 8, 64] {
+            let value_len = 64usize;
+
+            let atomic_bytes = {
+                let dir = tempfile::tempdir().unwrap();
+                let store = LocalWriteAheadLogStore::new(dir.path());
+                let path = write_ahead_log_path(dir.path(), 1);
+                let commands = (0..items)
+                    .map(|index| Command::StringSet {
+                        key: format!("batch-key-{index:09}"),
+                        value: vec![118u8; value_len],
+                    })
+                    .collect::<Vec<_>>();
+                let (_, before) = last_wal_sequence_in(&path).unwrap_or((0, 0));
+                store.append_batch_atomic(1, commands, false).unwrap();
+                let (_, after) = last_wal_sequence_in(&path).unwrap();
+                after - before
+            };
+
+            let one_record_bytes = {
+                let dir = tempfile::tempdir().unwrap();
+                let store = LocalWriteAheadLogStore::new(dir.path());
+                let path = write_ahead_log_path(dir.path(), 1);
+                let outcomes = (0..items)
+                    .map(|index| WalOutcomeItem {
+                        kind: "string".to_string(),
+                        object_key: format!("batch-key-{index:09}"),
+                        component: None,
+                        object_id: index as u64,
+                        routing_bucket: index as u32,
+                        address: None,
+                        value: Some(vec![118u8; value_len]),
+                        ttl: None,
+                        deleted: false,
+                        meta: false,
+                    })
+                    .collect::<Vec<_>>();
+                let (_, before) = last_wal_sequence_in(&path).unwrap_or((0, 0));
+                store
+                    .append_batch_as_one_record(1, outcomes, Vec::new(), false)
+                    .unwrap();
+                let (_, after) = last_wal_sequence_in(&path).unwrap();
+                after - before
+            };
+
+            let payload = (items * value_len) as f64;
+            println!(
+                "  BATCH {items:>3} items | N records {atomic_bytes:>7} B ({:>5.2}x) | one record {one_record_bytes:>7} B ({:>5.2}x) | saved {:>5.1}%",
+                atomic_bytes as f64 / payload,
+                one_record_bytes as f64 / payload,
+                100.0 * (atomic_bytes as f64 - one_record_bytes as f64) / atomic_bytes as f64,
+            );
+
+            // Both figures read as a saving if either side measured nothing.
+            assert!(atomic_bytes > 0, "the N-record form wrote nothing at {items}");
+            assert!(
+                one_record_bytes > 0,
+                "the one-record form wrote nothing at {items}"
+            );
+        }
+    }
+
     fn what_a_record_actually_costs_on_disk() {
         for value_len in [64usize, 1024, 4096] {
             let dir = tempfile::tempdir().unwrap();
