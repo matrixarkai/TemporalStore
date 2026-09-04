@@ -667,7 +667,7 @@
         if (!res.ok) {
           say($("listMsg"), res.status === 403
             ? "This key cannot change skills. It needs skill:manage."
-            : (res.body.detail || res.body.error || "Could not update the skill."), "err");
+            : window.__matrixarkWhy(res.body, "Could not update the skill."), "err");
           return;
         }
         /* load() clears the message area, so refresh first and confirm after -- otherwise the
@@ -867,6 +867,22 @@
    a copier defined after that line would not exist on those pages. */
 (function () {
   "use strict";
+  /* Why a request was refused, in the words the edge used. A scope refusal answers
+     {"error": "insufficient_scope", "required": ["admin:api_key"]}, and showing the code alone
+     leaves the operator guessing at the one thing the answer already contained -- and the scope
+     name is exactly the string to tick when issuing the key.
+
+     `detail` still wins where there is one: it names the setting and the reason. The scope is
+     appended to that rather than replacing it. */
+  window.__matrixarkWhy = function (body, fallback) {
+    body = body || {};
+    var text = body.detail || body.error || fallback;
+    if (body.required && body.required.length) {
+      text += " — this needs " + [].concat(body.required).join(" or ");
+    }
+    return text;
+  };
+
   window.__matrixarkCopyText = function (text) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
