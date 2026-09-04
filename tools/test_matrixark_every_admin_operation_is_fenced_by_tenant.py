@@ -39,6 +39,15 @@ ACCESS_MODULES = ("matrixark_access_apikey", "matrixark_access_accounts", "matri
 # Floors, so a pattern that stopped matching cannot leave these checks quantified over nothing.
 MIN_ADMIN_TOOLS = 13
 MIN_TOOL_ROUTES = 3
+# Admin routes that read a request body today. A floor, so an expression that stopped matching
+# cannot leave the body check quantified over nothing.
+MIN_BODY_ROUTES = 5
+
+# These read a body and change nothing, so they keep the read gate deliberately:
+# /deployment/plan composes a plan without touching the process, and /config/test probes the
+# endpoints already configured. Requiring a scope that may write in order to LOOK would be its own
+# mistake.
+READS_A_BODY_BUT_CHANGES_NOTHING = {"/v1/admin/deployment/plan", "/v1/admin/config/test"}
 
 # `list_accounts` is fenced by construction instead of by the guard: outside dev mode it discards
 # the requested account and substitutes the caller's own, so it cannot reach another one. Named
@@ -84,8 +93,12 @@ def unfenced_methods(core_source: str, sources: dict) -> list:
 def admin_route_blocks(gateway_source: str) -> list:
     """(route, block) for each `/v1/admin/...` branch, up to the next one."""
     lines = gateway_source.split("\n")
+    # `if method in ("GET", "POST")` is a branch too. Matching only `if method ==` meant
+    # /v1/admin/policy never started a block, so its body was counted against the route above it
+    # and every per-route check below quietly answered about the wrong one.
     starts = [i for i, line in enumerate(lines)
-              if "if method ==" in line and re.search(r'path == "/v1/admin/[^"]*"', line)]
+              if ("if method ==" in line or "if method in " in line)
+              and re.search(r'path == "/v1/admin/[^"]*"', line)]
     blocks = []
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(lines)
@@ -137,12 +150,16 @@ class EveryAdminOperationChecksTheCallerTest(unittest.TestCase):
     def test_a_missing_guard_would_be_caught(self) -> None:
         """The positive control. Take the guard out of one operation and require a complaint."""
         doctored = dict(self.sources)
-        # The call has to go entirely: leaving the name behind in a comment satisfies the check
-        # and makes the control pass while proving nothing. (It did, the first time.)
-        call = ("self." + GUARD
-                + '(identity, record["account_id"], record["tenant_id"])')
-        doctored["matrixark_access_apikey"] = doctored["matrixark_access_apikey"].replace(
-            call, "pass", 1)
+        # By pattern rather than by literal text: the call gained an `action=` argument and a line
+        # break, the literal stopped matching, and this control failed rather than passing over a
+        # mutation that never happened. The call still has to go entirely -- leaving the name in a
+        # comment satisfies the check and proves nothing.
+        module = doctored["matrixark_access_apikey"]
+        start = module.index("def revoke_api_key(")
+        end = module.index("def rotate_api_key(", start)
+        revoke = module[start:end]
+        without = re.sub(r"self\." + GUARD + r"\([^)]*\)", "pass", revoke, count=1)
+        doctored["matrixark_access_apikey"] = module[:start] + without + module[end:]
         self.assertNotEqual(self.sources["matrixark_access_apikey"],
                             doctored["matrixark_access_apikey"],
                             "the doctoring matched nothing, so this proves nothing")
@@ -178,6 +195,37 @@ class EveryAdminRouteNarrowsWhatItAsksForTest(unittest.TestCase):
         self.assertNotEqual(self.gateway, doctored, "the doctoring matched nothing")
         self.assertIn(route, unscoped_routes(doctored),
                       "a route that asks the backend for everything went unnoticed")
+
+    def test_every_admin_route_that_reads_a_body_needs_a_write_scope(self) -> None:
+        """A request body separates a write from a read here: routes that change something read
+        one, routes that answer questions do not.
+
+        This is the check that was missing when /v1/admin/policy kept the read gate. The sweep that
+        moved the other writes looked for `if method == "POST"`, and that route serves both methods
+        from one branch, so it was never looked at."""
+        unguarded = []
+        for route, block in admin_route_blocks(self.gateway):
+            if "_read_body_capped" not in block:
+                continue
+            if route in READS_A_BODY_BUT_CHANGES_NOTHING:
+                continue
+            if "_admin_write_denied" not in block:
+                unguarded.append(route)
+        self.assertEqual([], unguarded,
+                         "these read a request body and are gated by a scope that may only read")
+
+    def test_the_body_reading_routes_are_actually_found(self) -> None:
+        """Otherwise the check above is quantified over nothing."""
+        found = [route for route, block in admin_route_blocks(self.gateway)
+                 if "_read_body_capped" in block]
+        self.assertGreaterEqual(len(found), MIN_BODY_ROUTES,
+                                "found %d admin routes reading a body, expected at least %d: %r"
+                                % (len(found), MIN_BODY_ROUTES, found))
+
+    def test_the_route_that_serves_two_methods_is_seen(self) -> None:
+        """The splitter used to miss it, which is how the write behind it went unexamined."""
+        routes = [route for route, _ in admin_route_blocks(self.gateway)]
+        self.assertIn("/v1/admin/policy", routes, routes)
 
     def test_the_usage_snapshot_is_narrowed_before_it_is_returned(self) -> None:
         """It is deployment-wide, and the route returns it directly rather than through a tool, so
