@@ -259,14 +259,22 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
                     "metadata": {"node_path": ["tenant:summary", "user:worker", "session:worker"]},
                 },
             )
-        deadline = time.time() + 3.0
+        # The loop leaves as soon as the worker has produced everything, so a longer ceiling
+        # costs nothing when it is quick and stops the test failing on a busy machine. Three
+        # seconds was not enough: on a loaded box this failed about one standalone run in
+        # three, always on node_l1 -- the L1 refresh is the last step, so it is the one a short
+        # deadline cuts off.
+        settle_seconds = 30.0
+        deadline = time.time() + settle_seconds
         records = []
+        settled = False
         while time.time() < deadline:
             records = adapter.read_all()
             summary_types = {r.get("summary_type") for r in records if r.get("record_type") == "context_summary"}
             embedding_types = {(r.get("embedding_meta") or {}).get("embedding_type")
                                for r in records if r.get("vector")}
             if {"node_l0", "node_l1"}.issubset(summary_types) and {"node_l0", "node_l1"}.issubset(embedding_types):
+                settled = True
                 break
             time.sleep(0.05)
         summary_types = {r.get("summary_type") for r in records if r.get("record_type") == "context_summary"}
@@ -274,6 +282,15 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
         # survives under embedding_meta.
         embedding_types = {(r.get("embedding_meta") or {}).get("embedding_type")
                            for r in records if r.get("vector")}
+        # Say that the worker ran out of time, rather than asserting against a half-finished
+        # store and reporting a missing summary type as though the worker had produced a wrong
+        # answer. The checks below still name exactly what has to be there.
+        self.assertTrue(
+            settled,
+            "the summary worker did not settle within %.0fs: summary_types=%r embedding_types=%r"
+            % (settle_seconds, sorted(str(value) for value in summary_types),
+               sorted(str(value) for value in embedding_types)),
+        )
         self.assertIn("node_l0", summary_types)
         self.assertIn("node_l1", summary_types)
         self.assertIn("node_l0", embedding_types)
