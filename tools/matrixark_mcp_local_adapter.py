@@ -1247,6 +1247,21 @@ _EMBEDDING_META_SKIP = (
     "ref_type",
     "ref_hash",
     "vector",
+    # The retired row's OWN identity, which describes a row that no longer exists once the
+    # embedding is folded onto its owner. 36.7% of embedding_meta's bytes over 100,105 records,
+    # and the only unique field in a dict whose other members hold one distinct value each -- so
+    # it is also what keeps the dict from being shared: 99,371 objects for 99,371 values.
+    #
+    # Checked for readers the way the rest of this tuple was: no reader in any Python module
+    # outside this one, and inside it only the TOP-LEVEL row_key is used; no occurrence anywhere
+    # in the Rust crates; and a runtime probe over read_all + retrieve never saw it asked for,
+    # while `model` was asked for 99,324 times.
+    #
+    # It is also wrong to carry. `record_with_embedding_defaults` fills every meta key onto an
+    # owner whose value is empty, with no exclusion list, so an owner without a top-level row_key
+    # -- 99,280 of 100,122 records -- inherits the RETIRED row's identity, and
+    # `latest_value_record_key` prefers a stamped key over deriving one.
+    "row_key",
     "storage_route",
     "storage_options",
     # The placement/storage half of the same routing blob, inherited the same way and read by
