@@ -644,5 +644,28 @@ class AdminWritesNeedAScopeThatMayWriteTest(_PortalTest):
         self.assertNotEqual(403, status)
 
 
+class TheWriteSaysHowManyWorkersTest(_PortalTest):
+    """A live setting is applied to the environment of the worker that served the write, and read
+    per call from the environment of whichever worker serves the next request. The answer carries
+    the count so the page can say how far the write reached instead of claiming "live now"."""
+
+    def test_the_response_carries_the_worker_count(self) -> None:
+        status, _, body = drive(
+            self.app, method="POST", path="/v1/admin/config", headers=ADMIN,
+            body={"settings": {"extraction.model": "deepseek-chat"}})
+        self.assertEqual(200, status)
+        self.assertIn("workers", json.loads(body))
+
+    def test_it_is_a_number_and_never_zero(self) -> None:
+        """The page branches on "more than one"; a zero would read as a single worker on a
+        deployment running eight."""
+        _s, _h, body = drive(
+            self.app, method="POST", path="/v1/admin/config", headers=ADMIN,
+            body={"settings": {"extraction.model": "deepseek-chat"}})
+        workers = json.loads(body)["workers"]
+        self.assertIsInstance(workers, int)
+        self.assertGreaterEqual(workers, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
