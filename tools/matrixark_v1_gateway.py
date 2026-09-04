@@ -769,6 +769,24 @@ def _meter_and_check_quota(
 _USAGE_READ_SCOPES = {"admin:api_key", "admin:audit"}
 
 
+def _usage_rows_visible_to(record: Optional[Json], rows: list, tenant: Optional[str],
+                           account: Optional[str]) -> list:
+    """The usage rows this caller may see.
+
+    The meter's snapshot is deployment-wide -- every metered key's hash, tenant, account, request
+    counts and byte volume -- and the route returned it whole, so one tenant's admin key read how
+    much traffic every other tenant was doing.
+
+    A scoped enforced key sees its own account and tenant. A dev key (no record) or a legacy
+    unrestricted key (``scopes is None``) is unchanged, which is the same posture
+    ``_usage_read_denied`` takes for those keys.
+    """
+    if record is None or record.get("scopes") is None:
+        return rows
+    return [row for row in rows
+            if row.get("tenant_id") == tenant and row.get("account_id") == account]
+
+
 def _usage_read_denied(record: Optional[Json]) -> Optional[Json]:
     """403 payload when the key may not read usage, else ``None``.
 
@@ -3666,7 +3684,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             denied = _usage_read_denied(key_record)
             if denied is not None:
                 return await _json(send, 403, denied)
-            usage = meter.snapshot()
+            usage = _usage_rows_visible_to(key_record, meter.snapshot(), tenant, account)
             return await _json(send, 200, {"status": "ok", "usage": usage, "count": len(usage)})
 
         # ---- effective model configuration (auth + admin scope) ------------------------------
