@@ -2462,20 +2462,29 @@ CATALOG_BODY = """
     <div id="listMsg" role="status" aria-live="polite"></div>
   </section>
 
-  <section>
-    <h2>Skills</h2>
+  <div class="tabs" role="tablist" aria-label="Catalogue">
+    <button type="button" role="tab" id="tab-skills" aria-controls="pane-skills"
+            data-pane="skills" aria-selected="true">Skills<span class="aux"
+            id="skillsCount"></span></button>
+    <button type="button" role="tab" id="tab-resources" aria-controls="pane-resources"
+            data-pane="resources" aria-selected="false" tabindex="-1">Resources<span class="aux"
+            id="resourcesCount"></span></button>
+  </div>
+  <div id="crossList"></div>
+
+  <section class="pane" role="tabpanel" aria-labelledby="tab-skills" id="pane-skills">
     <div id="skills"><div class="empty">Not loaded.</div></div>
   </section>
 
-  <section>
-    <h2>Resources</h2>
+  <section class="pane" role="tabpanel" aria-labelledby="tab-resources" id="pane-resources"
+           hidden>
     <div id="resources"><div class="empty">Not loaded.</div></div>
   </section>
 
   <section>
     <h2>Stored text <span class="aux" id="contentTitle"></span></h2>
-    <p class="hint" style="margin-top:0">Select a row above to read what was actually stored — the
-      chunks retrieval will draw from, not the source file on disk.</p>
+    <p class="hint" style="margin-top:0">Select a row in either list to read what was
+      actually stored — the chunks retrieval will draw from, not the source file on disk.</p>
     <pre id="content">Nothing selected.</pre>
   </section>
 """
@@ -2485,6 +2494,16 @@ CATALOG_JS = r"""
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
+
+  /* Wired once: these buttons live in the static markup, so unlike the API page they are
+     not replaced on every render and their listeners survive. */
+  if (window.wireTabs) { window.wireTabs(); }
+
+  document.getElementById("crossList").addEventListener("click", function (ev) {
+    var button = ev.target.closest ? ev.target.closest("[data-goto]") : null;
+    if (!button) { return; }
+    if (window.showTab) { window.showTab(button.dataset.goto); }
+  });
 
   function auth() {
     var k = $("key").value.trim();
@@ -2623,6 +2642,27 @@ CATALOG_JS = r"""
       renderSummary(skills, resources);
       $("skills").innerHTML = skillsHtml(skills);
       $("resources").innerHTML = resourcesHtml(resources);
+      /* Counts under the CURRENT query, not the size of each catalogue: they describe what
+         clicking would show. */
+      $("skillsCount").textContent = " " + skills.length;
+      $("resourcesCount").textContent = " " + resources.length;
+      /* One filter covers both lists, and only one is visible. With Skills open, a query matching
+         only Resources would empty the list and read as "nothing found" while the match sat one
+         tab away -- so when the open tab has none and the other has some, say where they are. */
+      var openPane = ($("tab-resources").getAttribute("aria-selected") === "true")
+        ? "resources" : "skills";
+      var here = openPane === "skills" ? skills.length : resources.length;
+      var other = openPane === "skills" ? resources.length : skills.length;
+      var otherName = openPane === "skills" ? "Resources" : "Skills";
+      if (text && !here && other) {
+        $("crossList").innerHTML = '<div class="msg info">' + other + " match" +
+          (other === 1 ? "" : "es") + " in " + otherName +
+          '. <button type="button" class="link" data-goto="' +
+          (openPane === "skills" ? "resources" : "skills") + '">Show ' + otherName +
+          "</button></div>";
+      } else {
+        $("crossList").innerHTML = "";
+      }
     }).catch(function (e) {
       if (e === 401 || e === 403) {
         conn("live", "connected");
