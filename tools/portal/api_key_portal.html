@@ -971,6 +971,32 @@
     return text;
   };
 
+  /* One sentence per gateway status, for every page.
+   *
+   * Three pages had a map of their own and each carried a different subset. Ingestion -- the page
+   * that uploads files -- was the one with no sentence for 413, so an upload refused for size
+   * read as "The gateway answered 413." on precisely the panel where the cause was obvious to
+   * everyone but the reader. The four pages with no map at all said that about every status.
+   *
+   * `overrides` is for what a page genuinely knows better: a file rather than a request, an
+   * import conflict only ingestion can produce. Everything else is answered once, here, so the
+   * next status added does not have to be added in four places to be true in four places.
+   *
+   * This is the FALLBACK. A refusal that carries a body is explained by __matrixarkWhy from what
+   * the gateway said; this is what the reader gets when there is nothing but a number.
+   */
+  window.__matrixarkFailure = function (status, overrides) {
+    if (overrides && overrides[status]) { return overrides[status]; }
+    if (status === 401) { return "This key was not accepted."; }
+    if (status === 403) { return "This key lacks the scope for that call."; }
+    if (status === 413) { return "That request is larger than this deployment accepts."; }
+    if (status === 429) { return "Rate limited — the edge is throttling this key."; }
+    if (status === 502) { return "The gateway could not reach the storage behind it."; }
+    if (status === 503) { return "The gateway is not ready to serve this yet."; }
+    if (status === 504) { return "The backend did not answer in time."; }
+    return "The gateway answered " + status + ".";
+  };
+
   window.__matrixarkCopyText = function (text) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
