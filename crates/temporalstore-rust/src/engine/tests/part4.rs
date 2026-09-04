@@ -15005,3 +15005,85 @@ fn which_removals_cost_their_collection() {
     println!("  Ratio near 1 => the removal is incremental. Ratio rising with the collection");
     println!("  => removing one entry costs the size of what remains.");
 }
+
+/// Does a FEATURE write cost the length of the series it appends to?
+///
+/// Feature writes were made cheap in #716 by fixing the per-SHARD rebuild, measured in
+/// allocations. That is a different axis from the per-OBJECT one: a whole-series write is one
+/// big allocation, so a count cannot see it and only bytes can. This measures bytes against
+/// series length.
+///
+/// Two-sided control: ControlStateIncrement must amplify, SetAdd must not.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_a_feature_write_costs_against_its_series() {
+    const REPS: usize = 20;
+    let cost = |family: &str, fill: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let make = |i: usize| -> Command {
+            match family {
+                "FeatureAppend" => Command::FeatureAppend {
+                    key: "f".to_string(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: 1_000 + i as u64,
+                        value: vec![b'v'; 8],
+                    }],
+                },
+                "ControlStateIncrement" => Command::ControlStateIncrement {
+                    key: "c".to_string(),
+                    timestamp_ms: 1_000 + i as u64,
+                    amount: 1,
+                },
+                "SetAdd" => Command::SetAdd {
+                    key: "s".to_string(),
+                    member: format!("m{i:06}").into_bytes(),
+                },
+                other => panic!("unknown family {other}"),
+            }
+        };
+        for i in 0..fill {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+            assert!(out.status.ok, "{family} fill refused: {:?}", out.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: make(fill + i),
+            });
+            assert!(out.status.ok, "{family} probe refused: {:?}", out.status);
+        }
+        probe.stop().alloc_bytes / REPS as u64
+    };
+
+    println!("  family                  bytes/write @200   @3200      ratio");
+    let mut amplifying = 0.0f64;
+    let mut flat = 0.0f64;
+    for family in ["ControlStateIncrement", "SetAdd", "FeatureAppend"] {
+        let small = cost(family, 200);
+        let large = cost(family, 3200);
+        assert!(small > 0, "{family}: measured zero bytes");
+        let ratio = large as f64 / small as f64;
+        match family {
+            "ControlStateIncrement" => amplifying = ratio,
+            "SetAdd" => flat = ratio,
+            _ => {}
+        }
+        println!("  {family:22}  {small:10}  {large:10}   {ratio:8.2}x");
+    }
+    assert!(
+        amplifying > 3.0,
+        "the amplifying control reported {amplifying:.2}x -- the probe cannot see amplification"
+    );
+    assert!(
+        flat < 1.5,
+        "the flat control reported {flat:.2}x -- the probe invents amplification"
+    );
+}
