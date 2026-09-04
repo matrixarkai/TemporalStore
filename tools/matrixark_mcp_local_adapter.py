@@ -149,7 +149,11 @@ def _snapshot_prefix_fingerprint(record: "Json") -> str:
         ).hexdigest()[:32]
     except (TypeError, ValueError):
         return ""
-LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 1
+# Version 2 stores the base snapshot in the same interned form the durable log uses, so the two
+# files no longer disagree about how the same records are written. The bump is what protects an
+# older reader: it would otherwise serve tokenised records with the interned fields missing, so a
+# version it does not recognise has to send it back to the log, which it already does.
+LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 2
 PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
 
 QUALITY_FIRST_UNDERFILL_DROP_KEYS = {
@@ -4752,6 +4756,12 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if not isinstance(records, list):
             return None
         records = [record for record in records if isinstance(record, dict)]
+        # Undo the interning the writer applied, dropping the sidecars, so what comes back is the
+        # record set the caller stored -- the same inverse the log path applies at its own read.
+        # Called unconditionally rather than behind the intern flag, because the flag can differ
+        # between the process that wrote the file and the one reading it; with nothing interned
+        # this takes the no-op path. It runs before the count check, which counts data records.
+        records = expand_interned_records(records)
         if len(records) != head.get("record_count"):
             return None
         delta_count = head.get("delta_count") or 0
@@ -4937,7 +4947,21 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             "cache_key": self._cache_key_str(),
             "signature": signature,
             "record_count": len(records),
-            "records": records,
+            # Store what the log stores. The log writes each record with its interned metadata
+            # replaced by a bundle token and one sidecar per distinct bundle; the snapshot was
+            # writing the same records fully expanded, so the largest file in the store was the
+            # one copy of the data that had opted out of the compression.
+            #
+            # What it is worth depends on how much of a record is metadata rather than body, so
+            # the range matters more than any single figure. Re-encoding snapshots two real runs
+            # left behind: 13.4 MB -> 4.3 MB (67.8%) on a store of 3,022 small records, and
+            # 207.2 MB -> 186.3 MB (10.1%) on 100,105 records whose text and vectors dominate.
+            # The sidecar count barely moves with the corpus -- 22 for 99,919 tokened records --
+            # so this is the whole per-record cost of these fields, not a ratio that decays.
+            #
+            # `record_count` above counts data records, which is what the load path recovers
+            # after expansion; the encoded list is longer by the sidecars it carries.
+            "records": encode_interned_records(records, set()),
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
