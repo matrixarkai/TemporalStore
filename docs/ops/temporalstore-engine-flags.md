@@ -7,7 +7,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 97 of them, and **none is dead**: all 55 accessor functions that read one have a
+There are 98 of them, and **none is dead**: all 55 accessor functions that read one have a
 non-test caller. So the length of this list is not a cleanup backlog -- every flag changes
 behaviour, and retiring one is a decision about behaviour rather than tidying.
 
@@ -17,7 +17,7 @@ whether a customer can set it at all.
 
 | flags | count |
 |---|---|
-| total | 97 |
+| total | 98 |
 | offered on the portal | 16 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 3 |
@@ -148,7 +148,7 @@ Extra evidence for someone investigating. Off by default.
 |---|---|---|---|
 | `TS_SCALE_STORAGE_ROOT` | 1 | — | — |
 
-## behaviour (14)
+## behaviour (15)
 
 Everything else that changes what the engine does.
 
@@ -160,6 +160,7 @@ Everything else that changes what the engine does.
 | `TS_DATA_RAFT_READ_MODE` | 1 | — | — |
 | `TS_HOT_PAGE_SPILL` | 1 | — | — |
 | `TS_MALLOC_TRIM` | 1 | yes | — |
+| `TS_MANIFEST_SHORT_FIELD_NAMES` | 1 | — | — |
 | `TS_META_FD_PHI_THRESHOLD` | 1 | — | — |
 | `TS_META_MUTATION_LOG` | 1 | — | — |
 | `TS_PROXY_INGESTION_ACCOUNT` | 1 | — | — |
