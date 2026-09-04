@@ -208,6 +208,8 @@
             data-pane="policy" aria-selected="false" tabindex="-1">Policy</button>
     <button type="button" role="tab" id="tab-usage" aria-controls="pane-usage"
             data-pane="usage" aria-selected="false" tabindex="-1">Usage</button>
+    <button type="button" role="tab" id="tab-audit" aria-controls="pane-audit"
+            data-pane="audit" aria-selected="false" tabindex="-1">Audit</button>
   </div>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-keys" id="pane-keys">
@@ -345,11 +347,40 @@
 
   </section>
 
+  <section class="pane" role="tabpanel" aria-labelledby="tab-audit" id="pane-audit" hidden>
+
+  <!-- ============================ Audit ============================ -->
+  <!-- Here rather than on its own page: every record is about one of the keys listed two tabs
+       away, and the question "who tried this" is asked while looking at them. -->
+  <section class="card">
+    <h2>Audit trail</h2>
+    <p class="hint">Calls <code>GET /v1/admin/audit</code> — key management and refusals for your
+      tenant, newest first. Needs a key carrying <code>admin:audit</code>. Loaded when you ask for
+      it and never on a timer: the read walks the record log, and a panel refreshing itself would
+      put that walk on a schedule for as long as this tab stayed open.</p>
+    <div class="actions">
+      <button id="auditBtn" class="secondary">Load audit records</button>
+    </div>
+    <div id="auditRecording" class="msg" role="status" aria-live="polite"></div>
+    <div id="auditMsg" class="msg" role="status" aria-live="polite"></div>
+    <div class="tablewrap">
+      <table id="auditTable" style="display:none">
+        <thead><tr>
+          <th>when</th><th>action</th><th>status</th><th>key</th><th>asked for</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  </section>
+
   <footer>
     MatrixArk API Key Portal · served at <code>GET /v1/admin/portal</code>. Endpoints used:
     <code>/api/admin/create_api_key</code>, <code>/api/admin/list_api_keys</code>,
     <code>/api/admin/rotate_api_key</code>, <code>/api/admin/revoke_api_key</code>,
-    <code>/v1/admin/api_key_usage</code>. Key crypto and the usage meter are unchanged backend primitives.
+    <code>/v1/admin/api_key_usage</code>, <code>/v1/admin/audit</code>. Key crypto and the usage
+    meter are unchanged backend primitives.
   </footer>
 </main>
 
@@ -727,6 +758,62 @@
   }
 
   // ---- usage -----------------------------------------------------------------------------------
+  /* What the deployment is doing with audit records right now.
+   *
+   * An empty table means two entirely different things -- nothing happened, or nothing was kept --
+   * and the default is the second. Without this the panel would reassure somebody who is recording
+   * nothing, which is the failure the endpoint's `recording` field exists to prevent. */
+  function sayRecording(mode) {
+    var el = $("auditRecording");
+    if (mode === "off" || !mode) {
+      el.innerHTML = '<div class="msg warn">Nothing is being recorded. Audit records are ' +
+        'discarded before they reach storage, including every refusal — so an empty list below ' +
+        'is not evidence that nothing happened. Turn it on under <strong>Audit trail</strong> on ' +
+        'the <a href="/v1/admin/setup">Setup</a> page; it needs a restart to take effect ' +
+        'everywhere.</div>';
+      return;
+    }
+    el.innerHTML = '<div class="msg ok">Recording: <span class="mono">' + escapeHtml(mode) +
+      "</span>.</div>";
+  }
+
+  function auditDetail(row) {
+    var d = row.details || {};
+    var asked = [];
+    if (d.requested_tenant_id) { asked.push("tenant " + d.requested_tenant_id); }
+    if (d.requested_account_id) { asked.push("account " + d.requested_account_id); }
+    if (!asked.length && d.count !== undefined) { asked.push(d.count + " records"); }
+    return asked.join(", ");
+  }
+
+  function loadAudit() {
+    hideMsg("auditMsg");
+    apiFetch(gwBase(), "/v1/admin/audit", "GET")
+      .then(function (data) {
+        var rows = (data && data.audit_logs) || [];
+        sayRecording(data && data.recording);
+        var tb = $("auditTable").querySelector("tbody");
+        tb.innerHTML = "";
+        rows.forEach(function (r) {
+          var tr = document.createElement("tr");
+          var denied = r.status === "denied";
+          tr.innerHTML =
+            "<td>" + fmtTime(r.created_at_ms) + "</td>" +
+            "<td class='mono'>" + escapeHtml(r.action || "") + "</td>" +
+            '<td><span class="pill ' + (denied ? "failed" : "completed") + '">' +
+              escapeHtml(r.status || "") + "</span></td>" +
+            "<td class='mono'>" + escapeHtml(r.api_key_id || "") + "</td>" +
+            "<td>" + escapeHtml(auditDetail(r)) + "</td>";
+          tb.appendChild(tr);
+        });
+        $("auditTable").style.display = rows.length ? "" : "none";
+        if (!rows.length && data && data.recording && data.recording !== "off") {
+          showMsg("auditMsg", "ok", "Nothing recorded yet.");
+        }
+      })
+      .catch(function (e) { showMsg("auditMsg", "err", "Audit read failed: " + e.message); });
+  }
+
   function loadUsage() {
     hideMsg("usageMsg");
     apiFetch(gwBase(), "/v1/admin/api_key_usage", "GET")
@@ -774,6 +861,7 @@
   $("listBtn").onclick = listKeys;
   $("inclRevoked").onchange = listKeys;
   $("usageBtn").onclick = loadUsage;
+  $("auditBtn").onclick = loadAudit;
   loadConn();
 })();
 
