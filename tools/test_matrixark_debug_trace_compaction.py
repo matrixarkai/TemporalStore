@@ -55,9 +55,23 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
         }
 
         compact = core.compact_context_pack_for_serving(grouped_pack)
+        again = core.compact_context_pack_for_serving(compact)
 
-        self.assertEqual(compact["groups"], grouped_pack["groups"])
+        # Idempotence is f(f(x)) == f(x), which is what the entrypoint needs: it may compact a
+        # pack an adapter already returned in serving shape, and the second pass must not erase
+        # anything. Asserting f(x) == x instead asked compaction to be the identity on a
+        # hand-built pack, and this one carries a per-item `tokens` that the serving shape does
+        # not have -- nothing builds it, only the pack-level token summary exists -- so the
+        # first pass drops it and the test failed on a projection doing its job.
+        self.assertEqual(again["groups"], compact["groups"])
+        self.assertEqual(again["tokens"], compact["tokens"])
+        # The pack-level summary is carried through, and the evidence survives -- without this
+        # the equality above would hold just as well on a pack compacted down to nothing.
         self.assertEqual(compact["tokens"], grouped_pack["tokens"])
+        self.assertEqual(
+            [item["text"] for group in compact["groups"] for item in group["items"]],
+            ["Alice approved Project Aurora."],
+        )
 
     def test_trace_export_drops_raw_scope_and_replay_payloads(self) -> None:
         trace = {
