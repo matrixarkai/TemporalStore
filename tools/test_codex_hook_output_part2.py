@@ -1129,6 +1129,32 @@ class _CodexHookOutputPart2:
         self.assertIn("Outcome: pushed commit 4eafaf9c to origin/main", assistant_memory)
         self.assertIn("Validation: tests passed", assistant_memory)
 
+    def test_pushed_commit_is_the_new_head_however_the_push_is_described(self) -> None:
+        """A range names both ends, and the commit that landed is the SECOND one.
+
+        The looser patterns take the first hash they meet after the word "push", which in a
+        range is the commit that was already there. Git's own output never says "push", so it
+        reached the range pattern and read correctly while a sentence about the same push
+        reported the old head. Both spellings are asserted here so the order cannot drift back.
+        """
+        old, new = "b223ca8c", "4eafaf9c"
+        for description in (
+            "   %s..%s  HEAD -> main" % (old, new),
+            "To https://github.com/matrixarkai/TemporalStore.git\n   %s..%s  HEAD -> main" % (old, new),
+            "Done. Git push output was %s..%s  HEAD -> main after validation passed." % (old, new),
+            "git push succeeded: %s..%s HEAD -> main" % (old, new),
+            "pushed %s..%s HEAD -> origin/main" % (old, new),
+        ):
+            self.assertEqual(
+                new, hook.pushed_main_commit_from_text(description),
+                "read the wrong end of the range in: %r" % description,
+            )
+        # Without a range there is only one commit to name, and it is still found.
+        self.assertEqual(
+            new, hook.pushed_main_commit_from_text("pushed commit %s to origin/main" % new)
+        )
+        self.assertEqual("", hook.pushed_main_commit_from_text("nothing was pushed here"))
+
     def test_selected_assistant_memory_filters_large_response(self) -> None:
         raw = "\n".join(
             [f"background explanation line {index}" for index in range(40)]
