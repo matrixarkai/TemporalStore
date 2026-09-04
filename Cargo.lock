@@ -702,7 +702,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 [[package]]
 name = "matrixcache"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixCache.git?rev=2a3b14adc424d11d873ae7ade2325eb49718aecf#2a3b14adc424d11d873ae7ade2325eb49718aecf"
+source = "git+https://github.com/matrixarkai/MatrixCache.git?rev=01787324366288996a2a98058a914ba99f0401e2#01787324366288996a2a98058a914ba99f0401e2"
 dependencies = [
  "rocksdb",
  "serde",
