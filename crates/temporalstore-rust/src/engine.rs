@@ -2138,6 +2138,9 @@ fn command_upsert_components(
                 member,
             )),
         )]),
+        Command::SetAdd { key, member } => {
+            Some(vec![("set", key.clone(), Some(hex::encode(member)))])
+        }
         _ => None,
     }
 }
@@ -2173,6 +2176,17 @@ fn collect_upsert_index_items(
                         .get(object_key)
                         .and_then(|members| members.get(&member))
                         .map(|(_, address)| address.clone())
+                }),
+            // `hex::encode(member)` is the component a set add files its page under, so
+            // the member the map is keyed by is recoverable from the component itself.
+            ("set", Some(component)) => hex::decode(component)
+                .ok()
+                .and_then(|member| {
+                    shard
+                        .sets
+                        .get(object_key)
+                        .and_then(|members| members.get(&member))
+                        .cloned()
                 }),
             _ => None,
         };

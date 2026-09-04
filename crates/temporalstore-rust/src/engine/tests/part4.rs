@@ -14494,3 +14494,208 @@ fn a_counter_increment_rewrites_the_whole_series() {
         "the saving must GROW with series length"
     );
 }
+
+/// Which write paths cost the SIZE OF THE COLLECTION they write into?
+///
+/// ControlStateIncrement is the positive control: it is known to rewrite its whole series
+/// (mx#771), so if this probe reports it flat, the probe is broken and no other row means
+/// anything. Bytes, not allocation counts -- a whole-collection serialisation is one big
+/// allocation.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn which_write_paths_cost_their_collection() {
+    const REPS: usize = 20;
+    let make = |family: &str, i: usize| -> Command {
+        match family {
+            "HashSet" => Command::HashSet {
+                key: "k".to_string(),
+                field: format!("f{i:06}"),
+                value: vec![b'v'; 32],
+            },
+            "ZSetAdd" => Command::ZSetAdd {
+                key: "k".to_string(),
+                member: format!("m{i:06}").into_bytes(),
+                score: i as f64,
+            },
+            "ListPush" => Command::ListPush {
+                key: "k".to_string(),
+                member: format!("m{i:06}").into_bytes(),
+                left: false,
+            },
+            "SetAdd" => Command::SetAdd {
+                key: "k".to_string(),
+                member: format!("m{i:06}").into_bytes(),
+            },
+            "ControlStateIncrement" => Command::ControlStateIncrement {
+                key: "k".to_string(),
+                timestamp_ms: 1_000 + i as u64,
+                amount: 1,
+            },
+            other => panic!("unknown family {other}"),
+        }
+    };
+
+    let cost = |family: &str, fill: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..fill {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: make(family, i),
+            });
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: make(family, fill + i),
+            });
+        }
+        probe.stop().alloc_bytes / REPS as u64
+    };
+
+    let families = [
+        "ControlStateIncrement",
+        "HashSet",
+        "ZSetAdd",
+        "ListPush",
+        "SetAdd",
+    ];
+    println!("  family                  bytes/write @200   @3200      ratio");
+    let mut control_ratio = 0.0f64;
+    for family in families {
+        let small = cost(family, 200);
+        let large = cost(family, 3200);
+        // An upper-bound style claim passes hardest at zero, so require real work.
+        assert!(small > 0, "{family}: measured zero bytes, the probe is not reaching the path");
+        let ratio = large as f64 / small as f64;
+        if family == "ControlStateIncrement" {
+            control_ratio = ratio;
+        }
+        println!("  {family:22}  {small:10}  {large:10}   {ratio:8.2}x");
+    }
+    // The positive control MUST show the shape this probe exists to detect.
+    assert!(
+        control_ratio > 3.0,
+        "ControlStateIncrement is known to rewrite its whole series, so a 16x longer series \
+         must cost far more per write (got {control_ratio:.2}x). A flat control means the \
+         probe is broken, not that the path is clean."
+    );
+    println!("  A ratio near 1 => the write is incremental. A ratio rising with the collection");
+    println!("  => that write path rewrites what it writes into.");
+}
+
+/// A set must come back from a restart with exactly its members, including a removal staying
+/// removed. Nothing in the suite covered plain-set membership across a restart -- the nearby
+/// restart test covers zsets -- so this is the missing guard, not a demonstration.
+///
+/// What it does NOT prove: disabling the new ("set", Some(component)) index-item arm leaves this
+/// test GREEN. That is not a weakness in the assertions, it is what the write path says --
+/// "a write that only ADDED leaves nothing to resurrect: replay rebuilds the same membership
+/// from the same pages" -- and `unload_shard` writes a full base snapshot that a reload recovers
+/// from wholesale. So a missing index item for an add-only command costs work, not correctness,
+/// and any claim that this test discriminates the component mapping would be false.
+#[test]
+fn a_set_survives_a_restart_with_its_members_and_removals() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+
+    let members: Vec<String> = (0..64).map(|index| format!("m-{index:04}")).collect();
+
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    for member in &members {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SetAdd {
+                key: "bag".to_string(),
+                member: member.clone().into_bytes(),
+            },
+        });
+        assert!(out.status.ok, "add {member}: {:?}", out.status);
+    }
+    // A duplicate add: the set must still hold one of it.
+    let out = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SetAdd {
+            key: "bag".to_string(),
+            member: b"m-0000".to_vec(),
+        },
+    });
+    assert!(out.status.ok, "{:?}", out.status);
+    // One member removed: it must NOT come back.
+    let out = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SetRemove {
+            key: "bag".to_string(),
+            member: b"m-0001".to_vec(),
+        },
+    });
+    assert!(out.status.ok, "{:?}", out.status);
+
+    // Materialise the base index -- a reload recovers from the base snapshot plus the WAL tail.
+    engine.unload_shard(1);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    restarted.load_shard(1);
+
+    let out = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SetMembers {
+            key: "bag".to_string(),
+        },
+    });
+    // If the shard did not come back, say THAT -- not "a member is missing".
+    assert!(
+        out.status.ok,
+        "the restarted engine did not load the shard: {:?}",
+        out.status
+    );
+    let got = match out.response {
+        CommandResponse::Members { members } => members
+            .into_iter()
+            .map(|m| String::from_utf8(m).expect("member is utf8"))
+            .collect::<std::collections::BTreeSet<_>>(),
+        other => panic!("expected set members after the restart, got {other:?}"),
+    };
+
+    // The set is non-empty -- an empty answer would make every membership check below vacuous.
+    assert!(
+        !got.is_empty(),
+        "the set read back EMPTY after the restart: the index no longer resolves its members"
+    );
+    assert!(
+        !got.contains("m-0001"),
+        "a removed member came back after the restart"
+    );
+    for member in members.iter().filter(|m| m.as_str() != "m-0001") {
+        assert!(
+            got.contains(member),
+            "{member} did not survive the restart (recovered {} of {})",
+            got.len(),
+            members.len() - 1
+        );
+    }
+    assert_eq!(
+        got.len(),
+        members.len() - 1,
+        "a duplicate add must not add a second copy, and nothing may appear that was not written"
+    );
+}
