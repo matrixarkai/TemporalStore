@@ -14273,3 +14273,108 @@ fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
          `command_writes_no_page` is no longer safe for it"
     );
 }
+
+
+/// What `SequenceQuery`'s single bound costs a filtered caller.
+///
+/// `ContextQueryEvents` has TWO bounds -- `max_scan` for work, `limit` for results after filtering --
+/// and its regression test records the harm that shape was introduced to stop: taking the limit off
+/// the raw timeline first "silently dropped" matching events beyond it, so low-value rows hid the
+/// high-value ones on the retrieval path.
+///
+/// `SequenceQuery` has one knob, `count`, doing both jobs, so it still behaves the way QueryEvents
+/// did before that fix. This test does not change that -- it makes the cost visible. It passes
+/// against current behaviour; if `SequenceQuery` ever gains a `max_scan`, it will fail and should be
+/// updated to assert the fixed behaviour.
+#[test]
+fn a_filtered_sequence_query_returns_fewer_rows_than_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // 500 rows that do NOT match the filter, then 500 that do -- the shape the QueryEvents comment
+    // describes, where the interesting rows sit behind a wall of uninteresting ones.
+    const NON_MATCHING: usize = 500;
+    const MATCHING: usize = 500;
+    for index in 0..(NON_MATCHING + MATCHING) {
+        let action_type = if index < NON_MATCHING { 1 } else { 9 };
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceAdd {
+                key: "events".to_string(),
+                rows: vec![SequenceFeatureRow {
+                    timestamp_ms: 1_000 + index as u64,
+                    gid: index as u64,
+                    action_type,
+                    duration: 10,
+                    author_id: 1,
+                }],
+            },
+        });
+        assert!(out.status.ok, "add {index}: {:?}", out.status);
+    }
+
+    // Ask for 10 rows where action_type == 9. Five hundred match.
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SequenceQuery {
+            key: "events".to_string(),
+            start_ms: 0,
+            end_ms: 1_000_000,
+            count: 10,
+            filters: vec![FeatureFilter {
+                field: "action_type".to_string(),
+                op: FeatureFilterOp::Equal,
+                value: 9,
+            }],
+        },
+    });
+    assert!(response.status.ok, "{:?}", response.status);
+    let rows = match response.response {
+        CommandResponse::SequenceRows { rows } => rows,
+        other => panic!("expected sequence rows, got {other:?}"),
+    };
+
+    // Current behaviour: `count` caps the SCAN, so the first 10 rows are read, none match the
+    // filter, and the caller is told nothing.
+    assert_eq!(
+        rows.len(),
+        0,
+        "current behaviour: `count` bounds the scan, so a caller asking for 10 of 500 matching rows \
+         receives {} -- with no field in the reply saying the answer was cut short. If this now \
+         returns 10, SequenceQuery has gained a separate scan bound and this test should assert the \
+         fixed behaviour instead.",
+        rows.len()
+    );
+
+    // The rows really are there: the same query without the filter reaches them, and a scan wide
+    // enough finds them. This is not an empty store.
+    let wide = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SequenceQuery {
+            key: "events".to_string(),
+            start_ms: 0,
+            end_ms: 1_000_000,
+            count: NON_MATCHING + MATCHING,
+            filters: vec![FeatureFilter {
+                field: "action_type".to_string(),
+                op: FeatureFilterOp::Equal,
+                value: 9,
+            }],
+        },
+    });
+    let wide_rows = match wide.response {
+        CommandResponse::SequenceRows { rows } => rows,
+        other => panic!("expected sequence rows, got {other:?}"),
+    };
+    assert_eq!(
+        wide_rows.len(),
+        MATCHING,
+        "the matching rows exist -- a scan wide enough returns all {MATCHING} of them"
+    );
+}
