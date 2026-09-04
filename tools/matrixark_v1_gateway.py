@@ -2472,6 +2472,8 @@ _CHECK_SOURCES: Json = {
     "fail_closed": "configuration",
     "config_warnings": "configuration",
     "ingestion_root": "configuration",
+    # Counted a real connection to the backend, not a setting that says where it should be.
+    "datanode": "measured",
     "content": "measured",
     # Counts of what is actually there, and traffic actually observed -- these survive a
     # deployment being misconfigured, which is the whole reason the distinction is printed.
@@ -2487,7 +2489,8 @@ _CHECK_SOURCES: Json = {
 
 def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
                       request_total: float = 0.0,
-                      imports: Optional[Json] = None) -> List[Json]:
+                      imports: Optional[Json] = None,
+                      datanode: Optional[str] = None) -> List[Json]:
     """The deployment's setup state as an ordered checklist.
 
     A customer standing up MatrixArk has to get several independent things right, and every one of
@@ -2522,6 +2525,30 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
                        "href": href, "action": action,
                        "source": source, "source_label": _CHECK_SOURCE_LABELS[source],
                        "how": list(how or []) if status != "ok" else []})
+
+    # First, because if the backend is unreachable the rest of the list is moot -- a reader who
+    # sees this at the top stops working through checks about models and keys.
+    #
+    # Absent means nothing probed, which is not the same as unreachable, so the row says so rather
+    # than guessing either way.
+    if datanode == "ok":
+        add("datanode", "Datanode", "ok",
+            "The gateway reached the datanode on its last probe.",
+            "/v1/admin/setup", "Deployment")
+    elif datanode in ("erroring", "unreachable"):
+        add("datanode", "Datanode", "warn",
+            ("The datanode answered with an error." if datanode == "erroring"
+             else "The gateway could not connect to the datanode.")
+            + " Reads and writes cannot be served, and /v1/readyz is answering 503, so this worker "
+              "should already be out of rotation.",
+            "/v1/admin/setup", "Deployment",
+            ["Check the datanode process is running and listening.",
+             "Check MATRIXARK_DATANODE_BLOB_URL points at it.",
+             "Nothing below this line can work until it does."])
+    elif datanode is not None:
+        add("datanode", "Datanode", "warn",
+            "The datanode reported a state this gateway does not recognise: %r." % datanode,
+            "/v1/admin/setup", "Deployment")
 
     model_on = str(extraction.get("provider", "")).lower() not in deterministic
     add("extraction", "Extraction model", "ok" if model_on else "todo",
@@ -3888,8 +3915,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 config_snapshot = dict(config_snapshot)
                 config_snapshot["live_storage_backend"] = live.get("backend")
                 config_snapshot["live_storage_reason"] = live.get("reason") or ""
+            # From the frame's shared cache, so this endpoint adds no probing of its own.
+            datanode_state = await _datanode_for_frame(cfg)
             checks = _readiness_checks(config_snapshot, counts, cfg,
-                                       float(traffic.get("total_requests") or 0), imports)
+                                       float(traffic.get("total_requests") or 0), imports,
+                                       datanode=datanode_state)
             done = sum(1 for c in checks if c["status"] == "ok")
             return await _json(send, 200, {
                 "status": "ok",
