@@ -493,6 +493,96 @@
           "legendFormat": "errors/s"
         }
       ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Datanode",
+      "description": "Whether the gateway could reach its datanode on the last probe. 0 means it answered a readiness probe with 503 and should already be out of rotation -- no other panel here distinguishes that deployment from a healthy one. Absent means nothing has probed yet, which is not the same as reachable.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "cannot serve",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "reachable",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(matrixark_gateway_datanode_reachable{instance=~\"$instance\"})"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Datanode answer age",
+      "description": "How old the reading beside this is. The gauge only moves when something probes, so a stale 'reachable' would read as current for as long as nobody looked. A number climbing past a minute or two means the answer is not being refreshed, whatever it says.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 120
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(matrixark_gateway_datanode_probe_age_seconds{instance=~\"$instance\"})"
+        }
+      ]
     }
   ]
 }

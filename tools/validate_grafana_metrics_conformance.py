@@ -451,8 +451,16 @@ def check_no_bare_histogram_targets(kinds: dict) -> list:
     Found on a panel added in the change that introduced this dashboard, which is the honest reason
     the guard is here rather than the rule being obvious.
 
-    Only a target that is EXACTLY the base name is reported. `histogram_quantile(...)` over the
-    buckets, or a `_sum / _count` mean, both mention the base name as a prefix and are correct.
+    Reported when the base name appears as a WHOLE metric token. It used to require the target to
+    be exactly the base name and nothing else, which let through every realistic way of writing the
+    mistake -- `max(foo{instance=~"$instance"})` draws the same empty line as `foo` and did not
+    match. Found while adding a panel to this dashboard: the mutation that should have failed the
+    check passed it.
+
+    A token boundary is what keeps the legitimate uses safe, and they are the reason the match was
+    narrow in the first place. `histogram_quantile(...)` over `foo_bucket`, and a `foo_sum /
+    foo_count` mean, both mention the base name only as a prefix of a longer token, so neither is
+    reported.
     """
     shaped = {name for name, kind in kinds.items() if kind in ("histogram", "summary")}
     if not shaped:
@@ -468,9 +476,13 @@ def check_no_bare_histogram_targets(kinds: dict) -> list:
         for panel in panels:
             for target in panel.get("targets", []):
                 expr = str(target.get("expr", "")).strip()
-                if expr in shaped:
-                    failures.append("bare_histogram_target:%s:%s:%s"
-                                    % (path.name, panel.get("title"), expr))
+                for name in shaped:
+                    # The base name as a complete token: not followed by another name character,
+                    # which is what distinguishes `foo` from `foo_bucket` and `foo_sum`.
+                    if re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name), expr):
+                        failures.append("bare_histogram_target:%s:%s:%s"
+                                        % (path.name, panel.get("title"), expr))
+                        break
     return failures
 
 
@@ -526,16 +538,6 @@ def main() -> int:
             "missing": family_missing,
         }
 
-    report = {
-        "schema": "temporalstore_grafana_metrics_parity_report_v1",
-        "dashboard": str(DASHBOARD.relative_to(ROOT)),
-        "alerts": str(ALERTS.relative_to(ROOT)),
-        "doc": str(DOC.relative_to(ROOT)),
-        "families": family_reports,
-        "grafana_metrics_parity_ready": not missing,
-        "missing": missing,
-    }
-    print(json.dumps(report, indent=2, sort_keys=True))
     # A known gap stays in the report -- it is not hidden -- but does not fail the run. A gap that
     # gets FIXED does fail, so the list cannot go stale the way the one it replaces did.
     unexpected = [m for m in missing if m not in KNOWN_UNEMITTED]
@@ -553,6 +555,22 @@ def main() -> int:
                       + check_families_state_their_emission(METRIC_FAMILIES)
                       + check_alert_expressions_are_emitted(alerts, declared)
                       + check_alert_metric_names(alerts, declared))
+    report = {
+        "schema": "temporalstore_grafana_metrics_parity_report_v1",
+        "dashboard": str(DASHBOARD.relative_to(ROOT)),
+        "alerts": str(ALERTS.relative_to(ROOT)),
+        "doc": str(DOC.relative_to(ROOT)),
+        "families": family_reports,
+        # Scoped to family parity, which is what it has always meant. The checks below can fail
+        # while this is true, and the exit code -- not this flag -- is the gate.
+        "grafana_metrics_parity_ready": not missing,
+        "missing": missing,
+        # Carried so the machine-readable report says everything the exit code does. Reading
+        # `grafana_metrics_parity_ready: true` off a run that exited 1 is the sort of half-truth
+        # this file exists to stop.
+        "checks_failed": alert_failures,
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
     for failure in alert_failures:
         print("ALERT CANNOT FIRE: %s" % failure, file=sys.stderr)
     lost = check_scan_extent()
