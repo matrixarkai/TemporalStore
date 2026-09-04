@@ -1801,6 +1801,15 @@ EVENT_STREAM_MAX_S = 600.0
 # Everything in a frame used to be built inside each connection's own loop, so a second browser tab
 # cost a second copy of all of it, exactly linear to sixteen viewers when measured. What a frame
 # carries is one deployment's state; the number of people looking at it is not part of the answer.
+# How often the frame re-probes the datanode. Slower than the tick on purpose: this is the one
+# part of a frame that costs an outbound connection, and a backend that just went down is worth
+# knowing about within half a minute rather than within two seconds.
+DATANODE_REFRESH_S = 30.0
+
+_LIVE_DATANODE: Optional[tuple] = None
+# (event loop, task) while a probe is running; everyone else waits on it.
+_LIVE_DATANODE_INFLIGHT: Optional[tuple] = None
+
 _LIVE_SHARED: Optional[Json] = None
 _LIVE_SHARED_AT = 0.0
 _LIVE_EMBEDDING: dict = {}
@@ -1813,6 +1822,9 @@ def _reset_live_cache() -> None:
     global _LIVE_SHARED, _LIVE_SHARED_AT
     _LIVE_SHARED = None
     _LIVE_SHARED_AT = 0.0
+    global _LIVE_DATANODE, _LIVE_DATANODE_INFLIGHT
+    _LIVE_DATANODE = None
+    _LIVE_DATANODE_INFLIGHT = None
     _LIVE_EMBEDDING.clear()
     _LIVE_EMBEDDING_INFLIGHT.clear()
     _LIVE_SIGNATURE.clear()
@@ -1885,6 +1897,51 @@ def _frame_signature(identity: tuple, frame: Json) -> bytes:
     return signature
 
 
+async def _datanode_for_frame(cfg: GatewayConfig) -> Optional[str]:
+    """The datanode's state for the frame: shared by every viewer, refreshed slowly.
+
+    Deployment-wide, so it is cached globally rather than per identity -- whether the backend is up
+    is the same answer for everyone, and it carries nothing about who asked.
+
+    Not read from the readiness route's recorded value: that only moves when something calls
+    /v1/readyz, so a deployment nobody probes would show a stale answer or none at all, and the
+    strip should not depend on somebody else's health check being configured.
+    """
+    global _LIVE_DATANODE, _LIVE_DATANODE_INFLIGHT
+    if _LIVE_DATANODE is not None and (time.time() - _LIVE_DATANODE[1]) < DATANODE_REFRESH_S:
+        return _LIVE_DATANODE[0]
+
+    # One probe in flight for the whole deployment. Caching the result alone leaves the cold start
+    # uncollapsed -- viewers arrive together, find nothing cached, and each opens its own
+    # connection to the same backend. That is the same stampede the embedding read has, and it is
+    # worse here because this one is a network probe rather than a local read.
+    loop = asyncio.get_event_loop()
+    pending = _LIVE_DATANODE_INFLIGHT
+    if pending is not None and pending[0] is loop and not pending[1].done():
+        return await asyncio.shield(pending[1])
+
+    async def _probe_and_cache() -> Optional[str]:
+        global _LIVE_DATANODE
+        try:
+            state = await asyncio.to_thread(_probe_datanode, cfg)
+        except Exception:
+            # The frame is not the place to fail. Absent reads as "not known", which is true.
+            return None if _LIVE_DATANODE is None else _LIVE_DATANODE[0]
+        _LIVE_DATANODE = (state, time.time())
+        # Keeps the gauge fresh too, so the series does not depend on an orchestrator polling
+        # readiness.
+        _gwmetrics.METRICS.note_datanode(state)
+        return state
+
+    task = loop.create_task(_probe_and_cache())
+    _LIVE_DATANODE_INFLIGHT = (loop, task)
+    try:
+        return await asyncio.shield(task)
+    finally:
+        if _LIVE_DATANODE_INFLIGHT is not None and _LIVE_DATANODE_INFLIGHT[1] is task                 and task.done():
+            _LIVE_DATANODE_INFLIGHT = None
+
+
 async def _embedding_for(server: Any, cfg: GatewayConfig, key: Optional[str],
                          tenant: Optional[str], account: Optional[str]) -> Optional[Json]:
     """The embedding backlog for ONE identity, reused by that identity's other viewers.
@@ -1929,7 +1986,8 @@ async def _embedding_for(server: Any, cfg: GatewayConfig, key: Optional[str],
 
 async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
                        tenant: Optional[str], account: Optional[str],
-                       embedding: Optional[Json]) -> Json:
+                       embedding: Optional[Json],
+                       datanode: Optional[str] = None) -> Json:
     """One frame of live state.
 
     The deployment-wide parts come from `_shared_live_parts`, which builds them once per tick for
@@ -1943,6 +2001,9 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
         "imports": shared["imports"],
         "warnings": shared["warnings"],
         "embedding": embedding,
+        # Absent when nothing has looked yet. "not known" and "unreachable" are different answers
+        # and the strip renders them differently.
+        "datanode": datanode,
     }
 
 
@@ -2020,7 +2081,9 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
             # Per identity rather than per connection: two tabs open on the same key asked the
             # backend the same question twice on every refresh.
             embedding = await _embedding_for(server, cfg, key, tenant, account)
-            frame = await _event_frame(server, cfg, key, tenant, account, embedding)
+            datanode = await _datanode_for_frame(cfg)
+            frame = await _event_frame(server, cfg, key, tenant, account, embedding,
+                                       datanode=datanode)
             signature = _frame_signature((key, tenant, account), frame)
             if signature == last_signature:
                 # Nothing has changed since the last frame, so there is nothing to say. The comment

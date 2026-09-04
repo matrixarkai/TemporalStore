@@ -422,7 +422,7 @@
       <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
       <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
       <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
-      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span>
       <span class="live-dot" id="liveDot" title="live"></span>
     </div>
   </nav>
@@ -691,6 +691,7 @@ function liveStream(options) {
 
   /* ---------- diagnostics ---------- */
   var lastReport = null;
+  var lastFrame = null;
 
   function compactConfig(config) {
     if (!config) { return null; }
@@ -723,14 +724,26 @@ function liveStream(options) {
       fetch("/v1/admin/config", { headers: auth() })
         .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
       fetch("/v1/metrics").then(function (r) { return r.ok ? r.text() : ""; })
-        .catch(function () { return ""; })
+        .catch(function () { return ""; }),
+      /* Readiness answers 503 when the backend cannot serve, so a non-2xx here is the answer rather
+         than a failure to collect -- the status is recorded next to the body. */
+      fetch("/v1/readyz").then(function (r) {
+        return r.json().then(function (body) { return { status: r.status, body: body }; });
+      }).catch(function () { return null; })
     ]).then(function (parts) {
+      var traffic = (lastFrame || {}).traffic || {};
       return JSON.stringify({
         collected_at: new Date().toISOString(),
         origin: location.origin,
         overview: lastReport,
         config: compactConfig(parts[0]),
-        metrics: parts[1]
+        metrics: parts[1],
+        readiness: parts[2],
+        /* The counters in `metrics` say how many requests failed. This says WHEN, which is the
+           difference between an incident and a footnote -- and it exists only on the live frame, so
+           a bundle assembled from endpoints alone cannot carry it. */
+        recent_failures: traffic.recent_failures || null,
+        datanode: (lastFrame || {}).datanode || null
       }, null, 2);
     });
   }
@@ -800,6 +813,10 @@ function liveStream(options) {
         }
       },
       onFrame: function (frame) {
+        /* Kept for the diagnostics bundle. The failure timeline exists only on the frame, and
+           it answers "when did this start" -- which is the question a bundle is sent to
+           answer. */
+        lastFrame = frame;
         if (window.__matrixarkLiveFrame) { window.__matrixarkLiveFrame(frame); }
         renderImports(frame.imports);
         if (frame.embedding) { renderEncoding(frame.embedding); }
@@ -869,7 +886,8 @@ function liveStream(options) {
     enc: document.getElementById("liveEnc"),
     imp: document.getElementById("liveImp"),
     req: document.getElementById("liveReq"),
-    warn: document.getElementById("liveWarn")
+    warn: document.getElementById("liveWarn"),
+    node: document.getElementById("liveNode")
   };
   var dot = document.getElementById("liveDot");
   /* Any page can watch the frames this page is already receiving. The alternative -- each panel
@@ -941,6 +959,20 @@ function liveStream(options) {
       t.total_errors ? "warn" : "");
 
     show(seg.warn, frame.warnings ? plural(frame.warnings, "warning") : null, "warn");
+
+    /* Only when it is NOT ok, the way the warning segment already behaves. A strip that always
+       says "datanode: ok" is one people stop reading, and absent means nothing has looked yet --
+       which is not the same as reachable, so that shows nothing either.
+
+       Matched against the two states rather than escaped and interpolated: this block has no esc()
+       (it defines n, show and plural and nothing else), so calling one would have thrown inside
+       render, which the caller wraps in a catch that ignores -- failing in total silence. A closed
+       set of expected values is also stricter than escaping: a server sending something
+       unexpected renders nothing rather than rendering it safely. */
+    show(seg.node,
+      frame.datanode === "unreachable" ? "datanode <b>unreachable</b>"
+        : (frame.datanode === "erroring" ? "datanode <b>erroring</b>" : null),
+      "warn");
 
     watchers.forEach(function (callback) {
       /* One panel throwing must not stop the others, or the strip, from updating. */
