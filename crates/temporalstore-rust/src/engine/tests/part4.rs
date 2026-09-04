@@ -15297,3 +15297,98 @@ fn does_a_counter_write_cost_more_after_many_writes() {
     println!("  A ratio above 1 => cost grows with WRITES at fixed data size, which no");
     println!("  fill-and-measure probe in this file could have seen.");
 }
+
+/// What does ONE ENTRY cost, per data structure, in live heap?
+///
+/// Two rules this obeys, both learned the hard way:
+///
+/// * **Marginal, not average.** A small sample charges every entry for the fixed cost of the
+///   maps around it. Measuring at N and 2N and reporting `(heap2N - heapN) / N` prices the entry
+///   itself. An average over 1,000 entries has read ~7.6x high before.
+/// * **Live heap, not `size_of`.** A BTreeMap node holding one entry can cost 1,496 bytes to
+///   carry 120 bytes of key and value, so the struct's size says little. Live heap is
+///   `alloc_bytes - free_bytes` across the inserts.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_one_entry_costs_in_each_structure() {
+    const N: usize = 5_000;
+    let live_for = |kind: &str, count: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..count {
+            let command = match kind {
+                "hash" => Command::HashSet {
+                    key: "k".to_string(),
+                    field: format!("f{i:07}"),
+                    value: vec![b'v'; 32],
+                },
+                "zset" => Command::ZSetAdd {
+                    key: "k".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                    score: i as f64,
+                },
+                "set" => Command::SetAdd {
+                    key: "k".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                },
+                "list" => Command::ListPush {
+                    key: "k".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                    left: false,
+                },
+                other => panic!("unknown kind {other}"),
+            };
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(out.status.ok, "{kind} insert refused: {:?}", out.status);
+        }
+        let counts = probe.stop();
+        // Live heap: what the inserts allocated and did NOT give back.
+        let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
+        // The structure really holds `count` entries, so the divisor is not a guess.
+        let held = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            match kind {
+                "hash" => shard.hashes.values().map(|m| m.len()).sum::<usize>(),
+                "zset" => shard.zsets.values().map(|m| m.len()).sum::<usize>(),
+                "set" => shard.sets.values().map(|m| m.len()).sum::<usize>(),
+                "list" => shard.lists.values().map(|m| m.len()).sum::<usize>(),
+                _ => 0,
+            }
+        };
+        assert_eq!(held, count, "{kind} holds {held} entries, expected {count}");
+        live
+    };
+
+    println!("  structure   live @{N}      live @{}    MARGINAL B/entry   average B/entry", 2 * N);
+    for kind in ["hash", "zset", "set", "list"] {
+        let small = live_for(kind, N);
+        let large = live_for(kind, 2 * N);
+        let marginal = (large.saturating_sub(small)) as f64 / N as f64;
+        let average = large as f64 / (2 * N) as f64;
+        assert!(large > small, "{kind}: doubling the entries did not raise live heap");
+        println!(
+            "  {kind:9}  {small:11}  {large:11}   {marginal:14.1}   {average:14.1}",
+        );
+        // The sample must be big enough that the average is not still paying for the fixed
+        // structures. When it is, marginal and average agree; when it is not, the average runs
+        // high and every per-entry number taken from it is wrong. Assert the agreement rather
+        // than trusting that 5,000 is "probably enough".
+        let spread = (average - marginal).abs() / marginal;
+        assert!(
+            spread < 0.20,
+            "{kind}: marginal {marginal:.1} and average {average:.1} B/entry differ by {:.0}%, so              {N} entries is too small a sample and the average is still charging each entry for              the fixed structures around it",
+            spread * 100.0
+        );
+    }
+    println!("  MARGINAL is the entry's own cost. AVERAGE charges it for the fixed structures");
+    println!("  around it, and runs high -- the two columns are printed together so the");
+    println!("  difference cannot be mistaken for noise.");
+}
