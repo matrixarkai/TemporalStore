@@ -40,6 +40,7 @@ import unittest
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 PORTAL = os.path.join(TOOLS, "portal")
 HARNESS = os.path.join(PORTAL, "deep_link_harness.js")
+FOLD_HARNESS = os.path.join(PORTAL, "folded_answer_harness.js")
 GATEWAY = os.path.join(TOOLS, "matrixark_v1_gateway.py")
 
 
@@ -136,32 +137,64 @@ class TheTabOpensTest(unittest.TestCase):
                 grouped.setdefault(target, []).append(anchor)
         return grouped
 
+    def _by_mechanism(self, page_name, anchors):
+        """Which anchors a tab answers, and which something else does.
+
+        Not every link into a page names something a tab holds: the key portal answers "where does
+        the first key come from" in a <details> above its tablist. The harness reports those rather
+        than failing them, and they are checked below through the helper that actually opens them.
+        """
+        out = self._run(page_name, anchors).stdout
+        folds = {a for a in set(anchors) if ("skip #%s is not inside a tab pane" % a) in out}
+        return out, sorted(set(anchors) - folds), sorted(folds)
+
     def test_the_pages_that_are_linked_into_open_the_right_tab(self) -> None:
         grouped = self._targets()
         self.assertTrue(grouped, "nothing is linked into; this check is vacuous")
+        opened = 0
         for page_name, anchors in sorted(grouped.items()):
             with self.subTest(page=page_name):
                 proc = self._run(page_name, anchors)
                 self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
-                for anchor in sorted(set(anchors)):
+                _out, tabbed, _folds = self._by_mechanism(page_name, anchors)
+                for anchor in tabbed:
                     self.assertIn("ok   arriving at #%s opens the tab that holds it" % anchor,
                                   proc.stdout)
+                opened += len(tabbed)
+        self.assertGreater(opened, 0, "no link opens a tab; this check is quantified over nothing")
 
     def test_the_reader_is_taken_to_the_target_not_just_the_pane(self) -> None:
         """The pane can be metres long. Opening it and leaving them at the top is most of the way
         to the original problem: they are looking at a page that does not obviously concern them."""
         for page_name, anchors in sorted(self._targets().items()):
-            out = self._run(page_name, anchors).stdout
-            for anchor in sorted(set(anchors)):
+            out, tabbed, _folds = self._by_mechanism(page_name, anchors)
+            for anchor in tabbed:
                 self.assertIn("ok   arriving at #%s scrolls to it once the pane is showing" % anchor,
                               out)
 
     def test_the_same_page_case_is_handled(self) -> None:
         """The strip is on the setup page too, so its own segments load no document at all."""
         for page_name, anchors in sorted(self._targets().items()):
-            out = self._run(page_name, anchors).stdout
+            out, tabbed, _folds = self._by_mechanism(page_name, anchors)
+            if not tabbed:
+                continue
             self.assertIn("ok   the page listens for the fragment changing under it", out)
             self.assertIn("ok   changing the fragment without reloading still opens the tab", out)
+
+    def test_a_link_no_tab_answers_is_answered_by_a_fold(self) -> None:
+        """The other half of the split, so "not my business" cannot become "nobody's business"."""
+        checked = 0
+        for page_name, anchors in sorted(self._targets().items()):
+            _out, _tabbed, folds = self._by_mechanism(page_name, anchors)
+            for anchor in folds:
+                proc = subprocess.run(["node", FOLD_HARNESS, os.path.join(PORTAL, page_name)],
+                                      capture_output=True, text=True, timeout=300)
+                self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+                self.assertIn("ok   arriving at #%s unfolds it" % anchor, proc.stdout,
+                              "no tab holds it and no fold opens it either")
+                checked += 1
+        self.assertGreater(checked, 0,
+                           "no link is answered by a fold; this check is quantified over nothing")
 
     def test_a_fragment_that_means_nothing_here_changes_nothing(self) -> None:
         for page_name, anchors in sorted(self._targets().items()):
