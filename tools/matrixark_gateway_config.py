@@ -1042,6 +1042,11 @@ def snapshot(include_catalog: bool = True) -> Json:
         # whoever looks next.
         "pending_restart": sorted(entry["key"] for group in groups.values() for entry in group
                                   if entry.get("pending_restart")),
+        # In the file and not in this build: renamed or dropped since it was written, still
+        # sitting there, doing nothing. Reported rather than removed -- deleting a customer's
+        # stored values because this build does not recognise them is the wrong answer to a
+        # downgrade or a partial rollout.
+        "unknown_stored": sorted(set(values) - set(SETTINGS_BY_KEY)),
         "config_file": config_path(),
         "updated_at": document.get("updated_at"),
         "updated_by": document.get("updated_by"),
