@@ -2993,7 +2993,10 @@ fn append_record_locked(
     if prealloc {
         let needed = offset.saturating_add(bytes.len() as u64);
         let physical = file.metadata()?.len();
-        if physical < needed {
+        // Carried rather than re-read. The length after this block is either the one just read or
+        // the one just set, so asking the filesystem again is a second stat a write to learn a
+        // number already in hand.
+        let physical = if physical < needed {
             // Grow to a chunk boundary. This is the one place the file's length changes, so it
             // is the one place a barrier still has to persist a size -- once per chunk instead
             // of once per record.
@@ -3003,10 +3006,13 @@ fn append_record_locked(
                 .saturating_div(chunk)
                 .saturating_mul(chunk);
             file.set_len(target)?;
-        }
+            target
+        } else {
+            physical
+        };
         inner
             .prealloc_physical_by_shard
-            .insert(record.shard_id, file.metadata()?.len());
+            .insert(record.shard_id, physical);
         if let Some((at, slot)) = close_block_and_advance.as_ref() {
             file.seek(SeekFrom::Start(*at))?;
             file.write_all(slot)?;
@@ -4878,6 +4884,57 @@ mod tests {
         assert_eq!(after.sequence, 41, "the append after a roll must continue the sequence");
         let reread = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
         assert_eq!(reread.len(), 41, "the post-roll record must be readable too");
+    }
+
+    /// The physical length the append records matches what the file actually is.
+    ///
+    /// The append used to stat the file a second time to learn its length after possibly growing
+    /// it. That length is now carried: either the one just read, or the one just set. If those ever
+    /// disagreed, the cached figure would put the next record at the wrong offset -- so this checks
+    /// the carried number against the filesystem across both branches, the append that grows the
+    /// file and the many that do not.
+    #[test]
+    fn the_carried_physical_length_matches_the_file() {
+        // `Some(0)`, not `None`: rolling is on by default, and a roll seals the active piece and
+        // starts a new one -- so the active file drops back to a header while the carried figure
+        // keeps counting. This checks the ACTIVE file's bookkeeping, so it needs one file.
+        set_wal_segment_bytes_for_test(Some(0));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let path = write_ahead_log_path(dir.path(), 1);
+
+        let mut grew = 0usize;
+        let mut last = 0u64;
+        for index in 0..600usize {
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:05}"),
+                        value: vec![118u8; 512],
+                    },
+                )
+                .unwrap();
+            let on_disk = std::fs::metadata(&path).unwrap().len();
+            let carried = store.stats(1).persistent_bytes;
+            assert!(
+                carried <= on_disk,
+                "record {index}: carried {carried} exceeds the file's {on_disk}"
+            );
+            if on_disk != last {
+                grew += 1;
+                last = on_disk;
+            }
+        }
+
+        // A bound passes most easily when nothing was measured: the run must actually have grown
+        // the file more than once, or it never exercised the branch that sets the length.
+        assert!(grew > 1, "the workload must grow the file repeatedly: {grew}");
+
+        // And every record still reads back, which is what a wrong offset would break.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        set_wal_segment_bytes_for_test(None);
+        assert_eq!(scanned.len(), 600, "every record must be readable: {}", scanned.len());
     }
 
     /// What one append allocates, and how much of it is the value it carries.
