@@ -137,5 +137,47 @@ class TheStripDrawsItTest(unittest.TestCase):
         self.assertIn("ok   an unexpected value renders nothing at all", out, out)
 
 
+@unittest.skipUnless(shutil.which("node"), "node is not installed; the page JS cannot be run")
+class TheDiagnosticsBundleCarriesItTest(unittest.TestCase):
+    """What a customer sends to support should include what was wrong.
+
+    The bundle already carried the overview, the config and the whole /v1/metrics text, so the
+    counters were in it -- how many requests failed. It could not say WHEN, because the failure
+    timeline exists only on the live frame and a bundle assembled from endpoints alone cannot
+    reach it. Nor did it record the readiness verdict, which is the single clearest statement of
+    whether the deployment could serve at all.
+
+    Run rather than read: the bundle is built in a closure from a frame plus three fetches, and a
+    field referencing something the page never stored comes out null while the source looks right.
+    """
+
+    def _run(self):
+        return subprocess.run(
+            ["node", os.path.join(PORTAL, "bundle_harness.js"),
+             os.path.join(PORTAL, "overview_portal.html")],
+            capture_output=True, text=True, timeout=180)
+
+    def test_the_bundle_assembles_and_carries_the_new_evidence(self) -> None:
+        proc = self._run()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+
+    def test_it_still_carries_what_it_always_did(self) -> None:
+        """Adding to a support bundle must not quietly drop what was already in it."""
+        out = self._run().stdout
+        self.assertIn("ok   it still carries what it always did", out, out)
+
+    def test_a_failing_readiness_is_recorded_rather_than_dropped(self) -> None:
+        """Readiness answers 503 when the backend is down -- that is the answer, not a failure
+        to collect. A bundle that omits the one thing that was wrong is worse than one that says
+        it could not look."""
+        out = self._run().stdout
+        self.assertIn("ok   a 503 from readiness is recorded, not dropped as a failed collection",
+                      out, out)
+
+    def test_the_timeline_says_when(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   the timeline says when, not just how many", out, out)
+
+
 if __name__ == "__main__":
     unittest.main()

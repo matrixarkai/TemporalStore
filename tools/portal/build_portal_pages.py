@@ -2986,6 +2986,7 @@ function liveStream(options) {
 
   /* ---------- diagnostics ---------- */
   var lastReport = null;
+  var lastFrame = null;
 
   function compactConfig(config) {
     if (!config) { return null; }
@@ -3018,14 +3019,26 @@ function liveStream(options) {
       fetch("/v1/admin/config", { headers: auth() })
         .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }),
       fetch("/v1/metrics").then(function (r) { return r.ok ? r.text() : ""; })
-        .catch(function () { return ""; })
+        .catch(function () { return ""; }),
+      /* Readiness answers 503 when the backend cannot serve, so a non-2xx here is the answer rather
+         than a failure to collect -- the status is recorded next to the body. */
+      fetch("/v1/readyz").then(function (r) {
+        return r.json().then(function (body) { return { status: r.status, body: body }; });
+      }).catch(function () { return null; })
     ]).then(function (parts) {
+      var traffic = (lastFrame || {}).traffic || {};
       return JSON.stringify({
         collected_at: new Date().toISOString(),
         origin: location.origin,
         overview: lastReport,
         config: compactConfig(parts[0]),
-        metrics: parts[1]
+        metrics: parts[1],
+        readiness: parts[2],
+        /* The counters in `metrics` say how many requests failed. This says WHEN, which is the
+           difference between an incident and a footnote -- and it exists only on the live frame, so
+           a bundle assembled from endpoints alone cannot carry it. */
+        recent_failures: traffic.recent_failures || null,
+        datanode: (lastFrame || {}).datanode || null
       }, null, 2);
     });
   }
@@ -3095,6 +3108,10 @@ function liveStream(options) {
         }
       },
       onFrame: function (frame) {
+        /* Kept for the diagnostics bundle. The failure timeline exists only on the frame, and
+           it answers "when did this start" -- which is the question a bundle is sent to
+           answer. */
+        lastFrame = frame;
         if (window.__matrixarkLiveFrame) { window.__matrixarkLiveFrame(frame); }
         renderImports(frame.imports);
         if (frame.embedding) { renderEncoding(frame.embedding); }
