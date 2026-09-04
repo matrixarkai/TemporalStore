@@ -43,7 +43,9 @@ def panel() -> str:
     the name and slicing forward reads CSS and finds none of the prose.
     """
     source = page()
-    start = source.index('<details class="firstkey">')
+    # The opening tag, matched rather than spelled out: it has since gained an id so a link can
+    # name it, and a literal that pinned the whole tag broke on the attribute being added.
+    start = re.search(r'<details[^>]*class="firstkey"', source).start()
     return source[start:source.index("</details>", start)]
 
 

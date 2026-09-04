@@ -452,6 +452,8 @@
     <h2>Access <span class="aux"><label class="check"><input type="checkbox" id="remember"> remember for this browser tab</label></span></h2>
     <label for="key">Admin API key</label>
     <input id="key" type="password" placeholder="Key carrying an admin scope" autocomplete="off" spellcheck="false">
+    <p class="hint">No key yet? <a href="/v1/admin/portal#firstkey">Where the first one comes from</a>
+      — no page can mint it; it takes one command where the gateway runs.</p>
     <div class="hint">Reading this page needs nothing; every action calls an admin-gated endpoint, so
       the page is inert without a key. “Remember” keeps it in this tab only and forgets it when the
       tab closes — it is never written to disk or sent anywhere but this gateway.</div>
@@ -2629,6 +2631,41 @@ function liveStream(options) {
   });
   window.addEventListener("pagehide", function () { if (controller) { controller.abort(); } });
   open();
+}());
+
+/* A fragment can name something that is folded away.
+ *
+ * The key portal answers "where does the first one come from" in a <details>, shut by default
+ * because it is a question somebody has once. The pages that ask for a key link straight at it --
+ * and a link to a closed <details> arrives with the answer still folded up, which is the dead end
+ * the block was written to remove, reached by a different road. Browsers disagree about expanding
+ * it; this does not depend on which one is reading.
+ */
+(function () {
+  "use strict";
+
+  function reveal() {
+    /* Every harness that runs this file stubs a window, and most have no location on it --
+       the same shape a page gets before navigation has settled. Nothing to reveal, not a crash. */
+    var hash = (window.location && window.location.hash) || "";
+    var name;
+    try { name = decodeURIComponent(hash.replace(/^#/, "")); }
+    catch (error) { name = hash.replace(/^#/, ""); }
+    if (!name) { return false; }
+    var target = document.getElementById(name);
+    if (!target) { return false; }
+    var opened = false;
+    /* From the target itself: the fragment usually names the <details>, not something inside it. */
+    for (var node = target; node; node = node.parentNode) {
+      if (node.tagName === "DETAILS" && !node.open) { node.open = true; opened = true; }
+    }
+    /* The browser scrolled before this ran, to a target that was folded up. */
+    if (opened && target.scrollIntoView) { target.scrollIntoView(); }
+    return opened;
+  }
+
+  reveal();
+  if (window.addEventListener) { window.addEventListener("hashchange", reveal); }
 }());
 </script>
 </body>
