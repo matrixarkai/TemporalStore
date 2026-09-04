@@ -30,6 +30,7 @@ Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/ingest_file (stream fil
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
 import json
 import logging
@@ -1056,6 +1057,118 @@ async def _text(send: Callable, status: int, body: str,
         headers.extend(extra_headers)
     await send({"type": "http.response.start", "status": status, "headers": headers})
     await send({"type": "http.response.body", "body": data})
+
+
+# Compressed portal pages, keyed by the identity validator of the page they came from. Seven
+# pages, 490 KB uncompressed and 137 KB packed, so this holds ~137 KB per worker and takes 353 KB
+# off every full tour of the portal. Bounded by construction -- there are seven pages -- but a
+# ceiling anyway, because the key is content-derived and a deployment that reloads pages would
+# otherwise accumulate one entry per version.
+_HTML_PACKED: dict[str, bytes] = {}
+_HTML_PACKED_MAX = 32
+# Below this a gzip envelope is a meaningful share of the payload and the round trip dominates
+# anything it could save. The error fallbacks are the only HTML this size.
+_HTML_PACK_FLOOR = 1024
+
+
+def _validator(body: bytes) -> str:
+    """A strong ETag for these bytes. Content-derived, so it is stable across workers and across
+    restarts -- a validator that changed per process would 200 on every revalidation from a
+    deployment behind more than one worker."""
+    return '"' + hashlib.sha256(body).hexdigest()[:32] + '"'
+
+
+def _accepts_gzip(header: str) -> bool:
+    """Whether the client actually wants gzip.
+
+    ``gzip;q=0`` is a refusal, and ``identity;q=0, *`` is consent to anything. Both are lost by
+    looking for the substring, which is how a client that asked NOT to be compressed gets a
+    compressed body it will not decode.
+    """
+    for part in header.split(","):
+        token, _semi, params = part.strip().partition(";")
+        token = token.strip().lower()
+        if token not in ("gzip", "*"):
+            continue
+        quality = 1.0
+        for param in params.split(";"):
+            name, _eq, value = param.strip().partition("=")
+            if name.strip().lower() == "q":
+                try:
+                    quality = float(value)
+                except ValueError:
+                    quality = 0.0
+        if quality > 0:
+            return True
+    return False
+
+
+def _packed(body: bytes, validator: str) -> bytes:
+    packed = _HTML_PACKED.get(validator)
+    if packed is None:
+        # mtime=0: the default stamps the current time into the header, so the same page would
+        # compress to different bytes each process and anything hashing the response would see a
+        # change that is not one.
+        packed = gzip.compress(body, 6, mtime=0)
+        if len(_HTML_PACKED) >= _HTML_PACKED_MAX:
+            _HTML_PACKED.clear()
+        _HTML_PACKED[validator] = packed
+    return packed
+
+
+def _matches(header: str, validator: str) -> bool:
+    """Does the client already hold this exact representation?
+
+    ``*`` matches anything, and a weak validator (``W/"..."``) still identifies the same bytes for
+    the purpose of a conditional GET.
+    """
+    if not header:
+        return False
+    for candidate in header.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:].strip()
+        if candidate == validator:
+            return True
+    return False
+
+
+async def _page(send: Callable, scope: Json, body: bytes) -> None:
+    """One bundled portal page: compressed if the client takes it, revalidated if they have it.
+
+    ``no-cache`` is a revalidation instruction, not a refusal to cache -- the client keeps the
+    page and asks whether it still holds, which is a 304 with no body. Serving these stale would
+    show a customer a portal that does not match the gateway they upgraded, so revalidating every
+    time and paying nothing when nothing moved is the trade that fits.
+    """
+    headers = _headers_map(scope)
+    validator = _validator(body)
+    encoding = None
+    if len(body) >= _HTML_PACK_FLOOR and _accepts_gzip(headers.get("accept-encoding", "")):
+        body = _packed(body, validator)
+        encoding = b"gzip"
+        # A different representation needs a different validator, or a client holding the
+        # identity copy revalidates with this one and is told to reuse bytes it cannot read.
+        validator = validator[:-1] + '-gzip"'
+
+    if _matches(headers.get("if-none-match", ""), validator):
+        await send({"type": "http.response.start", "status": 304, "headers": [
+            (b"etag", validator.encode()),
+            (b"cache-control", b"no-cache"),
+            (b"vary", b"accept-encoding"),
+        ]})
+        return await send({"type": "http.response.body", "body": b""})
+
+    extra = [(b"etag", validator.encode()),
+             (b"cache-control", b"no-cache"),
+             # Without this a shared cache can hand a compressed body to a client that cannot
+             # take one, having stored it under a key that ignored the difference.
+             (b"vary", b"accept-encoding")]
+    if encoding:
+        extra.append((b"content-encoding", encoding))
+    return await _html(send, 200, body, extra)
 
 
 async def _html(send: Callable, status: int, body: bytes,
@@ -3693,17 +3806,17 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # ACTION on it calls an admin-gated JSON endpoint, so the page is inert without a valid
         # admin key. Kept before the data routes so it never touches auth/metering/quota.
         if method == "GET" and path == "/v1/admin/portal":
-            return await _html(send, 200, _portal_html_bytes())
+            return await _page(send, scope, _portal_html_bytes())
 
         # ---- setup + catalog pages (static HTML, no auth to FETCH) ---------------------------
         # Same posture as the key portal: the page is inert without an admin key, because every
         # action on it calls an admin-gated JSON endpoint.
         if method == "GET" and path in ("/v1/admin", "/v1/admin/"):
-            return await _html(send, 200, _overview_portal_html_bytes())
+            return await _page(send, scope, _overview_portal_html_bytes())
         if method == "GET" and path == "/v1/admin/explore":
-            return await _html(send, 200, _explore_portal_html_bytes())
+            return await _page(send, scope, _explore_portal_html_bytes())
         if method == "GET" and path == "/v1/admin/api":
-            return await _html(send, 200, _api_portal_html_bytes())
+            return await _page(send, scope, _api_portal_html_bytes())
 
         # ---- the API surface, as data (no auth: it is the published contract) -----------------
         # Served rather than written down separately so what a customer reads is what this process
@@ -3711,9 +3824,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         if method == "GET" and path == "/v1/admin/routes":
             return await _json(send, 200, {"status": "ok", "routes": documented_routes()})
         if method == "GET" and path == "/v1/admin/setup":
-            return await _html(send, 200, _setup_portal_html_bytes())
+            return await _page(send, scope, _setup_portal_html_bytes())
         if method == "GET" and path == "/v1/admin/catalog":
-            return await _html(send, 200, _catalog_portal_html_bytes())
+            return await _page(send, scope, _catalog_portal_html_bytes())
 
         # ---- per-key usage read (auth + admin scope) ----------------------------------------
         # Returns the in-process edge counters (per-key totals, ingest/retrieve split, bytes,
@@ -4275,7 +4388,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # Same posture as the key portal: fetching the page needs nothing, every action on it calls
         # an admin-gated endpoint, so the page is inert without a valid admin key.
         if method == "GET" and path == "/v1/admin/ingestion":
-            return await _html(send, 200, _ingestion_portal_html_bytes())
+            return await _page(send, scope, _ingestion_portal_html_bytes())
 
         # ---- ingestion jobs: list (auth + admin scope) ---------------------------------------
         if method == "GET" and path == "/v1/admin/ingestion/jobs":

@@ -72,8 +72,11 @@ def routes_to_pages() -> dict:
     pass.
     """
     source = read(GATEWAY)
+    # Keyed on the page helper, not on the function that sends it. Which sender a route uses
+    # is an implementation detail and it has already changed once; pinning it made this map
+    # come back empty, which shows up here only because the floor below asserts it is not.
     served = re.findall(
-        r'path (?:==|in) \(?"(/v1/admin[^"]*)"[^\n]*\n\s*return await _html\(send, 200, (\w+)\(\)\)',
+        r'path (?:==|in) \(?"(/v1/admin[^"]*)"[^\n]*\n\s*return await _\w+\([^\n]*?(\w*_portal_html_bytes)\(\)\)',
         source)
     files = {}
     for helper in {name for _, name in served}:
