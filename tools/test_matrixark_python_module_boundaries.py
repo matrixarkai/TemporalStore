@@ -968,6 +968,52 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertFalse(any(record.get("record_type") == "context_pack_audit" for record in records))
         self.assertFalse(any(record.get("record_type") == "context_pack_telemetry" for record in records))
 
+    def test_context_debug_record_keeps_its_payload_through_the_local_log(self) -> None:
+        # debug_payload is on the local-JSONL bulky strip list, which is correct for rows where it
+        # is incidental. On context_debug_record it is the entire record -- the writer refuses to
+        # emit one without a payload -- so stripping it stored a husk, and opting in via
+        # MATRIXARK_CONTEXT_DEBUG_RECORDS bought no diagnostics at all. The exemption is limited
+        # to that record type and to that one field; this test pins both edges.
+        server = self._server()
+        adapter = server.adapter
+        # Read the flag off the live method's globals rather than by module name: discovery keeps
+        # several generations of the adapter module alive, so importing it by name can return a
+        # different object than the one defining the class in use here.
+        live_globals = type(adapter)._sanitize_jsonl_record.__globals__
+        self.assertFalse(
+            live_globals["LOCAL_JSONL_INCLUDE_BULKY_FIELDS"],
+            "this test is only meaningful against the default, stripping configuration")
+
+        adapter.append_many(
+            [
+                {
+                    "record_type": "context_debug_record",
+                    "debug_type": "event_extraction_detail",
+                    "ref_type": "event",
+                    "ref_hash": 7,
+                    "debug_payload": {"kept": True},
+                    "raw_payload": {"stripped": True},
+                    "updated_at_ms": 1780000000000,
+                },
+                {
+                    "record_type": "agent_message",
+                    "role": "tool",
+                    "text": "summary",
+                    "debug_payload": {"stripped": True},
+                    "updated_at_ms": 1780000000001,
+                },
+            ]
+        )
+        records = adapter.read_all()
+        debug = next(record for record in records if record.get("record_type") == "context_debug_record")
+        message = next(record for record in records if record.get("record_type") == "agent_message")
+
+        self.assertEqual({"kept": True}, debug["debug_payload"])
+        # Only the defining field is exempt -- other bulky fields still go.
+        self.assertNotIn("raw_payload", debug)
+        # And no other record type is affected by the exemption.
+        self.assertNotIn("debug_payload", message)
+
     def test_storage_options_are_validated_stored_and_audited(self) -> None:
         core_modules = []
         for module_name in ("matrixark_mcp_core", "tools.matrixark_mcp_core"):
