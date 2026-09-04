@@ -3,6 +3,8 @@
 """_CodexHookOutputPart3 methods split from test_matrixark_codex_hook_output.MatrixArkCodexHookOutputTest (mixin)."""
 from __future__ import annotations
 
+from unittest import mock
+
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
 except ImportError:
@@ -224,6 +226,12 @@ class _CodexHookOutputPart3:
         self.assertNotIn("--user-id \"${MATRIXARK_HOOK_USER_ID:-local_user}\"", source)
 
 
+    # Keeping the raw tool blob is opt-in and this test reads raw_records[0] to assert the
+    # RAW record shape, so without it the test dies on an empty list rather than on
+    # anything it is about. The switch is read into a module constant at import, so the
+    # environment cannot reach it from here -- patch the constant. Default behaviour is
+    # covered by test_fast_async_tool_result_defaults_to_serving_memory.
+    @mock.patch.object(hook, "HOOK_TOOL_RESULT_RAW", True)
     def test_fast_async_hook_ingest_marks_tool_evidence_lifecycle(self) -> None:
         class Adapter:
             def __init__(self) -> None:
@@ -350,6 +358,12 @@ class _CodexHookOutputPart3:
         self.assertEqual(["after_llm"], serving_event["source_hook_types"])
         self.assertIn("assistant: Final assistant answer", serving_event["text"])
 
+    # Keeping the raw tool blob is opt-in and this test reads raw_records[0] to assert the
+    # RAW record shape, so without it the test dies on an empty list rather than on
+    # anything it is about. The switch is read into a module constant at import, so the
+    # environment cannot reach it from here -- patch the constant. Default behaviour is
+    # covered by test_fast_async_tool_result_defaults_to_serving_memory.
+    @mock.patch.object(hook, "HOOK_TOOL_RESULT_RAW", True)
     def test_fast_async_hook_ingest_threshold_commits_tool_evidence(self) -> None:
         original_auto_batch = hook.HOOK_AUTO_BATCH_EXTRACT
         hook.HOOK_AUTO_BATCH_EXTRACT = True
