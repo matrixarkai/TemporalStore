@@ -902,18 +902,21 @@ class _CodexHookOutputPart3:
             original_text="verbose stdout\nExit code: 0\nRan 9 tests\nOK",
         )
 
+        # Keeping the raw tool blob is OPT-IN: HOOK_TOOL_RESULT_RAW has defaulted off since it
+        # was introduced, and its fields were once even named tool_result_raw_opt_in_env. What
+        # a tool result leaves behind by default is the selected serving projection, which is
+        # what this test is named for. The opt-in itself is covered by
+        # test_fast_async_tool_result_raw_override_keeps_raw_only.
         self.assertEqual("accepted", result["status"])
-        self.assertEqual("accepted", result["raw_ingestion_status"])
+        self.assertEqual("skipped_tool_result_raw_capture", result["raw_ingestion_status"])
         self.assertEqual("accepted", result["serving_projection_status"])
         self.assertEqual("pending", result["async_pipeline_status"])
-        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertEqual([], server.adapter.raw_records)
         self.assertGreaterEqual(len(server.adapter.serving_records), 1)
-        raw = server.adapter.raw_records[0]
         serving = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
-        self.assertEqual("tool", raw["role"])
         self.assertEqual("tool", serving["role"])
-        self.assertEqual("serving", raw["metadata"]["serving_projection"]["visibility"])
         self.assertEqual("serving", serving["metadata"]["serving_projection"]["visibility"])
+        # The projection is the SELECTED text, not the raw stdout it was taken from.
         self.assertIn("Ran 9 tests", serving["text"])
         self.assertNotIn("verbose stdout", serving["text"])
 
@@ -1023,7 +1026,9 @@ class _CodexHookOutputPart3:
             hook.HOOK_TOOL_RESULT_SERVING = original
 
         self.assertEqual("accepted", result["status"])
-        self.assertEqual(1, len(server.adapter.raw_records))
+        # Only HOOK_TOOL_RESULT_SERVING is pinned above; the raw opt-in is untouched, so no raw
+        # record is kept. This test is about the serving projection being promoted.
+        self.assertEqual([], server.adapter.raw_records)
         self.assertGreaterEqual(len(server.adapter.serving_records), 1)
         serving = next(record for record in server.adapter.serving_records if record["record_type"] == "context_event")
         self.assertEqual("tool", serving["role"])
