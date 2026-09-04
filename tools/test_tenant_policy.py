@@ -179,6 +179,25 @@ class LiveTenantPolicyEndToEndTest(unittest.TestCase):
             out[key] = out.get(key, 0) + 1
         return out
 
+    def _vector_rows(self, records, tenant):
+        """How many of a tenant's rows actually CARRY a vector.
+
+        Counting context_embedding rows stopped measuring this: append_many folds a vector onto
+        the record that owns it and drops the separate row, so new logs hold none for anybody.
+        That made "starter stores no vectors" true for every tenant, passing while proving
+        nothing -- the assertion could no longer fail if the policy broke. A vector rides on its
+        owner under `vector` or, once compacted, under `embedding_meta`.
+        """
+        identities = {tenant, policy.tenant_hash_of(tenant)}
+        total = 0
+        for record in records:
+            scope = record.get("scope") or record.get("access_scope") or record.get("scope_key")
+            if policy.tenant_of(scope) not in identities:
+                continue
+            if record.get("vector") or record.get("embedding_meta"):
+                total += 1
+        return total
+
     def test_two_tenants_one_store_get_different_storage(self):
         import matrixark_mcp_server as mcp
 
@@ -201,8 +220,8 @@ class LiveTenantPolicyEndToEndTest(unittest.TestCase):
 
             enterprise = self._counts(records, "enterprise")
             starter = self._counts(records, "starter")
-            self.assertGreater(enterprise.get("context_embedding", 0), 0, "enterprise keeps its vectors")
-            self.assertEqual(starter.get("context_embedding", 0), 0, "starter stores no vectors")
+            self.assertGreater(self._vector_rows(records, "enterprise"), 0, "enterprise keeps its vectors")
+            self.assertEqual(self._vector_rows(records, "starter"), 0, "starter stores no vectors")
             self.assertGreater(enterprise.get("context_segment", 0), 0, "enterprise keeps segments")
             self.assertEqual(starter.get("context_segment", 0), 0, "starter stores no segments")
             self.assertGreater(starter.get("context_event", 0), 0, "starter still stores its memories")
@@ -210,8 +229,7 @@ class LiveTenantPolicyEndToEndTest(unittest.TestCase):
             # ---- flip the small tenant's embeddings ON with the service running
             policy.set_tenant_policy("starter", {"generate_embeddings": True})
             ingest("starter", "turn 99: My favorite drink is matcha.")
-            after = self._counts(adapter.read_all(), "starter")
-            self.assertGreater(after.get("context_embedding", 0), 0,
+            self.assertGreater(self._vector_rows(adapter.read_all(), "starter"), 0,
                                "a live policy change must take effect with no restart")
 
 
