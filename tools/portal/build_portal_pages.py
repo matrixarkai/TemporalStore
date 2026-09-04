@@ -286,6 +286,29 @@ EXTRA_CSS = """
 # hand-maintained ones through `_with_nav_js`. It is deliberately self-contained -- no helper from
 # any page's own script -- because it has to run identically on pages that share nothing else.
 NAV_JS = r'''<script>
+/* One copy helper for every page. It resolves true when the text reached the clipboard and false
+   when it did not: no clipboard API at all (an http:// origin, which a self-hosted portal often
+   is), a denied permission, a document that is not focused.
+
+   Callers must report what they are handed. Announcing "copied" without looking -- which every
+   caller here used to do -- is worse than saying nothing, because the reader stops trying and
+   walks away with an empty clipboard.
+
+   Its own IIFE, ahead of the strip's: the strip returns immediately on a page that has none, and
+   a copier defined after that line would not exist on those pages. */
+(function () {
+  "use strict";
+  window.__matrixarkCopyText = function (text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; }, function () { return false; });
+      }
+    } catch (e) { /* falls through to the failure below */ }
+    return Promise.resolve(false);
+  };
+}());
+
 /* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
    window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
 (function () {
@@ -2017,16 +2040,18 @@ function liveStream(options) {
 
   $("copyUserData").addEventListener("click", function () {
     var text = $("depUserData").textContent;
-    if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-    $("copyUserData").textContent = "copied";
-    setTimeout(function () { $("copyUserData").textContent = "copy user-data"; }, 1400);
+    window.__matrixarkCopyText(text).then(function (ok) {
+      $("copyUserData").textContent = ok ? "copied" : "copy failed";
+      setTimeout(function () { $("copyUserData").textContent = "copy user-data"; }, 1400);
+    });
   });
 
   $("copyEnv").addEventListener("click", function () {
     var text = $("depEnv").textContent;
-    if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-    $("copyEnv").textContent = "copied";
-    setTimeout(function () { $("copyEnv").textContent = "copy env file"; }, 1400);
+    window.__matrixarkCopyText(text).then(function (ok) {
+      $("copyEnv").textContent = ok ? "copied" : "copy failed";
+      setTimeout(function () { $("copyEnv").textContent = "copy env file"; }, 1400);
+    });
   });
 
   /* Set once the config lands. Until then only the gateway job is knowable, and printing a
@@ -2160,9 +2185,10 @@ function liveStream(options) {
         "  -H \"Authorization: Bearer $MATRIXARK_ADMIN_KEY\" \\\n" +
         "  -H 'Content-Type: application/json' \\\n  -d '" +
         JSON.stringify({ settings: d.settings }) + "'\n";
-      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-      $("copyCfgCurl").textContent = "copied";
-      setTimeout(function () { $("copyCfgCurl").textContent = "copy as curl"; }, 1400);
+      window.__matrixarkCopyText(text).then(function (ok) {
+        $("copyCfgCurl").textContent = ok ? "copied" : "copy failed";
+        setTimeout(function () { $("copyCfgCurl").textContent = "copy as curl"; }, 1400);
+      });
     }).catch(function (e) {
       say($("importMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
           "err");
@@ -2263,9 +2289,10 @@ function liveStream(options) {
 
   $("copyScrape").addEventListener("click", function () {
     var text = scrapeConfig();
-    if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-    $("copyScrape").textContent = "copied";
-    setTimeout(function () { $("copyScrape").textContent = "copy scrape config"; }, 1400);
+    window.__matrixarkCopyText(text).then(function (ok) {
+      $("copyScrape").textContent = ok ? "copied" : "copy failed";
+      setTimeout(function () { $("copyScrape").textContent = "copy scrape config"; }, 1400);
+    });
   });
   /* Traffic and encoding arrive on the stream; the checkbox now pauses the stream rather than a
      timer, which is the same promise to the reader and one connection instead of two pollers. */
@@ -3220,8 +3247,12 @@ function liveStream(options) {
 
   $("copyDiag").addEventListener("click", function () {
     withBundle(function (text) {
-      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-      say($("diagMsg"), "Copied " + text.length + " characters to the clipboard.", "ok");
+      window.__matrixarkCopyText(text).then(function (ok) {
+        say($("diagMsg"),
+            ok ? "Copied " + text.length + " characters to the clipboard."
+               : "Could not copy. Use Download instead, or select the bundle and copy it by hand.",
+            ok ? "ok" : "err");
+      });
     });
   });
   $("downloadDiag").addEventListener("click", function () {
@@ -4153,9 +4184,13 @@ EXPLORE_JS = r"""
       }
       /* The key is named, never pasted: this goes on a clipboard and often into a ticket. */
       var text = lines.join(" \\\n");
-      if (navigator.clipboard) { navigator.clipboard.writeText(text); }
-      say($("opMsg"), "Copied. It reads $MATRIXARK_API_KEY from your environment rather than " +
-        "carrying your key.", "ok");
+      window.__matrixarkCopyText(text).then(function (ok) {
+        say($("opMsg"),
+            ok ? "Copied. It reads $MATRIXARK_API_KEY from your environment rather than "
+                 + "carrying your key."
+               : "Could not copy. The command is shown above; select it and copy it by hand.",
+            ok ? "ok" : "err");
+      });
       return;
     }
     if (ev.target.id === "opRun") { runOp(); }
@@ -4814,9 +4849,14 @@ API_JS = r"""
     var route = button.closest(".route");
     var open = route.classList.toggle("open");
     button.textContent = open ? "hide curl" : "show curl";
-    if (open && navigator.clipboard) {
-      navigator.clipboard.writeText(curlFor(ROUTES[parseInt(button.dataset.curl, 10)]));
-      button.textContent = "hide curl — copied";
+    if (open) {
+      window.__matrixarkCopyText(curlFor(ROUTES[parseInt(button.dataset.curl, 10)]))
+        .then(function (ok) {
+          /* Only while the route is still open: the reader may have closed it again, and
+             relabelling a closed toggle "copied" describes something not on screen. */
+          if (!route.classList.contains("open")) { return; }
+          button.textContent = ok ? "hide curl — copied" : "hide curl — copy failed";
+        });
     }
   });
   $("filter").addEventListener("input", render);
@@ -4879,7 +4919,8 @@ def _with_nav_js(text):
     that stacks would open one stream per build.
     """
     if NAV_JS_MARKER in text:
-        start = text.index("<script>", text.index(NAV_JS_MARKER) - 200)
+        marker = text.index(NAV_JS_MARKER)
+        start = text.rindex("<script>", 0, marker)
         end = text.index("</script>", start) + len("</script>")
         return text[:start] + NAV_JS.strip() + text[end:]
     if "</body>" not in text:
@@ -4927,7 +4968,8 @@ def inject(filename, anchor, active):
         if not count:
             print("nav present but unrecognised in %s" % filename)
             sys.exit(1)
-        io.open(path, "w", encoding="utf-8", newline="\n").write(_with_tabs_js(_with_nav_js(replaced)))
+        rendered = _with_tabs_js(_with_nav_js(replaced))
+        io.open(path, "w", encoding="utf-8", newline="\n").write(rendered)
         print("nav refreshed in %s" % filename)
         return
     if anchor not in text:

@@ -122,20 +122,28 @@ class EveryClipboardWriteGoesThroughTheOneCopierTest(unittest.TestCase):
     names the count it found rather than checking that some particular line still exists.
     """
 
-    def test_the_page_writes_to_the_clipboard_in_exactly_one_place(self) -> None:
+    def test_no_write_on_this_page_ignores_its_result(self) -> None:
+        """Two copiers live here now -- this page's own, for the one-time secret, and the shared
+        one the nav script injects into every page. Both must read the promise they get; a write
+        that ignores it is free to claim a copy it did not make."""
         source = page_source()
-        self.assertEqual(1, source.count("clipboard.writeText("),
-                         "every copy on this page must go through copyText, which reports what "
-                         "happened; a second write site is free to claim a copy it did not make")
+        writes = [i for i in range(len(source))
+                  if source.startswith("clipboard.writeText(", i)]
+        self.assertGreaterEqual(len(writes), 1, "no clipboard write found; this check is vacuous")
+        for at in writes:
+            self.assertIn(".then(", source[at:at + 240],
+                          "a clipboard write at offset %d ignores the promise it returns" % at)
 
-    def test_that_one_place_is_inside_the_copier(self) -> None:
+    def test_the_secrets_own_copier_is_still_the_one_the_secret_uses(self) -> None:
+        """The shared helper takes only the text; this one also names the button it reports on,
+        which is what the one-time secret needs."""
         source = page_source()
         start = source.index("function copyText(")
         end = source.index("// ---- create", start)
-        write = source.index("clipboard.writeText(")
-        self.assertTrue(start < write < end,
-                        "the only clipboard write is outside copyText, so its result is not "
-                        "reported to anyone")
+        self.assertIn("clipboard.writeText(", source[start:end],
+                      "copyText no longer writes to the clipboard")
+        self.assertIn('copyText(secret, "copyNewKey", "Copied")', source,
+                      "the created key no longer goes through this page's own copier")
 
     def test_the_copier_reports_both_outcomes(self) -> None:
         """The failure branch is the one that was missing; assert it is present and distinct."""

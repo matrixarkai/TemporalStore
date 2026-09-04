@@ -855,6 +855,29 @@
 }());
 </script>
 <script>
+/* One copy helper for every page. It resolves true when the text reached the clipboard and false
+   when it did not: no clipboard API at all (an http:// origin, which a self-hosted portal often
+   is), a denied permission, a document that is not focused.
+
+   Callers must report what they are handed. Announcing "copied" without looking -- which every
+   caller here used to do -- is worse than saying nothing, because the reader stops trying and
+   walks away with an empty clipboard.
+
+   Its own IIFE, ahead of the strip's: the strip returns immediately on a page that has none, and
+   a copier defined after that line would not exist on those pages. */
+(function () {
+  "use strict";
+  window.__matrixarkCopyText = function (text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text).then(
+          function () { return true; }, function () { return false; });
+      }
+    } catch (e) { /* falls through to the failure below */ }
+    return Promise.resolve(false);
+  };
+}());
+
 /* The shared live strip. One stream per page: a page that runs its own (Setup, Overview) claims
    window.__matrixarkLive and calls window.__matrixarkLiveFrame instead of opening a second. */
 (function () {
