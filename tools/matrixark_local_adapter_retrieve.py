@@ -1537,6 +1537,10 @@ class _LocalAdapterRetrieveMixin:
             node_scores,
             top_k_per_layer=top_k_per_layer,
             max_children_scored_per_parent=max_children_scored_per_parent,
+            # The session being talked in should not have to out-rank its own history. If it was
+            # never scored into node_scores this is a no-op, so the guarantee can only ever add
+            # the current session, never move anything else.
+            guaranteed_path=tuple(self.default_session_node_path(scope)),
         )
         finish_retrieval_stage("node_traversal", stage_started_perf)
         stage_started_perf = time.perf_counter()
