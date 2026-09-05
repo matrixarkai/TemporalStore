@@ -1322,24 +1322,41 @@ fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, Str
     match response.response {
         CommandResponse::HashEntries { entries } => {
             let mut decoded = BTreeMap::new();
+            let mut skipped_non_utf8 = 0usize;
+            let mut first_skipped = String::new();
             for (field, value) in entries {
-                // Name what choked. Without the key and field this error can only be guessed at,
-                // and it is fatal to context assembly -- the caller returns an empty pack.
-                let value = String::from_utf8(value).map_err(|error| {
-                    let bytes = error.as_bytes();
-                    let head: String = bytes
-                        .iter()
-                        .take(16)
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    format!(
-                        "stored hash value is not UTF-8: {error} (key={key}, field={field}, \
-                         len={}, first bytes: {head})",
-                        bytes.len()
-                    )
-                })?;
+                // A value that is not text is not corruption: byte payloads are written in a
+                // carried raw shape, so embeddings and their kin are legitimately not UTF-8.
+                // Failing here would cost the whole pack -- and the caller turns an error into
+                // an empty pack, which a hook emits as `{}` while exiting 0. Leave the value out
+                // of the selection instead, and say how many were left out.
+                let value = match String::from_utf8(value) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        if skipped_non_utf8 == 0 {
+                            let bytes = error.as_bytes();
+                            let head: String = bytes
+                                .iter()
+                                .take(16)
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            first_skipped = format!(
+                                "key={key}, field={field}, len={}, first bytes: {head}",
+                                bytes.len()
+                            );
+                        }
+                        skipped_non_utf8 += 1;
+                        continue;
+                    }
+                };
                 decoded.insert(field, value);
+            }
+            if skipped_non_utf8 > 0 {
+                eprintln!(
+                    "context_pack skipped {skipped_non_utf8} value(s) that are not UTF-8 \
+                     (first: {first_skipped})"
+                );
             }
             // An empty read must stay a question, not become an answer: caching it would pin
             // "no data" for a key no write may ever touch again (observed once as a pinned
