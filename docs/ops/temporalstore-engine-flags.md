@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 312 of them, read by 109 functions.
+There are 310 of them, read by 107 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 312 |
-| booleans whose default this could read off the source | 47 |
+| total | 310 |
+| booleans whose default this could read off the source | 45 |
 | **defaulting on, and set by nothing** | 9 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 184 |
@@ -158,7 +158,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (27)
+## durability (25)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -176,12 +176,10 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_SCHEDULER_SNAPSHOT` | — | nothing | 1 | — |
 | `TS_RAFT_WAL_BINARY_RECORDS` | on | nothing | 1 | — |
-| `TS_SHARED_STORE_FENCE` | off | test | 1 | — |
 | `TS_WAL_BINARY_FRAME` | on | launch, test | 1 | — |
 | `TS_WAL_BINARY_RECORDS` | on | launch, test | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | — | config | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
-| `TS_WAL_ITEM_METADATA` | off | test | 1 | — |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
 | `TS_WAL_OUTCOME_STRICT` | off | nothing | 1 | — |
 | `TS_WAL_PREALLOCATE` | on | launch, test | 1 | — |

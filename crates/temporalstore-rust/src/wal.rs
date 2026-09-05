@@ -580,14 +580,31 @@ pub struct WriteAheadLogRecordMetadata {
 }
 
 impl WriteAheadLogRecordMetadata {
+    /// Metadata for a record carrying one command, without the per-item description.
+    ///
+    /// That description is derived entirely from the command this record already carries, and
+    /// read by nothing, so writing it costs 147 fsynced bytes per record to say what the record
+    /// says twice. `WriteAheadLogItemMetadata::from_command` reconstructs it for any caller that
+    /// wants it, and `single_command_with_items` writes it for one that cannot.
     pub fn single_command(command: &Command) -> Self {
+        Self::for_command(command, false)
+    }
+
+    /// The same, carrying the per-item description, for a consumer that reads records directly
+    /// and has not moved to deriving it.
+    ///
+    /// `TS_WAL_ITEM_METADATA` used to select this for every writer in the process. Nothing set
+    /// it, and the cost it added was per write, so restoring the description is a call rather
+    /// than an export -- made by whoever knows the consumer that needs it.
+    pub fn single_command_with_items(command: &Command) -> Self {
+        Self::for_command(command, true)
+    }
+
+    fn for_command(command: &Command, with_items: bool) -> Self {
         Self {
             version: WRITE_AHEAD_LOG_FORMAT_VERSION,
             timestamp_ms: current_time_ms(),
-            // Derived from the command this record already carries, and read by nothing, so
-            // writing it costs 147 fsynced bytes per record to say what the record says twice.
-            // `from_command` reconstructs it for any caller that wants it.
-            items: if wal_item_metadata_enabled() {
+            items: if with_items {
                 vec![WriteAheadLogItemMetadata::from_command(command)]
             } else {
                 Vec::new()
@@ -620,22 +637,6 @@ pub struct WriteAheadLogItemMetadata {
     pub meta_log: bool,
     #[serde(default)]
     pub block_log: bool,
-}
-
-/// TS_WAL_ITEM_METADATA: write the per-item description into each record.
-///
-/// Default OFF. Every field is derived from the command in the same record and nothing reads it
-/// back, so writing it is 147 bytes of amplification per write. Set to a truthy value to restore
-/// it for a consumer that reads records directly and has not moved to deriving it.
-fn wal_item_metadata_enabled() -> bool {
-    matches!(
-        std::env::var("TS_WAL_ITEM_METADATA")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 impl WriteAheadLogItemMetadata {
@@ -6085,9 +6086,8 @@ mod tests {
         assert!(!item.meta_log);
         assert!(!item.block_log);
 
-        // By default the record does not carry it -- 147 fsynced bytes per write saying what
-        // the record already says.
-        std::env::remove_var("TS_WAL_ITEM_METADATA");
+        // The record does not carry it -- 147 fsynced bytes per write saying what the record
+        // already says.
         let lean = WriteAheadLogRecordMetadata::single_command(&command);
         assert!(
             lean.items.is_empty(),
@@ -6099,10 +6099,9 @@ mod tests {
             "an empty description must be skipped entirely, got {encoded}"
         );
 
-        // The escape hatch restores it for a consumer reading records directly.
-        std::env::set_var("TS_WAL_ITEM_METADATA", "1");
-        let full = WriteAheadLogRecordMetadata::single_command(&command);
-        std::env::remove_var("TS_WAL_ITEM_METADATA");
+        // The other constructor restores it for a consumer reading records directly. It is
+        // named rather than selected, so no environment can point the live path at it.
+        let full = WriteAheadLogRecordMetadata::single_command_with_items(&command);
         assert_eq!(full.items.len(), 1);
         assert_eq!(full.items[0].object_key.as_deref(), Some("k"));
     }
