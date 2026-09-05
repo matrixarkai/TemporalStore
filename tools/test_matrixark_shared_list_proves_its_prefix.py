@@ -114,7 +114,8 @@ class ASharedListCanProveItsPrefix(unittest.TestCase):
         with tempfile.TemporaryDirectory() as store:
             adapter, records = self._seeded(store)
             base = adapter._durable_read_cache_snapshot_path()
-            delta = adapter._durable_read_cache_delta_path()
+            # The tail in whichever form this build writes -- see the accessor.
+            delta = adapter._durable_read_cache_tail_path()
             base_before = base.stat().st_size
             delta_before = delta.stat().st_size if delta.exists() else 0
 

@@ -230,6 +230,19 @@ class SnapshotIsACompressedContainerTest(unittest.TestCase):
         torn = _decode_delta_blocks(raw[: len(raw) - 10])
         self.assertLessEqual(len(torn), whole)
 
+    def test_a_tail_in_the_other_form_is_refused_rather_than_joined(self):
+        """Turning the container on over a store that already has a plain tail must not braid them.
+
+        Refusing raises ValueError, which both append paths already catch and answer by falling
+        through to a full rewrite -- and a rewrite clears both forms, leaving exactly one tail.
+        """
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = True
+        self._ingest(2)
+        adapter = MatrixArkLocalAdapter(self.log)
+        adapter._durable_read_cache_delta_path().write_text("{}", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            adapter._append_tail_records([{"record_type": "context_event", "event_id_hash": 1}])
+
     def _fresh_store(self) -> None:
         self._dir.cleanup()
         self._dir = tempfile.TemporaryDirectory()

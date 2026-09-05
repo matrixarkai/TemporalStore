@@ -182,6 +182,43 @@ class IncrementalReadCacheCase(unittest.TestCase):
         self.assertEqual(self.SEED + 8, len(view),
                          "a damaged tail must fall back to the log, not truncate")
 
+    def test_both_append_paths_write_the_same_tail(self):
+        """Two paths extend the tail, and they must agree on which file it is.
+
+        A write holds the batch it just appended; a read has to slice it out of the record set.
+        While the tail had a single form, writing it in two places was duplication. Once the tail
+        could be block-framed it became a correctness hazard: the writer extended one file, the
+        reader extended the other, the loader read whichever it prefers, its count disagreed with
+        the head, and every read re-derived from the log with a good snapshot sitting beside it.
+        Silently -- nothing raises and the answer stays right, only the latency moves.
+
+        The out-of-band write is what forces the read-side path: those records never pass through
+        this process's writer, so the next read is what has to persist them.
+        """
+        adapter = self._primed()
+        with self.path.open("a", encoding="utf-8") as handle:
+            for record in _records(self.SEED, 4):
+                print(json.dumps(record, separators=(",", ":")), file=handle)
+
+        A._LOCAL_READ_CACHE.clear()
+        reader = A.MatrixArkLocalAdapter(self.path)
+        view = reader.read_all()
+        # Before anything else looks at the store: _log_view builds another adapter, and a read
+        # can fold the tail back into the base, which would clear what this is here to inspect.
+        on_disk = [path for path in (reader._durable_read_cache_delta_path(),
+                                     reader._durable_read_cache_delta_binary_path())
+                   if path.exists()]
+        self.assertEqual([reader._durable_read_cache_tail_path()], on_disk,
+                         "the two append paths disagree about where the tail is")
+        self.assertEqual(self._log_view(), view)
+
+        # And the snapshot still SERVES, which is what two tails quietly cost.
+        A._LOCAL_READ_CACHE.clear()
+        again = A.MatrixArkLocalAdapter(self.path)
+        self.assertEqual(view, again.read_all())
+        self.assertEqual("durable", getattr(again, "_read_cache_source", "?"),
+                         "the snapshot stopped serving reads")
+
     def test_head_counts_track_what_was_persisted(self):
         adapter = self._primed()
         for record in _records(self.SEED, 6):

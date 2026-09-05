@@ -4880,6 +4880,39 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return self._durable_read_cache_delta_binary_path()
         return self._durable_read_cache_delta_path()
 
+    def _append_tail_records(self, appended_records: list[Json]) -> None:
+        """Append one batch to the tail, in whichever form this build writes.
+
+        BOTH append paths come through here -- the one a write takes, holding the batch it just
+        appended, and the one a read takes, slicing it out of the record set. They used to write the
+        tail separately. While the tail had a single form that was duplication; with two forms it is
+        a correctness hazard, because the writer would extend the block-framed tail while the reader
+        extended the plain one, the loader would read whichever it prefers, and its count would
+        disagree with the head -- so every read would re-derive from the log with a perfectly good
+        snapshot sitting beside it.
+
+        One block per appended batch. The batch is the boundary the caller already holds, so a block
+        costs no buffering and does not move the moment a record becomes durable -- and it reaches
+        15.6x where per-record framing reaches 3.3x, because one record carries no dictionary worth
+        the name.
+
+        A tail already on disk in the OTHER form is refused rather than joined. Raising here is the
+        answer both callers already have: they catch ValueError and fall through to a full rewrite,
+        which clears both forms and leaves exactly one tail behind.
+        """
+        binary = self._durable_read_cache_delta_binary_path()
+        plain = self._durable_read_cache_delta_path()
+        wanted, other = (binary, plain) if LOCAL_DURABLE_READ_CACHE_COMPRESS else (plain, binary)
+        if other.exists() and other.stat().st_size:
+            raise ValueError("a tail in the other form is on disk")
+        if wanted is binary:
+            with binary.open("ab") as handle:
+                handle.write(_encode_delta_block(appended_records))
+            return
+        with plain.open("a", encoding="utf-8") as handle:
+            for record in appended_records:
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
     def _durable_read_cache_head_path(self) -> Path:
         """Signature and counts only -- never the records.
 
@@ -5175,17 +5208,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             and delta_count + len(appended_records) <= LOCAL_DURABLE_READ_CACHE_MAX_DELTA
         ):
             try:
-                if LOCAL_DURABLE_READ_CACHE_COMPRESS:
-                    # One block per appended batch. The batch is the boundary the writer already
-                    # holds, so this costs no buffering and does not move the moment a record
-                    # becomes durable -- and it reaches 15.6x where per-record framing reaches 3.3x,
-                    # because one record carries no dictionary worth the name.
-                    with self._durable_read_cache_delta_binary_path().open("ab") as handle:
-                        handle.write(_encode_delta_block(appended_records))
-                else:
-                    with delta_path.open("a", encoding="utf-8") as handle:
-                        for record in appended_records:
-                            handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+                self._append_tail_records(appended_records)
                 write_head(base_count, delta_count + len(appended_records),
                            appended_records[-1])
                 self._durable_read_cache_state = (
@@ -5209,9 +5232,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             and self._durable_read_cache_snapshot_path().exists()
         ):
             try:
-                with delta_path.open("a", encoding="utf-8") as handle:
-                    for record in records[base_count + delta_count:]:
-                        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+                self._append_tail_records(records[base_count + delta_count:])
                 write_head(base_count, delta_count + appended)
                 self._durable_read_cache_state = (
                     self._cache_key_str(), base_count, delta_count + appended, epoch
