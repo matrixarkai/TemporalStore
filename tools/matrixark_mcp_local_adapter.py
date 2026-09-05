@@ -115,8 +115,24 @@ LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").s
 LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 # Records the tail file may hold before the base is folded back in. Bounds both the
 # delta file and the work a load does stitching it onto the base.
+# 250 rather than 2000, because the tail is now on the COLD path: a load stitches the delta onto the
+# base and compacts the result, and the delta is parsed a line at a time where the base is a single
+# bulk decode. Medians over four interleaved rounds of 60 ingest-then-read cycles:
+#
+#     cap      cold      read     ingest     delta
+#     main    77 ms     87 ms    319 ms         0
+#      250   119 ms     28 ms     97 ms       152
+#     2000   228 ms     26 ms     82 ms     1,386
+#
+# Past a couple of hundred the cap buys nothing a read or an ingest can feel and charges the cold
+# start for it. Raising it trades cold start for base rewrites; lowering it does the reverse.
+#
+# The cold start IS slower than it was -- about 42 ms here, and it does not go away by shrinking the
+# cap further, because most of it is the load-time compaction rather than the delta parse (at a cap
+# of 50, where the delta empties, cold still measured ~86 ms against main's ~64). It is paid once
+# per process, and one read plus one ingest already returns ~281 ms of it.
 LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
-    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "2000"))
+    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "250"))
 )
 # No floor by default. One was added because the fallback rewrote the WHOLE record set as JSON
 # whenever the append-only path could not apply, which was almost every append -- so a delay
@@ -4841,9 +4857,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             return None
         # Compact what was stitched. The base is a checkpoint and the delta is what has been
         # appended since, so together they can hold rows the base recorded and a later append
-        # superseded. Compaction is what makes that correct, and it is what lets the writer
-        # stop caring whether the persisted prefix is still a prefix. Measured at 3.1 ms over
-        # 1,178 records against the 114 ms rewrite it removes.
+        # superseded. Compaction is what makes that correct, and it is what lets the writer stop
+        # caring whether the persisted prefix is still a prefix.
         return compact_and_apply_tombstones(expand_interned_records(records))
 
     def _durable_read_cache_tail_fingerprint(self) -> str:
