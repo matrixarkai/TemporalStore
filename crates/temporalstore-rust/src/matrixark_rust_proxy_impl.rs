@@ -1074,12 +1074,6 @@ fn storage_prefix_from_request(request: &RecordLogRequest) -> String {
         .unwrap_or_default()
 }
 
-fn matrixark_compact_snapshot_retrieve_enabled() -> bool {
-    env::var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN")
-        .map(|value| !matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(true)
-}
-
 fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
     if storage_prefix.trim().is_empty() {
         return;
@@ -3758,13 +3752,7 @@ fn execute_record_log_request(
             );
             output
         }
-        "matrixark_retrieve_context_pack" => {
-            if matrixark_compact_snapshot_retrieve_enabled() {
-                retrieve_context_pack_output(engine, &request, root)?
-            } else {
-                json_output(retrieve_context_pack_native(engine, &request)?, root)?
-            }
-        }
+        "matrixark_retrieve_context_pack" => retrieve_context_pack_output(engine, &request, root)?,
         "matrixark_retrieve_context_pack_full_scan" => {
             json_output(retrieve_context_pack_native(engine, &request)?, root)?
         }
@@ -6876,7 +6864,6 @@ mod tests {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
-        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
 
         let storage_prefix = "matrixark:test:native-pack";
         let mut append = request("matrixark_batch_append_records");
@@ -7156,7 +7143,6 @@ mod tests {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
-        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
 
         let storage_prefix = "matrixark:test:native-source-role-budget";
         let mut append = request("matrixark_batch_append_records");
@@ -7423,7 +7409,6 @@ mod tests {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
-        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
 
         let storage_prefix = "matrixark:test:native-selection-phase-budget";
         let mut append = request("matrixark_batch_append_records");
@@ -7520,7 +7505,6 @@ mod tests {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
-        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
 
         let storage_prefix = "matrixark:test:native-compact-profile-shadow";
         let mut append = request("matrixark_batch_append_records");
@@ -7625,7 +7609,6 @@ mod tests {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
-        env::set_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN", "1");
 
         let storage_prefix = "matrixark:test:native-profile-shadow";
         let mut append = request("matrixark_batch_append_records");
@@ -7641,7 +7624,9 @@ mod tests {
         let engine = open_engine(&append).expect("engine");
         execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
 
-        let mut retrieve = request("matrixark_retrieve_context_pack");
+        // The op that does this has a name. The variable made a DIFFERENT op behave
+        // this way, for every caller in the process.
+        let mut retrieve = request("matrixark_retrieve_context_pack_full_scan");
         retrieve.storage_prefix = storage_prefix.to_string();
         retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
         retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
@@ -7724,7 +7709,6 @@ mod tests {
             Some(1)
         );
 
-        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
 
