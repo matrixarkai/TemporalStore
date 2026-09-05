@@ -860,12 +860,17 @@ impl TemporalEngine {
                 staged_outcomes.clear();
             }
             if write_command && !replaying_wal() {
-                // A write that changed the shard and recorded nothing cannot be replaced by its
-                // record. Off unless a sweep asks for it; when it is on, every existing test that
-                // writes anything becomes a probe for that property -- which covers far more of
-                // the mutating surface than a hand-listed fixture per command ever would.
+                // A write that changed the shard and recorded nothing cannot be replaced by
+                // its record. Every existing test that writes anything is a probe for that,
+                // which covers far more of the mutating surface than a hand-listed fixture per
+                // command would -- so this is checked in every debug build rather than behind
+                // `TS_WAL_OUTCOME_STRICT`, which nothing ever set. Measured before making it
+                // standing: 1628 lib tests, no violation. A release build pays nothing.
+                //
+                // Still conditional on records carrying results at all: with none there is
+                // nothing for the check to be about.
                 if crate::wal::wal_outcome_items_enabled()
-                    && crate::wal::wal_outcome_strict()
+                    && cfg!(debug_assertions)
                     && staged_outcomes.is_empty()
                 {
                     let rendered = format!("{command:?}");
@@ -874,7 +879,7 @@ impl TemporalEngine {
                         .map(|(head, _)| head.to_string())
                         .unwrap_or(rendered);
                     panic!(
-                        "TS_WAL_OUTCOME_STRICT: {label} changed shard {} and recorded nothing about what it did",
+                        "{label} changed shard {} and recorded nothing about what it did, so its record cannot replace it",
                         request.shard_id
                     );
                 }
