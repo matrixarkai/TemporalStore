@@ -3560,6 +3560,26 @@ mod tests {
         let counts = probe.stop();
         rows.push(("GET /proxy/config", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
+        // The context surface, which carries a scope and a body rather than a shard id. Measured
+        // whole so it can be read against POST /execute above: same dispatcher, heavier request.
+        let ingest_body = context_ingest_body("acct", "t");
+        let _ = proxy.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/ingest".to_string(),
+            body: ingest_body.clone(),
+        });
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = proxy.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: ingest_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("POST /context/ingest", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
         println!();
         println!("  path                    allocs/call   bytes/call");
         for (name, allocs, bytes) in &rows {
