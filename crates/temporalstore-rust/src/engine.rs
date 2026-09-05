@@ -1998,43 +1998,6 @@ pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
     bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
 }
 
-/// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
-///
-/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
-/// index written either way loads in either setting.
-///
-/// ON by default; `TS_INDEX_BINARY=0` is the escape hatch.
-///
-/// The container was built, measured and then left switched off, so every store written since has
-/// carried a plain-JSON served index. Measured at 300 adds into one subject, which is the shape
-/// that grows an index rather than merely touching it:
-///
-/// ```text
-///                    index      WAL    durable per memory   add p50
-///     JSON          19.9 MB  15.4 MB          227.0 KB      383.1 ms
-///     container      2.2 MB   2.3 MB          122.0 KB      367.8 ms
-/// ```
-///
-/// 46% less durable disk per memory. The WAL falls with it because index deltas ride the WAL, and
-/// page bytes do not move at all -- the data is unchanged, only the way the index is written.
-///
-/// A format default is a durability decision, not a size one, so the flip is gated on recovery
-/// rather than on the table above. Three cases, 120 memories each, comparing full retrieval
-/// snapshots across a restart:
-///
-///   * written by the container, reopened by it -- identical.
-///   * written as JSON, reopened with the container on -- identical, and the index on disk becomes
-///     a container, so an existing store upgrades in place with no migration step.
-///   * written by the container, reopened with the hatch pulled -- identical, and the index goes
-///     back to JSON. The flip is reversible in both directions, which is what makes it safe to
-///     make it the default rather than an opt-in.
-///
-/// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
-/// magic, so both formats stay loadable whichever way this flag points.
-fn index_binary_container_enabled() -> bool {
-    env_flag_default_on("TS_INDEX_BINARY")
-}
-
 /// TS_INDEX_CODEC: which payload to write when the container is on. `msgpack` (the default when
 /// the container is enabled) encodes the struct itself; `zstd-json` keeps the compressed-JSON
 /// payload, which any reader can still inspect with a decompressor and a JSON parser.
@@ -2069,14 +2032,49 @@ fn encode_index_msgpack(shard: &ShardState) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The single place the served index becomes bytes.
+/// The single place the served index becomes bytes, and it always writes the container.
 ///
 /// The measured cost of raw JSON here is real: a 1 000-memory store carries a 74 MB index, and a
 /// dump rewrites it whole. Compressing the same JSON keeps ONE representation of the struct --
 /// no schema mirrored by hand, no second definition to drift -- while cutting what is written and
 /// what must be read back at load.
+///
+///
+/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
+/// index written either way loads in either setting.
+///
+///
+/// The container was built, measured and then left switched off, so every store written since has
+/// carried a plain-JSON served index. Measured at 300 adds into one subject, which is the shape
+/// that grows an index rather than merely touching it:
+///
+/// ```text
+///                    index      WAL    durable per memory   add p50
+///     JSON          19.9 MB  15.4 MB          227.0 KB      383.1 ms
+///     container      2.2 MB   2.3 MB          122.0 KB      367.8 ms
+/// ```
+///
+/// 46% less durable disk per memory. The WAL falls with it because index deltas ride the WAL, and
+/// page bytes do not move at all -- the data is unchanged, only the way the index is written.
+///
+/// A format default is a durability decision, not a size one, so the flip is gated on recovery
+/// rather than on the table above. Three cases, 120 memories each, comparing full retrieval
+/// snapshots across a restart:
+///
+///   * written by the container, reopened by it -- identical.
+///   * written as JSON, reopened with the container on -- identical, and the index on disk becomes
+///     a container, so an existing store upgrades in place with no migration step.
+///     make it the default rather than an opt-in.
+///
+/// A reader never has to be told which it is holding: JSON starts with `{`, a container with its
+/// magic, so both formats stay loadable whichever way this flag points.
+///
+/// Writing raw JSON was a switch until nothing selected it: reading is sniffed either way, so the
+/// only thing the off position produced was an index an older build could read, and producing one
+/// now means running such a build. `encode_index_bytes_as_plain_json` keeps that shape reachable
+/// from tests, which is where the claim "both shapes still load" has to be proved.
 pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
-    if index_binary_container_enabled() && index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
+    if index_container_codec() == INDEX_CODEC_ZSTD_MSGPACK {
         // A binary payload only works from the struct itself, so the version-stamping path (which
         // patches a `Value`) keeps to JSON; both still land inside the same container.
         if let Some(encoded) = encode_index_msgpack(shard) {
@@ -2086,13 +2084,10 @@ pub(super) fn encode_index_bytes(shard: &ShardState) -> Vec<u8> {
     wrap_index_json(serde_json::to_vec(shard).expect("shard index should serialize"))
 }
 
-/// Put already-serialized index JSON into the container (or leave it as JSON when the container
-/// is off). Separate from `encode_index_bytes` because the version-stamping path serializes a
-/// patched `Value` rather than the struct, and both must produce the same on-disk shape.
+/// Put already-serialized index JSON into the container. Separate from `encode_index_bytes`
+/// because the version-stamping path serializes a patched `Value` rather than the struct, and both
+/// must produce the same on-disk shape.
 fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
-    if !index_binary_container_enabled() {
-        return json;
-    }
     match zstd::stream::encode_all(json.as_slice(), INDEX_ZSTD_LEVEL) {
         Ok(payload) => {
             let mut out = Vec::with_capacity(payload.len() + INDEX_CONTAINER_MAGIC.len() + 1);
@@ -2104,6 +2099,16 @@ fn wrap_index_json(json: Vec<u8>) -> Vec<u8> {
         // A compression failure must not cost the index: fall back to the bytes that always work.
         Err(_) => json,
     }
+}
+
+/// The served index as an older build wrote it: the struct's JSON, in no container.
+///
+/// Production has no way to produce this any more, and that is the point -- but the reader still
+/// takes it, and a claim about what a reader accepts is worth only as much as the bytes used to
+/// test it. This is those bytes.
+#[cfg(test)]
+pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
+    serde_json::to_vec(shard).expect("shard index should serialize")
 }
 
 /// The single place served-index bytes become a `ShardState`, whatever wrote them.
