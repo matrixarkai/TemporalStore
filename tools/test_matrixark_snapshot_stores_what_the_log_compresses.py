@@ -19,6 +19,7 @@ from pathlib import Path
 
 import matrixark_mcp_local_adapter as adapter_module
 from matrixark_mcp_local_adapter import (
+    _decode_snapshot_bytes,
     INTERN_BUNDLE_TOKEN_KEY,
     INTERN_DICT_RECORD_TYPE,
     LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
@@ -51,11 +52,11 @@ class SnapshotStoresWhatTheLogCompressesTest(unittest.TestCase):
         writer.close(timeout_s=600)
         # A read is what materialises the snapshot, so take one and keep what it returned.
         self.from_log = MatrixArkLocalAdapter(self.log).read_all()
-        self.base = self.root / "events.jsonl.read-cache.json"
+        self.base = MatrixArkLocalAdapter(self.log)._durable_read_cache_snapshot_path()
         self.assertTrue(self.base.exists(), "no base snapshot was written, so nothing is under test")
 
     def _snapshot_records(self) -> list:
-        payload = json.loads(self.base.read_text(encoding="utf-8"))
+        payload = _decode_snapshot_bytes(self.base.read_bytes())
         records = payload.get("records")
         self.assertIsInstance(records, list)
         return records

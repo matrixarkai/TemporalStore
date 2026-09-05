@@ -25,7 +25,7 @@ class MatrixArkLocalDurableReadCacheTest(unittest.TestCase):
             )
 
             self.assertEqual(len(adapter.read_all()), 2)
-            self.assertTrue(adapter._durable_read_cache_path().exists())
+            self.assertTrue(adapter._durable_read_cache_snapshot_path().exists())
 
             clear_process_read_cache()
             restarted = MatrixArkLocalAdapter(event_log)

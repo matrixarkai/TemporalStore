@@ -97,7 +97,7 @@ class _FlagGuard(unittest.TestCase):
         durable bytes, decoded but NOT expanded."""
         records: list[dict] = []
         for shard in sorted(path.parent.glob(path.name + "*")):
-            if shard.name.endswith(".read-cache.json"):
+            if shard.name.endswith((".read-cache.json", ".read-cache.bin")):
                 continue
             for line in shard.read_text(encoding="utf-8").splitlines():
                 line = line.strip()

@@ -50,7 +50,7 @@ class AWriteDoesNotRewriteTheSnapshot(unittest.TestCase):
         """A list that is not a continuation used to cost a full rewrite on every append."""
         with tempfile.TemporaryDirectory() as store:
             adapter, records = self._seeded(store)
-            base = adapter._durable_read_cache_path()
+            base = adapter._durable_read_cache_snapshot_path()
             before = base.read_bytes()
 
             diverged = [dict(r) for r in records]
@@ -70,7 +70,9 @@ class AWriteDoesNotRewriteTheSnapshot(unittest.TestCase):
         """Declining the full rewrite must not disable the cheap path."""
         with tempfile.TemporaryDirectory() as store:
             adapter, records = self._seeded(store)
-            delta = adapter._durable_read_cache_delta_path()
+            # The tail in whichever form this build writes. Naming the plain file here meant
+            # measuring one that is never written once the tail is block-framed.
+            delta = adapter._durable_read_cache_tail_path()
             before = delta.stat().st_size if delta.exists() else 0
 
             longer = list(records) + [{"record_type": "context_document", "id": "tail",

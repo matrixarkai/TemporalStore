@@ -113,8 +113,9 @@ class ASharedListCanProveItsPrefix(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as store:
             adapter, records = self._seeded(store)
-            base = adapter._durable_read_cache_path()
-            delta = adapter._durable_read_cache_delta_path()
+            base = adapter._durable_read_cache_snapshot_path()
+            # The tail in whichever form this build writes -- see the accessor.
+            delta = adapter._durable_read_cache_tail_path()
             base_before = base.stat().st_size
             delta_before = delta.stat().st_size if delta.exists() else 0
 
@@ -132,7 +133,7 @@ class ASharedListCanProveItsPrefix(unittest.TestCase):
         """The other half. The fingerprint has to REFUSE as well as permit, or it proves nothing."""
         with tempfile.TemporaryDirectory() as store:
             adapter, records = self._seeded(store)
-            base = adapter._durable_read_cache_path()
+            base = adapter._durable_read_cache_snapshot_path()
             base_before = base.read_bytes()
 
             # same length as the persisted prefix plus one, but a different record at the position
