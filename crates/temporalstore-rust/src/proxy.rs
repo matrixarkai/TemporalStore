@@ -2439,6 +2439,21 @@ mod tests {
         });
     }
 
+    /// Measured across batch sizes, best of three, 8 threads, load ~13:
+    ///
+    ///     batch   ns/admit   ns/command
+    ///     1          36.2       36.20
+    ///     16         36.9        2.31
+    ///     128        60.0        0.47
+    ///
+    /// Admission is a fixed cost, not a per-command one: 36 ns buys the whole decision for one
+    /// command or sixteen, and a batch of 128 costs 60 ns in total -- about 0.19 ns per command
+    /// past the first. That is the shape of a jump table, which is what classifying a command is.
+    ///
+    /// Recorded so the per-command work here is not optimised again. It has been looked at twice:
+    /// computing `is_write` once and passing it to both decisions measured ~6% SLOWER at batch 1
+    /// (the shape nearly every request takes) and was reverted, and this says why -- there is
+    /// almost nothing per command to remove.
     /// Admission cost for a batch, under contention. `cargo test --lib bench_proxy_admission
     /// -- --ignored --nocapture`
     #[test]
