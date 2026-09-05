@@ -7113,15 +7113,12 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
         }
 
         if sampled {
-            std::env::set_var("TS_EVICT_SAMPLED_LRU", "1");
-        } else {
-            std::env::remove_var("TS_EVICT_SAMPLED_LRU");
+            engine.use_sampled_eviction_for_test();
         }
         crate::engine::reset_live_page_scan_entries();
         // Threshold 0 so the pressure gate always admits and the selection path actually runs.
         let report = engine.apply_storage_eviction(1, 0, 4, false, false);
         let scanned = crate::engine::live_page_scan_entries();
-        std::env::remove_var("TS_EVICT_SAMPLED_LRU");
         (scanned, report.selected_victims.len())
     }
 
@@ -7182,7 +7179,9 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
     std::env::set_var("TS_BLOCK_IN_WAL", "1");
     // The spill path would otherwise mask what is being tested by copying the value to a real
     // slab on eviction.
-    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
+    // work: the handler is installed during construction, which already happened above.
+    engine.disable_hot_page_spill_for_test();
 
     let key = "block-in-wal-key";
     let value = b"block-in-wal-value".to_vec();
@@ -7205,7 +7204,6 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
         },
     });
     std::env::remove_var("TS_BLOCK_IN_WAL");
-    std::env::remove_var("TS_HOT_PAGE_SPILL");
 
     assert_eq!(
         read.response,
@@ -7241,7 +7239,9 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
     });
 
     std::env::set_var("TS_BLOCK_IN_WAL", "1");
-    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
+    // work: the handler is installed during construction, which already happened above.
+    engine.disable_hot_page_spill_for_test();
 
     let write = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -7264,7 +7264,6 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
         },
     });
     std::env::remove_var("TS_BLOCK_IN_WAL");
-    std::env::remove_var("TS_HOT_PAGE_SPILL");
 
     assert_eq!(
         read.response,
@@ -7506,7 +7505,9 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
     });
 
     std::env::set_var("TS_BLOCK_IN_WAL", "1");
-    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
+    // work: the handler is installed during construction, which already happened above.
+    engine.disable_hot_page_spill_for_test();
 
     let key = "reload-block-key";
     let value = b"reload-block-value".to_vec();
@@ -7532,7 +7533,6 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
         },
     });
     std::env::remove_var("TS_BLOCK_IN_WAL");
-    std::env::remove_var("TS_HOT_PAGE_SPILL");
 
     assert_eq!(
         read.response,
@@ -7568,7 +7568,9 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
         },
     });
     std::env::set_var("TS_BLOCK_IN_WAL", "1");
-    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
+    // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
+    // work: the handler is installed during construction, which already happened above.
+    engine.disable_hot_page_spill_for_test();
 
     assert_eq!(
         engine.wal_resident_page_count(1),
@@ -7612,7 +7614,6 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
         },
     });
     std::env::remove_var("TS_BLOCK_IN_WAL");
-    std::env::remove_var("TS_HOT_PAGE_SPILL");
     assert_eq!(
         read.response,
         CommandResponse::Bytes { value: Some(value) },
@@ -7790,11 +7791,14 @@ fn two_engines_in_one_process_do_not_read_each_others_pages() {
                 ..Config::default()
             },
         });
+        // Said to EACH engine this closure builds. The variable worked here -- it is set before
+        // construction, unlike the four above -- but it said it to the process, and this test
+        // builds two engines to prove they do not share a spill map.
+        engine.disable_hot_page_spill_for_test();
         engine
     };
 
     std::env::set_var("TS_BLOCK_IN_WAL", "1");
-    std::env::set_var("TS_HOT_PAGE_SPILL", "0");
 
     let first = make("first");
     let second = make("second");
@@ -7833,7 +7837,6 @@ fn two_engines_in_one_process_do_not_read_each_others_pages() {
     let first_read = read(&first);
     let second_read = read(&second);
     std::env::remove_var("TS_BLOCK_IN_WAL");
-    std::env::remove_var("TS_HOT_PAGE_SPILL");
 
     assert_eq!(
         first_read,

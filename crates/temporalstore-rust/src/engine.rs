@@ -133,6 +133,13 @@ pub struct TemporalEngine {
     /// baseline could otherwise observe a window its sibling had opened. Shared across clones,
     /// because a clone is the same engine.
     concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether eviction picks its victims by a sampled scan instead of enumerating and sorting
+    /// every bucket.
+    ///
+    /// FALSE. Sampling changes WHICH buckets are chosen, not only how fast they are found, so it
+    /// wants deliberate enabling and measurement per deployment. One test turns it on, of the
+    /// engine it built, to measure how the scan volume grows with the store either way.
+    evict_sampled_lru: Arc<std::sync::atomic::AtomicBool>,
     /// Whether a committed raft batch shares ONE durable engine-WAL barrier.
     ///
     /// True everywhere but a test measuring the per-entry loop. `TS_RAFT_APPLY_COALESCE` used to
@@ -2937,13 +2944,6 @@ fn env_flag_on(name: &str) -> bool {
 /// Default-ON gate read: the fix is LIVE unless explicitly disabled with
 /// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
 /// fixed behavior by default; the env var remains only as an escape hatch.
-/// Bound eviction victim selection to a sampled scan instead of enumerating and sorting every
-/// bucket. Off by default: this changes which buckets are chosen, not just how fast they are
-/// found, so it wants deliberate enabling and measurement per deployment.
-pub fn evict_sampled_lru_enabled() -> bool {
-    env_flag_on("TS_EVICT_SAMPLED_LRU")
-}
-
 /// Tuning for sampled eviction, read from the environment with defaults that mirror the
 /// established policy: sample several buckets per wanted victim, keep a bounded candidate pool
 /// across passes, and cap how far one pass may walk.
