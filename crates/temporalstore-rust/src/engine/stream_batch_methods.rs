@@ -409,6 +409,12 @@ impl TemporalEngine {
                     });
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
+                    // A command that writes no page cannot have changed the page index, so a
+                    // rebuild after one recomputes what it already held. The single-command path
+                    // has always skipped it here; this path did not, so the same command walked
+                    // the whole store when it arrived in a batch and nothing when it arrived
+                    // alone -- measured at one visit per page in the shard, per command.
+                    && !command_writes_no_page(&command_for_post_write)
                     && (!command_updates_bucket_index_directly(&command_for_post_write)
                         || shard.bucket_index.bucket_map.is_empty())
                 {
