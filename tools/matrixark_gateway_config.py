@@ -215,6 +215,17 @@ GROUPS: Dict[str, Json] = {
 # vectors already in the store stop being usable the moment the encoder changes. The engine's own
 # MIGRATION note calls the result "a quiet degradation rather than an error" -- which is exactly why
 # it belongs beside the control rather than in a comment somebody has to go and find.
+# The gateway re-reads both encoder fields on the next call, so `live` is true of it. A co-located
+# encoder server does not: `context_minilm_embed_server` binds MATRIXARK_EMBEDDING_MODEL and
+# MATRIXARK_EMBEDDING_MODEL_PATH at ITS import, and keeps whatever it started with. Said once and
+# shared by both controls, because saying it twice is how one of them came to say it and the other
+# not to.
+ENCODER_SERVER_NOTE = (
+    " The gateway picks this up on the next call, but a co-located encoder server reads it at ITS"
+    " startup — restart that too if you are running one."
+)
+
+
 ENCODER_CHANGE_NOTE = (
     " Changing this on a store that already holds documents leaves every vector in it made by the "
     "previous encoder: they are declined as a different model, so retrieval falls back to lexical "
@@ -310,13 +321,12 @@ SETTINGS: List[Setting] = [
             "Must end in /v1: the request is built as <base>/embeddings."),
     Setting("embedding.model", "embedding", "MATRIXARK_EMBEDDING_MODEL",
             "Embedding model", "str", "", "live",
-            "Encoder model name, e.g. paraphrase-multilingual-MiniLM-L12-v2. The gateway picks "
-            "this up on the next call, but a co-located encoder server reads it at ITS startup — "
-            "restart that too if you are running one." + ENCODER_CHANGE_NOTE),
+            "Encoder model name, e.g. paraphrase-multilingual-MiniLM-L12-v2."
+            + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
     Setting("embedding.model_path", "embedding", "MATRIXARK_EMBEDDING_MODEL_PATH",
             "Embedding model path", "str", "", "live",
             "Local path to a downloaded encoder; wins over the model name when set."
-            + ENCODER_CHANGE_NOTE),
+            + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
     Setting("embedding.api_key_env", "embedding", "MATRIXARK_EMBEDDING_API_KEY_ENV",
             "Embedding key variable", "str", "OPENAI_API_KEY", "live",
             "Name of the environment variable holding the encoder key."),
