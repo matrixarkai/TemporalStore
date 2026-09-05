@@ -96,7 +96,11 @@ class TheClaimsAboutLocalAreTrueTest(unittest.TestCase):
         with open(os.path.join(TOOLS, "matrixark_mcp_embeddings.py"), encoding="utf-8") as handle:
             source = handle.read()
         api = re.search(r"_API_EMBEDDING_PROVIDERS\s*=\s*\{([^}]*)\}", source)
-        oss = re.search(r'provider in \{("oss"[^}]*)\}', source)
+        # Read from the assignment, as the API set above already is. The encoder used to spell
+        # these four spellings out at each branch and now names them once; the check that the
+        # constant is what the code actually DISPATCHES on lives in
+        # test_matrixark_an_unrecognised_provider_name_is_named, which follows the name.
+        oss = re.search(r"_OSS_EMBEDDING_PROVIDERS\s*=\s*\{([^}]*)\}", source)
         strip = lambda text: {v.strip().strip('"').strip("'") for v in text.split(",") if v.strip()}
         return strip(api.group(1)), strip(oss.group(1))
 

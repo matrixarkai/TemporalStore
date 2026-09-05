@@ -52,6 +52,8 @@ def assigned_string_set(filename: str, name: str) -> set:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == name:
+                    if not isinstance(node.value, (ast.Set, ast.List, ast.Tuple)):
+                        continue
                     return {e.value for e in node.value.elts
                             if isinstance(e, ast.Constant) and isinstance(e.value, str)}
     raise AssertionError("%s not found in %s" % (name, filename))
@@ -65,6 +67,20 @@ def provider_membership_sets(filename: str) -> list:
             continue
         left, right = node.left, node.comparators[0]
         if not (isinstance(left, ast.Name) and left.id == "provider"):
+            continue
+        if isinstance(right, ast.Name):
+            # A dispatch may NAME its set rather than spell it out, and one now does: the encoder
+            # hoisted the four spellings that select the in-process model into a constant, because
+            # writing them at each branch was four places for a new spelling to reach one and miss
+            # the others. Refusing to follow the name would make this check pass only for modules
+            # that repeat themselves, and go quiet on the ones that stopped -- which is the wrong
+            # way round, since what it is really asking is what the code DISPATCHES on.
+            try:
+                named = assigned_string_set(filename, right.id)
+            except AssertionError:
+                continue
+            if named:
+                found.append(named)
             continue
         if isinstance(right, (ast.Set, ast.List, ast.Tuple)):
             members = {e.value for e in right.elts
