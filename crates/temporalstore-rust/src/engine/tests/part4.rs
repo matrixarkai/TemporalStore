@@ -5593,6 +5593,11 @@ fn does_writing_scale_with_the_store() {
 /// fields carry no `serde` attribute, so their Rust name IS their wire name -- renaming one
 /// changes what is written, and an index written by the new code would not be read by the old.
 /// Listing them makes that visible in a diff instead of silent.
+///
+/// The derived object-to-page lookup is deliberately absent. It duplicates page refs the bucket
+/// index already carries, so it is `skip_serializing` and rebuilt on load -- which is only
+/// safe while loading actually rebuilds it. `a_reload_rebuilds_the_lookup_the_index_no_longer_writes`
+/// holds that half; this one holds that the format stays as small as that change made it.
 #[test]
 fn the_index_wire_keys_are_what_they_were() {
     let dir = tempfile::tempdir().unwrap();
@@ -5650,7 +5655,6 @@ fn the_index_wire_keys_are_what_they_were() {
         vec![
             "address",
             "b",
-            "by_component",
             "component",
             "deleted",
             "deleted_object_index",
@@ -5668,19 +5672,131 @@ fn the_index_wire_keys_are_what_they_were() {
             "o",
             "object_index",
             "object_key",
-            "object_page_lookup",
             "oi",
             "page_index",
-            "page_ref_key",
             "pi",
             "ps",
-            "refs",
             "routing_slot",
             "rs",
             "slot_map",
             "ttl_ms",
         ],
-        "the index writes different keys than it did; a rename reached the format"
+        "the index writes different keys than it did; a rename or a serde attribute reached the format"
+    );
+}
+
+/// The index no longer writes the object-to-page lookup, so a reload has to rebuild it.
+///
+/// `object_page_lookup` is `skip_serializing`: it duplicates page refs the bucket index already
+/// carries, and persisting it made large context checkpoints tens of MB bigger. Dropping it from
+/// the format is only safe while a load reconstructs it, and a lookup left empty by a reload does
+/// not fail loudly -- it makes reads miss.
+///
+/// So this asserts both halves, and each is a control on the other: the format does not carry it,
+/// and a base-only load -- no delta fold, no WAL replay -- comes back with it populated and
+/// identical to what a rebuild produces. Comparing against the rebuild rather than a hand-written
+/// expectation is the same choice `deleting_leaves_the_lookup_a_rebuild_would_have_built` makes,
+/// for the same reason.
+#[test]
+fn a_reload_rebuilds_the_lookup_the_index_no_longer_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let pages = dir.path().join("pages");
+    let indexes = dir.path().join("indexes");
+    let engine =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+    engine.load_shard(1);
+
+    // A mix of kinds, so the objects do not all carry refs in one shape.
+    for i in 0..24 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: format!("s{i:03}"), value: vec![b'v'; 48] },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: format!("h{i:03}"),
+                field: format!("f{i}"),
+                value: vec![b'v'; 32],
+            },
+        });
+    }
+
+    {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        // Positive control: if the writes above did not populate the lookup, a reload that comes
+        // back empty would agree with a rebuild that is also empty, and the test would pass while
+        // measuring nothing.
+        assert!(
+            !shard.bucket_index.object_page_lookup.is_empty(),
+            "the writes did not populate the lookup, so the reload below proves nothing"
+        );
+        let value = serde_json::to_value(&shard.bucket_index).expect("the index serializes");
+        assert_eq!(
+            value.get("object_page_lookup"),
+            None,
+            "the derived lookup is being persisted again, and the checkpoint it was taken out of              will grow by every page ref it duplicates"
+        );
+    }
+
+    // The durable base checkpoint: fsyncs every page, then advances the watermark.
+    engine.flush_shard_index(1);
+
+    // A fresh engine over the SAME pages+index dirs, loading the base checkpoint WITHOUT folding
+    // deltas, so nothing re-executes the writes through the maintained path.
+    //
+    // Going through `load_shard` would prove nothing. WAL replay re-runs each write and populates
+    // the lookup on its way past, so the load-time rebuild could be deleted outright and an
+    // end-to-end reload would still come back populated -- checked, by deleting it. This path is
+    // the one where the rebuild is the only thing that can supply the lookup.
+    let reloaded =
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
+    let mut state = reloaded
+        .load_index_base_only(1, false)
+        .expect("the persisted base index loads");
+
+    let loaded: Vec<(String, String, Vec<(u32, u64)>)> = state
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(model, object, refs)| {
+            let mut flat: Vec<(u32, u64)> = refs
+                .by_component
+                .iter()
+                .flat_map(|component| component.refs.as_slice())
+                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .collect();
+            flat.sort();
+            (model.to_string(), object.to_string(), flat)
+        })
+        .collect();
+    assert!(
+        !loaded.is_empty(),
+        "loading the base index left the derived lookup empty; nothing rebuilt it, and reads that          go through it will miss"
+    );
+
+    state.bucket_index.rebuild_object_page_lookup();
+
+    let rebuilt: Vec<(String, String, Vec<(u32, u64)>)> = state
+        .bucket_index
+        .object_page_lookup
+        .iter()
+        .map(|(model, object, refs)| {
+            let mut flat: Vec<(u32, u64)> = refs
+                .by_component
+                .iter()
+                .flat_map(|component| component.refs.as_slice())
+                .map(|page_ref| (page_ref.routing_bucket, page_ref.page_ref_key))
+                .collect();
+            flat.sort();
+            (model.to_string(), object.to_string(), flat)
+        })
+        .collect();
+
+    assert_eq!(
+        loaded, rebuilt,
+        "the lookup a load built differs from the one a rebuild builds"
     );
 }
 
