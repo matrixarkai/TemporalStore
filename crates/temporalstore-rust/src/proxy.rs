@@ -3526,6 +3526,18 @@ mod tests {
 
     /// What one proxy request allocates, by path.
     ///
+    /// READ THIS BEFORE QUOTING THE ROWS: there is no backend at 127.0.0.1:1, so every row that
+    /// goes end to end takes the FAILURE path. `POST /execute` and `POST /context/ingest` are
+    /// therefore "what a request costs when the datanode cannot be reached", which includes the
+    /// error response and the backend-failure accounting -- a `format!` naming the address, a
+    /// `json_response` carrying the status, and a route-cache note. A successful forward pays the
+    /// response parse instead.
+    ///
+    /// The rows are still worth having and the comparisons between them still hold, because every
+    /// row pays the same error tail: the split between parse and handler, and the difference
+    /// between a command and a context request, are unaffected by it. What must not be done is
+    /// quoting these as the cost of a healthy request.
+    ///
     /// Latency work on these paths took the locks off them; this asks the other question, which
     /// no benchmark here answered: how much a request allocates and where. Allocation is both
     /// memory and time -- it is the remaining cost on the table path now the locks are gone.
