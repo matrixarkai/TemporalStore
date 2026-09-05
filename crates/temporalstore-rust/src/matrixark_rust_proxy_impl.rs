@@ -1323,8 +1323,22 @@ fn hgetall_map(engine: &RecordStore, key: String) -> Result<BTreeMap<String, Str
         CommandResponse::HashEntries { entries } => {
             let mut decoded = BTreeMap::new();
             for (field, value) in entries {
-                let value = String::from_utf8(value)
-                    .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+                // Name what choked. Without the key and field this error can only be guessed at,
+                // and it is fatal to context assembly -- the caller returns an empty pack.
+                let value = String::from_utf8(value).map_err(|error| {
+                    let bytes = error.as_bytes();
+                    let head: String = bytes
+                        .iter()
+                        .take(16)
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!(
+                        "stored hash value is not UTF-8: {error} (key={key}, field={field}, \
+                         len={}, first bytes: {head})",
+                        bytes.len()
+                    )
+                })?;
                 decoded.insert(field, value);
             }
             // An empty read must stay a question, not become an answer: caching it would pin
