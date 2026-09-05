@@ -1855,9 +1855,8 @@ fn wire_matrixobject_durability(
         }
     };
 
-    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack; group commit (the
-    // `[wal] group_commit` / `TS_GROUP_COMMIT` gate, default ON) then coalesces concurrent sync
-    // writers onto a shared durable barrier. Coalescing requires the single-appendable-log
+    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack; group commit, which
+    // is unconditional, then coalesces concurrent sync writers onto a shared durable barrier. Coalescing requires the single-appendable-log
     // (ProtobufAppendBlob) WAL layout, so select it here when group commit is active on the sync
     // path. `latest_persisted_wal_index` / replay read BOTH layouts (union by WAL index), so a shard
     // that previously wrote the per-key layout continues monotonically with no migration.
