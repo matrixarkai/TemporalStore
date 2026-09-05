@@ -93,12 +93,23 @@ def _default_on_switches() -> Dict[str, str]:
 
 
 def _selector_texts() -> List[Tuple[bool, str]]:
-    """(is_registry, text) for everywhere a switch could be selected."""
+    """(is_registry, text) for everywhere a switch could be selected.
+
+    This file is excluded, and the reason is worth keeping. KNOWN_UNSELECTED writes each name as
+    a quoted key followed by a colon, which is one of the shapes that counts as selecting -- so
+    once this file was committed it read its own list as a set of selectors and reported every
+    listed switch as reachable. It could not do that before being committed, because the scan
+    walks  and an untracked file is not listed: the test was green when written and
+    red when merged. A file that LISTS switches must never count as selecting them.
+    """
     listed = subprocess.run(
         ["git", "ls-files", "*.py", "*.sh", "*.json", "*.toml", "*.yml", "*.yaml", "*.rs", "*.js"],
         cwd=REPO, capture_output=True, text=True).stdout.split()
+    myself = os.path.basename(__file__)
     texts: List[Tuple[bool, str]] = []
     for path in listed:
+        if os.path.basename(path) == myself:
+            continue
         try:
             with open(os.path.join(REPO, path), encoding="utf-8") as handle:
                 texts.append((os.path.basename(path) in _REGISTRIES, handle.read()))
