@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests for the phase-1 flat-append gate (`TS_PHASE1_FLAT`): the two per-write O(store) costs that
+//! Tests for phase-1 flat append (`LocalWriteAheadLogStore::flat_append`): the two per-write
+//! O(store) costs that
 //! run under the engine `shards` write lock -- the WAL append's full-file `last_wal_sequence_at`
 //! rescan and the per-execute `promote_model_maps_to_bucket_index_authority` reconcile scan -- are
 //! made O(1) so phase-1 stops aging O(n) with data size. These tests prove:
@@ -16,13 +17,12 @@
 #![allow(clippy::all)]
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
 
 // The gates are process-global env vars; serialize the sub-tests that toggle them so an OFF-baseline
 // measurement never observes a sibling's ON window (and vice versa). Other tests are unaffected: the
 // gate only alters an internal fast path and the per-engine/per-store counters read here are
 // isolated to the engine under test.
-static PHASE1_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn new_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
@@ -70,8 +70,6 @@ fn assert_present_sampled(engine: &TemporalEngine, n: usize, step: usize) {
 #[test]
 #[ignore]
 fn phase1_flat_diag_timing() {
-    let _serial = PHASE1_ENV_LOCK.lock().unwrap();
-    std::env::set_var("TS_PHASE1_FLAT", "1");
     let dir = tempfile::tempdir().unwrap();
     let engine = new_engine(dir.path());
     let batch = 500usize;
@@ -98,18 +96,15 @@ fn phase1_flat_diag_timing() {
             raw.stats_full_scans
         );
     }
-    std::env::remove_var("TS_PHASE1_FLAT");
 }
 
-/// AGING: with TS_PHASE1_FLAT ON, the WAL append rescan count and the promote reconcile scan count
+/// AGING: with flat append ON, the WAL append rescan count and the promote reconcile scan count
 /// both stay a SMALL CONSTANT over 5k writes -- phase-1 is O(1) per write, not O(n). The OFF
 /// baseline fires each scan once per command, so the counts track the write volume (O(writes)).
 #[test]
 fn phase1_flat_keeps_per_write_scans_flat_over_5k_writes() {
-    let _serial = PHASE1_ENV_LOCK.lock().unwrap();
 
     // --- Gate ON: 5k writes, scans must stay flat (a small constant, not ~5000). ---
-    std::env::set_var("TS_PHASE1_FLAT", "1");
     let on_dir = tempfile::tempdir().unwrap();
     let on = new_engine(on_dir.path());
     const N: usize = 5000;
@@ -125,7 +120,6 @@ fn phase1_flat_keeps_per_write_scans_flat_over_5k_writes() {
     // Read back a sample WHILE the gate is still on (so the reads also skip the O(store) promote
     // scan -- reading all N with the gate off would itself be O(N^2) and is not what we measure).
     assert_present_sampled(&on, N, 137);
-    std::env::remove_var("TS_PHASE1_FLAT");
     // A tiny constant covers the first warm-up append + the first reconcile (+ any load-time
     // reconcile). The point is NONE of the three per-write scans scale with N.
     assert!(
@@ -142,9 +136,9 @@ fn phase1_flat_keeps_per_write_scans_flat_over_5k_writes() {
     );
 
     // --- Gate OFF baseline: each scan fires once per command -> counts track the write volume. ---
-    std::env::set_var("TS_PHASE1_FLAT", "0");
     let off_dir = tempfile::tempdir().unwrap();
     let off = new_engine(off_dir.path());
+    off.write_ahead_log_store().rescan_on_every_append_for_test();
     // Smaller than N: with the gate off each of these writes pays the O(store) promote scan AND a
     // full-file WAL rescan, so the run is intentionally O(M^2) -- kept modest so the baseline is
     // quick while still proving the per-command scans track the write volume.
@@ -193,8 +187,6 @@ fn phase1_flat_keeps_per_write_scans_flat_over_5k_writes() {
 /// cold reload's first append correctly reconciles against the on-disk WAL via the full scan.
 #[test]
 fn phase1_flat_writes_survive_wal_replay_reload() {
-    let _serial = PHASE1_ENV_LOCK.lock().unwrap();
-    std::env::set_var("TS_PHASE1_FLAT", "1");
 
     let dir = tempfile::tempdir().unwrap();
     const N: usize = 400;
@@ -226,7 +218,6 @@ fn phase1_flat_writes_survive_wal_replay_reload() {
         "post-reload readback failed: {:?}",
         get.response
     );
-    std::env::remove_var("TS_PHASE1_FLAT");
 }
 
 /// COALESCING: with the gate ON plus the concurrent-commit path, group commit still engages
@@ -236,9 +227,6 @@ fn phase1_flat_writes_survive_wal_replay_reload() {
 /// re-test on the standalone shared backend.
 #[test]
 fn phase1_flat_composes_with_concurrent_commit_coalescing() {
-    let _serial = PHASE1_ENV_LOCK.lock().unwrap();
-    std::env::set_var("TS_PHASE1_FLAT", "1");
-    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
 
     const WRITERS: usize = 8;
     const PER_WRITER: usize = 25;
@@ -272,8 +260,6 @@ fn phase1_flat_composes_with_concurrent_commit_coalescing() {
         handle.join().expect("writer thread must not panic");
     }
     let fsyncs = engine.write_ahead_log_store().stats(1).syncs - syncs_before;
-    std::env::remove_var("TS_PHASE1_FLAT");
-    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
     eprintln!(
         "[phase1_flat] concurrent writers={WRITERS} writes={total} fdatasyncs={fsyncs} ratio={:.3} fsync/write",
         fsyncs as f64 / total as f64

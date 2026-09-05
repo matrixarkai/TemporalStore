@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 301 of them, read by 99 functions.
+There are 300 of them, read by 98 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 301 |
-| booleans whose default this could read off the source | 35 |
+| total | 300 |
+| booleans whose default this could read off the source | 34 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 178 |
@@ -363,7 +363,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING` | on | nothing | 1 | — |
 
-## behaviour (63)
+## behaviour (62)
 
 Everything else that changes what the engine does.
 
@@ -380,7 +380,6 @@ Everything else that changes what the engine does.
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
-| `TS_PHASE1_FLAT` | on | test | 2 | — |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED` | — | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL` | — | test | 1 | — |

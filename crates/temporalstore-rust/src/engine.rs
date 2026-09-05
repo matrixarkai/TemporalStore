@@ -155,7 +155,7 @@ pub struct TemporalEngine {
     raft_apply_coalesce: Arc<std::sync::atomic::AtomicBool>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
-    /// TS_PHASE1_FLAT this fires once per command (O(writes)); with the gate on the
+    /// `flat_append()` this fires once per command (O(writes)); with it on the
     /// `promote_scan_done` fast-skip holds it to a small constant once warm. Read by the phase-1
     /// aging test to prove the per-write O(n) reconcile scan is gone.
     promote_scans: Arc<std::sync::atomic::AtomicU64>,
@@ -626,7 +626,7 @@ impl TemporalEngine {
         // flag is `#[serde(skip)]` (false on any fresh load), so the first live command after a
         // reload still pays one full reconcile. Gate OFF -> the scan runs every command as before.
         if !defer_bucket_index_reconstruct()
-            && !(phase1_flat_enabled() && shard.promote_scan_done)
+            && !(self.wal_store.flat_append() && shard.promote_scan_done)
         {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -641,7 +641,7 @@ impl TemporalEngine {
             // Mark the reconcile confirmed only once the shard actually holds model-map state:
             // `promote` returns false (without establishing anything) on an empty shard, so
             // guarding on non-emptiness avoids latching the flag before the first real write.
-            if phase1_flat_enabled() && shard_has_model_entries(shard) {
+            if self.wal_store.flat_append() && shard_has_model_entries(shard) {
                 shard.promote_scan_done = true;
             }
         }
@@ -1029,9 +1029,9 @@ impl TemporalEngine {
                 // dumped-log-id anchor read back on load). Reading the sequence via `stats()`
                 // triggers a full-file `last_wal_sequence_at` rescan -- an O(records)-per-write cost
                 // under this lock (stack-sampling shows it dominates a warm ingest). Under
-                // TS_PHASE1_FLAT anchor off the O(1) cached last sequence (authoritative right after
-                // this write's append) instead; gate OFF keeps the exact `stats()` value.
-                shard.applied_wal_sequence = Some(if phase1_flat_enabled() || raft_apply_batch_active() {
+                // flat append anchor off the O(1) cached last sequence (authoritative right after
+                // this write's append) instead; without it the exact `stats()` value is kept.
+                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() || raft_apply_batch_active() {
                     self.wal_store.cached_last_sequence(request.shard_id)
                 } else {
                     self.wal_store.stats(request.shard_id).last_sequence
@@ -2925,20 +2925,6 @@ pub(super) fn wal_single_barrier() -> bool {
 // barrier. The ack is always returned
 // strictly AFTER the covering barrier succeeds, so durability is never weakened.
 
-/// TS_PHASE1_FLAT: make phase-1 (the work under the global `shards` write lock in
-/// `execute_with_storage_override`) O(1) per write so it stops aging O(n) with data size. Two
-/// per-write O(store) costs otherwise run under the lock on the live path: (1) the WAL append's
-/// full-file `last_wal_sequence_at` rescan (handled in `wal.rs` by the same gate), and (2) the
-/// per-execute `promote_model_maps_to_bucket_index_authority` reconciliation scan at the top of
-/// `execute_with_storage_override`, which walks + clones every live model-map entry only to
-/// re-confirm that `bucket_index` (which every write already keeps authoritative) is in sync. With
-/// the gate on, once a promote scan has confirmed sync (`ShardState.promote_scan_done`) the hot
-/// path skips the repeat scan. Default ON; set the variable to 0 for byte-identical behaviour
-/// (the scan then runs every command exactly as before). Sharing one gate with the WAL
-/// fast-append so a single switch flattens phase-1.
-fn phase1_flat_enabled() -> bool {
-    env_flag_default_on("TS_PHASE1_FLAT")
-}
 
 // TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
 // engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery

@@ -46,6 +46,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -695,13 +696,13 @@ pub struct WriteAheadLogStats {
     pub last_flushed_sequence: u64,
     pub persistent_bytes: u64,
     /// Diagnostics: full-file `last_wal_sequence_at` rescans taken on the client append path for
-    /// this shard. Without TS_PHASE1_FLAT this increments once per append (O(writes)); with the
-    /// gate on it stays O(1) once the shard's length cache is warm. Read by the phase-1 aging test.
+    /// this shard. Without the log's `flat_append()` this increments once per append (O(writes));
+    /// with it on the count stays O(1) once the shard's length cache is warm. Read by the phase-1 aging test.
     #[serde(default)]
     pub append_full_scans: u64,
     /// Diagnostics: full-file `last_wal_sequence_at` rescans taken inside `stats()`. The per-write
-    /// index-anchor step reads `stats().last_sequence`; without TS_PHASE1_FLAT that rescans on every
-    /// write (O(writes)); with the gate on the engine anchors off `cached_last_sequence` so this
+    /// index-anchor step reads `stats().last_sequence`; without `flat_append()` that rescans on
+    /// every write (O(writes)); with it on the engine anchors off `cached_last_sequence` so this
     /// stays flat. Read (via `raw_stats`, which does NOT itself scan) by the phase-1 aging test.
     #[serde(default)]
     pub stats_full_scans: u64,
@@ -850,6 +851,10 @@ pub struct LocalWriteAheadLogStore {
     // Writers append their bytes under the `inner` lock, RELEASE it, then coalesce
     // their fsync here -- so a burst of concurrent writes amortizes onto ~1 fsync.
     sync_coord: Arc<Mutex<HashMap<ShardId, GroupCommitState>>>,
+    /// Whether an append resolves its sequence from the warm cache. Read on the append path and
+    /// on every execute, so it is an atomic beside the lock rather than a field inside it -- the
+    /// engine asks without taking the log's lock.
+    flat_append: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Default)]
@@ -918,14 +923,14 @@ struct WriteAheadLogInner {
     /// appends to it and never revisited, because the answer is a property of the bytes already
     /// on disk rather than of the current configuration.
     block_mode_by_shard: HashMap<ShardId, bool>,
-    // MANIFEST-CONFORMANCE / phase-1 flat-append cache (TS_PHASE1_FLAT). The WAL file byte length as
+    // MANIFEST-CONFORMANCE / phase-1 flat-append cache (`flat_append()`). The WAL file byte length as
     // this process last left it after its own append (or after a full reconcile scan), per shard.
     // On the next append the fast path stats the file: if the on-disk length still equals this,
     // no other writer touched the file since we wrote it (the append lock is cross-process) and --
     // because we only ever append complete framed lines -- there is no torn tail, so the warm
     // `last_sequence_by_shard` is authoritative and the O(records) `last_wal_sequence_at` scan is
     // skipped. Any mismatch (external append, or first touch this process lifetime) falls back to
-    // the full scan. Only consulted when `wal_fast_append_seq()`; harmless to maintain when off.
+    // the full scan. Only consulted when `flat_append()`; harmless to maintain when off.
     verified_len_by_shard: HashMap<ShardId, u64>,
     // Lowest sequence whose record may still hold the only copy of a block's bytes -- the dump
     // watermark. A block written into the WAL is addressed by the byte offset of its record and
@@ -974,7 +979,41 @@ impl LocalWriteAheadLogStore {
                 dir_sync_owed_by_shard: HashSet::new(),
             })),
             sync_coord: Arc::new(Mutex::new(HashMap::new())),
+            flat_append: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Whether an append resolves its sequence from the warm in-process cache.
+    ///
+    /// On, and settable off only by a test. Off, the live client-write append path calls
+    /// `last_wal_sequence_at()` on EVERY append -- a full read of this shard's log from offset 0
+    /// that decodes every record to find the max sequence, so an ingest costs O(records) per
+    /// append and O(n^2) overall. That scan is the dominant cost of the work done under the
+    /// engine's shards write lock: longer than the ~3.3 ms fsync and serialized under the same
+    /// lock, so concurrent writers never overlap at the fsync barrier and group commit cannot
+    /// coalesce.
+    ///
+    /// On, the cache is trusted whenever the file's on-disk length is still exactly what this
+    /// process last left it -- an O(1) `metadata()` stat instead of the O(n) scan. That is safe
+    /// because the append lock is cross-process, so any external appender changes the length and
+    /// forces the full scan; and because only complete framed records are ever appended, so a
+    /// matching length rules out a torn tail. The result is byte-identical to the scanning path.
+    ///
+    /// The same setting decides whether the engine repeats its promote reconcile scan, which is
+    /// the other per-write cost that ages with the store. One switch flattens both, which is why
+    /// it lives here rather than in each place that consults it.
+    pub fn flat_append(&self) -> bool {
+        self.flat_append.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Rescan the whole log on every append, as builds before the warm cache did.
+    ///
+    /// For the test that measures both: it writes to one log with the cache trusted and to
+    /// another without, and asserts the scan counts of the second track its write volume while
+    /// the first stay flat.
+    #[cfg(test)]
+    pub(crate) fn rescan_on_every_append_for_test(&self) {
+        self.flat_append.store(false, AtomicOrdering::Relaxed);
     }
 
     pub fn append(
@@ -1063,7 +1102,7 @@ impl LocalWriteAheadLogStore {
             let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
             ensure_active_wal_segment(&mut inner, shard_id)?;
             let (last_sequence, on_disk_len) =
-                resolve_last_sequence_for_append(&mut inner, shard_id)?;
+                resolve_last_sequence_for_append(&mut inner, shard_id, self.flat_append())?;
             inner.last_sequence_by_shard.insert(shard_id, last_sequence);
             let seq = last_sequence.saturating_add(1);
             let rec = WriteAheadLogRecord {
@@ -1150,7 +1189,7 @@ impl LocalWriteAheadLogStore {
         // the record creates the file with no base header, so it reads as starting at log id zero
         // -- an address the sealed pieces already own.
         ensure_active_wal_segment(&mut inner, shard_id)?;
-        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id, self.flat_append())?;
         inner.last_sequence_by_shard.insert(shard_id, last_sequence);
         let seq = last_sequence.saturating_add(1);
         let rec = WriteAheadLogRecord {
@@ -1235,7 +1274,7 @@ impl LocalWriteAheadLogStore {
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         let _append_lock = WalAppendLock::acquire(&mut inner, shard_id)?;
-        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id)?;
+        let (last_sequence, _on_disk_len) = resolve_last_sequence_for_append(&mut inner, shard_id, self.flat_append())?;
         let seq = last_sequence.saturating_add(1);
         let record = WriteAheadLogRecord {
             shard_id,
@@ -2069,7 +2108,7 @@ impl LocalWriteAheadLogStore {
     /// `stats()` runs. The per-write index-anchor step (`shard.applied_wal_sequence = last
     /// sequence`) otherwise calls `stats()` on EVERY write, so its embedded rescan is a second
     /// O(records)-per-write cost under the engine `shards` lock (equal in weight to the append-path
-    /// rescan, and confirmed dominant by stack sampling). Under TS_PHASE1_FLAT the engine anchors
+    /// rescan, and confirmed dominant by stack sampling). Under flat append the engine anchors
     /// off this cached value instead. Returns 0 if this store has not yet observed the shard (no
     /// append and no scan); the write path always has, so the value equals the on-disk maximum.
     pub fn cached_last_sequence(&self, shard_id: ShardId) -> u64 {
@@ -2678,25 +2717,6 @@ fn wal_bulk_relaxed_durability() -> bool {
     crate::engine::bulk_ingest_mode()
 }
 
-/// TS_PHASE1_FLAT: make per-append WAL sequence resolution O(1) so phase-1 (the work under the
-/// engine `shards` write lock) stops aging O(n) with data size. The live client-write append path
-/// (`append_with_sync` / `append_for_group_commit`) otherwise calls `last_wal_sequence_at()` on
-/// EVERY append -- a full read of the per-shard WAL file from offset 0 that decodes every record to
-/// find the max sequence (O(records) per append -> O(n^2) ingest). That per-write scan is the
-/// dominant WAL-side phase-1 cost, longer than the ~3.3 ms fsync and serialized under the global
-/// lock, so concurrent writers never overlap at the fsync barrier and group commit cannot coalesce.
-/// With the gate on we trust the warm in-process `last_sequence_by_shard` cache whenever the file's
-/// on-disk length is still exactly what we last left it (`verified_len_by_shard`) -- an O(1)
-/// `metadata()` stat instead of the O(n) scan. Safe because (a) the append lock is cross-process, so
-/// any external appender changes the length and forces the full scan, and (b) we only ever append
-/// complete framed records, so a length match rules out a torn tail. DEFAULT ON (the comment here
-/// said OFF long after the code said otherwise, and a stale default in a comment is worse than no
-/// comment: it was read as fact while deciding whether another gate could be turned on).
-/// Byte-identical to the unconditional-scan path when off. Mirrors the warm-cache fast path already used by
-/// `index_log::append_delta` and `append_replayed_record`.
-fn wal_fast_append_seq() -> bool {
-    wal_env_flag_default_on("TS_PHASE1_FLAT")
-}
 
 /// Resolve the last WAL sequence for `shard_id` immediately before an append, under the `inner`
 /// lock. Fast path (gate on): if a cached sequence AND a verified file length are both present and
@@ -2711,13 +2731,14 @@ fn wal_fast_append_seq() -> bool {
 fn resolve_last_sequence_for_append(
     inner: &mut WriteAheadLogInner,
     shard_id: ShardId,
+    flat_append: bool,
 ) -> Result<(u64, u64), WriteAheadLogError> {
     let cached_last_sequence = inner
         .last_sequence_by_shard
         .get(&shard_id)
         .copied()
         .unwrap_or_default();
-    if wal_fast_append_seq() {
+    if flat_append {
         if let (true, Some(&verified_len)) = (
             inner.last_sequence_by_shard.contains_key(&shard_id),
             inner.verified_len_by_shard.get(&shard_id),
