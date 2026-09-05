@@ -242,10 +242,24 @@ SETTINGS: List[Setting] = [
             ["deterministic", "openai_compatible", "anthropic"]),
     Setting("extraction.base_url", "extraction", "MATRIXARK_EXTRACTION_BASE_URL",
             "Extraction base URL", "str", "", "restart",
-            "OpenAI-compatible base, including /v1. DeepSeek: https://api.deepseek.com/v1"),
+            "OpenAI-compatible base, including /v1. DeepSeek: https://api.deepseek.com/v1. "
+            "anthropic ignores this and uses Anthropic base URL below."),
     Setting("extraction.model", "extraction", "MATRIXARK_EXTRACTION_MODEL",
             "Extraction model", "str", "", "restart",
-            "Model name sent to the endpoint, e.g. deepseek-chat."),
+            "Model name sent to the endpoint, e.g. deepseek-chat. anthropic ignores this and "
+            "uses Anthropic model below."),
+    # anthropic does not read the two fields above. Its model and endpoint have their own
+    # variables and no fallback, so without these a customer who chose anthropic could type a model
+    # and watch a different one be called. Max tokens and timeout are not repeated here because
+    # those DO fall back to the extraction controls.
+    Setting("extraction.anthropic_model", "extraction", "MATRIXARK_ANTHROPIC_MODEL",
+            "Anthropic model", "str", "claude-sonnet-5", "restart",
+            "Used when Extraction provider is anthropic, which does not read Extraction model. "
+            "Leave it alone on any other provider."),
+    Setting("extraction.anthropic_base_url", "extraction", "MATRIXARK_ANTHROPIC_API_BASE",
+            "Anthropic base URL", "str", "https://api.anthropic.com", "restart",
+            "Used when Extraction provider is anthropic, which does not read Extraction base URL. "
+            "The Messages API path is added to this, so give the host without /v1."),
     Setting("extraction.api_key_env", "extraction", "MATRIXARK_EXTRACTION_API_KEY_ENV",
             "Extraction key variable", "str", "OPENAI_API_KEY", "restart",
             "Name of the environment variable holding the extraction key. The key you enter below "
