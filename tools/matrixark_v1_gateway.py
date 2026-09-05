@@ -1083,6 +1083,49 @@ _ACCEPT_ENCODING: "contextvars.ContextVar[str]" = contextvars.ContextVar(
 _JSON_PACK_FLOOR = 1024
 
 
+# What an admin page is allowed to do, and who is allowed to embed it.
+#
+# The pages need very little: nothing is fetched cross-origin except by explicit configuration,
+# there are no inline event handlers, and there is no eval or new Function anywhere -- so
+# 'unsafe-eval' is not needed and default-src can be 'self'.
+#
+# 'unsafe-inline' IS needed: every page carries its stylesheet and scripts inline. So this policy
+# does NOT stop injected inline script, and saying otherwise would be the more dangerous mistake.
+# What it does stop is the page being framed, script being pulled from another origin, a <base>
+# tag redirecting every relative URL, and a form posting somewhere else.
+#
+# connect-src is open on purpose. The key portal lets a customer point at a management host and a
+# gateway host of their own; a policy that forbade that would break a documented feature to close
+# a hole this deployment does not have.
+_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src *; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'"
+)
+
+# Sent with every response, HTML or JSON. nosniff because a response read as a different type is
+# how a JSON body becomes executable; no-referrer because an admin URL names the deployment and
+# there is nowhere it needs to travel to.
+_SAFETY_HEADERS = [
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"no-referrer"),
+]
+
+# frame-ancestors is the modern spelling and X-Frame-Options the one older intermediaries honour.
+# The portal has destructive controls one click behind a confirm box; being framed is the attack
+# that turns a confirm box into a decoration.
+_HTML_SAFETY_HEADERS = _SAFETY_HEADERS + [
+    (b"content-security-policy", _CONTENT_SECURITY_POLICY.encode("ascii")),
+    (b"x-frame-options", b"DENY"),
+]
+
+
 async def _json(send: Callable, status: int, payload: Json,
                 extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
     data = json.dumps(payload).encode("utf-8")
@@ -1095,6 +1138,10 @@ async def _json(send: Callable, status: int, payload: Json,
     # Whether this response is compressed depends on the request, and a shared cache that ignored
     # that would hand a gzip body to a client that asked for none.
     headers.append((b"vary", b"accept-encoding"))
+    # Configuration, audit records and per-key usage all come through here. Nothing between the
+    # gateway and the browser should be keeping any of it.
+    headers.append((b"cache-control", b"no-store"))
+    headers.extend(_SAFETY_HEADERS)
     headers.append((b"content-length", str(len(data)).encode()))
     if extra_headers:
         headers.extend(extra_headers)
@@ -1232,6 +1279,7 @@ async def _html(send: Callable, status: int, body: bytes,
                 extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
     headers = [(b"content-type", b"text/html; charset=utf-8"),
                (b"content-length", str(len(body)).encode())]
+    headers.extend(_HTML_SAFETY_HEADERS)
     if extra_headers:
         headers.extend(extra_headers)
     await send({"type": "http.response.start", "status": status, "headers": headers})
