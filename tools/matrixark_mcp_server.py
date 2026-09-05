@@ -399,45 +399,15 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
                 self.metrics.observe_operation("stream_materialize", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark stream materialize loop failed: {exc}")
 
-    #: The share of a close budget the two background-thread joins may spend between them.
-    #:
-    #: They are daemon threads in a process that is about to exit, so joining them is a courtesy;
-    #: the adapter close and the audit drain below are the reason a caller waits at all. Capping
-    #: their share is what stops a poller that will not stop from consuming the whole budget and
-    #: leaving nothing for the flushes.
-    CLOSE_JOIN_BUDGET_SHARE = 0.25
-
     def close(self, *, timeout_s: float = 5.0) -> None:
-        """Shut the server down within `timeout_s` TOTAL, not per step.
+        """Stop background work and flush, in `timeout_s` TOTAL rather than per step.
 
-        Each of the four waits below used to receive the full budget, so a close could need four
-        times what its caller was willing to wait -- and the caller waits once. Measured on the live
-        box, every one of 2,811 hook closes hit its 750 ms budget exactly: the first wait, a join
-        against a 1000 ms-interval summary poller, spent all of it, and the two steps that flush
-        were reached only after the caller had abandoned the thread.
-
-        So the budget is a deadline that every step measures itself against, and the joins take a
-        bounded share of it. A poller that refuses to stop now costs its slice instead of everything.
+        See `matrixark_mcp_shutdown`: each stage used to receive the caller's whole budget, so the
+        first wait could spend it all and the flushes were reached only after the caller gave up.
         """
-        deadline = time.monotonic() + max(0.0, timeout_s)
+        from matrixark_mcp_shutdown import close_server_within_budget  # sibling; keeps this small
 
-        def remaining() -> float:
-            return max(0.0, deadline - time.monotonic())
-
-        self._summary_stop.set()
-        self._stream_materialize_stop.set()
-
-        join_deadline = time.monotonic() + remaining() * self.CLOSE_JOIN_BUDGET_SHARE
-        for thread in (self._summary_thread, self._stream_materialize_thread):
-            if thread is None:
-                continue
-            thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
-
-        # Whatever is left goes to the work a caller actually waits for.
-        adapter_close = getattr(self.adapter, "close", None)
-        if callable(adapter_close):
-            adapter_close(timeout_s=remaining())
-        self._audit_queue.drain(remaining())
+        close_server_within_budget(self, timeout_s)
 
     def append_audit_policy(self, action: str, identity: Json, *, status: str, details: Json | None = None, args: Json | None = None, hot_path: bool = False) -> None:
         mode = str((args or {}).get("audit_mode") or self._audit_mode_default).strip().lower()
