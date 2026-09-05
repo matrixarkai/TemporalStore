@@ -438,6 +438,42 @@ fn staged_block_body_len(page: &crate::wal::StagedPage) -> usize {
         }
 }
 
+/// A record measured but not yet written.
+///
+/// `encode` below builds the payload into its own buffer and the framing layer then copies it
+/// into a second one, so a write carries the record twice. Handing the framing layer a length and
+/// a writer instead lets it reserve once and have the payload land in the bytes that go to disk.
+///
+/// The length has to be exact, which is the whole reason this can exist: `RecordParts::len` is
+/// asserted equal to the bytes written, for every arm, by
+/// `the_borrowing_encoder_writes_the_same_bytes`.
+pub(crate) struct PreparedRecord<'a> {
+    parts: RecordParts<'a>,
+}
+
+impl PreparedRecord<'_> {
+    /// Bytes the payload will occupy: the marker, then the record.
+    pub(crate) fn payload_len(&self) -> usize {
+        self.parts.len + 1
+    }
+
+    pub(crate) fn put(
+        &self,
+        record: &WriteAheadLogRecord,
+        out: &mut Vec<u8>,
+    ) -> Result<(), String> {
+        out.push(RAW_PAYLOAD_MARKER);
+        self.parts.put(record, out)
+    }
+}
+
+/// Measure a record so it can be framed without an intermediate buffer.
+pub(crate) fn prepare(record: &WriteAheadLogRecord) -> Result<PreparedRecord<'_>, String> {
+    Ok(PreparedRecord {
+        parts: record_parts(record)?,
+    })
+}
+
 /// Encode a record as protobuf, marker byte first.
 pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let parts = record_parts(record)?;
