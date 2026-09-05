@@ -1548,6 +1548,18 @@ def _post_json(url: str, payload: Json, headers: Dict[str, str], timeout: float)
             return response.getcode(), raw[:512].decode("utf-8", "replace")
 
 
+# A probe is only worth anything if it exercises the path the deployment really uses, so these
+# mirror the dispatch sets in the provider code -- matrixark_mcp_core for extraction,
+# _API_EMBEDDING_PROVIDERS in matrixark_mcp_embeddings for the encoder -- and a test parses those
+# modules and fails if they drift. Anything outside them reaches no endpoint at all: "local" is not
+# a local server, it is the token-hash fallback, and probing an endpoint the encoder never calls
+# reported a green connection test on a deployment running entirely on hash vectors.
+_OPENAI_EXTRACTION_PROVIDERS = {"openai", "openai_compatible", "openai_compatible_llm"}
+_ANTHROPIC_EXTRACTION_PROVIDERS = {"anthropic", "claude", "anthropic_messages"}
+_API_EMBEDDING_PROVIDERS = {"openai", "openai_compatible", "openai-compatible", "azure_openai",
+                            "voyage", "api"}
+
+
 def _probe(kind: str, url: str, payload: Json, headers: Dict[str, str], timeout: float) -> Json:
     started = time.time()
     result: Json = {"target": kind, "url": url, "ok": False}
@@ -1584,6 +1596,13 @@ def _summarize(kind: str, parsed: Any) -> Json:
             "model": parsed.get("model"),
             "dimensions": len(vector) if isinstance(vector, list) else None,
         }
+    if kind == "extraction_anthropic":
+        # Messages API: the reply is a list of content blocks, not a choices list.
+        blocks = parsed.get("content")
+        text = "".join(str(b.get("text", "")) for b in blocks
+                       if isinstance(b, dict) and b.get("type", "text") == "text") \
+            if isinstance(blocks, list) else ""
+        return {"model": parsed.get("model"), "sample": text[:120]}
     choices = parsed.get("choices")
     text = ""
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
@@ -1606,7 +1625,27 @@ def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
         model = os.environ.get("MATRIXARK_EXTRACTION_MODEL", "").strip()
         key_env = _env_name(SETTINGS_BY_KEY["extraction.api_key"], values)
         key = os.environ.get(key_env, "")
-        if provider in {"", "deterministic", "rules", "local"}:
+        if provider in _ANTHROPIC_EXTRACTION_PROVIDERS:
+            # Anthropic reads its own base URL and model, and authenticates with x-api-key rather
+            # than a bearer token. Probing it as though it were OpenAI-compatible asked for a base
+            # URL and model this provider never reads, so the test told a customer to fill in two
+            # fields that would not have changed anything.
+            anthropic_base = os.environ.get(
+                "MATRIXARK_ANTHROPIC_API_BASE", "https://api.anthropic.com").strip().rstrip("/")
+            anthropic_model = os.environ.get("MATRIXARK_ANTHROPIC_MODEL", "").strip()
+            version = os.environ.get("MATRIXARK_ANTHROPIC_VERSION", "2023-06-01")
+            if not key:
+                results.append({"target": "extraction", "ok": False, "skipped": True,
+                                "error": "no_api_key",
+                                "detail": "The Anthropic provider needs a key. It is read from "
+                                          + key_env + "."})
+            else:
+                results.append(_probe(
+                    "extraction_anthropic", f"{anthropic_base}/v1/messages",
+                    {"model": anthropic_model or SETTINGS_BY_KEY["extraction.anthropic_model"].default,
+                     "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
+                    {"x-api-key": key, "anthropic-version": version}, timeout))
+        elif provider not in _OPENAI_EXTRACTION_PROVIDERS:
             results.append({"target": "extraction", "ok": False, "skipped": True,
                             "error": "provider_is_deterministic",
                             "detail": "No model is called on this setting, so there is nothing to "
@@ -1630,11 +1669,15 @@ def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
         model = os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
         key_env = _env_name(SETTINGS_BY_KEY["embedding.api_key"], values)
         key = os.environ.get(key_env, "")
-        if provider in {"", "deterministic"}:
+        if provider not in _API_EMBEDDING_PROVIDERS:
+            # "local" lands here, and that is the point: it is not a local server, it is the
+            # token-hash fallback. Probing the base URL anyway returned ok for a deployment whose
+            # encoder was never called.
             results.append({"target": "embedding", "ok": False, "skipped": True,
                             "error": "provider_is_deterministic",
-                            "detail": "Retrieval is running on hash vectors. Set the embedding "
-                                      "provider to openai_compatible."})
+                            "detail": "The encoder makes no call on this setting -- retrieval is "
+                                      "running on hash vectors, whatever the base URL points at. "
+                                      "Set the embedding provider to openai_compatible or voyage."})
         elif not base:
             results.append({"target": "embedding", "ok": False, "skipped": True,
                             "error": "incomplete_config",
