@@ -6410,7 +6410,10 @@ fn which_piece_of_the_write_machinery_costs() {
 
     for (label, flag, value) in [
         ("TS_WAL_PREALLOCATE=0        ", "TS_WAL_PREALLOCATE", "0"),
-        ("TS_ENGINE_CONCURRENT_COMMIT=0", "TS_ENGINE_CONCURRENT_COMMIT", "0"),
+        // `TS_ENGINE_CONCURRENT_COMMIT=0` was a row here. The barrier's position is a property of
+        // the engine now, not of the environment, so the variable moves nothing -- and a row
+        // reporting a delta of zero would read as "this piece is free" rather than "this row
+        // stopped measuring". `commit_under_lock_for_test` is how an engine takes the other side.
         ("TS_INDEX_BINARY=0           ", "TS_INDEX_BINARY", "0"),
     ] {
         std::env::set_var(flag, value);

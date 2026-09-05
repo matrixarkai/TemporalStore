@@ -1,25 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests for the concurrent-commit write path (`TS_ENGINE_CONCURRENT_COMMIT`): the durable WAL
-//! barrier runs OUTSIDE the global `shards` write lock, so concurrent same-shard writers reach
-//! #45's group-commit queue and their fdatasyncs coalesce. These tests prove:
-//!   (a) with the gate ON, N concurrent same-shard writers take FEWER fdatasyncs than writes
-//!       (group commit engages) AND every acked write is present + exact (no lost/torn writes);
-//!   (b) with the gate OFF, the barrier stays under the lock -> one fsync per write (coalescing
-//!       is unreachable) -> byte-identical legacy behavior;
+//! Tests for the concurrent-commit write path: the durable WAL barrier runs OUTSIDE the global
+//! `shards` write lock, so concurrent same-shard writers reach #45's group-commit queue and their
+//! fdatasyncs coalesce. These tests prove:
+//!   (a) N concurrent same-shard writers take FEWER fdatasyncs than writes (group commit engages)
+//!       AND every acked write is present + exact (no lost/torn writes);
+//!   (b) with the barrier taken back under the lock -- which only a test can ask for, of one
+//!       engine -- it is one fsync per write, so coalescing is unreachable there;
 //!   (c) the concurrent path is durable: after a drop + WAL-replay reload every acked write is
 //!       recovered exactly (ordering/consistency preserved -- WAL order == apply order).
 #![allow(clippy::all)]
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
 
-// The gate is read from a process-global env var; serialize the sub-tests that toggle it so a
-// gate-OFF baseline measurement never observes a gate-ON window from its sibling (and vice
-// versa). Other tests are unaffected: the gate only alters the SYNC write path, and no other
-// test asserts an exact sync-write fdatasync count.
-static ENGINE_COMMIT_ENV_LOCK: Mutex<()> = Mutex::new(());
+// These used to serialize against each other through a mutex, because the choice was a
+// process-global env var and a baseline measurement could observe a window its sibling had
+// opened. It is a property of an engine now, and each of these builds its own.
 
 const WRITERS: usize = 8;
 const PER_WRITER: usize = 25; // 200 same-shard sync writes total
@@ -112,13 +110,12 @@ fn new_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
 /// under the lock and every write takes its own fsync. Both paths preserve all acked writes.
 #[test]
 fn concurrent_commit_coalesces_fsyncs_while_off_path_is_one_fsync_per_write() {
-    let _serial = ENGINE_COMMIT_ENV_LOCK.lock().unwrap();
-
-    // --- Baseline: gate OFF -> barrier under the shards lock -> group commit unreachable. ---
-    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "0");
+    // --- Baseline: barrier under the shards lock -> group commit unreachable. ---
     let off_dir = tempfile::tempdir().unwrap();
-    let off = run_concurrent_same_shard_writes(&new_engine(off_dir.path()));
-    assert_eq!(off.acked, off.writes, "gate OFF: all writes acked");
+    let off_engine = new_engine(off_dir.path());
+    off_engine.commit_under_lock_for_test();
+    let off = run_concurrent_same_shard_writes(&off_engine);
+    assert_eq!(off.acked, off.writes, "barrier under the lock: all writes acked");
     // Serialized under the global lock, each sync write drives its own barrier -> exactly one
     // fdatasync per write. This is the live-proven 1.00 fdatasync/write bottleneck.
     assert_eq!(
@@ -127,12 +124,10 @@ fn concurrent_commit_coalesces_fsyncs_while_off_path_is_one_fsync_per_write() {
         off.writes, off.fsyncs
     );
 
-    // --- Fix: gate ON -> barrier out of the lock -> group commit engages. ---
-    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
+    // --- What ships: barrier out of the lock -> group commit engages. ---
     let on_dir = tempfile::tempdir().unwrap();
     let on = run_concurrent_same_shard_writes(&new_engine(on_dir.path()));
-    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
-    assert_eq!(on.acked, on.writes, "gate ON: all writes acked");
+    assert_eq!(on.acked, on.writes, "barrier outside the lock: all writes acked");
     // The whole point: fewer durable barriers than writes -> coalescing is now reachable.
     assert!(
         on.fsyncs < on.writes as u64,
@@ -154,9 +149,6 @@ fn concurrent_commit_coalesces_fsyncs_while_off_path_is_one_fsync_per_write() {
 /// outside the lock, and that no acked write was lost/torn/reordered.
 #[test]
 fn concurrent_commit_writes_survive_wal_replay_reload() {
-    let _serial = ENGINE_COMMIT_ENV_LOCK.lock().unwrap();
-    std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", "1");
-
     let dir = tempfile::tempdir().unwrap();
     {
         let engine = new_engine(dir.path());
@@ -168,7 +160,6 @@ fn concurrent_commit_writes_survive_wal_replay_reload() {
 
     // Fresh engine over the same directories -> load_shard replays the WAL tail.
     let recovered = new_engine(dir.path());
-    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
     for w in 0..WRITERS {
         for i in 0..PER_WRITER {
             let get = recovered.execute(ExecuteRequest {

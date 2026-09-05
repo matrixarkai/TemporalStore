@@ -73,7 +73,25 @@ impl TemporalEngine {
             replay_installs: Arc::default(),
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
+            concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            raft_apply_coalesce: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
+    }
+
+    /// Take the durable WAL barrier UNDER the `shards` write lock, for a test measuring what
+    /// the other side of the lock costs. Scoped to this engine.
+    #[cfg(test)]
+    pub(crate) fn commit_under_lock_for_test(&self) {
+        self.concurrent_commit
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Apply a committed raft batch one entry at a time, each with its own barrier, for a test
+    /// measuring what coalescing saves. Scoped to this engine.
+    #[cfg(test)]
+    pub(crate) fn apply_raft_batch_per_entry_for_test(&self) {
+        self.raft_apply_coalesce
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// How many recorded outcomes recovery has installed (see `replay_installs`).
