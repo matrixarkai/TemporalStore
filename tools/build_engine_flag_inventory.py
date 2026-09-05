@@ -220,6 +220,20 @@ def _end_of_flag_chain(body: str) -> int:
     return len(body) if later < 0 else later
 
 
+def statement_around(lines, read_line):
+    """The whole statement a flag read sits in, so a default is never taken from a neighbour."""
+    start = read_line
+    while start > 0:
+        previous = lines[start - 1].strip()
+        if previous.endswith((";", "{", "}")) or not previous:
+            break
+        start -= 1
+    end = read_line
+    while end < len(lines) - 1 and not lines[end].strip().endswith(";"):
+        end += 1
+    return NEWLINE.join(lines[start:end + 1])
+
+
 def default_of_statement(lines, read_line):
     """"on", "off", or "" -- the default of a flag read INLINE, from its own statement.
 
@@ -233,16 +247,7 @@ def default_of_statement(lines, read_line):
     same statement, so a statement always carries its own negation, while a window of n lines
     carries it only when n happens to be large enough.
     """
-    start = read_line
-    while start > 0:
-        previous = lines[start - 1].strip()
-        if previous.endswith((";", "{", "}")) or not previous:
-            break
-        start -= 1
-    end = read_line
-    while end < len(lines) - 1 and not lines[end].strip().endswith(";"):
-        end += 1
-    statement = NEWLINE.join(lines[start:end + 1])
+    statement = statement_around(lines, read_line)
     if len(FLAG_READ.findall(statement)) != 1:
         return ""
     # Boolean-shaped only. A statement reading a millisecond count has no ON/OFF to state.
@@ -297,6 +302,67 @@ def default_of(body: str, flags_read: int) -> str:
     return "on" if index > 0 and body[index - 1] == "!" else "off"
 
 
+# A number stated in the read itself, and the named constants such a read can point at.
+UNWRAP_NUMBER = re.compile(r"\.unwrap_or\(\s*(-?\d[\d_]*)\s*\)")
+UNWRAP_NAMED = re.compile(r"\.unwrap_or\(\s*([A-Z][A-Z0-9_]{2,})\s*\)")
+CONST_LITERAL = re.compile(
+    r"const ([A-Z][A-Z0-9_]+)\s*:\s*[a-z][a-z0-9]*\s*=\s*([^;]+);")
+ARITHMETIC = re.compile(r"^[\d_ ()*<+]+$")
+
+
+def literal_consts(bodies):
+    """Every `const NAME = <literal>` whose value is a plain number or bool, as display text.
+
+    Only arithmetic on literals is evaluated -- digits, `*`, `<<`, `+`, parentheses. A const
+    computed from another const, or from a function call, is left out rather than guessed at: a
+    wrong number in this table would be published as fact for every flag pointing at it.
+    """
+    found = {}
+    for rel in sorted(bodies):
+        for name, expr in CONST_LITERAL.findall(bodies[rel]):
+            expr = expr.strip()
+            if expr in ("true", "false"):
+                found.setdefault(name, "on" if expr == "true" else "off")
+            elif ARITHMETIC.match(expr):
+                try:
+                    found.setdefault(
+                        name, str(eval(expr.replace("_", ""), {"__builtins__": {}}, {})))
+                except Exception:
+                    pass
+    return found
+
+
+def numeric_default_of_statement(lines, read_line, consts):
+    """A number, as text, or "" -- the default of a flag whose read states one.
+
+    `default_of_statement` answers this for booleans and says so: a statement reading a
+    millisecond count has no ON/OFF to state. It had no answer for the count itself, so a page
+    an operator consults to decide what to change showed an em dash for 26 flags whose default
+    is written down three lines from the name.
+
+    Only what comes AFTER the read can be its default. Scanning the whole statement reported
+    `MATRIXARK_ACCOUNT_ID` -- which defaults to the string "acct_codex" -- as defaulting to
+    1024, borrowed from a neighbouring field of the same struct literal, because a struct
+    literal separates its fields with commas and so is one statement. Reading forward from the
+    name cannot make that mistake.
+
+    `unwrap_or_else(` cannot match `unwrap_or\(`, so a string fallback never reads as a number.
+    """
+    statement = statement_around(lines, read_line)
+    first = FLAG_READ.search(statement)
+    if not first or len(FLAG_READ.findall(statement)) != 1:
+        return ""
+    after = statement[first.end():]
+    number = UNWRAP_NUMBER.search(after)
+    if number:
+        return number.group(1).replace("_", "")
+    named = UNWRAP_NAMED.search(after)
+    if named and named.group(1) in consts:
+        value = consts[named.group(1)]
+        return value if value not in ("on", "off") else ""
+    return ""
+
+
 def classify(name: str) -> str:
     for label, pattern in CLASS_RULES:
         if pattern.search(name):
@@ -311,6 +377,9 @@ for path in sorted(SRC.rglob("*.rs")):
 
 prod = {k: strip_test_modules(v) for k, v in sources.items()
         if "/tests" not in k and not k.startswith("tests")}
+
+# Named constants a numeric read can point at, resolved once so every flag sees the same table.
+CONSTS = literal_consts(prod)
 
 flags = {}
 # Distinct functions that read a flag, as (file, line) -> name. Several flags can share one, so
@@ -359,6 +428,8 @@ for rel, text in prod.items():
             entry["default"] = default_of(body, len(set(FLAG_READ.findall(body))))
         if not entry["default"]:
             entry["default"] = default_of_statement(lines, line_no)
+        if not entry["default"]:
+            entry["default"] = numeric_default_of_statement(lines, line_no, CONSTS)
         if entry["doc"]:
             continue
         text_doc, shared_with = doc_for_flag(name, " ".join(doc), lines, fn_line)
@@ -373,6 +444,13 @@ for rel, text in prod.items():
         r'"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"', text):
         entry = flags.setdefault(value, {"sites": set(), "doc": "", "default": ""})
         entry["sites"].add(rel)
+        # storage_config.rs declares the variable NAME and its DEFAULT as neighbouring consts and
+        # reads one with the other, so the default is derivable even though no scan of string
+        # literals can see the read. The pairing is on the const IDENTIFIER, not the string:
+        # `TS_BLOCK_SLAB_TARGET_BYTES` names the variable `TS_BLOCK_SEGMENT_TARGET_BYTES`, and
+        # matching on the string would silently drop it.
+        if not entry["default"] and ident.startswith("TS_"):
+            entry["default"] = CONSTS.get("DEFAULT_" + ident[len("TS_"):], "")
 
 # Where a flag is given a value, as opposed to read.
 #
@@ -527,7 +605,9 @@ lines = [
     "|---|---|",
     "| total | %d |" % len(rows),
     "| booleans whose default this could read off the source | %d |"
-    % sum(1 for r in rows if r["default"]),
+    % sum(1 for r in rows if r["default"] in ("on", "off")),
+    "| numbers whose default this could read off the source | %d |"
+    % sum(1 for r in rows if r["default"] and r["default"] not in ("on", "off")),
     "| **defaulting on, and set by nothing** | %d |"
     % sum(1 for r in rows if r["default"] == "on" and not r["set_by"]),
     "| offered on the portal | %d |" % sum(1 for r in rows if r["offered"]),
