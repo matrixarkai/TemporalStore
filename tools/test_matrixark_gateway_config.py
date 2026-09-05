@@ -252,10 +252,18 @@ class ProbeTest(_Sandbox):
         self.assertTrue(targets["embedding"]["skipped"])
         self.assertFalse(result["all_ok"])
 
-    def test_an_incomplete_configuration_is_reported_before_dialling(self) -> None:
+    def test_an_unset_endpoint_is_probed_at_the_build_default_not_refused(self) -> None:
+        # This used to answer "incomplete_config -- set both the extraction base URL and model
+        # first". The extraction call has no such guard: with nothing set it posts to the build
+        # default, so refusing here described a deployment that does not exist and withheld the one
+        # result that would have shown where the calls are really going. Asserted on the URL rather
+        # than the outcome, so it does not depend on anything listening.
         cfgmod.update({"extraction.provider": "openai_compatible"})
-        targets = {r["target"]: r for r in cfgmod.probe(["extraction"])["results"]}
-        self.assertEqual("incomplete_config", targets["extraction"]["error"])
+        entry = cfgmod.probe(["extraction"], timeout=2.0)["results"][0]
+        self.assertNotIn("skipped", entry)
+        self.assertEqual(
+            str(cfgmod.SETTINGS_BY_KEY["extraction.base_url"].default).rstrip("/")
+            + "/chat/completions", entry["url"])
 
     def test_an_unreachable_endpoint_is_an_error_not_an_exception(self) -> None:
         cfgmod.update({

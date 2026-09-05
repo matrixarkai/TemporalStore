@@ -2,23 +2,29 @@
 # SPDX-License-Identifier: Apache-2.0
 """Every setting declares the default the build actually runs.
 
-The frozen retrieval knobs were fixed once: the registry's number was 10x to 156x what retrieval
-uses, and `export_settings(include_defaults=True)` writes a declared default to the target as an
-EXPLICIT value, so cloning a deployment raised its budgets by up to 156x. Four settings written by
-hand had the same problem and were not covered:
+`export_settings(include_defaults=True)` writes a declared default to the target as an EXPLICIT
+value, so a default that disagrees with the code does not merely mislead a reader -- it
+reconfigures a clone. That was fixed once for the five frozen retrieval knobs, whose registry
+numbers were 10x to 156x what retrieval uses. Six settings written by hand had the same problem:
 
-    skills.shared_resource_budget_ratio        declared 0.10   build runs 0.25
-    retrieval.cross_session_budget_ratio       declared ""     build runs 0.12
-    retrieval.cross_session_max_sessions       declared ""     build runs 3
-    ingestion.time_compression_window_events   declared ""     build runs 64
+    skills.shared_resource_budget_ratio        portal said 0.10   build runs 0.25
+    retrieval.cross_session_budget_ratio       portal said ""     build runs 0.12
+    retrieval.cross_session_max_sessions       portal said ""     build runs 3
+    ingestion.time_compression_window_events   portal said ""     build runs 64
+    extraction.base_url                        portal said ""     build calls http://127.0.0.1:8000/v1
+    extraction.model                           portal said ""     build asks for qwen2.5:1.5b
 
-A blank is the worse of the two: the field reads as "nothing is in force" on a deployment that is
-running a number, and a clone taking the blank as explicit gets an empty environment variable where
-the source had a value.
+The check is a sweep, not a list of six: it walks every setting, finds the literal fallback its
+variable is read with anywhere under ``tools/``, and requires the two to agree.
 
-The check below is not a list of those four. It walks EVERY setting, finds the literal fallback its
-variable is read with in the tools tree, and requires the two to agree -- so a setting added later
-with a default nobody checked fails here rather than being found the same way these were.
+**Every exemption is derived, not written down.** A hand-maintained skip list is how a sweep quietly
+stops covering things, and the first version of this file had two of them. A blank default is
+correct in exactly two shapes, and both are readable from the source:
+
+* the variable is read as ``get(THIS, get(THAT, ...))`` where ``THAT`` is another setting's variable
+  -- the setting FOLLOWS that one, and blank is what "follow it" looks like;
+* the variable is read with several different literals, one per provider branch, so there is no
+  single default the portal could honestly name.
 """
 from __future__ import annotations
 
@@ -32,26 +38,32 @@ sys.path.insert(0, TOOLS)
 
 import matrixark_gateway_config as cfg  # noqa: E402
 
-try:
-    from tools import matrixark_mcp_runtime_config as runtime  # type: ignore
-except ImportError:
-    import matrixark_mcp_runtime_config as runtime  # type: ignore
-
-# Settings whose blank default MEANS something other than "nothing": it means "follow the provider",
-# and the code's fallback is per provider rather than one value. Each is asserted below to have more
-# than one fallback in the code, so nothing can be parked here to silence a genuine disagreement.
-FOLLOWS_THE_PROVIDER = {
-    "extraction.api_key_env", "embedding.api_key_env", "embedding.api_base",
-}
-# The extraction endpoint and model are a separate question -- the connection probe refuses to test
-# a deployment that has not set them, while the extraction call would happily reach the build
-# default -- so the two surfaces have to move together, in their own change.
-DEFERRED = {"extraction.base_url", "extraction.model", "summary.provider", "summary.model"}
+TRUE = {"1", "true", "yes", "on"}
+SETTING_VARIABLES = {s.env for s in cfg.SETTINGS if s.env}
 
 
-def literal_fallbacks() -> dict:
-    """{variable: {literal, ...}} for every ``os.environ.get(VAR, "literal")`` under tools/."""
-    found: dict = {}
+def _get_call(node: ast.AST):
+    """The (variable, second argument) of an ``os.environ.get(VAR, ...)``, or None."""
+    if not isinstance(node, ast.Call) or len(node.args) != 2:
+        return None
+    target = node.func
+    if not (isinstance(target, ast.Attribute) and target.attr in {"get", "getenv"}):
+        return None
+    first, second = node.args
+    if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+        return None
+    return first.value, second
+
+
+def read_shapes() -> tuple:
+    """({variable: {literal, ...}}, {variable: {what it falls back to, ...}}).
+
+    The second is what makes the exemptions derivable: a variable that falls back to ANOTHER
+    setting's variable has no default of its own, and the literal at the end of the chain belongs
+    to the setting at the end of the chain.
+    """
+    literals: dict = {}
+    follows: dict = {}
     for name in sorted(os.listdir(TOOLS)):
         if (not name.endswith(".py") or name.startswith("test_")
                 or name == "matrixark_gateway_config.py"):
@@ -62,98 +74,110 @@ def literal_fallbacks() -> dict:
         except SyntaxError:  # pragma: no cover - a module this build cannot parse
             continue
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or len(node.args) != 2:
+            call = _get_call(node)
+            if call is None:
                 continue
-            target = node.func
-            if not (isinstance(target, ast.Attribute) and target.attr in {"get", "getenv"}):
-                continue
-            first, second = node.args
-            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
-                continue
+            variable, second = call
             if isinstance(second, ast.Constant) and isinstance(second.value, (str, int, float)):
-                found.setdefault(first.value, set()).add(str(second.value))
-            elif isinstance(second, ast.Call):
-                # get(A, get(B, "literal")) -- the innermost literal decides when nothing is set.
-                inner = [a for a in ast.walk(second)
-                         if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-                if inner:
-                    found.setdefault(first.value, set()).add(inner[-1].value)
-    return found
-
-
-TRUE = {"1", "true", "yes", "on"}
+                literals.setdefault(variable, set()).add(str(second.value))
+                continue
+            inner = _get_call(second)
+            if inner is not None:
+                follows.setdefault(variable, set()).add(inner[0])
+                deepest = [a.value for a in ast.walk(second)
+                           if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                if deepest:
+                    literals.setdefault(variable, set()).add(deepest[-1])
+            elif isinstance(second, ast.Name):
+                # An indirection through a module constant: this parser cannot say what it holds,
+                # so it must not claim the setting has a wrong default either.
+                follows.setdefault(variable, set()).add(second.id)
+    return literals, follows
 
 
 def truth(value: str) -> bool:
-    """The truthiness the code applies to a boolean variable: anything not in TRUE is off."""
     return str(value).strip().lower() in TRUE
 
 
-def same_number(left: str, right: str) -> bool:
+def same_value(setting, left: str, right: str) -> bool:
+    """Agreement in MEANING, not spelling: `""` and `"0"` are both off for a boolean, and reporting
+    that as a disagreement is how a sweep gets ignored."""
+    if setting.kind == "bool":
+        return truth(left) == truth(right)
     try:
         return float(left) == float(right)
     except (TypeError, ValueError):
         return left == right
 
 
-def same_value(setting, left: str, right: str) -> bool:
-    """Agreement in MEANING, not in spelling.
-
-    A boolean is the case that makes the difference: `""` and `"0"` are both off, and reporting
-    them as a disagreement would be a false alarm the sweep gets ignored for.
-    """
-    if setting.kind == "bool":
-        return truth(left) == truth(right)
-    return same_number(left, right)
+def classify() -> tuple:
+    """(disagreements, settings compared, settings exempt) -- the exemptions derived, not listed."""
+    literals, follows = read_shapes()
+    wrong, compared, exempt = [], [], []
+    for setting in cfg.SETTINGS:
+        if not setting.env:
+            continue
+        chain = follows.get(setting.env, set())
+        if chain & SETTING_VARIABLES:
+            exempt.append(setting.key)  # follows another setting; blank is what that looks like
+            continue
+        seen = literals.get(setting.env)
+        if not seen:
+            continue  # nothing to compare against
+        if len(seen) > 1 and str(setting.default) == "":
+            exempt.append(setting.key)  # per-branch literals; no single default to name
+            continue
+        compared.append(setting.key)
+        if not any(same_value(setting, literal, str(setting.default)) for literal in seen):
+            wrong.append("%s (%s): portal says %r, code falls back to %s"
+                         % (setting.key, setting.env, setting.default,
+                            " / ".join(sorted(repr(x) for x in seen))))
+    return wrong, compared, exempt
 
 
 class TheParseFoundSomethingTest(unittest.TestCase):
-    """Everything below is a comparison against what this finds. If it finds nothing, the sweep
-    passes by having nothing to say."""
+    """Everything below compares against what this finds. If it finds nothing, the sweep passes by
+    having nothing to say."""
 
-    def test_it_reads_the_retrieval_modules(self) -> None:
-        found = literal_fallbacks()
-        self.assertIn("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", found)
-        self.assertIn("MATRIXARK_MAX_SELECTED_REFS", found)
-        self.assertGreater(len(found), 100)
+    def test_it_reads_the_modules(self) -> None:
+        literals, follows = read_shapes()
+        self.assertIn("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", literals)
+        self.assertIn("MATRIXARK_MAX_SELECTED_REFS", literals)
+        self.assertGreater(len(literals), 100)
+        self.assertTrue(follows, "no fallback chains found, so every exemption would be a guess")
 
-    def test_the_settings_registry_is_populated(self) -> None:
-        self.assertGreater(len([s for s in cfg.SETTINGS if s.env]), 80)
+    def test_it_finds_the_chain_that_makes_a_summary_follow_extraction(self) -> None:
+        """The shape the first exemption rests on, named once, so a parser change that stops seeing
+        it fails here rather than turning into a false disagreement."""
+        _literals, follows = read_shapes()
+        self.assertIn("MATRIXARK_EXTRACTION_MODEL",
+                      follows.get("MATRIXARK_SUMMARY_MODEL", set()))
+
+    def test_it_finds_a_variable_read_differently_per_provider(self) -> None:
+        """The shape the second exemption rests on."""
+        literals, _follows = read_shapes()
+        self.assertGreater(len(literals.get("MATRIXARK_EMBEDDING_API_KEY_ENV", set())), 1)
 
 
 class EverySettingDeclaresWhatTheBuildRunsTest(unittest.TestCase):
 
     def test_no_declared_default_disagrees_with_the_code(self) -> None:
-        found = literal_fallbacks()
-        wrong = []
-        for setting in cfg.SETTINGS:
-            if not setting.env or setting.key in DEFERRED or setting.key in FOLLOWS_THE_PROVIDER:
-                continue
-            literals = found.get(setting.env)
-            if not literals:
-                continue  # nothing to compare against
-            # Several literals means the fallback is per provider (or two modules disagree about
-            # it); matching ANY of them is the most this test can require. Skipping such variables
-            # instead was a hole: a mutation that changed one module's fallback went unreported
-            # because it made the variable multi-literal.
-            if not any(same_value(setting, literal, str(setting.default))
-                       for literal in literals):
-                wrong.append("%s (%s): portal says %r, code falls back to %s"
-                             % (setting.key, setting.env, setting.default,
-                                " / ".join(sorted(repr(x) for x in literals))))
+        wrong, _compared, _exempt = classify()
         self.assertEqual([], wrong, "\n  ".join([""] + wrong))
 
     def test_the_sweep_actually_compares_something(self) -> None:
-        """The sweep above passes by finding no disagreement, so it has to be finding COMPARISONS.
+        """The sweep passes by finding no disagreement, so it has to be finding COMPARISONS.
         Without this it would go quiet the moment the parse stopped matching the code's shape, and
         read exactly the same as a clean result."""
-        found = literal_fallbacks()
-        compared = [s for s in cfg.SETTINGS
-                    if s.env and s.key not in DEFERRED and s.key not in FOLLOWS_THE_PROVIDER
-                    and found.get(s.env)]
+        _wrong, compared, _exempt = classify()
         self.assertGreaterEqual(len(compared), 30,
-                                "the sweep is comparing %d settings; it used to compare more"
-                                % len(compared))
+                                "the sweep is comparing %d settings" % len(compared))
+
+    def test_the_exemptions_are_the_minority(self) -> None:
+        """An exemption rule that swallowed the registry would make the sweep vacuous with no list
+        to notice it happening."""
+        _wrong, compared, exempt = classify()
+        self.assertLess(len(exempt), len(compared))
 
     def test_a_boolean_agrees_by_meaning_not_by_spelling(self) -> None:
         """The sweep found ingestion.embed_drainer declaring "0" against a code fallback of "" --
@@ -165,21 +189,12 @@ class EverySettingDeclaresWhatTheBuildRunsTest(unittest.TestCase):
         self.assertFalse(same_value(cfg.SETTINGS_BY_KEY["skills.shared_resource_budget_ratio"],
                                     "0.10", "0.25"))
 
-    def test_the_four_that_were_wrong_now_agree(self) -> None:
-        """Named explicitly so the sweep above cannot pass by skipping them."""
-        for key, constant in (
-                ("retrieval.cross_session_budget_ratio", "DEFAULT_CROSS_SESSION_BUDGET_RATIO"),
-                ("retrieval.cross_session_max_sessions", "DEFAULT_CROSS_SESSION_MAX_SESSIONS"),
-                ("skills.shared_resource_budget_ratio", "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO"),
-                ("ingestion.time_compression_window_events", "TIME_COMPRESSION_WINDOW_EVENTS")):
-            with self.subTest(setting=key):
-                self.assertTrue(same_number(str(getattr(runtime, constant)),
-                                            str(cfg.SETTINGS_BY_KEY[key].default)))
-
-    def test_none_of_them_is_blank_any_more(self) -> None:
-        """A blank reads as "nothing is in force" on a deployment that is running a number."""
+    def test_the_six_that_were_wrong_are_compared_and_agree(self) -> None:
+        """Named explicitly so the sweep cannot pass by classifying them as exempt."""
+        _wrong, compared, _exempt = classify()
         for key in cfg._EXPLICIT_BUILD_DEFAULT:
             with self.subTest(setting=key):
+                self.assertIn(key, compared, "no longer compared, so no longer covered")
                 self.assertNotEqual("", cfg.SETTINGS_BY_KEY[key].default)
 
     def test_the_help_says_what_the_deployment_runs(self) -> None:
@@ -189,50 +204,77 @@ class EverySettingDeclaresWhatTheBuildRunsTest(unittest.TestCase):
                 self.assertIn("With nothing set this deployment runs", setting.help)
                 self.assertIn(str(setting.default), setting.help)
 
-    def test_the_number_is_read_not_retyped(self) -> None:
-        """The file's own rule: a table of numbers here is the second copy it refuses to keep."""
+    def test_the_value_is_read_not_retyped(self) -> None:
+        """The file's own rule: a table of values here is the second copy it refuses to keep."""
         with open(os.path.join(TOOLS, "matrixark_gateway_config.py"), encoding="utf-8") as handle:
             source = handle.read()
         start = source.index("_EXPLICIT_BUILD_DEFAULT = {")
         block = source[start:source.index("_apply_build_defaults(SETTINGS)", start)]
-        for constant in cfg._EXPLICIT_BUILD_DEFAULT.values():
-            self.assertIn(constant, block)
-        # The table AND the function that applies it: a mutation that re-typed the numbers inside
-        # the function passed while only the table was inspected.
-        for number in ("0.25", "0.12", "64", "3"):
-            self.assertNotIn('"%s"' % number, block,
-                             "%s is written here instead of read from the build" % number)
+        for value in ("0.25", "0.12", "64", "3", "qwen2.5:1.5b"):
+            self.assertNotIn('"%s"' % value, block,
+                             "%s is written here instead of read from the build" % value)
 
 
-class TheExemptionsAreRealTest(unittest.TestCase):
-    """A skip list is how a sweep quietly stops covering things, so each entry has to earn it."""
+class TheExtractionEndpointIsTheOneTheCallReachesTest(unittest.TestCase):
+    """Three surfaces described one endpoint three ways: the call posted to the build default, the
+    panel showed an empty field, and the connection test refused to run at all."""
 
-    def test_a_blank_that_follows_the_provider_really_has_several_fallbacks(self) -> None:
-        found = literal_fallbacks()
-        for key in FOLLOWS_THE_PROVIDER:
-            with self.subTest(setting=key):
-                setting = cfg.SETTINGS_BY_KEY[key]
-                self.assertEqual("", setting.default, "no longer a follow-the-provider blank")
-                self.assertGreater(len(found.get(setting.env, set())), 1,
-                                   "one fallback, so this is a plain disagreement, not a blank "
-                                   "that means 'follow the provider'")
+    VARIABLES = ("MATRIXARK_EXTRACTION_BASE_URL", "MATRIXARK_EXTRACTION_MODEL",
+                 "MATRIXARK_UNDERSTANDING_PROVIDER", "MATRIXARK_EXTRACTION_PROVIDER",
+                 "OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_API_KEY")
 
-    def test_the_deferred_ones_are_still_deferred_for_a_reason(self) -> None:
-        """If one of these gains a matching default on its own, it should leave the list rather
-        than sit here looking like an exemption that is still needed."""
-        found = literal_fallbacks()
-        still_disagreeing = [
-            key for key in DEFERRED
-            if len(found.get(cfg.SETTINGS_BY_KEY[key].env, set())) == 1
-            and not same_number(next(iter(found[cfg.SETTINGS_BY_KEY[key].env])),
-                                str(cfg.SETTINGS_BY_KEY[key].default))]
-        self.assertTrue(still_disagreeing,
-                        "nothing in DEFERRED disagrees any more; drop the list")
+    def setUp(self) -> None:
+        self._saved = {n: os.environ.get(n) for n in self.VARIABLES}
+        for name in self.VARIABLES:
+            os.environ.pop(name, None)
+        self._post_json, self._load = cfg._post_json, cfg.load
+        cfg.load = lambda: {"values": {}}   # never read the deployment's real settings file
+        self.calls: list = []
 
-    def test_every_exempt_key_exists(self) -> None:
-        for key in FOLLOWS_THE_PROVIDER | DEFERRED:
-            with self.subTest(setting=key):
-                self.assertIn(key, cfg.SETTINGS_BY_KEY)
+        def recorder(url, payload, headers, timeout):
+            self.calls.append({"url": url, "model": payload.get("model")})
+            return 200, {"model": payload.get("model"),
+                         "choices": [{"message": {"content": "pong"}}]}
+
+        cfg._post_json = recorder
+
+    def tearDown(self) -> None:
+        cfg._post_json, cfg.load = self._post_json, self._load
+        for name, value in self._saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_the_probe_tests_the_endpoint_the_call_would_reach(self) -> None:
+        os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = "openai_compatible"
+        result = cfg.probe(["extraction"], 5.0)
+        self.assertEqual(1, len(self.calls), result)
+        self.assertTrue(self.calls[0]["url"].startswith(
+            str(cfg.SETTINGS_BY_KEY["extraction.base_url"].default)), self.calls)
+        self.assertEqual(cfg.SETTINGS_BY_KEY["extraction.model"].default, self.calls[0]["model"])
+
+    def test_it_no_longer_refuses_a_deployment_that_would_work(self) -> None:
+        os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = "openai_compatible"
+        entry = cfg.probe(["extraction"], 5.0)["results"][0]
+        self.assertNotEqual("incomplete_config", entry.get("error"))
+        self.assertTrue(entry.get("ok"))
+
+    def test_a_configured_endpoint_still_wins(self) -> None:
+        """The floor: if the default overrode what was set, every deployment would be probed at
+        localhost."""
+        os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = "openai_compatible"
+        os.environ["MATRIXARK_EXTRACTION_BASE_URL"] = "https://api.example/v1"
+        os.environ["MATRIXARK_EXTRACTION_MODEL"] = "gpt-4o-mini"
+        cfg.probe(["extraction"], 5.0)
+        self.assertEqual("https://api.example/v1/chat/completions", self.calls[0]["url"])
+        self.assertEqual("gpt-4o-mini", self.calls[0]["model"])
+
+    def test_a_provider_that_calls_nothing_is_still_skipped(self) -> None:
+        os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = "deterministic"
+        entry = cfg.probe(["extraction"], 5.0)["results"][0]
+        self.assertEqual([], self.calls)
+        self.assertTrue(entry["skipped"])
 
 
 if __name__ == "__main__":

@@ -196,10 +196,15 @@ class AnExplicitVariableStillWinsTest(_NothingInherited):
 class TheDefaultNoLongerPinsOneProviderTest(_NothingInherited):
 
     def test_it_defaults_the_way_every_other_provider_dependent_field_does(self) -> None:
-        """api_base, model and base_url all default to empty, meaning 'follow the provider'. These
-        two were the exception, and they were the two that misrouted the key."""
-        neighbours = ("embedding.api_base", "embedding.model", "extraction.base_url",
-                      "extraction.model")
+        """A blank default means "follow the provider", and it is only honest where the code's
+        fallback really is per provider. These two were the exception -- one name for every
+        provider -- and they were the two that misrouted the key.
+
+        extraction.base_url and extraction.model were on this list and have since left it: their
+        fallback is a single concrete value the build calls, so they now declare it. The remaining
+        neighbours are the ones the encoder resolves per provider.
+        """
+        neighbours = ("embedding.api_base", "embedding.model")
         for key in neighbours:
             self.assertEqual("", cfg.SETTINGS_BY_KEY[key].default, key + " changed shape")
         for key in ("embedding.api_key_env", "extraction.api_key_env"):
