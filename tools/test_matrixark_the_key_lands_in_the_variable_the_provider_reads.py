@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+"""The portal's API key lands in the variable the SELECTED provider actually reads.
+
+Both secrets are written into whatever variable ``*.api_key_env`` names. That name used to fall back
+to ``OPENAI_API_KEY`` for every provider, while the provider code's own fallback is per provider:
+the encoder reads ``VOYAGE_API_KEY`` on Voyage, and extraction reads ``ANTHROPIC_API_KEY`` on
+Anthropic. So a customer who picked either of those, left the variable field alone and typed their
+key got it written into a variable their provider never reads -- with no error, because an
+unreachable encoder falls back to hash vectors unless "Fail instead of falling back" is on.
+
+Every expectation here is PARSED OUT OF THE PROVIDER MODULES rather than restated, so a new provider
+branch, or a renamed fallback, fails this instead of silently reopening the hole.
+"""
+from __future__ import annotations
+
+import ast
+import os
+import sys
+import unittest
+
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, TOOLS)
+
+import matrixark_gateway_config as cfg  # noqa: E402
+
+ENCODER = "matrixark_mcp_embeddings.py"
+CORE = "matrixark_mcp_core.py"
+SECRETS = {"embedding": "embedding.api_key", "extraction": "extraction.api_key"}
+
+
+def parse(filename: str) -> ast.Module:
+    with open(os.path.join(TOOLS, filename), encoding="utf-8") as handle:
+        return ast.parse(handle.read(), filename=filename)
+
+
+def _environ_get_default(node: ast.AST, variable: str) -> str | None:
+    """The literal fallback in ``os.environ.get(variable, "...")``, wherever it sits under node."""
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call) or len(sub.args) != 2:
+            continue
+        target = sub.func
+        if not (isinstance(target, ast.Attribute) and target.attr in {"get", "getenv"}):
+            continue
+        first, second = sub.args
+        if (isinstance(first, ast.Constant) and first.value == variable
+                and isinstance(second, ast.Constant) and isinstance(second.value, str)):
+            return second.value
+    return None
+
+
+def encoder_key_variables() -> dict:
+    """{provider or None for 'anything else': the variable the encoder reads}, from the source."""
+    tree = parse(ENCODER)
+    function = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.FunctionDef) and node.name == "_api_embedding_config")
+    found = {}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.If):
+            continue
+        names = [c.value for c in ast.walk(node.test)
+                 if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+        variable = "MATRIXARK_EMBEDDING_API_KEY_ENV"
+        for branch, key in ((node.body, names[0] if names else None), (node.orelse, None)):
+            if not branch:
+                continue
+            default = _environ_get_default(ast.Module(body=list(branch), type_ignores=[]), variable)
+            if default is not None:
+                found[key] = default
+    return found
+
+
+def extraction_key_variables() -> dict:
+    """Same, for the two module constants extraction resolves its key variable through."""
+    tree = parse(CORE)
+    by_constant = {"ANTHROPIC_LLM_API_KEY_ENV": "anthropic", "EXTRACTION_LLM_API_KEY_ENV": None}
+    found = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in by_constant:
+                default = _environ_get_default(node, "MATRIXARK_EXTRACTION_API_KEY_ENV")
+                if default is not None:
+                    found[by_constant[target.id]] = default
+    return found
+
+
+def resolved(group: str, values: dict) -> str:
+    return cfg._env_name(cfg.SETTINGS_BY_KEY[SECRETS[group]], values)
+
+
+class TheSourceStillSaysWhatWeThinkItSaysTest(unittest.TestCase):
+    """The rest of this file is only as good as the parse. If these stop finding branches, every
+    other assertion here would pass vacuously."""
+
+    def test_the_encoder_has_a_per_provider_fallback_and_a_general_one(self) -> None:
+        found = encoder_key_variables()
+        self.assertIn(None, found, "no else branch found in _api_embedding_config")
+        self.assertTrue([k for k in found if k], "no per-provider branch found; the parse broke")
+
+    def test_extraction_has_both_constants(self) -> None:
+        self.assertEqual({"anthropic", None}, set(extraction_key_variables()))
+
+
+class TheKeyLandsWhereTheProviderLooksTest(unittest.TestCase):
+    """The defect, from the customer's side: pick a provider, type a key, and it must reach it."""
+
+    def test_every_encoder_branch_agrees(self) -> None:
+        for provider, reads in encoder_key_variables().items():
+            chosen = provider or "openai_compatible"
+            with self.subTest(provider=chosen):
+                self.assertEqual(reads, resolved("embedding", {"embedding.provider": chosen}))
+
+    def test_every_extraction_branch_agrees(self) -> None:
+        for provider, reads in extraction_key_variables().items():
+            chosen = provider or "openai_compatible"
+            with self.subTest(provider=chosen):
+                self.assertEqual(reads, resolved("extraction", {"extraction.provider": chosen}))
+
+    def test_every_offered_provider_choice_reaches_a_variable_its_code_reads(self) -> None:
+        """Nothing selectable in the portal may resolve to a name its own module never mentions."""
+        sources = {"embedding": ENCODER, "extraction": CORE}
+        for group, filename in sources.items():
+            with open(os.path.join(TOOLS, filename), encoding="utf-8") as handle:
+                text = handle.read()
+            for choice in cfg.SETTINGS_BY_KEY[group + ".provider"].choices:
+                with self.subTest(group=group, provider=choice):
+                    name = resolved(group, {group + ".provider": choice})
+                    self.assertTrue(name, "resolved to no variable at all")
+                    self.assertIn(name, text)
+
+    def test_the_provider_may_come_from_the_launcher_rather_than_the_portal(self) -> None:
+        """A deployment that sets the provider in the environment and the key in the portal is the
+        mixed case, and it has to resolve the same way."""
+        setting = cfg.SETTINGS_BY_KEY["embedding.provider"]
+        previous = os.environ.get(setting.env)
+        os.environ[setting.env] = "voyage"
+        try:
+            self.assertEqual(encoder_key_variables()["voyage"], resolved("embedding", {}))
+        finally:
+            if previous is None:
+                os.environ.pop(setting.env, None)
+            else:
+                os.environ[setting.env] = previous
+
+
+class AnExplicitVariableStillWinsTest(unittest.TestCase):
+    """The field is an override, not a suggestion -- a deployment pointing at a variable its own
+    launcher fills, DEEPSEEK_API_KEY being the shipped example, must keep working."""
+
+    def test_a_stored_name_beats_the_provider_default(self) -> None:
+        self.assertEqual("DEEPSEEK_API_KEY", resolved(
+            "extraction", {"extraction.provider": "anthropic",
+                           "extraction.api_key_env": "DEEPSEEK_API_KEY"}))
+
+    def test_a_launcher_set_name_beats_the_provider_default(self) -> None:
+        variable = cfg.SETTINGS_BY_KEY["embedding.api_key_env"].env
+        previous = os.environ.get(variable)
+        os.environ[variable] = "LAUNCHER_KEY"
+        try:
+            self.assertEqual("LAUNCHER_KEY",
+                             resolved("embedding", {"embedding.provider": "voyage"}))
+        finally:
+            if previous is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = previous
+
+
+class TheDefaultNoLongerPinsOneProviderTest(unittest.TestCase):
+
+    def test_it_defaults_the_way_every_other_provider_dependent_field_does(self) -> None:
+        """api_base, model and base_url all default to empty, meaning 'follow the provider'. These
+        two were the exception, and they were the two that misrouted the key."""
+        neighbours = ("embedding.api_base", "embedding.model", "extraction.base_url",
+                      "extraction.model")
+        for key in neighbours:
+            self.assertEqual("", cfg.SETTINGS_BY_KEY[key].default, key + " changed shape")
+        for key in ("embedding.api_key_env", "extraction.api_key_env"):
+            with self.subTest(setting=key):
+                self.assertEqual("", cfg.SETTINGS_BY_KEY[key].default)
+
+    def test_the_help_names_the_variable_each_provider_gets(self) -> None:
+        """A customer has to be able to answer 'where did my key go' from the portal alone."""
+        embedding = cfg.SETTINGS_BY_KEY["embedding.api_key_env"].help
+        self.assertIn(encoder_key_variables()["voyage"], embedding)
+        self.assertIn(encoder_key_variables()[None], embedding)
+        extraction = cfg.SETTINGS_BY_KEY["extraction.api_key_env"].help
+        self.assertIn(extraction_key_variables()["anthropic"], extraction)
+        self.assertIn(extraction_key_variables()[None], extraction)
+
+
+class EveryPresetLandsItsKeySomewhereTheProviderReadsTest(unittest.TestCase):
+    """Presets were never wrong, because every one of them named a variable explicitly. The two
+    providers that had no preset were the two that broke, so both now have one."""
+
+    def test_each_preset_resolves_to_what_its_provider_reads(self) -> None:
+        encoder, extraction = encoder_key_variables(), extraction_key_variables()
+        for name, preset in cfg.PRESETS.items():
+            values = dict(preset["values"])
+            for group, table in (("embedding", encoder), ("extraction", extraction)):
+                if group + ".provider" not in values:
+                    continue
+                with self.subTest(preset=name, group=group):
+                    provider = values[group + ".provider"]
+                    expected = values.get(group + ".api_key_env") or table.get(
+                        provider, table[None])
+                    self.assertEqual(expected, resolved(group, values))
+
+    def test_both_previously_uncovered_providers_now_have_a_starting_point(self) -> None:
+        chosen = set()
+        for preset in cfg.PRESETS.values():
+            for key in ("embedding.provider", "extraction.provider"):
+                if key in preset["values"]:
+                    chosen.add(preset["values"][key])
+        self.assertIn("voyage", chosen)
+        self.assertIn("anthropic", chosen)
+
+    def test_no_preset_carries_a_secret(self) -> None:
+        for name, preset in cfg.PRESETS.items():
+            for key in preset["values"]:
+                with self.subTest(preset=name, setting=key):
+                    self.assertNotEqual("secret", cfg.SETTINGS_BY_KEY[key].kind)
+
+    def test_every_preset_value_is_a_real_setting_with_a_permitted_value(self) -> None:
+        for name, preset in cfg.PRESETS.items():
+            for key, value in preset["values"].items():
+                with self.subTest(preset=name, setting=key):
+                    setting = cfg.SETTINGS_BY_KEY[key]
+                    if setting.choices:
+                        self.assertIn(value, setting.choices)
+
+
+if __name__ == "__main__":
+    unittest.main()
