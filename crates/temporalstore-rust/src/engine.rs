@@ -709,6 +709,10 @@ impl TemporalEngine {
             // Capture this write's touched keys for the O(delta) index-log append below
             // (the command is moved into the WAL append before we reach that point).
             let delta_command_keys = object_keys.clone();
+            // Captured here for the same reason as the keys above: the command is moved into
+            // the WAL append before the index-log items are built, so anything the items need
+            // from it has to be taken while it is still owned.
+            let removed_component = command_removed_component(&command);
             let upsert_components = command_upsert_components(&command, shard);
             if object_keys.is_empty() {
                 rebuild_bucket_page_ownership(
@@ -1011,11 +1015,16 @@ impl TemporalEngine {
                         true,
                     ),
                     None => (
-                        collect_command_index_items(
+                        collect_command_index_items_for(
                             shard,
                             &delta_command_keys,
                             start_routing_bucket,
                             end_routing_bucket,
+                            // A removal that can name its component states that one page, not
+                            // every page the object holds.
+                            removed_component
+                                .as_ref()
+                                .map(|(kind, component)| (*kind, component.as_deref())),
                         ),
                         false,
                     ),
@@ -2259,11 +2268,46 @@ fn collect_upsert_index_items(
     items
 }
 
+/// The (kind, component) a typed removal deleted, when the command names it outright.
+///
+/// Only commands whose component is derivable from their own fields appear here. ZSetRemove's
+/// component folds in the score it is deleting, and ListPop's is the sequence it just took --
+/// neither survives the operation, so neither can be named from the command afterwards. Those
+/// keep restating the whole object until the component is carried out of the arm.
+fn command_removed_component(command: &Command) -> Option<(&'static str, Option<String>)> {
+    match command {
+        Command::SetRemove { member, .. } => Some(("set", Some(hex::encode(member)))),
+        Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
+        _ => None,
+    }
+}
+
 fn collect_command_index_items(
     shard: &ShardState,
     command_keys: &[String],
     start_routing_bucket: u32,
     end_routing_bucket: u32,
+) -> Vec<crate::index_log::IndexItem> {
+    collect_command_index_items_for(shard, command_keys, start_routing_bucket, end_routing_bucket, None)
+}
+
+/// The same, restricted to one component when the command can name what it touched.
+///
+/// Without a filter this states EVERY page the object holds, and each item costs four string
+/// allocations -- so a removal from a 3,200-member collection built 3,200 items to record that
+/// one member went away, measured at ~2.5 MB per call. A command that can name its component
+/// states that one page instead, which is what the add path already does through
+/// `command_upsert_components`.
+///
+/// The page is still found: a typed removal marks its page deleted in the bucket index rather
+/// than dropping it, so the item this emits carries `deleted: true` and the deletion is recorded
+/// exactly as before -- the guarantee that keeps a replay from resurrecting it.
+fn collect_command_index_items_for(
+    shard: &ShardState,
+    command_keys: &[String],
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    only: Option<(&str, Option<&str>)>,
 ) -> Vec<crate::index_log::IndexItem> {
     use std::collections::BTreeSet;
     let keys: BTreeSet<&str> = command_keys.iter().map(String::as_str).collect();
@@ -2282,6 +2326,11 @@ fn collect_command_index_items(
         for (page_ref_key, page) in &bucket.page_index {
             if !keys.contains(page.object_key.as_ref()) {
                 continue;
+            }
+            if let Some((kind, component)) = only {
+                if &*page.model_id != kind || page.component.as_deref() != component {
+                    continue;
+                }
             }
             items.push(crate::index_log::IndexItem {
                 kind: crate::index_log::IndexItemKind::Page,
