@@ -162,6 +162,24 @@ fn source_from_fields(
     })
 }
 
+/// One buffered raw event, as it is stored.
+///
+/// Field names and order match what `json!` produced here before, and what every reader
+/// downstream expects. Borrowed so serialising copies nothing that the request already owns.
+#[derive(serde::Serialize)]
+struct RawEventRecord<'a> {
+    // ALPHABETICAL, and that is load-bearing. `json!` renders through a `serde_json::Map`,
+    // which is a BTreeMap, so its output is key-sorted; serde renders a struct in DECLARATION
+    // order. Declaring these out of order silently changes the stored bytes of every buffered
+    // event. `a_raw_event_serialises_exactly_as_it_did_when_it_went_through_a_value` fails if
+    // this order is disturbed.
+    body: &'a str,
+    record_type: &'a str,
+    role: &'a str,
+    timestamp_ms: u64,
+    title: &'a str,
+}
+
 impl ProxyService {
     /// Route a tenant to its owning shard using the same key hashing as
     /// `/execute` (`shard_id_for_key`). The tenant hash string is the routing
@@ -293,14 +311,19 @@ impl ProxyService {
             // what stops two ingests in the same millisecond writing the same field and
             // one silently overwriting the other; `{idx}` alone restarts at zero per call.
             let field = format!("{timestamp_ms:020}:{call:08}:{idx:06}");
-            let value = json!({
-                "record_type": "raw_event",
-                "role": message.role,
-                "title": title,
-                "body": message.content,
-                "timestamp_ms": timestamp_ms,
+            // Serialised straight from a borrowed view rather than through `json!`, which
+            // builds a whole `Value` -- a map, a `String` for each of the five keys, and a
+            // `Value::String` copy of role, title and body -- only to render it and drop it.
+            // The field names and their order are the same, because these records are read
+            // back by everything downstream.
+            let value = serde_json::to_string(&RawEventRecord {
+                body: &message.content,
+                record_type: "raw_event",
+                role: &message.role,
+                timestamp_ms,
+                title: &title,
             })
-            .to_string();
+            .unwrap_or_default();
             entries.push((field, value.into_bytes()));
         }
         if entries.is_empty() {
@@ -528,5 +551,54 @@ impl ProxyService {
             &request,
             self.context_http_options(),
         );
+    }
+}
+
+#[cfg(test)]
+mod raw_event_record_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The borrowed form serialises byte-for-byte what `json!` did.
+    ///
+    /// These records are stored and read back by everything downstream, so the shape is a
+    /// contract, not an implementation detail. `json!` built a whole `Value` to render it;
+    /// this asserts the cheaper path produces the identical string, including field ORDER,
+    /// which serde takes from declaration order and a `json!` object takes from its literal.
+    #[test]
+    fn a_raw_event_serialises_exactly_as_it_did_when_it_went_through_a_value() {
+        let cases: [(&str, &str, &str, u64); 4] = [
+            ("user", "message", "hello", 1_700_000_000_000),
+            ("", "", "", 0),
+            // Characters that force escaping, so this covers the encoder and not just ASCII.
+            ("assistant", "a \"quoted\" title", "line\nbreak \\ backslash", 42),
+            ("tool", "check \u{2713} and \u{1F600}", "tab\there", u64::MAX),
+        ];
+        for (role, title, body, ts) in cases {
+            let borrowed = serde_json::to_string(&RawEventRecord {
+                record_type: "raw_event",
+                role,
+                title,
+                body,
+                timestamp_ms: ts,
+            })
+            .expect("borrowed form serialises");
+
+            let through_value = json!({
+                "record_type": "raw_event",
+                "role": role,
+                "title": title,
+                "body": body,
+                "timestamp_ms": ts,
+            })
+            .to_string();
+
+            assert_eq!(
+                borrowed, through_value,
+                "the stored shape changed for role={role:?} title={title:?}
+  borrowed: {borrowed}
+  value:    {through_value}"
+            );
+        }
     }
 }
