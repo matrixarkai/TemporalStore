@@ -1494,6 +1494,23 @@ _STORE_SENTINELS = {"", "local", "none", "standalone", "off"}
 # These are measurements on ONE corpus of technical documentation with English and Chinese queries.
 # They rank these models on that corpus; they do not promise the same ranking on a different one,
 # which is why the portal presents them as evidence rather than as a recommendation to apply blindly.
+# Encoders a HOSTED provider serves. Deliberately not rows in _ENCODER_CATALOG: every entry there
+# carries hit@1 and throughput measured by encoding a real corpus on this machine, which is only
+# possible for a model we run. Giving these numbers they do not have would put invented figures in
+# the comparison table, sorted and marked "best" against measured ones -- so they are named here and
+# offered as choices, and the table stays what it is.
+#
+# Each name is one the code already uses: the encoder's own default for that provider, or a preset.
+_HOSTED_ENCODERS = [
+    {"model": "voyage-3", "serves": "voyage", "dim": 1024,
+     "note": "Voyage's general encoder, and what this build asks for when the provider is Voyage."},
+    {"model": "text-embedding-3-small", "serves": "openai", "dim": 1536,
+     "note": "OpenAI's cheaper encoder; what the OpenAI preset configures."},
+    {"model": "text-embedding-3-large", "serves": "openai", "dim": 3072,
+     "note": "OpenAI's stronger encoder, and what this build asks for on an OpenAI-compatible "
+             "endpoint that names no model."},
+]
+
 _ENCODER_CATALOG = [
     {
         "id": "intfloat/multilingual-e5-large",
@@ -1561,6 +1578,38 @@ def encoder_catalog() -> list:
     return out
 
 
+def _encoder_applies(provider: str) -> bool:
+    """Whether a SELF-HOSTED encoder is something this provider could run.
+
+    An OpenAI-compatible endpoint is the one value covering two worlds -- OpenAI itself and a local
+    server behind the same protocol, which is what the MiniLM preset configures -- so it keeps them.
+    A hosted-only provider cannot serve a repository id at all.
+    """
+    effect = _gwconfig.embedding_provider_effect(provider)
+    if effect == "hash":
+        return True  # nothing chosen yet; narrowing towards nothing helps no one
+    if effect == "local_model":
+        return True
+    return (provider or "").strip().lower() != "voyage"
+
+
+def _hosted_encoders_for(provider: str) -> List[Json]:
+    """Encoders the provider serves itself, with no measurement to show for them.
+
+    An in-process encoder gets NONE: it loads a model rather than calling one, so a hosted name is
+    not a thing it could be pointed at. Nothing chosen yet gets all of them, because narrowing
+    towards nothing helps no one.
+    """
+    name = (provider or "").strip().lower()
+    effect = _gwconfig.embedding_provider_effect(name)
+    if effect == "local_model":
+        return []
+    if effect != "api":
+        return [dict(row) for row in _HOSTED_ENCODERS]
+    wanted = "voyage" if name == "voyage" else "openai"
+    return [dict(row) for row in _HOSTED_ENCODERS if row["serves"] == wanted]
+
+
 def _model_picker_body(target: str) -> Json:
     """The part of /v1/admin/models that needs no network: which setting a pick belongs in, what is
     in that setting now, and the suggestions for the selected provider.
@@ -1575,13 +1624,23 @@ def _model_picker_body(target: str) -> Json:
     """
     setting_key = ("embedding.model" if target == "embedding"
                    else _gwconfig.extraction_model_setting())
-    return {
+    body: Json = {
         "target": target,
         "key": setting_key,
         "catalogue": (embedding_picker_catalogue() if target == "embedding"
                       else _gwconfig.model_catalogue(target)),
         "current": os.environ.get(_gwconfig.SETTINGS_BY_KEY[setting_key].env, "").strip(),
     }
+    if target == "embedding":
+        # `applicable` narrows what is OFFERED without narrowing what is SHOWN. The measured table
+        # is evidence -- a deployment on Voyage is still entitled to see what self-hosting would
+        # score -- but offering it five models it cannot serve, and none it can, is the defect.
+        provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "")
+        applies = _encoder_applies(provider)
+        for row in body["catalogue"]:
+            row["applicable"] = applies
+        body["provider_models"] = _hosted_encoders_for(provider)
+    return body
 
 
 def _model_config_snapshot() -> Json:
