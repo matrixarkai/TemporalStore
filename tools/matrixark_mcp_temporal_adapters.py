@@ -486,6 +486,31 @@ def _shadow_log_path(operation: str) -> str:
     return _os.environ.get("MATRIXARK_SHADOW_LOG", "/tmp/matrixark_%s_shadow.log" % operation)
 
 
+def _note_full_read_fallback(where: str, reason: BaseException) -> None:
+    """Say which scoped scan gave up and why, when the answer is to read the whole store.
+
+    Each of these replaces a scan of the records a request needs with a read of every record
+    there is, on every turn it happens. Silent, that is invisible from outside: a scan path that
+    has stopped working looks exactly like one that was never taken, and the cost shows up only as
+    a store that got slower.
+
+    Written only when MATRIXARK_MCP_DEBUG_LOG names a file, so the normal path costs one lookup --
+    against a fallback that is about to read everything. Never raises: a channel that reports a
+    problem must not become one.
+    """
+    try:
+        import os as _os
+
+        debug_path = _os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
+        if not debug_path:
+            return
+        with open(debug_path, "a", encoding="utf-8") as handle:
+            handle.write("%s fell back to the full read: %s: %s%s"
+                         % (where, reason.__class__.__name__, reason, chr(10)))
+    except OSError:
+        pass
+
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
     # The base class precedes the mixins in the MRO, so without this the buffered audit
     # implementation the __init__ prepares for (MATRIXARK_DIRECT_AUDIT_MODE, buffer, flusher)
@@ -1303,7 +1328,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
                     return self._scan_records_of_types(
                         record_types, record_ids=record_ids, scope=scope, newest_by_type=None
                     )
-                except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+                except Exception as fallback_reason:  # noqa: BLE001 - the caller reads everything.
+                    _note_full_read_fallback("_scan_records_of_types", fallback_reason)
                     return None
             return None
         except Exception:  # noqa: BLE001 - an unanswered question means "do the full read".
@@ -1375,7 +1401,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
 
         try:
             tenant_hash, user_hash = self._resolve_subject_hashes(scope or {})
-        except Exception:  # noqa: BLE001
+        except Exception as fallback_reason:  # noqa: BLE001
+            _note_full_read_fallback("records_for_get_all", fallback_reason)
             return self.read_all()
         if not tenant_hash or not user_hash:
             return self.read_all()
@@ -1424,17 +1451,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         try:
             latest_state = self._load_latest_context_state_records()
         except Exception as fallback_reason:  # noqa: BLE001 - the full read is the fallback.
-            try:
-                _debug = _os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
-                if _debug:
-                    with open(_debug, "a", encoding="utf-8") as _log:
-                        _log.write(
-                            "prior_context_records fell back to the full read: {}: {}".format(
-                                fallback_reason.__class__.__name__, fallback_reason
-                            ) + chr(10)
-                        )
-            except OSError:
-                pass
+            _note_full_read_fallback("records_for_get_all", fallback_reason)
             return self.read_all()
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
@@ -1506,7 +1523,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
 
         try:
             tenant_hash, user_hash = self._resolve_subject_hashes(scope or {})
-        except Exception:  # noqa: BLE001
+        except Exception as fallback_reason:  # noqa: BLE001
+            _note_full_read_fallback("records_for_session_buffer", fallback_reason)
             return self.read_all()
         if not tenant_hash or not user_hash:
             return self.read_all()
@@ -1549,7 +1567,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
-        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+        except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
+            _note_full_read_fallback("records_for_session_buffer", fallback_reason)
             return self.read_all()
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
@@ -1646,7 +1665,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
-        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+        except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
+            _note_full_read_fallback("records_for_summary_refresh", fallback_reason)
             return self.read_all()
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
@@ -1764,7 +1784,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
-        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+        except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
+            _note_full_read_fallback("records_for_delete", fallback_reason)
             return self.read_all()
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
@@ -1904,7 +1925,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
-        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+        except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
+            _note_full_read_fallback("records_for_get_memory", fallback_reason)
             return self.read_all()
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
@@ -2084,7 +2106,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         }
         try:
             latest_state = self._load_latest_context_state_records()
-        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+        except Exception as fallback_reason:  # noqa: BLE001 - full read is the fallback.
+            _note_full_read_fallback("prior_context_records", fallback_reason)
             return self.read_all()
         try:
             from tools.matrixark_mcp_serving_records import compact_latest_context_state_records
