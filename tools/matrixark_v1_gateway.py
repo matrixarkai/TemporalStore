@@ -1631,25 +1631,29 @@ def _model_config_snapshot() -> Json:
     deterministic = {"", "deterministic", "rules", "local"}
     if extraction_provider in deterministic:
         warnings.append(
-            "extraction_provider is deterministic: no LLM is called, so ingest stores only what the "
-            "local rules extract. Set MATRIXARK_EXTRACTION_PROVIDER=openai_compatible with "
-            "MATRIXARK_EXTRACTION_BASE_URL/_MODEL/_API_KEY_ENV to enable model extraction."
+            "Extraction provider is deterministic: no model is called, so ingest stores only "
+            "what the local rules extract. Set Extraction provider to openai_compatible, then fill "
+            "in Extraction base URL, Extraction model and Extraction API key below."
         )
     elif not extraction["api_key_configured"]:
         warnings.append(
-            "extraction_provider is " + repr(extraction_provider) + " but " + extraction_key_env
-            + " is empty: extraction calls will fail and fall back to the deterministic path."
+            "Extraction API key is empty and Extraction provider is "
+            + repr(extraction_provider) + ": extraction calls will fail and fall back to the "
+            "deterministic path. The key goes into " + extraction_key_env + ", which is what "
+            "Extraction key variable names."
         )
     if embedding_provider in deterministic:
         warnings.append(
-            "embedding_provider is deterministic: retrieval uses hash vectors, not semantic "
-            "embeddings. Set MATRIXARK_EMBEDDING_PROVIDER and MATRIXARK_REQUIRE_MODEL_EMBEDDINGS=1."
+            "Embedding provider is deterministic: retrieval uses hash vectors, not semantic "
+            "embeddings. Set Embedding provider to the encoder you run, and turn on Fail instead "
+            "of falling back so an unreachable one is not answered with hash vectors."
         )
     else:
         if not require_model_embeddings:
             warnings.append(
-                "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is not set: if the encoder becomes unreachable "
-                "the gateway falls back to hash vectors instead of failing the request."
+                "Fail instead of falling back is off: if the encoder becomes unreachable the "
+                "gateway answers with hash vectors instead of failing the request, and retrieval "
+                "looks healthy while it stops being semantic."
             )
         # Two configuration mistakes silently degrade an OpenAI-compatible encoder to hash vectors,
         # and neither is visible from the outside: the request 200s and retrieval still returns
@@ -1657,15 +1661,16 @@ def _model_config_snapshot() -> Json:
         api_base = embedding["api_base"]
         if api_base and not api_base.rstrip("/").endswith("/v1"):
             warnings.append(
-                "MATRIXARK_EMBEDDING_API_BASE (" + api_base + ") does not end in /v1: the endpoint "
-                "is built as <base>/embeddings, so an OpenAI-compatible encoder serving "
+                "Embedding base URL (" + api_base + ") does not end in /v1: the endpoint is "
+                "built as <base>/embeddings, so an OpenAI-compatible encoder serving "
                 "/v1/embeddings is never reached and every vector is a hash fallback."
             )
         if not embedding["api_key_configured"]:
             warnings.append(
-                "embedding key env " + embedding_key_env + " is empty: the embedding call is skipped "
-                "before it is attempted, even for a local encoder that needs no auth. Set it to any "
-                "non-empty placeholder for a local endpoint."
+                "Embedding API key is empty: the embedding call is skipped before it is "
+                "attempted, even for a local encoder that needs no auth, so set it to any "
+                "non-empty placeholder for a local endpoint. The key goes into "
+                + embedding_key_env + ", which is what Embedding key variable names."
             )
 
     # Both key controls can name the SAME variable -- they both default to OPENAI_API_KEY -- and the
