@@ -181,9 +181,9 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
 | `TS_WAL_LEGACY_RECOVERY` | — | config, harness, script | 1 | yes |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
-| `TS_WAL_PREALLOCATE` | on | launch, test | 1 | — |
+| `TS_WAL_PREALLOCATE` | on | launch, test | 1 | yes |
 | `TS_WAL_PREALLOCATE_CHUNK` | — | nothing | 1 | — |
-| `TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS` | — | test | 1 | yes |
+| `TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS` | — | test | 1 | — |
 | `TS_WAL_RECLAIM_MIN_COPY_BYTES` | — | nothing | 1 | — |
 | `TS_WAL_RECLAIM_MIN_FREED_PERCENT` | — | nothing | 1 | — |
 | `TS_WAL_RESIDENT_PAGES` | — | test | 1 | — |

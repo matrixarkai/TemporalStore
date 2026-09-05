@@ -373,3 +373,126 @@ class TheInventoryKnowsWhatTheCustomerCanSeeTest(unittest.TestCase):
             len(offered & listed), 10,
             "only %d offered flags overlap the inventory; the comparison has stopped comparing"
             % len(offered & listed))
+
+
+class NoDocCommentIsGluedToTheWrongItemTest(unittest.TestCase):
+    """A `///` block documents the item below it -- and only one item is below any of them.
+
+    Two `///` runs with nothing between them are ONE block on whatever follows, and an
+    intervening `//` comment does not separate them either. So deleting a function between two
+    doc comments, or writing a second block without an item under the first, silently files one
+    subject's words under another's name. Rustdoc then renders them as that item's documentation
+    and nothing complains, because a comment cannot fail.
+
+    Four of these were found by hand while retiring flags -- `env_flag_on` had acquired two design
+    notes about the write path, `raft_durable_fingerprint` two more, and
+    `context_hybrid_lexical_enabled` and `wal_preallocate_enabled` had each lost their own to the
+    function above them. That is the whole reason this exists: the failure is invisible in review
+    and permanent once merged.
+
+    The signal is a line INSIDE a run that opens the way a block opens -- a flag name or an
+    `S2:`-style tag at the start -- where the line before it ended a sentence or was blank. The
+    "ended a sentence" part is what keeps a wrapped line from counting: a sentence continuing onto
+    a new line that happens to start with a flag name is ordinary prose, and two of the three
+    candidates this first reported were exactly that.
+    """
+
+    OPENER = re.compile(r"^///\s+((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]{3,}|[A-Z]\d)[:( ]")
+
+    def test_no_block_documents_an_item_that_is_not_below_it(self) -> None:
+        root = os.path.join(ROOT, "crates", "temporalstore-rust", "src")
+        glued, scanned = [], 0
+        for base, _dirs, names in os.walk(root):
+            for name in sorted(names):
+                if not name.endswith(".rs"):
+                    continue
+                scanned += 1
+                path = os.path.join(base, name)
+                with io.open(path, encoding="utf-8") as handle:
+                    lines = handle.read().splitlines()
+                run_start = None
+                for index, line in enumerate(lines):
+                    stripped = line.strip()
+                    if not stripped.startswith("///"):
+                        run_start = None
+                        continue
+                    if run_start is None:
+                        run_start = index
+                        continue
+                    if not self.OPENER.match(stripped):
+                        continue
+                    previous = lines[index - 1].strip()
+                    # A sentence that wraps onto a line starting with a flag name is prose, not a
+                    # new block. Only a line after a finished sentence, or after a blank `///`,
+                    # opens one.
+                    if previous != "///" and not previous.endswith((".", ")")):
+                        continue
+                    following = index + 1
+                    while following < len(lines) and (
+                        lines[following].strip().startswith(("///", "#["))
+                    ):
+                        following += 1
+                    item = lines[following].strip() if following < len(lines) else "(end of file)"
+                    glued.append(
+                        "%s:%d\n      %s\n      -> documents: %s"
+                        % (os.path.relpath(path, ROOT), index + 1, stripped[:88], item[:88])
+                    )
+        self.assertGreater(scanned, 100,
+                           "only %d .rs files scanned; the walk is broken" % scanned)
+        self.assertEqual(
+            [], glued,
+            "%d doc block(s) open inside another block, so they document an item they are not "
+            "about:\n  %s" % (len(glued), "\n  ".join(glued)))
+
+
+class NonTestCodeDoesNotWriteTheProcessEnvironmentTest(unittest.TestCase):
+    """A binary that sets a variable on itself is doing at a distance what an argument does.
+
+    It depends on the order the write and the read happen in, it is visible to every other reader
+    in the process, and it is almost never put back. Four were replaced while retiring flags: the
+    proxy and three binaries set `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` to configure an engine they
+    were about to build, and two set `TS_PHASE1_FLAT` to the value it already had.
+
+    What is allowed is a whole-PROCESS mode, where the binary genuinely is the thing the variable
+    describes -- a backfill setting `MATRIXARK_BULK_INGEST`. Anything else belongs on the object
+    it configures, so this list is meant to shrink and never to grow.
+    """
+
+    ALLOWED = {
+        # `context_batch_ingest` and `context_embed_backfill` ARE backfills; bulk ingest is a
+        # property of the process, not of one engine inside it.
+        ("bin/context_batch_ingest.rs", "MATRIXARK_BULK_INGEST"),
+        ("bin/context_embed_backfill.rs", "MATRIXARK_BULK_INGEST"),
+    }
+
+    WRITE = re.compile(r'env::set_var\(\s*"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"')
+
+    def test_only_a_whole_process_mode_is_written(self) -> None:
+        root = os.path.join(ROOT, "crates", "temporalstore-rust", "src")
+        found, scanned = set(), 0
+        for base, _dirs, names in os.walk(root):
+            if os.sep + "tests" in base:
+                continue
+            for name in sorted(names):
+                if not name.endswith(".rs") or name == "tests.rs":
+                    continue
+                scanned += 1
+                path = os.path.join(base, name)
+                with io.open(path, encoding="utf-8") as handle:
+                    lines = handle.read().splitlines()
+                cut = next((i for i, l in enumerate(lines) if re.match(r"\s*mod tests\b", l)),
+                           len(lines))
+                rel = os.path.relpath(path, root).replace(os.sep, "/")
+                for line in lines[:cut]:
+                    match = self.WRITE.search(line)
+                    if match:
+                        found.add((rel, match.group(1)))
+        self.assertGreater(scanned, 100,
+                           "only %d .rs files scanned; the walk is broken" % scanned)
+        self.assertTrue(self.ALLOWED, "the allowlist is empty; this test would assert nothing")
+        unexpected = sorted(found - self.ALLOWED)
+        self.assertEqual(
+            [], unexpected,
+            "non-test code writes these into the process environment. A setting that belongs to "
+            "one engine, store or cluster belongs on that object:\n  %s"
+            % "\n  ".join("%s sets %s" % pair for pair in unexpected))

@@ -2796,14 +2796,6 @@ fn wal_env_flag_default_on(name: &str) -> bool {
     )
 }
 
-/// TS_WAL_PREALLOCATE (default ON): write records inside a file that has already been grown
-/// to size instead of growing it on every append. fdatasync on a growing file must persist the
-/// new length -- the bytes are unreadable without it -- so every barrier pays a metadata write.
-/// Growing the file in chunks moves that cost to once per chunk: measured 42-55% cheaper at a
-/// barrier per record (issue #188). Live by default now that the full suite runs green with it
-/// forced on; the env var remains the escape hatch (=0 restores growing appends, and a log
-/// written either way reads back under the other, since the tail scan treats a zeros run as
-/// room and a plain file simply ends at its records).
 /// TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS: how many sealed pieces one reclaim pass may unlink.
 ///
 /// The unlinking happens while the log's lock is held, and every append takes that lock, so an
@@ -2820,6 +2812,14 @@ fn wal_reclaim_max_segments_per_pass() -> usize {
         .unwrap_or(64)
 }
 
+/// TS_WAL_PREALLOCATE (default ON): write records inside a file that has already been grown
+/// to size instead of growing it on every append. fdatasync on a growing file must persist the
+/// new length -- the bytes are unreadable without it -- so every barrier pays a metadata write.
+/// Growing the file in chunks moves that cost to once per chunk: measured 42-55% cheaper at a
+/// barrier per record (issue #188). Live by default now that the full suite runs green with it
+/// forced on; the env var remains the escape hatch (=0 restores growing appends, and a log
+/// written either way reads back under the other, since the tail scan treats a zeros run as
+/// room and a plain file simply ends at its records).
 fn wal_preallocate_enabled() -> bool {
     wal_env_flag_default_on("TS_WAL_PREALLOCATE")
 }
