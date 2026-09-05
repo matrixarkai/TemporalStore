@@ -44,7 +44,7 @@ OPENAI = "https://api.openai.com/v1"
 
 
 def sharing(warnings):
-    return [w for w in warnings if "both take their key from" in w]
+    return [w for w in warnings if "both go into" in w]
 
 
 class _Configured(unittest.TestCase):
@@ -88,15 +88,19 @@ class OneVariableTwoEndpointsIsCalledOutTest(_Configured):
         self.assertEqual(1, len(found), self.two_providers())
 
     def test_it_says_which_variable_and_which_endpoints(self) -> None:
-        """A warning that does not name the variable leaves the reader nothing to change."""
+        """It names the two CONTROLS, because that is what a reader on the Setup page can act on,
+        and the variable they share, because that is what an API reader sees."""
         said = sharing(self.two_providers())[0]
+        self.assertIn("Extraction API key", said)
+        self.assertIn("Embedding API key", said)
         self.assertIn("OPENAI_API_KEY", said)
         self.assertIn(DEEPSEEK, said)
         self.assertIn(OPENAI, said)
 
     def test_it_says_what_to_do(self) -> None:
         said = sharing(self.two_providers())[0]
-        self.assertIn("Name a different variable", said)
+        self.assertIn("Extraction key variable", said)
+        self.assertIn("Embedding key variable", said)
         self.assertIn("set that key again", said)
 
 

@@ -1682,11 +1682,11 @@ def _model_config_snapshot() -> Json:
             and extraction_endpoint and embedding_endpoint
             and extraction_endpoint != embedding_endpoint):
         warnings.append(
-            "extraction and embedding both take their key from " + extraction_key_env + ", but they "
-            "call different endpoints (" + extraction_endpoint + " and " + embedding_endpoint
-            + "): whichever key was saved last is in that variable, so one of the two is "
-            "authenticating with the other's. Name a different variable in one of the key-variable "
-            "settings, then set that key again."
+            "Extraction API key and Embedding API key both go into " + extraction_key_env
+            + ", but they call different endpoints (" + extraction_endpoint + " and "
+            + embedding_endpoint + "): whichever was saved last is the one in that variable, so one "
+            "of the two is authenticating with the other's key. Give one of them its own place in "
+            "Extraction key variable or Embedding key variable, then set that key again."
         )
 
     return {
