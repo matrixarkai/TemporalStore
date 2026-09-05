@@ -38,17 +38,7 @@ pub(crate) fn try_sdk_native_pack(
     client: &Client,
     command: &Command,
 ) -> SdkNativePackAttempt {
-    let use_sdk_native = std::env::var("MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK")
-        .map(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
-        .unwrap_or(true);
-    if !use_sdk_native {
-        return SdkNativePackAttempt::FallbackAllowed;
-    }
+    // The native pack is always attempted; the fallback below is for when it FAILS.
     match retrieve_context_pack_via_sdk_native(client, command) {
         Ok(response) => SdkNativePackAttempt::Response(response),
         Err(err) => {

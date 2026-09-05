@@ -432,7 +432,7 @@ Everything else that changes what the engine does.
 | `TS_SHARD_WRITE_QPS` | — | nothing | 1 | — |
 | `TS_TABLE_NAME` | — | test | 1 | — |
 
-## outside this document (7)
+## outside this document (6)
 
 `sdk/rust/temporalstore` is a second Rust tree, carrying its own copy of the
 proxy implementation -- a different file, not a stale duplicate. The root
@@ -444,7 +444,6 @@ is computed, so one more cannot appear quietly.
 - `MATRIXARK_RUST_FILTERED_SCAN_CACHE_ENTRIES`
 - `MATRIXARK_RUST_METRICS_PATH`
 - `MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK`
-- `MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK`
 - `MATRIXARK_RUST_SCAN_RECORD_CACHE_ENTRIES`
 - `MATRIXARK_RUST_SDK_MODE`
 - `TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API`

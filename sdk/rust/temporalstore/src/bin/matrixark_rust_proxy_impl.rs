@@ -2335,29 +2335,21 @@ fn retrieve_context_pack_via_sdk_native(
 }
 
 fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Value, String> {
-    let use_sdk_native = std::env::var("MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK")
-        .map(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
-        .unwrap_or(true);
-    if use_sdk_native {
-        match retrieve_context_pack_via_sdk_native(client, command) {
-            Ok(response) => return Ok(response),
-            Err(err) => {
-                if std::env::var("MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK")
-                    .map(|value| {
-                        matches!(
-                            value.trim().to_ascii_lowercase().as_str(),
-                            "1" | "true" | "yes"
-                        )
-                    })
-                    .unwrap_or(false)
-                {
-                    return Err(err);
-                }
+    // The native pack is always attempted. What follows is the fallback for when it FAILS,
+    // which is a different question from whether to try it -- and the only one anything asks.
+    match retrieve_context_pack_via_sdk_native(client, command) {
+        Ok(response) => return Ok(response),
+        Err(err) => {
+            if std::env::var("MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK")
+                .map(|value| {
+                    matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes"
+                    )
+                })
+                .unwrap_or(false)
+            {
+                return Err(err);
             }
         }
     }
