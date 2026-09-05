@@ -1633,8 +1633,23 @@ def _model_config_snapshot() -> Json:
             "out-of-the-box default so the API works with no configuration. Set "
             "MATRIXARK_REQUIRE_AUTH=1 and MATRIXARK_ACCESS_MODE=enforced, then restart."
         )
-    deterministic = {"", "deterministic", "rules", "local"}
-    if extraction_provider in deterministic:
+    def _unrecognised(group: str, provider: str) -> str:
+        """The warning for a value nothing matches. It names the value, because the whole failure is
+        that the value looks configured -- and lists what would have worked."""
+        return (
+            "The " + group + " provider is set to " + repr(provider) + ", which nothing recognises. "
+            "It is not rejected: the request falls through to the same local path as "
+            "'deterministic', so the deployment answers 200 and looks configured. Set it to one of "
+            + ", ".join(_gwconfig.recognised_providers(group)) + ".")
+
+    unrecognised_extraction = _gwconfig.provider_is_unrecognised("extraction", extraction_provider)
+    unrecognised_embedding = _gwconfig.provider_is_unrecognised("embedding", embedding_provider)
+    if unrecognised_extraction:
+        warnings.append(_unrecognised("extraction", extraction_provider))
+    if unrecognised_embedding:
+        warnings.append(_unrecognised("embedding", embedding_provider))
+    if _gwconfig.extraction_provider_effect(extraction_provider) == "rules" \
+            and not unrecognised_extraction:
         warnings.append(
             "Extraction provider is deterministic: no model is called, so ingest stores only "
             "what the local rules extract. Set Extraction provider to openai_compatible, then fill "
@@ -1647,14 +1662,15 @@ def _model_config_snapshot() -> Json:
             "deterministic path. The key goes into " + extraction_key_env + ", which is what "
             "Extraction key variable names."
         )
-    if embedding_provider in deterministic:
+    if _gwconfig.embedding_provider_effect(embedding_provider) == "hash" \
+            and not unrecognised_embedding:
         warnings.append(
             "Embedding provider is deterministic: retrieval uses hash vectors, not semantic "
             "embeddings. Set Embedding provider to the encoder you run, and turn on Fail instead "
             "of falling back so an unreachable one is not answered with hash vectors."
         )
     else:
-        if not require_model_embeddings:
+        if not require_model_embeddings and not unrecognised_embedding:
             warnings.append(
                 "Fail instead of falling back is off: if the encoder becomes unreachable the "
                 "gateway answers with hash vectors instead of failing the request, and retrieval "
@@ -1687,7 +1703,8 @@ def _model_config_snapshot() -> Json:
     # sharing the key is the point, and warning there would be noise on a correct configuration.
     extraction_endpoint = str(extraction["base_url"] or "").rstrip("/")
     embedding_endpoint = str(embedding["api_base"] or "").rstrip("/")
-    if (extraction_provider not in deterministic and embedding_provider not in deterministic
+    if (_gwconfig.extraction_provider_effect(extraction_provider) != "rules"
+            and _gwconfig.embedding_provider_effect(embedding_provider) == "api"
             and extraction_key_env and extraction_key_env == embedding_key_env
             and extraction_endpoint and embedding_endpoint
             and extraction_endpoint != embedding_endpoint):
@@ -2925,7 +2942,6 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
     """
     extraction = config_snapshot.get("extraction") or {}
     embedding = config_snapshot.get("embedding") or {}
-    deterministic = {"", "deterministic", "rules", "local"}
     checks: List[Json] = []
 
     def plural(count: int, one: str, many: str = "") -> str:
@@ -2971,7 +2987,10 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
             "The datanode reported a state this gateway does not recognise: %r." % datanode,
             "/v1/admin/setup", "Deployment")
 
-    model_on = str(extraction.get("provider", "")).lower() not in deterministic
+    # A name nothing recognises is not "on". It used to pass this test, so the checklist showed
+    # a tick and the provider's own name beside it on a deployment running the local rules.
+    model_on = _gwconfig.extraction_provider_effect(
+        str(extraction.get("provider", ""))) != "rules"
     add("extraction", "Extraction model", "ok" if model_on else "todo",
         ("Ingest calls " + str(extraction.get("model") or extraction.get("provider")) + ".")
         if model_on else
@@ -3004,7 +3023,8 @@ def _readiness_checks(config_snapshot: Json, counts: Json, cfg: Any,
                 "The key is stored owner-only and is never returned by any read.",
             ])
 
-    semantic = str(embedding.get("provider", "")).lower() not in deterministic
+    semantic = _gwconfig.embedding_provider_effect(
+        str(embedding.get("provider", ""))) != "hash"
     add("embedding", "Embedding model", "ok" if semantic else "todo",
         ("Retrieval encodes with " + str(embedding.get("model") or embedding.get("provider")) + ".")
         if semantic else
