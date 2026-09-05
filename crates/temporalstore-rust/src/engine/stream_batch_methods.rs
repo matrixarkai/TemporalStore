@@ -235,7 +235,7 @@ impl TemporalEngine {
         // `promote_scan_done` is `#[serde(skip)]`, so a freshly loaded shard still pays exactly
         // one full reconcile before the skip engages, and with the gate off the scan runs on
         // every batch precisely as before.
-        if !(phase1_flat_enabled() && shard.promote_scan_done) {
+        if !(self.wal_store.flat_append() && shard.promote_scan_done) {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if promote_model_maps_to_bucket_index_authority(
@@ -249,7 +249,7 @@ impl TemporalEngine {
             // Latch only once the shard actually holds model-map state: `promote` returns false
             // without establishing anything on an empty shard, so guarding on non-emptiness
             // avoids latching before the first real write.
-            if phase1_flat_enabled() && shard_has_model_entries(shard) {
+            if self.wal_store.flat_append() && shard_has_model_entries(shard) {
                 shard.promote_scan_done = true;
             }
         }
@@ -506,9 +506,9 @@ impl TemporalEngine {
             if !config.async_storage && !bulk_ingest_mode() {
                 // Anchor the served index to the WAL sequence it reflects (see the
                 // single-command path) so shard load replays only records after it. Under
-                // TS_PHASE1_FLAT read the O(1) cached last sequence instead of `stats()` (which
-                // rescans the whole WAL file); gate OFF keeps the exact `stats()` value.
-                shard.applied_wal_sequence = Some(if phase1_flat_enabled() {
+                // flat append read the O(1) cached last sequence instead of `stats()` (which
+                // rescans the whole WAL file); without it the exact `stats()` value is kept.
+                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() {
                     self.wal_store.cached_last_sequence(request.shard_id)
                 } else {
                     self.wal_store.stats(request.shard_id).last_sequence

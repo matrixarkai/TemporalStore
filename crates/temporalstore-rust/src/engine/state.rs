@@ -262,14 +262,14 @@ pub(super) struct ShardState {
     pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
     pub(super) dirty_objects: BTreeSet<String>,
-    /// Phase-1 flat-append (TS_PHASE1_FLAT) fast-skip flag for the per-execute
+    /// Phase-1 flat-append fast-skip flag for the per-execute
     /// `promote_model_maps_to_bucket_index_authority` reconciliation. The live write path already
     /// keeps `bucket_index` authoritative in step with the model maps (each mutating command
     /// upserts its page into `bucket_index` before returning), so once a full promote scan has
     /// confirmed the two are in sync a repeat per-command O(store) scan can only re-confirm it.
     /// Set true after a confirmed/rebuilt reconcile at the hot-path call site; `#[serde(skip)]`
     /// so it is false on every fresh load -> the first live command after any reload pays one
-    /// full reconcile and re-establishes it. Only consulted when `phase1_flat_enabled()`.
+    /// full reconcile and re-establishes it. Only consulted when the log's `flat_append()`.
     #[serde(skip)]
     pub(super) promote_scan_done: bool,
     /// Resume point and candidate pool for sampled eviction. In-memory and ephemeral like

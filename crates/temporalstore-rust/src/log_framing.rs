@@ -74,7 +74,7 @@ pub(crate) const FRAME_MAGIC_V3: u8 = 0xB3;
 /// The one thing length framing takes away is the ability to find a log's tail by scanning
 /// BACKWARD: a length prefix is only readable from in front of the record it describes, so the
 /// tail has to be walked to. That walk reads the file, which would be ruinous if it ran per
-/// append -- and it does not: TS_PHASE1_FLAT resolves the sequence from the warm cache plus a
+/// append -- and it does not: flat append resolves the sequence from the warm cache plus a
 /// length stat, leaving the walk for a cold open. (A log format that frames by length usually
 /// records where its last record is as it writes, which bounds even that; the descriptors for
 /// it exist in `storage_descriptor` and are not yet wired.)
