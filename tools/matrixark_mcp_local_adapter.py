@@ -4546,6 +4546,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # dirty_hash -> the newest summary-dirty or refresh-audit row, so the outstanding set
         # can be answered without reading everything. None until first use.
         self._summary_dirty_index: dict[Any, Json] | None = None
+        #: Pipeline-task rows, kept for the same reason the summary-dirty rows are: the
+        #: pre-retrieval idle-commit flush was scanning the WHOLE live view twice per query
+        #: to find them, and they are a handful of rows in a store of millions.
+        self._pipeline_task_index: list[Json] | None = None
         # model_ref -> {node_hash}, so 'is this node already embedded' does not read the
         # store. None until first use; see _existing_node_embedding_refs.
         self._node_embedding_refs_index: dict[str, set[int]] | None = None
@@ -5051,6 +5055,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
             self._summary_dirty_index = None
+            self._pipeline_task_index = None
             self._node_embedding_refs_index = None
             self._read_cache_size = -1
             self._read_cache_mtime_ns = -1
@@ -5300,6 +5305,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._pipeline_task_index = None
                 self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
@@ -5339,6 +5345,12 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 if self._summary_dirty_index is not None:
                     for record in records:
                         self._note_summary_dirty_row(self._summary_dirty_index, record)
+                if self._pipeline_task_index is not None:
+                    for record in records:
+                        if (isinstance(record, dict)
+                                and str(record.get("record_type") or "")
+                                == "matrixark_async_pipeline_task"):
+                            self._pipeline_task_index.append(record)
                 if self._node_embedding_refs_index is not None:
                     for record in records:
                         self._note_node_embedding_ref(self._node_embedding_refs_index, record)
@@ -5363,6 +5375,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._pipeline_task_index = None
                 self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
@@ -5526,6 +5539,38 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._note_summary_dirty_row(index, record)
             self._summary_dirty_index = index
         return list(index.values())
+
+    def idle_commit_task_records(self, scope: Json) -> list[Json]:
+        """Only the pipeline-task rows, without walking the store.
+
+        `pre_retrieval_idle_commit_flush` looks for scheduled idle-commit tasks before every
+        retrieve. It prefers this method and falls back to `read_all()`, and the local adapter did
+        not offer it -- so the fallback ran, scanning the entire live view TWICE per query to find
+        rows that number in the handful. Profiled on a 1 MB corpus at 8,548 records, that flush was
+        68% of a settled retrieve.
+
+        The native reader has offered this since it was written; this is the same contract for the
+        python one. Scope is accepted and not filtered on here: the caller already applies
+        `scope_matches` to every row it considers, and narrowing twice would mean rebuilding this
+        index per scope rather than per cache generation.
+
+        Kept the way `_summary_dirty_rows` is kept -- built from one read the first time, folded
+        forward on append, and dropped whenever the cache it describes is.
+        """
+        index = self._pipeline_task_index
+        if index is None:
+            index = []
+            try:
+                live = self.read_all()
+            except (OSError, ValueError):
+                live = []
+            for record in live:
+                if (isinstance(record, dict)
+                        and str(record.get("record_type") or "")
+                        == "matrixark_async_pipeline_task"):
+                    index.append(record)
+            self._pipeline_task_index = index
+        return list(index)
 
     @staticmethod
     def _note_summary_dirty_row(index: dict[Any, Json], record: Json) -> None:
@@ -6137,6 +6182,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._pipeline_task_index = None
                 self._node_embedding_refs_index = None
                 self._read_cache_size = -1
                 self._read_cache_mtime_ns = -1
@@ -6210,6 +6256,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 self._read_cache_value_keys = None
                 self._read_cache_state_keys = None
                 self._summary_dirty_index = None
+                self._pipeline_task_index = None
                 self._node_embedding_refs_index = None
                 self._read_cache_size = size
                 self._read_cache_mtime_ns = mtime_ns
@@ -6246,6 +6293,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             self._read_cache_value_keys = None
             self._read_cache_state_keys = None
             self._summary_dirty_index = None
+            self._pipeline_task_index = None
             self._node_embedding_refs_index = None
             self._read_cache_size = size
             self._read_cache_mtime_ns = mtime_ns
