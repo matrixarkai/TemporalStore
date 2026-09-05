@@ -58,10 +58,19 @@ impl Default for Config {
 impl Config {
     /// Truthy check for an `extend_config` gate flag.
     pub fn flag(&self, name: &str) -> bool {
-        self.extend_config
-            .get(name)
-            .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes" | "enabled"))
-            .unwrap_or(false)
+        self.flag_or(name, false)
+    }
+
+    /// `flag`, for a gate whose default is ON. An absent key takes `default`; a key that is
+    /// present is read exactly as `flag` reads it, so an explicit false value opts out.
+    pub fn flag_or(&self, name: &str, default: bool) -> bool {
+        match self.extend_config.get(name) {
+            None => default,
+            Some(v) => matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "on" | "yes" | "enabled"
+            ),
+        }
     }
 
     /// Gate for the Control State rollup ladder (O(levels) sum-family window aggregates).
@@ -72,9 +81,18 @@ impl Config {
 
     /// Gate for coalesced Control State counter persistence: skip the per-write whole-series
     /// page rewrite and rely on the index snapshot + WAL replay (same durability model as
-    /// control_state_changes/fol). Effective only with async_storage (WAL) on; off by default.
+    /// control_state_changes/fol). Effective only with async_storage (WAL) on.
+    ///
+    /// DEFAULT ON. The rewrite it skips costs the length of the series on every increment --
+    /// measured at 313,309 bytes per increment on a 3,200-point series against 2,459 coalesced,
+    /// a 127x difference that grows without bound. What it relies on instead is covered by
+    /// `control_state_coalesced_write_survives_restart_via_wal_replay`, which writes counters,
+    /// reopens the engine and requires the counts to come back.
+    ///
+    /// Set the key to a false value to opt out; the async_storage gate still applies, so a
+    /// deployment without a WAL keeps the per-write page rewrite either way.
     pub fn control_coalesce_persist_enabled(&self) -> bool {
-        self.flag("control_coalesce_persist")
+        self.flag_or("control_coalesce_persist", true)
     }
 
     /// Gate for bounded distinct: convert oversized exact CHANGE sets to fixed-size HLL sketches
