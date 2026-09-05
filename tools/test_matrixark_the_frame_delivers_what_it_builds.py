@@ -74,26 +74,67 @@ class EveryBuiltFieldIsDeliveredTest(unittest.TestCase):
 
 class TheStripCanLearnAboutAPendingRestartTest(unittest.TestCase):
 
+    # The names that shadow extraction.provider. A value in either of these is the launcher's and
+    # outranks anything the portal stores, so a test that leaves one set makes the next one's write
+    # unobservable -- which is exactly what happened to this file.
+    SHADOWING = ("MATRIXARK_UNDERSTANDING_PROVIDER", "MATRIXARK_EXTRACTION_PROVIDER")
+
     def setUp(self) -> None:
+        # apply_boot() writes to os.environ and rebuilds _BOOT_EFFECTIVE, both of them process-wide
+        # and neither scoped to a test. Restored here in full: without this the test inherits
+        # whatever the previous one left behind AND leaves its own behind for the next, which is
+        # how it passed alone and failed in the suite.
+        environment = dict(os.environ)
+
+        def restore_environment() -> None:
+            os.environ.clear()
+            os.environ.update(environment)
+
+        self.addCleanup(restore_environment)
+
+        boot = dict(gwconfig._BOOT_EFFECTIVE)
+
+        def restore_boot() -> None:
+            gwconfig._BOOT_EFFECTIVE.clear()
+            gwconfig._BOOT_EFFECTIVE.update(boot)
+
+        self.addCleanup(restore_boot)
+
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        previous = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE")
-
-        def restore() -> None:
-            if previous is None:
-                os.environ.pop("MATRIXARK_RUNTIME_CONFIG_FILE", None)
-            else:
-                os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = previous
-
-        self.addCleanup(restore)
         os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = os.path.join(tmp.name, "runtime.json")
         self.assertTrue(gwconfig.config_path().startswith(tmp.name),
                         "the config path did not move; this test would rewrite a live config")
+        for name in self.SHADOWING:
+            os.environ.pop(name, None)
+
+        # A frame is built from a cache shared by the whole process and held for a tick, so without
+        # this the FIRST reading below is whatever the previous test left there rather than
+        # anything about this configuration. That is what failed in CI while passing alone: a
+        # neighbour had left a frame reporting three settings waiting, so this test wrote one and
+        # compared it against three.
+        gw._reset_live_cache()
+        self.addCleanup(gw._reset_live_cache)
+
         # What the gateway does at startup, and without it nothing is ever pending: the record of
         # what this process began with is built by apply_boot, and a module that was merely
         # imported has none. Skipping it here made this test read as "the frame says nothing"
         # when the frame was right and the test was not a real process.
         gwconfig.apply_boot()
+
+    def _a_provider_other_than_the_one_we_booted_with(self) -> str:
+        """Chosen against the boot record rather than written as a constant.
+
+        A fixed value can be the value already in effect, and then the write changes nothing and the
+        assertion fails while the code is fine.
+        """
+        setting = gwconfig.SETTINGS_BY_KEY["extraction.provider"]
+        booted = gwconfig._BOOT_EFFECTIVE.get(setting.key)
+        for choice in setting.choices or []:
+            if choice != booted:
+                return choice
+        self.fail("extraction.provider offers no value other than %r, so nothing can be "
+                  "changed here" % booted)
 
     def test_the_field_arrives(self) -> None:
         self.assertIn("settings_waiting", _frame())
@@ -101,12 +142,20 @@ class TheStripCanLearnAboutAPendingRestartTest(unittest.TestCase):
     def test_it_counts_a_setting_that_needs_a_restart(self) -> None:
         """The one the Setup page already explains in words. The strip is what a customer sees
         from the other six panels, and it had nothing to say."""
-        before = _frame()["settings_waiting"] or 0
-        gwconfig.update({"extraction.provider": "openai_compatible"}, actor="test")
+        gwconfig.update(
+            {"extraction.provider": self._a_provider_other_than_the_one_we_booted_with()},
+            actor="test")
         gw._LIVE_SHARED = None
-        after = _frame()["settings_waiting"] or 0
-        self.assertGreater(after, before,
-                           "a setting read once at startup was written and the frame said nothing")
+
+        # Against the configuration's own answer rather than against an earlier reading of the
+        # frame. A before/after comparison asks what changed in a number that the whole process
+        # shares, so it inherits whatever a neighbouring test left in the tick cache; this asks the
+        # question that actually matters -- the strip reports what the settings say is waiting.
+        waiting = gwconfig.pending_restart_keys()
+        self.assertTrue(waiting, "the write did not leave anything pending, so this proves nothing")
+        self.assertEqual(len(waiting), _frame()["settings_waiting"],
+                         "the frame does not report what the settings say is waiting: %r"
+                         % (waiting,))
 
     def test_a_quiet_deployment_reports_zero_rather_than_nothing(self) -> None:
         """The strip hides the segment on a falsy value, so zero and absent look the same there --
