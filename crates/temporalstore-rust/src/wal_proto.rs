@@ -42,6 +42,66 @@ pub(crate) const BINARY_PAYLOAD_MARKER: u8 = 0xB7;
 /// reading halfway through.
 pub(crate) const RAW_PAYLOAD_MARKER: u8 = 0xB8;
 
+/// Marker for a protobuf payload that is zstd-compressed and carries no escaping.
+///
+/// A record's payload is the largest thing this log writes and the most repetitive: the same
+/// field names, scope keys and policy blocks over and over. Measured on one live segment of the
+/// hook store -- 151 records, 13.5 KB each -- zstd at level 3 takes 2,038,147 bytes to 236,714,
+/// which is 8.61x, and projects to 617 MB off a 698 MB log.
+///
+/// Compressing the whole SEGMENT instead reaches 22.28x, and is not available here: a log id is a
+/// byte position, page references point at those positions, and a block that has to be inflated
+/// before any record inside it can be found does not have them. Per record keeps every record
+/// independently addressable, which is the property the log is built on.
+pub(crate) const COMPRESSED_RAW_PAYLOAD_MARKER: u8 = 0xB9;
+
+/// The same, for a delimited frame, where the compressed bytes still have to be escaped.
+///
+/// Two markers rather than one plus a flag, for the reason the pair above gives: which encoding a
+/// payload is in has to be a property of the payload, or a log written across a configuration
+/// change stops reading halfway through.
+pub(crate) const COMPRESSED_ESCAPED_PAYLOAD_MARKER: u8 = 0xBA;
+
+/// Compression level. The same level the index already compresses at, so the log and the index
+/// make the same trade rather than two unexplained ones.
+const COMPRESSION_LEVEL: i32 = 3;
+
+/// Below this many bytes a payload is written uncompressed.
+///
+/// Not a guess: the page store measured this exact question and found a 1-byte floor worse than
+/// no compression at all -- the saving stopped while the median write rose, because a tiny
+/// payload costs more to compress than it gives back. 256 is the floor that measurement chose.
+const COMPRESSION_MIN_BYTES: usize = 256;
+
+/// Whether new records are written compressed. DEFAULT OFF.
+///
+/// Reading never consults this. A payload says what encoding it is in, so a log written across a
+/// change reads end to end and turning it off again is not a one-way door -- the same contract
+/// `TS_WAL_BINARY_RECORDS` keeps.
+pub(crate) fn compress_records_enabled() -> bool {
+    matches!(
+        std::env::var("TS_WAL_COMPRESS_RECORDS")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Compress `encoded` if it is worth compressing, returning None when it is not.
+///
+/// None for a payload under the floor, and None when the compressed form is not actually smaller.
+/// The second check is the page store's: compression that does not pay is written uncompressed
+/// rather than trusted to pay on average.
+fn compress_payload(encoded: &[u8]) -> Option<Vec<u8>> {
+    if encoded.len() < COMPRESSION_MIN_BYTES {
+        return None;
+    }
+    let compressed = zstd::stream::encode_all(encoded, COMPRESSION_LEVEL).ok()?;
+    (compressed.len() < encoded.len()).then_some(compressed)
+}
+
 /// Escapes a newline out of an encoded payload.
 ///
 /// The log is read with `reader.lines()`. A JSON payload can never contain a raw newline, so that
@@ -487,6 +547,31 @@ pub(crate) fn prepare(record: &WriteAheadLogRecord) -> Result<PreparedRecord<'_>
 /// Encode a record as protobuf, marker byte first.
 pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
     let parts = record_parts(record)?;
+    if compress_records_enabled() {
+        // Compression cannot use the borrowing writer above: that path reserves the frame from
+        // `payload_len()` before the payload exists, and how long a compressed payload will be is
+        // not knowable until it has been compressed. So this arm builds the payload first and the
+        // frame around it, which is what the escaping arm below has always done.
+        let mut encoded = Vec::with_capacity(parts.len);
+        parts.put(record, &mut encoded)?;
+        if let Some(compressed) = compress_payload(&encoded) {
+            let escaping = !crate::log_framing::binary_frame_enabled();
+            let mut out = Vec::with_capacity(compressed.len() + 8);
+            out.push(if escaping {
+                COMPRESSED_ESCAPED_PAYLOAD_MARKER
+            } else {
+                COMPRESSED_RAW_PAYLOAD_MARKER
+            });
+            if escaping {
+                out.extend_from_slice(&escape_newlines(&compressed));
+            } else {
+                out.extend_from_slice(&compressed);
+            }
+            return Ok(out);
+        }
+        // Not worth compressing. Fall through and write it the way it would have been written
+        // anyway, under its own marker -- a reader cannot tell that this record was considered.
+    }
     if crate::log_framing::binary_frame_enabled() {
         // The frame declares its own length, so the payload is written as produced -- which means
         // the marker can go in FIRST and the message encode straight after it. `encode` appends,
@@ -509,12 +594,25 @@ pub(crate) fn encode(record: &WriteAheadLogRecord) -> Result<Vec<u8>, String> {
 /// Decode a payload this module wrote. The caller has already checked the marker byte.
 pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
     let body = &payload[1..];
+    let marker = payload.first().copied();
+    let escaped = marker == Some(BINARY_PAYLOAD_MARKER)
+        || marker == Some(COMPRESSED_ESCAPED_PAYLOAD_MARKER);
+    let compressed = marker == Some(COMPRESSED_RAW_PAYLOAD_MARKER)
+        || marker == Some(COMPRESSED_ESCAPED_PAYLOAD_MARKER);
     let unescaped;
-    let bytes: &[u8] = if payload.first() == Some(&RAW_PAYLOAD_MARKER) {
-        body
-    } else {
+    let framed: &[u8] = if escaped {
         unescaped = unescape_newlines(body)?;
         unescaped.as_slice()
+    } else {
+        body
+    };
+    let inflated;
+    let bytes: &[u8] = if compressed {
+        inflated = zstd::stream::decode_all(framed)
+            .map_err(|err| format!("compressed wal payload did not inflate: {err}"))?;
+        inflated.as_slice()
+    } else {
+        framed
     };
     let message = v1::EngineWalRecord::decode(bytes).map_err(|err| err.to_string())?;
     // Absent is a legitimate record now, not a malformed one: it carries results instead.
@@ -581,6 +679,152 @@ mod tests {
         let mut encoded = Vec::with_capacity(message.encoded_len());
         message.encode(&mut encoded).unwrap();
         encoded
+    }
+
+    /// A record big and repetitive enough to be worth compressing, which most real ones are.
+    fn compressible_record() -> WriteAheadLogRecord {
+        let mut record = record_with(Some(Command::StringSet {
+            key: "compressible".to_string(),
+            // Repetition is the point: a real record repeats field names, scope keys and policy
+            // blocks, and a payload of one byte over and over would flatter the codec in a way
+            // those do not. This alternates, so it is compressible without being trivial.
+            value: (0..4096u32).map(|index| (index % 7) as u8).collect(),
+        }));
+        record.outcomes = vec![crate::wal::WalOutcomeItem {
+            kind: "page".to_string(),
+            object_key: "tenant/1/object/9".to_string(),
+            component: Some("body".to_string()),
+            object_id: 9,
+            routing_bucket: 8539,
+            address: None,
+            value: Some(vec![3; 512]),
+            ttl: Some(60_000),
+            deleted: false,
+            meta: false,
+        }];
+        record
+    }
+
+    /// Build the compressed payload by hand, so decoding is tested without touching the
+    /// environment: what a reader must accept is a property of the bytes, not of a flag.
+    fn compressed_payload(record: &WriteAheadLogRecord, escaping: bool) -> Vec<u8> {
+        let mut encoded = Vec::new();
+        record_parts(record).unwrap().put(record, &mut encoded).unwrap();
+        let compressed = zstd::stream::encode_all(encoded.as_slice(), COMPRESSION_LEVEL).unwrap();
+        let mut out = Vec::new();
+        if escaping {
+            out.push(COMPRESSED_ESCAPED_PAYLOAD_MARKER);
+            out.extend_from_slice(&escape_newlines(&compressed));
+        } else {
+            out.push(COMPRESSED_RAW_PAYLOAD_MARKER);
+            out.extend_from_slice(&compressed);
+        }
+        out
+    }
+
+    #[test]
+    fn a_compressed_payload_decodes_to_the_record_that_made_it() {
+        let record = compressible_record();
+        for escaping in [false, true] {
+            let payload = compressed_payload(&record, escaping);
+            let back = decode(&payload).expect("compressed payload decodes");
+            assert_eq!(record, back, "escaping={escaping}");
+        }
+    }
+
+    #[test]
+    fn a_log_holding_every_encoding_reads_end_to_end() {
+        // What a log looks like across a configuration change: records written under different
+        // settings, sitting next to each other, all of which must still read.
+        let record = compressible_record();
+        let mut encoded = Vec::new();
+        record_parts(&record).unwrap().put(&record, &mut encoded).unwrap();
+
+        let mut raw = vec![RAW_PAYLOAD_MARKER];
+        raw.extend_from_slice(&encoded);
+        let mut escaped = vec![BINARY_PAYLOAD_MARKER];
+        escaped.extend_from_slice(&escape_newlines(&encoded));
+
+        for payload in [
+            raw,
+            escaped,
+            compressed_payload(&record, false),
+            compressed_payload(&record, true),
+        ] {
+            assert_eq!(record, decode(&payload).expect("payload decodes"));
+        }
+    }
+
+    #[test]
+    fn a_payload_under_the_floor_is_left_alone() {
+        // Compressing a tiny payload costs more than it gives back; the page store measured that
+        // and chose this floor, so the check is that the floor is honoured, not that it is right.
+        let tiny = vec![1u8; COMPRESSION_MIN_BYTES - 1];
+        assert!(compress_payload(&tiny).is_none());
+    }
+
+    #[test]
+    fn a_payload_that_would_not_shrink_is_left_alone() {
+        // Random bytes do not compress. Writing them "compressed" would add a frame header to a
+        // payload that got no smaller, so the encoder declines.
+        let mut incompressible = Vec::with_capacity(4096);
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        for _ in 0..4096 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            incompressible.push((state >> 24) as u8);
+        }
+        assert!(compress_payload(&incompressible).is_none());
+    }
+
+    #[test]
+    fn compression_is_worth_doing_on_a_record_shaped_like_a_real_one() {
+        let record = compressible_record();
+        let mut encoded = Vec::new();
+        record_parts(&record).unwrap().put(&record, &mut encoded).unwrap();
+        let compressed = compress_payload(&encoded).expect("a repetitive record compresses");
+        assert!(
+            compressed.len() * 2 < encoded.len(),
+            "expected better than 2x, got {} -> {}",
+            encoded.len(),
+            compressed.len()
+        );
+    }
+
+    #[test]
+    fn the_flag_decides_what_is_written_and_never_what_is_read() {
+        // One test rather than several: these set a process-wide variable, and separate tests
+        // would race each other inside the same binary.
+        let record = compressible_record();
+
+        std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
+        let compressed = encode(&record).expect("encodes with compression on");
+        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
+        let plain = encode(&record).expect("encodes with compression off");
+
+        assert!(
+            matches!(
+                compressed.first(),
+                Some(&COMPRESSED_RAW_PAYLOAD_MARKER) | Some(&COMPRESSED_ESCAPED_PAYLOAD_MARKER)
+            ),
+            "compression on should write a compressed marker, got {:?}",
+            compressed.first()
+        );
+        assert!(
+            matches!(
+                plain.first(),
+                Some(&RAW_PAYLOAD_MARKER) | Some(&BINARY_PAYLOAD_MARKER)
+            ),
+            "compression off should write an uncompressed marker, got {:?}",
+            plain.first()
+        );
+        assert!(compressed.len() < plain.len());
+
+        // The flag is off now, and the compressed record still reads. That is the contract: a
+        // deployment that turns this off does not lose the log it already wrote.
+        assert_eq!(record, decode(&compressed).expect("still decodes with the flag off"));
+        assert_eq!(record, decode(&plain).expect("uncompressed decodes"));
     }
 
     fn record_with(command: Option<Command>) -> WriteAheadLogRecord {

@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 296 of them, read by 94 functions.
+There are 297 of them, read by 95 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,11 +46,11 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 296 |
-| booleans whose default this could read off the source | 33 |
+| total | 297 |
+| booleans whose default this could read off the source | 34 |
 | numbers whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 2 |
-| offered on the portal | 25 |
+| offered on the portal | 26 |
 | **that nothing in this repository sets** | 175 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
@@ -159,7 +159,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (22)
+## durability (23)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -177,6 +177,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_BINARY_FRAME` | on | launch, test, portal | 1 | — |
 | `TS_WAL_BINARY_RECORDS` | on | launch, test, portal | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | 0 | config | 1 | — |
+| `TS_WAL_COMPRESS_RECORDS` | off | test, portal | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
 | `TS_WAL_LEGACY_RECOVERY` | off | config, harness, script | 1 | yes |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |

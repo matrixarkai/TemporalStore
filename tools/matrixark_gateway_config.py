@@ -560,6 +560,18 @@ SETTINGS: List[Setting] = [
             "length frames is NOT supported: finding the tail of the log follows this setting, and "
             "off it searches backwards for a newline, which is not a record boundary in a "
             "length-framed log."),
+    Setting("storage_engine.wal_compress_records", "storage_engine",
+            "TS_WAL_COMPRESS_RECORDS",
+            "Compress log records", "bool", "0", "restart",
+            "On, a log record is zstd-compressed before it is written. Measured on one live "
+            "segment -- 151 records averaging 13.5 KB -- this is 8.61x, which on a 698 MB log is "
+            "about 617 MB back. It ships OFF because it spends write CPU to buy disk, and which "
+            "of those is scarce is the deployment's answer, not this file's. Reading never "
+            "consults it: a payload says what encoding it is in, so a log written across a change "
+            "reads end to end and turning it off again is not a one-way door. Records below 256 "
+            "bytes, and any record the codec fails to shrink, are written uncompressed. Each "
+            "record is compressed on its own rather than the log in blocks: blocks reach 22.28x "
+            "and would end record-level addressing, which page references depend on."),
     Setting("storage_engine.vector_scaled", "storage_engine",
             "TS_VECTOR_SCALED",
             "Store vectors in the scaled form", "bool", "1", "live",

@@ -114,6 +114,8 @@ pub fn decode_wal_line(line: &[u8]) -> Result<WriteAheadLogRecord, WriteAheadLog
     // written across a flag change still reads end to end.
     if payload.first() == Some(&crate::wal_proto::BINARY_PAYLOAD_MARKER)
         || payload.first() == Some(&crate::wal_proto::RAW_PAYLOAD_MARKER)
+        || payload.first() == Some(&crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER)
+        || payload.first() == Some(&crate::wal_proto::COMPRESSED_ESCAPED_PAYLOAD_MARKER)
     {
         return crate::wal_proto::decode(payload).map_err(|err| {
             WriteAheadLogError::Corruption(format!("engine wal record decode failed: {err}"))
@@ -2994,7 +2996,12 @@ fn append_record_locked(
     // different marker to say so. Fusing on `binary_records` alone wrote raw bytes into a line
     // frame, and a value containing a newline then split into two unreadable records --
     // `what_each_frame_costs_on_disk` toggles the frame flag precisely to catch that, and did.
-    if crate::wal_proto::binary_records_enabled() && crate::log_framing::binary_frame_enabled() {
+    // Compression is excluded from the borrowing writer deliberately: it reserves
+    // the frame from a length the payload does not have yet. See `encode`.
+    if crate::wal_proto::binary_records_enabled()
+        && crate::log_framing::binary_frame_enabled()
+        && !crate::wal_proto::compress_records_enabled()
+    {
         // The payload lands directly in the frame. Building it separately meant carrying the
         // record twice -- once into its own buffer and once into this one -- and at a four
         // kilobyte value the second copy was four kilobytes of pure duplication.
