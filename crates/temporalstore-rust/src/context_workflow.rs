@@ -31,11 +31,6 @@ const LEXICAL_SCORE_SATURATION: i64 = 1_000;
 /// remain rankable (never a flat 0) instead of collapsing to recency order.
 const LEXICAL_MATCH_MICROS: i64 = 500_000;
 
-/// Hybrid lexical fallback for un-embedded nodes in `retrieve_context`
-/// (`MATRIXARK_CONTEXT_HYBRID_LEXICAL`, default ON). When enabled, a node with no
-/// stored summary embedding is scored by query/text lexical overlap instead of the
-/// flat 0 it used to get, so a freshly bulk-loaded store returns relevant results
-/// before the embed drainer catches up. Embedded-node scoring is unchanged.
 /// MATRIXARK_CONTEXT_SECONDARY_INDEX (default OFF): whether ingest builds the ctxidx
 /// secondary-index refs at all.
 ///
@@ -51,6 +46,11 @@ pub(crate) fn context_secondary_index_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Hybrid lexical fallback for un-embedded nodes in `retrieve_context`
+/// (`MATRIXARK_CONTEXT_HYBRID_LEXICAL`, default ON). When enabled, a node with no
+/// stored summary embedding is scored by query/text lexical overlap instead of the
+/// flat 0 it used to get, so a freshly bulk-loaded store returns relevant results
+/// before the embed drainer catches up. Embedded-node scoring is unchanged.
 fn context_hybrid_lexical_enabled() -> bool {
     std::env::var("MATRIXARK_CONTEXT_HYBRID_LEXICAL")
         .ok()
@@ -81,7 +81,10 @@ pub use resource::{
 pub use benchmark::{run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep};
 pub(crate) use benchmark::*;
 pub use reports::*;
-pub use ingest::{ingest_extract_context, ingest_resource_skill_context, validate_resource_skill_secondary_indexes};
+pub use ingest::{
+    ingest_extract_context, ingest_extract_context_with_l1_gate, ingest_resource_skill_context,
+    validate_resource_skill_secondary_indexes,
+};
 pub(crate) use model_provider::*;
 pub use model_provider::context_backfill_embeddings;
 pub use query::context_embedding_ref_hash;
