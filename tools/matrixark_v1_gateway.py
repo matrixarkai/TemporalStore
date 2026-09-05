@@ -30,6 +30,7 @@ Routes: POST /v1/ingest (async fast-ack 202) · POST /v1/ingest_file (stream fil
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import gzip
 import hashlib
 import json
@@ -1068,10 +1069,33 @@ def _isolate_key(key_str: str, tenant: Optional[str], account: Optional[str] = N
 # ================================================================================================
 # ASGI helpers
 # ================================================================================================
+# The Accept-Encoding of the request being served.
+#
+# `_json` is called from 197 places and none of them have the scope, so threading it through would
+# be 197 edits to reach one header. A context variable is set once per request instead: asyncio
+# copies the context for each task, so one request cannot read another's, and a call made outside a
+# request (a test calling the helper directly) sees the default and compresses nothing.
+_ACCEPT_ENCODING: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "matrixark_accept_encoding", default="")
+
+# gzip has an envelope, and three of the eleven admin reads are smaller than it. Below this a
+# response would get bigger and cost CPU to do it.
+_JSON_PACK_FLOOR = 1024
+
+
 async def _json(send: Callable, status: int, payload: Json,
                 extra_headers: Optional[list[Tuple[bytes, bytes]]] = None) -> None:
     data = json.dumps(payload).encode("utf-8")
-    headers = [(b"content-type", b"application/json"), (b"content-length", str(len(data)).encode())]
+    headers = [(b"content-type", b"application/json")]
+    if len(data) >= _JSON_PACK_FLOOR and _accepts_gzip(_ACCEPT_ENCODING.get()):
+        # Not cached: these are dynamic reads, and a cache keyed by content would grow an entry per
+        # distinct answer. The pages can be held because there are seven of them.
+        data = gzip.compress(data, 6, mtime=0)
+        headers.append((b"content-encoding", b"gzip"))
+    # Whether this response is compressed depends on the request, and a shared cache that ignored
+    # that would hand a gzip body to a client that asked for none.
+    headers.append((b"vary", b"accept-encoding"))
+    headers.append((b"content-length", str(len(data)).encode()))
     if extra_headers:
         headers.extend(extra_headers)
     await send({"type": "http.response.start", "status": status, "headers": headers})
@@ -3806,6 +3830,11 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             return
         if scope.get("type") != "http":
             return
+
+        # Set at the top of every HTTP request, so the response helpers below can negotiate an
+        # encoding without being handed the scope. Before the legacy branch as well: those
+        # responses go through the same helpers.
+        _ACCEPT_ENCODING.set(_headers_map(scope).get("accept-encoding", ""))
 
         # First HTTP request on this loop/worker installs the sized threadpool (if configured).
         if not executor_state["installed"]:
