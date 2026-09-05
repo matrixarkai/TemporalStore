@@ -1554,6 +1554,20 @@ impl LocalWriteAheadLogStore {
             let mut reader = BufReader::new(file);
             let mut log_id = base;
             loop {
+                // Step over a block footer this lands on. The zero-run check below only catches a
+                // boundary that has padding in front of its footer; a block whose records end
+                // flush against the footer has none, and the footer would then be read as a
+                // record -- its first byte is not a frame marker, so the reader falls to
+                // newline-delimited mode and hands back a fragment. `last_wal_sequence_forward`
+                // takes this same first step; the two walkers read one format and must agree.
+                let at = header_len.saturating_add(log_id.saturating_sub(base));
+                let stepped = skip_block_footer_if_due(&mut reader, at, header_len)?;
+                if stepped != at {
+                    // Log ids are byte positions in the log's history, so the footer bytes
+                    // stepped over are counted here exactly as the closed-block branch counts
+                    // the ones it skips.
+                    log_id = log_id.saturating_add(stepped.saturating_sub(at));
+                }
                 // Reads a record by the length it declares when it is framed that way, and to
                 // the newline when it is not, so one loop walks a log holding both. The
                 // preallocated zero run that trails the records ends the loop from inside the

@@ -261,6 +261,10 @@ impl TemporalEngine {
         // Accumulate the object keys every mutating command in the batch touched, for the
         // single O(delta) index-log append below (delta path). Empty when the flag is off.
         let mut delta_command_keys: Vec<String> = Vec::new();
+        // Did ANY command in this batch remove something? Only then does the per-key membership
+        // capture below have anything to preserve -- see the single-command execute path, whose
+        // guard this mirrors.
+        let mut batch_membership_shrank = false;
         // Some(components) while every mutating command in the batch is a pure page-upsert;
         // one non-upsert write downgrades the whole record to snapshot semantics.
         let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
@@ -314,6 +318,16 @@ impl TemporalEngine {
                 continue;
             }
             let command_for_post_write = command.clone();
+            // What the touched keys held before this command, so the capture below can be
+            // skipped when nothing was removed. Sizes only -- no allocation.
+            let membership_before: Vec<(String, usize)> =
+                command_object_keys(&command_for_post_write)
+                    .into_iter()
+                    .map(|key| {
+                        let size = key_membership_size(shard, &key);
+                        (key, size)
+                    })
+                    .collect();
             let outcome = execute_on_shard(
                 &self.cache,
                 &self.page_store,
@@ -342,6 +356,11 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 delta_command_keys.extend(object_keys.iter().cloned());
+                if !batch_membership_shrank {
+                    batch_membership_shrank = membership_before
+                        .iter()
+                        .any(|(key, before)| key_membership_size(shard, key) < *before);
+                }
                 match (
                     &mut batch_upsert_components,
                     command_upsert_components(&command_for_post_write, shard),
@@ -518,7 +537,16 @@ impl TemporalEngine {
                         false,
                     ),
                 };
-                let key_states = capture_key_states(shard, &delta_command_keys);
+                // Capturing serializes every entry the per-key maps hold for each key, so
+                // appending to a posting of length N serialized all N -- 99.5% of the index log
+                // on a real corpus (3.53 GB against 16 MB for the same 20,001 messages). A write
+                // that only ADDED leaves nothing to resurrect, so it is skipped there, exactly as
+                // the single-command execute path already does.
+                let key_states = if batch_membership_shrank {
+                    capture_key_states(shard, &delta_command_keys)
+                } else {
+                    Vec::new()
+                };
                 let _ = self.index_log_store.append_delta(
                     request.shard_id,
                     items,
