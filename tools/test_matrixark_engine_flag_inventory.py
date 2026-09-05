@@ -498,6 +498,103 @@ class NonTestCodeDoesNotWriteTheProcessEnvironmentTest(unittest.TestCase):
             % "\n  ".join("%s sets %s" % pair for pair in unexpected))
 
 
+class ADocDoesNotStateANumericDefaultTheCodeContradictsTest(unittest.TestCase):
+    """The same question as the class below, asked of numbers.
+
+    That one checks booleans and says why it stops there: the accessor is "the shape whose default
+    can be read off the source without guessing". Numbers are now readable too, so the limit can
+    be lifted rather than left as a permanent boundary nobody revisits.
+
+    This is not hypothetical. The WAL module header said `TS_WAL_SEGMENT_BYTES` "defaults to zero
+    and so never seals a piece". Its one read site defaults to `DEFAULT_WAL_SEGMENT_BYTES`, 256
+    KiB; nothing in the tree or on a running box sets the variable; and the const's own doc calls
+    itself the rolling threshold when nothing sets one. The header described the behaviour before
+    the log started rolling and was never updated. It was found by accident, because the inventory
+    began printing the number beside it -- which is the sort of luck a test exists to replace.
+
+    A claim is a sentence that names the flag AND states a number in a default-shaped phrase.
+    Prose that describes a knob without claiming a default is not a finding, and prose stating a
+    number that AGREES is counted, because a check that can only ever report disagreement cannot
+    tell a clean tree from a pattern that stopped matching.
+    """
+
+    CLAIMS = [
+        re.compile(r"default(?:s|ed)?\s+(?:to|is|of|:)?\s*([0-9][0-9_,]*)\b", re.I),
+        re.compile(r"\b([0-9][0-9_,]*)\s*,\s*the default\b", re.I),
+        re.compile(r"\bdefaults?\s+to\s+(zero|none|nothing)\b", re.I),
+        re.compile(r"\b(zero)\s*,\s*the default\b", re.I),
+    ]
+    WORDS = {"zero": "0", "none": "0", "nothing": "0"}
+
+    # 31 numeric defaults when this was written.
+    EXPECTED_NUMERIC_FLOOR = 20
+
+    def _numeric_defaults(self):
+        prelude = _builder_prelude()
+        literal_consts = prelude["literal_consts"]
+        numeric_default = prelude["numeric_default_of_statement"]
+        flag_read = prelude["FLAG_READ"]
+        sources = dict(_engine_sources())
+        consts = literal_consts(sources)
+        found = {}
+        for path in sorted(sources):
+            source = sources[path]
+            lines = source.split("\n")
+            for match in flag_read.finditer(source):
+                name = match.group(1)
+                if name in found:
+                    continue
+                value = numeric_default(lines, source[: match.start()].count("\n"), consts)
+                if value:
+                    found[name] = value
+        return found
+
+    def _claims(self, defaults):
+        agree, disagree = [], []
+        for path, source in _engine_sources():
+            lines = source.split("\n")
+            for number, line in enumerate(lines):
+                for name, value in defaults.items():
+                    if name not in line:
+                        continue
+                    window = " ".join(lines[number:number + 3])
+                    for pattern in self.CLAIMS:
+                        found = pattern.search(window)
+                        if not found:
+                            continue
+                        claimed = found.group(1).lower().replace(",", "").replace("_", "")
+                        claimed = self.WORDS.get(claimed, claimed)
+                        entry = (name, os.path.basename(path), number + 1, claimed, value)
+                        (agree if claimed == value else disagree).append(entry)
+                        break
+        return agree, disagree
+
+    def test_the_scan_still_reads_numeric_defaults(self) -> None:
+        found = self._numeric_defaults()
+        self.assertGreaterEqual(
+            len(found), self.EXPECTED_NUMERIC_FLOOR,
+            "read %d numeric defaults off the source, expected at least %d -- below that the "
+            "comparison below is running on almost nothing"
+            % (len(found), self.EXPECTED_NUMERIC_FLOOR))
+
+    def test_some_prose_states_a_number_at_all(self) -> None:
+        agree, disagree = self._claims(self._numeric_defaults())
+        self.assertTrue(
+            agree or disagree,
+            "no doc comment anywhere states a numeric default in a shape these patterns match. "
+            "Either the prose changed or the patterns did; either way this file is now inert and "
+            "would pass over a header saying the opposite of the code.")
+
+    def test_no_doc_states_a_number_its_code_contradicts(self) -> None:
+        _agree, disagree = self._claims(self._numeric_defaults())
+        detail = ["%s: %s:%d says %s, the code says %s" % entry for entry in sorted(set(disagree))]
+        self.assertEqual(
+            [], detail,
+            "these say a flag defaults to one number while its own read says another: %s\n"
+            "A stale default in a comment is read as fact by whoever is deciding what to change."
+            % detail)
+
+
 class ADocDoesNotStateADefaultTheCodeContradictsTest(unittest.TestCase):
     """A flag's doc must not claim a default its own code disagrees with.
 
