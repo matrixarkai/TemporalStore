@@ -163,6 +163,78 @@ pub(crate) fn encode_record_into(payload: &[u8], out: &mut Vec<u8>) {
     }
 }
 
+/// Frame a record whose length is known before it is written, with no payload buffer in between.
+///
+/// `encode_record_into` takes a payload that already exists, which means the payload was built in
+/// one buffer and copied into another. Both buffers are the size of the record. This writes the
+/// header, hands `write_payload` the same buffer to append into, and patches the checksum in
+/// afterwards -- so a write allocates nothing here and copies the payload once, into the bytes
+/// that go to the file.
+///
+/// The declared length is written BEFORE the payload, because the varint that carries it sits in
+/// front of it. That is the whole risk of this function: if `payload_len` disagrees with what
+/// `write_payload` appends, the frame declares a length the payload does not have, and every
+/// record after it in the file reads as garbage. So the disagreement is checked and returned as an
+/// error, with the buffer left cleared -- a caller cannot write the bad frame by ignoring it.
+pub(crate) fn encode_framed_into<E>(
+    payload_len: usize,
+    write_payload: impl FnOnce(&mut Vec<u8>) -> Result<(), E>,
+    out: &mut Vec<u8>,
+) -> Result<Result<(), E>, FrameLengthMismatch> {
+    out.clear();
+    if !binary_frame_enabled() {
+        // The line framing escapes the payload, so it has to see it whole first. Nothing to fuse.
+        let mut payload = Vec::with_capacity(payload_len);
+        if let Err(err) = write_payload(&mut payload) {
+            return Ok(Err(err));
+        }
+        out.extend_from_slice(&encode_line(&payload));
+        return Ok(Ok(()));
+    }
+    out.reserve(payload_len + 10);
+    out.push(FRAME_MAGIC_V3);
+    write_varint(payload_len as u64, out);
+    let checksum_at = out.len();
+    out.extend_from_slice(&[0u8; 4]);
+    let payload_at = out.len();
+    if let Err(err) = write_payload(out) {
+        out.clear();
+        return Ok(Err(err));
+    }
+    let written = out.len() - payload_at;
+    if written != payload_len {
+        out.clear();
+        return Err(FrameLengthMismatch {
+            declared: payload_len,
+            written,
+        });
+    }
+    let checksum = crate::checksum::crc32c(&out[payload_at..]);
+    out[checksum_at..checksum_at + 4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(Ok(()))
+}
+
+/// A record that did not write the number of bytes it said it would.
+///
+/// Never expected to happen: it means an encoder's own length arithmetic disagrees with its
+/// writing. It is returned rather than asserted because the alternative to failing this write is
+/// writing a frame that makes the rest of the log unreadable.
+#[derive(Debug)]
+pub(crate) struct FrameLengthMismatch {
+    pub(crate) declared: usize,
+    pub(crate) written: usize,
+}
+
+impl std::fmt::Display for FrameLengthMismatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "record declared {} bytes and wrote {}",
+            self.declared, self.written
+        )
+    }
+}
+
 /// Prefix of the reclaim-base header, the optional first line of a log file.
 ///
 /// A reclaim drops a prefix of the file, shifting every surviving record down by the number of

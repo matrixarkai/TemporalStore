@@ -2933,11 +2933,49 @@ fn append_record_locked(
     // Frame the record with a length + SHA-256 digest so a later value-preserving bit-flip in
     // this committed line is detected on read (see `crate::log_framing`). Offsets/stats below
     // use the real byte length, so framing is transparent to the append report and replication.
-    let payload = encode_wal_payload(record)?;
     // Taken out and returned below: framing borrows the buffer while the rest of `inner` is still
     // needed, and `mem::take` is the cheap way to say that without splitting the struct.
     let mut bytes = std::mem::take(&mut inner.encode_scratch);
-    crate::log_framing::encode_record_into(&payload, &mut bytes);
+    // BOTH flags, not just the first. The fused path writes the RAW marker and unescaped
+    // protobuf, which is what the length-prefixed frame wants and what the LINE frame cannot
+    // take: a line frame has to escape the newlines out of the payload first, and carries a
+    // different marker to say so. Fusing on `binary_records` alone wrote raw bytes into a line
+    // frame, and a value containing a newline then split into two unreadable records --
+    // `what_each_frame_costs_on_disk` toggles the frame flag precisely to catch that, and did.
+    if crate::wal_proto::binary_records_enabled() && crate::log_framing::binary_frame_enabled() {
+        // The payload lands directly in the frame. Building it separately meant carrying the
+        // record twice -- once into its own buffer and once into this one -- and at a four
+        // kilobyte value the second copy was four kilobytes of pure duplication.
+        let prepared = crate::wal_proto::prepare(record).map_err(|err| {
+            WriteAheadLogError::Corruption(format!("engine wal record encode failed: {err}"))
+        })?;
+        let written = crate::log_framing::encode_framed_into(
+            prepared.payload_len(),
+            |out| prepared.put(record, out),
+            &mut bytes,
+        );
+        match written {
+            // The record wrote a different number of bytes than it measured. The frame declares
+            // its length up front, so writing it would make every record after it unreadable --
+            // fail the append instead, with the buffer already cleared.
+            Err(mismatch) => {
+                inner.encode_scratch = bytes;
+                return Err(WriteAheadLogError::Corruption(format!(
+                    "engine wal record framing failed: {mismatch}"
+                )));
+            }
+            Ok(Err(err)) => {
+                inner.encode_scratch = bytes;
+                return Err(WriteAheadLogError::Corruption(format!(
+                    "engine wal record encode failed: {err}"
+                )));
+            }
+            Ok(Ok(())) => {}
+        }
+    } else {
+        let payload = encode_wal_payload(record)?;
+        crate::log_framing::encode_record_into(&payload, &mut bytes);
+    }
     // Close the block if this record will not fit in what is left of it, and start the next.
     //
     // A record is never split across the boundary: the one that does not fit moves whole into
