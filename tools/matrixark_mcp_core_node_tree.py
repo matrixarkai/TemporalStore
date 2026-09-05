@@ -76,6 +76,7 @@ def tree_first_traversal(
     *,
     top_k_per_layer: int,
     max_children_scored_per_parent: int,
+    guaranteed_path=None,
 ) -> Json:
     """Traverse ContextNode summaries layer by layer and return selected subtrees.
 
@@ -96,6 +97,29 @@ def tree_first_traversal(
         parent = path[:-1]
         children_by_parent.setdefault(parent, []).append(node)
 
+    guaranteed = node_path_tuple(list(guaranteed_path)) if guaranteed_path else ()
+    if guaranteed and guaranteed not in node_by_path:
+        # A path this store does not have must change nothing at all.
+        guaranteed = ()
+
+    def admit_guaranteed(parent: tuple[str, ...], picked: list[Json]) -> list[Json]:
+        """Add the guaranteed path's child under this parent without displacing a ranked pick.
+
+        top_k_per_layer is applied per parent, so every session under a user competes for the same
+        places, and the current session -- newest and least summarised -- is the likeliest to lose
+        to its own history. Losing it means asking about something said minutes ago and being
+        handed a much older session instead. So it is admitted alongside the ranking rather than
+        competing in it, and it is looked up directly rather than through the
+        max_children_scored_per_parent slice, so the guarantee does not depend on the scoring cap.
+        """
+        if not guaranteed or len(guaranteed) <= len(parent) or guaranteed[:len(parent)] != parent:
+            return picked
+        wanted = guaranteed[:len(parent) + 1]
+        if any(node_path_tuple(entry.get("node_path", [])) == wanted for entry in picked):
+            return picked
+        node = node_by_path.get(wanted)
+        return picked + [node] if node is not None else picked
+
     roots = children_by_parent.get((), [])
     if not roots:
         return {
@@ -106,7 +130,8 @@ def tree_first_traversal(
             "fallback_to_flat": True,
         }
 
-    frontier = top_scored_nodes(roots[:max_children_scored_per_parent], top_k_per_layer)
+    frontier = admit_guaranteed(
+        (), top_scored_nodes(roots[:max_children_scored_per_parent], top_k_per_layer))
     selected_paths: set[tuple[str, ...]] = set()
     selected_node_hashes: set[int] = set()
     leaf_paths: set[tuple[str, ...]] = set()
@@ -124,7 +149,8 @@ def tree_first_traversal(
             except (TypeError, ValueError):
                 pass
             children = children_by_parent.get(path, [])[:max_children_scored_per_parent]
-            picked_children = top_scored_nodes(children, top_k_per_layer) if children else []
+            picked_children = admit_guaranteed(
+                path, top_scored_nodes(children, top_k_per_layer) if children else [])
             trace.append(
                 {
                     "node_hash": node.get("node_hash"),
