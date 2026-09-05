@@ -710,6 +710,24 @@ _KNOB_ENV_FROZEN_AT_IMPORT = {
 }
 
 
+def _build_default(name: str) -> Optional[str]:
+    """What retrieval uses for this knob when nobody has set anything.
+
+    Read from the module that decides it, never re-typed here. A table of numbers in this file
+    would be the second copy the section above refuses to keep, and it would drift the moment a
+    budget moved.
+    """
+    try:
+        try:
+            from tools import matrixark_mcp_runtime_config as runtime  # type: ignore
+        except ImportError:
+            import matrixark_mcp_runtime_config as runtime  # type: ignore
+    except Exception:  # pragma: no cover - portal still works without the retrieval modules
+        return None
+    value = getattr(runtime, "DEFAULT_" + name.upper(), None)
+    return None if value is None else str(value)
+
+
 def _knob_settings() -> List[Setting]:
     try:
         try:
@@ -729,6 +747,26 @@ def _knob_settings() -> List[Setting]:
         choices = sorted(knob.choices) if getattr(knob, "choices", None) else None
         default = knob.default
         default = ("1" if default else "0") if isinstance(default, bool) else str(default)
+        description = knob.description
+        # For the five frozen budgets the registry's default is NOT what a deployment gets.
+        # `_tenant_retrieval_limit` in matrixark_local_adapter_retrieve deliberately does not
+        # resolve() them -- resolving would "silently multiply the budget for every deployment
+        # that never configured one" -- so with nothing set retrieval uses the build constant,
+        # which is 10x to 156x smaller. Showing the registry number told an operator their
+        # deployment does something it does not, and export_settings(include_defaults=True) then
+        # wrote that number to the target as an EXPLICIT value, so cloning a deployment raised
+        # its budgets by up to 156x. Show what this build uses, and say where the other number
+        # applies.
+        if env in _KNOB_ENV_FROZEN_AT_IMPORT:
+            build = _build_default(name)
+            if build is not None and build != default:
+                description = (
+                    knob.description
+                    + " -- With nothing set this deployment uses %s, not the %s above: retrieval "
+                      "reads an explicit tenant record or an explicit value here, and otherwise "
+                      "its own build default. The number above applies where someone sets it."
+                    % (build, default))
+                default = build
         derived.append(Setting(
             "behaviour." + name, "behaviour", env, _humanize(name), kind, default,
             # tenant_policy.resolve() reads os.environ per call, so most of these are live.
@@ -744,7 +782,7 @@ def _knob_settings() -> List[Setting]:
             # matrixark_mcp_budget_policies. A comment asserting a broken thing works is what
             # stops anyone checking, so it is worth more care than the code it sits beside.
             "restart" if env in _KNOB_ENV_FROZEN_AT_IMPORT else "live",
-            knob.description, choices))
+            description, choices))
     return derived
 
 

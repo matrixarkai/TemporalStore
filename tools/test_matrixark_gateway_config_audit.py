@@ -261,9 +261,78 @@ class RegistryShapeTest(unittest.TestCase):
                         % sorted(derived - set(policy.KNOBS)))
         for name in derived:
             with self.subTest(knob=name):
+                knob = policy.KNOBS[name]
                 setting = cfgmod.SETTINGS_BY_KEY["behaviour." + name]
-                self.assertEqual(policy.KNOBS[name].env, setting.env)
-                self.assertEqual(policy.KNOBS[name].description, setting.help)
+                self.assertEqual(knob.env, setting.env)
+                # The description is still derived either way -- corrected knobs APPEND to it, so
+                # a retyped description still fails here.
+                self.assertTrue(
+                    setting.help.startswith(knob.description),
+                    "the help for %s no longer starts with the registry description, so the "
+                    "portal has grown a second copy of it" % name)
+                if knob.env not in cfgmod._KNOB_ENV_FROZEN_AT_IMPORT:
+                    self.assertEqual(knob.description, setting.help)
+
+    def test_a_frozen_budget_shows_what_this_build_actually_uses(self) -> None:
+        """The five budgets retrieval does not resolve() must not advertise the registry number.
+
+        `_tenant_retrieval_limit` reads an explicit tenant record or an explicit env value and
+        otherwise the build constant -- deliberately never the registry default, because resolving
+        it would multiply the budget of every deployment that never configured one. The portal used
+        to show the registry number anyway, so a deployment running on 64 reported 10000, and
+        `export_settings(include_defaults=True)` wrote that 10000 to the target as an explicit
+        value: cloning a deployment raised its budgets by 10x to 156x.
+        """
+        import matrixark_mcp_runtime_config as runtime
+        import matrixark_tenant_policy as policy
+        checked = 0
+        for name, knob in policy.KNOBS.items():
+            if knob.env not in cfgmod._KNOB_ENV_FROZEN_AT_IMPORT:
+                continue
+            build = getattr(runtime, "DEFAULT_" + name.upper(), None)
+            self.assertIsNotNone(
+                build, "%s is frozen at import but the retrieval build defines no default for it, "
+                       "so the portal has nothing truthful to show" % name)
+            setting = cfgmod.SETTINGS_BY_KEY["behaviour." + name]
+            with self.subTest(knob=name):
+                self.assertEqual(
+                    str(build), setting.default,
+                    "the portal offers %s as the default for %s; this build uses %s when nothing "
+                    "is set" % (setting.default, name, build))
+                self.assertIn(
+                    str(build), setting.help,
+                    "the help for %s does not name the value the deployment actually uses" % name)
+            checked += 1
+        self.assertEqual(
+            5, checked,
+            "expected the five budgets _tenant_retrieval_limit covers, checked %d -- if that set "
+            "moved, this test is guarding the wrong knobs" % checked)
+
+    def test_the_frozen_set_is_exactly_what_retrieval_refuses_to_resolve(self) -> None:
+        """Keep the frozen list tied to the code it describes, not to a memory of it."""
+        import re
+        path = os.path.join(os.path.dirname(cfgmod.__file__),
+                            "matrixark_local_adapter_retrieve.py")
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+        called = set(re.findall(r'_tenant_retrieval_limit\(\s*["\']([a-z_]+)["\']', source))
+        self.assertTrue(called, "found no _tenant_retrieval_limit call sites; the scan is broken")
+        import matrixark_tenant_policy as policy
+        frozen = {name for name, knob in policy.KNOBS.items()
+                  if knob.env in cfgmod._KNOB_ENV_FROZEN_AT_IMPORT}
+        self.assertTrue(
+            called <= frozen,
+            "retrieval takes a build default for %s, which the portal does not correct, so the "
+            "portal advertises a number that deployment will not use" % sorted(called - frozen))
+        # One frozen knob is not wired to a tenant record at all: cross_session_profile_max_
+        # candidates is read straight from the build constant in matrixark_mcp_budget_policies,
+        # so it reaches the same place by a shorter road and the portal must still show the build
+        # number. Anything ELSE that turns up here has not been looked at.
+        self.assertEqual(
+            {"cross_session_profile_max_candidates"}, frozen - called,
+            "these are frozen at import and are not wired through _tenant_retrieval_limit: %s. "
+            "Work out where each one actually gets its value before trusting what the portal "
+            "shows for it." % sorted(frozen - called))
 
 
 class EssentialSettingsTest(unittest.TestCase):
