@@ -37,6 +37,11 @@ KNOWN_OVERRIDES: Dict[str, str] = {
         "read is served",
 }
 
+# The same, for keys whose value is a number. Empty today: all six comparable numeric keys restate
+# the engine default. A new entry here is a deployment decision and its reason belongs beside it in
+# the file, exactly as for the booleans above.
+KNOWN_NUMERIC_OVERRIDES: Dict[str, str] = {}
+
 _LINE = re.compile(
     r"^\s*([a-z0-9_]+)\s*=\s*([^\s#]+)\s*#\s*((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)")
 _TRUE = {"1", "true", "yes", "on"}
@@ -90,6 +95,72 @@ def _engine_defaults() -> Dict[str, str]:
     return defaults
 
 
+_NAME_CONST = re.compile(r'pub const (TS_[A-Z0-9_]+)\s*:\s*&str\s*=\s*"([A-Z0-9_]+)"\s*;')
+_INTEGER = re.compile(r"-?\d+")
+
+EXPECTED_NUMERIC_COMPARISON_FLOOR = 5
+
+
+def _engine_numeric_defaults() -> Dict[str, str]:
+    """flag -> the number the engine uses when nothing sets it.
+
+    Two routes, both the builder's own. A number stated in the read, and a number named by a
+    const beside the const that names the variable -- the storage_config family, whose reads no
+    scan of string literals can see. The second pairs on the const IDENTIFIER, because
+    `TS_BLOCK_SLAB_TARGET_BYTES` names the variable `TS_BLOCK_SEGMENT_TARGET_BYTES`.
+    """
+    ns = _builder()
+    flag_read = ns["FLAG_READ"]
+    numeric_default = ns["numeric_default_of_statement"]
+    literal_consts, strip = ns["literal_consts"], ns["strip_test_modules"]
+    sources = {}
+    source_root = os.path.join(REPO, "crates", "temporalstore-rust", "src")
+    for directory, _, names in os.walk(source_root):
+        if os.sep + "tests" in directory:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".rs") or name.startswith("test"):
+                continue
+            path = os.path.join(directory, name)
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                sources[path] = strip(handle.read())
+    consts = literal_consts(sources)
+    defaults: Dict[str, str] = {}
+    for path in sorted(sources):
+        source = sources[path]
+        lines = source.split("\n")
+        for match in flag_read.finditer(source):
+            flag = match.group(1)
+            if flag in defaults:
+                continue
+            value = numeric_default(lines, source[: match.start()].count("\n"), consts)
+            if value:
+                defaults[flag] = value
+        for ident, env in _NAME_CONST.findall(source):
+            paired = consts.get("DEFAULT_" + ident[len("TS_"):])
+            if paired and paired not in ("on", "off"):
+                defaults.setdefault(env, paired)
+    return defaults
+
+
+def _annotated_numeric_keys():
+    """(key, value, flag) for each annotated key whose value is an integer."""
+    with open(CONFIG, encoding="utf-8") as handle:
+        for raw in handle:
+            match = _LINE.match(raw)
+            if not match:
+                continue
+            value = match.group(2).strip().strip('"')
+            if _INTEGER.fullmatch(value):
+                yield match.group(1), value, match.group(3)
+
+
+def _numeric_disagreements() -> set:
+    defaults = _engine_numeric_defaults()
+    return {key for key, value, flag in _annotated_numeric_keys()
+            if flag in defaults and defaults[flag] != value}
+
+
 def _annotated_boolean_keys():
     """(key, value-as-on/off, flag) for each annotated key whose value is a boolean."""
     with open(CONFIG, encoding="utf-8") as handle:
@@ -135,6 +206,39 @@ class TheShippedConfigSaysWhenItOverridesTest(unittest.TestCase):
             [], stale,
             "these are listed as overriding the engine default and no longer do: %s. Strike them "
             "off -- either the default moved to meet them, or the key did." % stale)
+
+
+class TheShippedConfigSaysWhenItOverridesANumberTest(unittest.TestCase):
+    """The same question, of numbers.
+
+    The class above checks booleans, and could only check booleans: the engine's numeric defaults
+    were not readable off the source, so a shipped-config number was compared against nothing. They
+    are readable now, and half a file checked reads exactly like a whole one.
+    """
+
+    def test_the_scan_still_compares_numbers(self) -> None:
+        defaults = _engine_numeric_defaults()
+        compared = [key for key, _value, flag in _annotated_numeric_keys() if flag in defaults]
+        self.assertGreaterEqual(
+            len(compared), EXPECTED_NUMERIC_COMPARISON_FLOOR,
+            "only %d numeric config keys could be compared against an engine default, expected at "
+            "least %d -- below that the assertion below is passing on almost nothing"
+            % (len(compared), EXPECTED_NUMERIC_COMPARISON_FLOOR))
+
+    def test_no_number_disagrees_with_the_engine_without_saying_so(self) -> None:
+        new = sorted(_numeric_disagreements() - set(KNOWN_NUMERIC_OVERRIDES))
+        self.assertEqual(
+            [], new,
+            "these shipped-config keys set a number the engine would not have chosen, and say "
+            "nothing about it: %s. A key that agrees documents; a key that disagrees is a "
+            "decision, and the file should be readable enough to tell them apart." % new)
+
+    def test_a_listed_number_that_stopped_disagreeing_is_struck_off(self) -> None:
+        stale = sorted(set(KNOWN_NUMERIC_OVERRIDES) - _numeric_disagreements())
+        self.assertEqual(
+            [], stale,
+            "these are listed as overriding a numeric engine default and no longer do: %s. Strike "
+            "them off -- either the default moved to meet them, or the key did." % stale)
 
 
 if __name__ == "__main__":
