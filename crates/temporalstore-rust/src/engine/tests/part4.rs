@@ -14751,6 +14751,102 @@ fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
     );
 }
 
+/// Which cache namespaces a record can actually end up in.
+///
+/// `invalidate_record` walks EVERY key in all three cache tiers and filters, so each call costs
+/// more as the cache fills. Three of the namespaces it was being called for did not need a walk:
+///
+/// - `list` and `zset` have no `CacheKey` constructor at all, so nothing ever puts an entry in
+///   them and every sweep for one walked the whole cache to match nothing. Those calls are gone.
+/// - `set` has exactly one possible entry per record -- `CacheKey::set_members` fixes the selector
+///   at `members` -- so naming that key is equivalent to sweeping for it, and O(1) instead.
+///
+/// `hash` and `feature` keep their sweeps: a hash caches one entry per field and a feature one per
+/// query window, so neither has a single key to name.
+///
+/// This holds those premises. If a `list` or `zset` entry ever appears, the removed invalidations
+/// were load bearing after all; if a `set` entry ever appears under another selector, the narrowed
+/// one stops being equivalent.
+#[test]
+fn the_cache_namespaces_a_record_can_actually_use() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Write and then READ each collection kind: a read is what populates the record caches, so
+    // writing alone would leave every namespace empty and prove nothing.
+    for command in [
+        Command::ListPush { key: "l".to_string(), member: b"a".to_vec(), left: false },
+        Command::ListRange { key: "l".to_string(), start: 0, stop: -1 },
+        Command::ListLen { key: "l".to_string() },
+        Command::ZSetAdd { key: "z".to_string(), member: b"m".to_vec(), score: 1.0 },
+        Command::ZSetScore { key: "z".to_string(), member: b"m".to_vec() },
+        Command::ZSetCard { key: "z".to_string() },
+        Command::SetAdd { key: "s".to_string(), member: b"m".to_vec() },
+        Command::SetMembers { key: "s".to_string() },
+        Command::HashSet { key: "h".to_string(), field: "f".to_string(), value: b"v".to_vec() },
+        Command::HashGet { key: "h".to_string(), field: "f".to_string() },
+    ] {
+        let out = engine.execute(ExecuteRequest { shard_id: 1, command });
+        assert!(out.status.ok, "{:?}", out.status);
+    }
+
+    let entries = engine.cache.entries_for_shard(1);
+    let in_namespace = |name: &str| -> Vec<String> {
+        entries
+            .iter()
+            .filter(|entry| entry.namespace == name)
+            .map(|entry| format!("{}/{}", entry.record_key, entry.selector))
+            .collect()
+    };
+
+    // The positive control comes FIRST, because everything below is an emptiness claim and an
+    // empty view would satisfy all of them at once.
+    assert!(
+        !in_namespace("hash").is_empty(),
+        "no hash entry was cached, so this view cannot show that list and zset are empty"
+    );
+
+    assert!(
+        in_namespace("list").is_empty(),
+        "a list entry reached the cache, so removing the list invalidations leaves it stale: {:?}",
+        in_namespace("list")
+    );
+    assert!(
+        in_namespace("zset").is_empty(),
+        "a zset entry reached the cache, so removing the zset invalidations leaves it stale: {:?}",
+        in_namespace("zset")
+    );
+
+    // A set caches exactly one entry, under one selector, which is what makes naming it
+    // equivalent to sweeping for it.
+    let sets = in_namespace("set");
+    assert!(
+        sets.iter().all(|entry| entry.ends_with("/members")),
+        "a set cached an entry under a selector other than `members`, so naming one key no          longer covers the record: {sets:?}"
+    );
+
+    // And the narrowed call really does remove it.
+    if !sets.is_empty() {
+        let _ = engine
+            .cache
+            .invalidate(&matrixcache::CacheKey::set_members(1, "s"));
+        assert!(
+            engine
+                .cache
+                .entries_for_shard(1)
+                .iter()
+                .all(|entry| entry.namespace != "set"),
+            "invalidating the one set key left a set entry behind"
+        );
+    }
+}
+
 /// A context write leaves nothing in the `hash`, `set` or `feature` cache namespaces.
 ///
 /// This is the premise `invalidate_context_record` rests on. `invalidate_record_all` sweeps those

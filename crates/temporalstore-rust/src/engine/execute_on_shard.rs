@@ -713,7 +713,7 @@ pub(crate) fn execute_on_shard(
                     .insert(member.clone(), address);
                 mutated = true;
             }
-            let _ = cache.invalidate_record(shard_id, "set", &key);
+            let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
         Command::ZSetAdd { key, member, score } => {
@@ -764,7 +764,6 @@ pub(crate) fn execute_on_shard(
                     .insert(member.clone(), (biased, address));
                 mutated = true;
             }
-            let _ = cache.invalidate_record(shard_id, "zset", &key);
             CommandResponse::Integer {
                 value: i64::from(existed.is_none()),
             }
@@ -772,7 +771,6 @@ pub(crate) fn execute_on_shard(
         Command::ZSetScore { key, member } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "zset", &key);
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
                     mutated,
@@ -800,7 +798,6 @@ pub(crate) fn execute_on_shard(
                     if shard.zsets.get(&key).is_some_and(BTreeMap::is_empty) {
                         shard.zsets.remove(&key);
                     }
-                    let _ = cache.invalidate_record(shard_id, "zset", &key);
                     CommandResponse::Integer { value: 1 }
                 }
             }
@@ -808,7 +805,6 @@ pub(crate) fn execute_on_shard(
         Command::ZSetCard { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "zset", &key);
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -1051,7 +1047,6 @@ pub(crate) fn execute_on_shard(
                 );
                 mutated = true;
             }
-            let _ = cache.invalidate_record(shard_id, "zset", &key);
             CommandResponse::Bytes {
                 value: Some(zset_score_string(biased).into_bytes()),
             }
@@ -1059,7 +1054,6 @@ pub(crate) fn execute_on_shard(
         Command::ZSetPop { key, min, count } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "zset", &key);
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
                         members: Vec::new(),
@@ -1087,7 +1081,6 @@ pub(crate) fn execute_on_shard(
                 shard.zsets.remove(&key);
             }
             if mutated {
-                let _ = cache.invalidate_record(shard_id, "zset", &key);
             }
             CommandResponse::Members { members }
         }
@@ -1167,14 +1160,12 @@ pub(crate) fn execute_on_shard(
                     .insert(seq, address);
                 mutated = true;
             }
-            let _ = cache.invalidate_record(shard_id, "list", &key);
             let length = shard.lists.get(&key).map_or(0, BTreeMap::len) as i64;
             CommandResponse::Integer { value: length }
         }
         Command::ListPop { key, left } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "list", &key);
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
                     mutated,
@@ -1197,7 +1188,6 @@ pub(crate) fn execute_on_shard(
                     if shard.lists.get(&key).is_some_and(BTreeMap::is_empty) {
                         shard.lists.remove(&key);
                     }
-                    let _ = cache.invalidate_record(shard_id, "list", &key);
                     CommandResponse::Bytes {
                         value: read_page_bytes(cache, page_store, shard_id, &address),
                     }
@@ -1207,7 +1197,6 @@ pub(crate) fn execute_on_shard(
         Command::ListRange { key, start, stop } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "list", &key);
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
                         members: Vec::new(),
@@ -1259,7 +1248,6 @@ pub(crate) fn execute_on_shard(
         Command::ListLen { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "list", &key);
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
                     mutated,
@@ -1272,7 +1260,7 @@ pub(crate) fn execute_on_shard(
         Command::SetMembers { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate_record(shard_id, "set", &key);
+                let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
                 return ExecuteOutcome {
                     response: CommandResponse::Members {
                         members: Vec::new(),
@@ -1302,7 +1290,7 @@ pub(crate) fn execute_on_shard(
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
             }
-            let _ = cache.invalidate_record(shard_id, "set", &key);
+            let _ = cache.invalidate(&CacheKey::set_members(shard_id, &key));
             CommandResponse::Empty
         }
         Command::FeatureAppend { key, points } => {
