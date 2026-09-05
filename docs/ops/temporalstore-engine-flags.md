@@ -47,12 +47,12 @@ Anything else is blank, and a blank means go and look.
 | flags | count |
 |---|---|
 | total | 302 |
-| booleans whose default this could read off the source | 37 |
+| booleans whose default this could read off the source | 36 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 178 |
-| documented as keeping an older path alive | 5 |
-| reaching more than two files | 16 |
+| documented as keeping an older path alive | 6 |
+| reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
 
 ## topology (38)
@@ -164,7 +164,6 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TS_WAL_LEGACY_RECOVERY` | on | config, harness, script | 3 | — |
 | `MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS` | — | test | 2 | — |
 | `TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 2 | — |
 | `MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS` | — | nothing | 1 | — |
@@ -180,6 +179,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_BINARY_RECORDS` | on | launch, test | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | — | config | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
+| `TS_WAL_LEGACY_RECOVERY` | — | config, harness, script | 1 | yes |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
 | `TS_WAL_PREALLOCATE` | on | launch, test | 1 | — |
 | `TS_WAL_PREALLOCATE_CHUNK` | — | nothing | 1 | — |
@@ -370,9 +370,9 @@ Everything else that changes what the engine does.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `MATRIXARK_BULK_INGEST` | off | config, test, portal | 6 | — |
 | `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | config | 5 | — |
 | `TS_RAFT_ALLOW_PLAINTEXT` | — | harness, script | 4 | — |
+| `MATRIXARK_BULK_INGEST` | off | config, test, portal | 3 | — |
 | `TS_RAFT_ELECTION_TICK_MS` | — | harness, script | 3 | — |
 | `TS_RAFT_ENABLE_LOCAL_ADMIN` | — | harness, script | 3 | — |
 | `TS_RAFT_RPC_DEADLINE_MS` | — | harness, script | 3 | — |

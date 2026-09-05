@@ -467,28 +467,16 @@ fn indexlog_enabled() -> bool {
 }
 
 fn bulk_ingest_mode() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::engine::bulk_ingest_mode()
 }
 
 /// Defer the ack-path index-log fsync (WAL replay is the durable recovery source). This is the
 /// single-barrier default; restored to a synchronous fsync only under the TS_WAL_LEGACY_RECOVERY
 /// escape hatch (whose delta-fold recovery trusts the durable delta).
 fn indexlog_wal_only_sync() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_LEGACY_RECOVERY")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    // See `block_store::page_wal_single_barrier`: one reader, in `engine`, so the three barriers
+    // this hatch controls cannot end up disagreeing about whether it is set.
+    !crate::engine::wal_legacy_recovery()
 }
 
 /// MANIFEST-CONFORMANCE FOLD gate (default ON, opt-out). When on, the band/zone

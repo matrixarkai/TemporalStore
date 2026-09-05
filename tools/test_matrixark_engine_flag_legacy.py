@@ -24,6 +24,7 @@ import re
 import unittest
 
 TOOLS = pathlib.Path(os.path.dirname(os.path.abspath(__file__)))
+ROOT_PATH = TOOLS.parent
 TOOL = TOOLS / "build_engine_flag_inventory.py"
 DOC = TOOLS.parent / "docs" / "ops" / "temporalstore-engine-flags.md"
 
@@ -252,14 +253,50 @@ class TheInventoryReportsWhatItMeasuredTest(unittest.TestCase):
     def _marked(self):
         return [r for r in self.rows if r.split("|")[self.legacy_column].strip() == "yes"]
 
-    def test_a_flag_is_not_marked_legacy_on_a_barrier_sentence(self) -> None:
-        """`TS_WAL_LEGACY_RECOVERY` is credited with block_store's doc, which says when pages are
-        fsynced and nothing else. That is a fact about ordering, not about a path kept alive."""
+    def test_the_legacy_mark_on_the_recovery_hatch_is_backed_by_its_own_doc(self) -> None:
+        """The mark has to come from a restore-claim, not from a sentence about fsync ordering.
+
+        This test used to assert the row was NOT marked, and that was right while the doc the
+        generator credited to `TS_WAL_LEGACY_RECOVERY` was block_store's -- which says when pages
+        are fsynced and nothing else, a fact about ordering rather than about a path kept alive.
+
+        Consolidating that flag's readers into one moved the credited doc to the engine's, which
+        says the non-default setting "falls back to the legacy multi-barrier write path" and
+        exists "so an operator can revert the default in the field". That is exactly the claim
+        this column is about, so the mark is now earned rather than inferred.
+
+        Pinning the answer would make this test fail for a correct change -- as it did. So it pins
+        the REASON: however the row reads, the flag's own doc must agree.
+        """
+        source = (ROOT_PATH / "crates" / "temporalstore-rust" / "src" / "engine.rs").read_text(
+            encoding="utf-8")
+        lines = source.splitlines()
+        index = next(
+            (i for i, line in enumerate(lines)
+             if line.lstrip().endswith("fn wal_legacy_recovery() -> bool {")), None)
+        self.assertIsNotNone(
+            index, "no reader for the hatch in engine.rs; this test lost its subject")
+        doc = []
+        for back in range(index - 1, -1, -1):
+            stripped = lines[back].lstrip()
+            if not stripped.startswith("///"):
+                break
+            doc.insert(0, stripped[3:].strip())
+        self.assertTrue(doc, "the hatch's reader carries no doc comment to judge")
+
+        # The flag's own NAME carries the word "legacy", so it comes out of the prose before the
+        # prose is asked whether it claims one. Leaving it in makes this check inert: `restores`
+        # could not be false for a flag called TS_WAL_LEGACY_RECOVERY whatever its doc said.
+        prose = " ".join(doc).lower().replace("ts_wal_legacy_recovery", "the hatch")
+        restores = any(word in prose for word in ("falls back", "revert", "restores"))
+
         row = [line for line in self.rows if line.startswith("| `TS_WAL_LEGACY_RECOVERY`")]
         self.assertTrue(row, "the flag is missing from the inventory entirely")
-        self.assertNotEqual("yes", row[0].split("|")[self.legacy_column].strip(),
-                            "marked as keeping an older path alive, on a doc comment that "
-                            "describes when pages are fsynced and nothing else")
+        marked = row[0].split("|")[self.legacy_column].strip() == "yes"
+        self.assertEqual(
+            restores, marked,
+            "the row says marked=%s while the flag's own doc says restores=%s: %s"
+            % (marked, restores, prose[:200]))
 
     def test_the_count_matches_the_rows(self) -> None:
         marked = self._marked()
