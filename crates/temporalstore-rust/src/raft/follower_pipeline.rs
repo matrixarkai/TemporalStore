@@ -149,19 +149,6 @@ impl FollowerPipeline {
     }
 }
 
-/// Whether replication runs through the per-follower senders.
-pub(crate) fn follower_pipeline_enabled() -> bool {
-    // Off by default, deliberately. On a live cluster the senders were correctness-clean where
-    // the fan-out never was (every replica read of every accepted write succeeded, no reorder or
-    // stale-term rejections at all, and binary request bodies stopped collapsing the cluster) --
-    // but two performance anomalies are still open: the text-body arm lost ~a third of its
-    // throughput under concurrency, and the binary-body arm amplified the leader machine's log
-    // writes. Until both are run down on hardware, the proven default stays.
-    std::env::var("TS_RAFT_FOLLOWER_PIPELINE")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
 impl RaftCluster {
     /// Bring the per-follower senders up, or rebuild them after the peer set changed. Cheap when
     /// already current: one lock and a comparison.

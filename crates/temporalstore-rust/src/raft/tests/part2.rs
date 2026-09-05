@@ -9,7 +9,24 @@ use super::helpers::*;
 // shared-corpus: raft_matrixraft_rpc_auth_deadline_transport_matrix
 #[test]
 fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
-    let cluster = RaftCluster::new_single_shard(11, [1, 2, 3]);
+    append_vote_and_snapshot_over_tcp(11, Wire::Binary);
+}
+
+// The receiver sniffs the body and accepts either wire, so the JSON sender stays covered rather
+// than merely reachable.
+#[test]
+fn http_raft_transport_sends_append_entries_as_json_over_tcp() {
+    append_vote_and_snapshot_over_tcp(12, Wire::Json);
+}
+
+#[derive(Clone, Copy)]
+enum Wire {
+    Binary,
+    Json,
+}
+
+fn append_vote_and_snapshot_over_tcp(shard: ShardId, wire: Wire) {
+    let cluster = RaftCluster::new_single_shard(shard, [1, 2, 3]);
     let addr = free_local_addr();
     std::thread::spawn({
         let cluster = cluster.clone();
@@ -26,7 +43,7 @@ fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
     let mut peers = BTreeMap::new();
     peers.insert(2, addr.clone());
     peers.insert(3, addr.clone());
-    let transport = HttpRaftTransport::with_options(
+    let mut transport = HttpRaftTransport::with_options(
         peers,
         HttpRequestOptions {
             connect_timeout_ms: 200,
@@ -34,6 +51,9 @@ fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
             max_retries: 1,
         },
     );
+    if matches!(wire, Wire::Json) {
+        transport.send_json_append_entries_for_test();
+    }
 
     cluster.set_alive(3, false).unwrap();
     cluster
@@ -80,10 +100,10 @@ fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
-    // This test is about ENTRY chunking; a state image is one small unit and
-    // completes in a single chunk, which is not what these assertions probe.
-    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(21, [1, 2, 3]);
+    // This test is about ENTRY chunking; a state image is one small unit and completes in a
+    // single chunk, which is not what these assertions probe.
+    cluster.snapshot_carries_entries_for_test();
     cluster.set_alive(3, false).unwrap();
     for index in 0..5 {
         cluster
@@ -136,13 +156,13 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn matrixraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
-    // This test is about ENTRY chunking; a state image is one small unit and
-    // completes in a single chunk, which is not what these assertions probe.
-    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let transport = FlakyTransport {
         cluster: RaftCluster::new_single_shard(213, [1, 2, 3]),
         failures_left: Arc::new(Mutex::new(1)),
     };
+    // This test is about ENTRY chunking; a state image is one small unit and completes in a
+    // single chunk, which is not what these assertions probe.
+    transport.cluster.snapshot_carries_entries_for_test();
     for index in 0..3 {
         transport
             .cluster
@@ -188,9 +208,6 @@ fn matrixraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn matrixraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
-    // This test is about ENTRY chunking; a state image is one small unit and
-    // completes in a single chunk, which is not what these assertions probe.
-    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard_with_config(
         214,
         [1, 2, 3],
@@ -202,6 +219,9 @@ fn matrixraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_
         },
     )
     .unwrap();
+    // This test is about ENTRY chunking; a state image is one small unit and completes in a
+    // single chunk, which is not what these assertions probe.
+    cluster.snapshot_carries_entries_for_test();
     cluster.set_alive(3, false).unwrap();
     for index in 0..3 {
         cluster
@@ -322,10 +342,10 @@ fn raft_snapshot_transport_rejects_stale_term_before_install() {
 // shared-corpus: raft_matrixraft_snapshot_chunk_retry_rollback_matrix raft_matrixraft_snapshot_lifecycle_depth
 #[test]
 fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
-    // This test is about ENTRY chunking; a state image is one small unit and
-    // completes in a single chunk, which is not what these assertions probe.
-    let _entries = super::part4::EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(212, [1, 2, 3]);
+    // This test is about ENTRY chunking; a state image is one small unit and completes in a
+    // single chunk, which is not what these assertions probe.
+    cluster.snapshot_carries_entries_for_test();
     for index in 0..3 {
         cluster
             .propose(Command::StringSet {

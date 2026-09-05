@@ -815,8 +815,6 @@ impl RaftTransport for OneInFlightTransport {
 /// Eight concurrent proposers, and never two appends in flight to one follower.
 #[test]
 fn at_most_one_append_in_flight_per_follower() {
-    // This test IS the pipeline's invariant; it must not silently test the default.
-    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -825,6 +823,8 @@ fn at_most_one_append_in_flight_per_follower() {
         RaftConfig::default(),
     )
     .unwrap();
+    // This test IS the pipeline's invariant; it must not silently test the default.
+    cluster.use_follower_pipeline_for_test();
     let transport = OneInFlightTransport {
         cluster: cluster.clone(),
         in_flight: Default::default(),
@@ -890,8 +890,6 @@ fn at_most_one_append_in_flight_per_follower() {
 /// happened to apply last in the same commit batch.
 #[test]
 fn concurrent_proposers_get_their_own_responses() {
-    // This test IS the pipeline's invariant; it must not silently test the default.
-    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -900,6 +898,8 @@ fn concurrent_proposers_get_their_own_responses() {
         RaftConfig::default(),
     )
     .unwrap();
+    // This test IS the pipeline's invariant; it must not silently test the default.
+    cluster.use_follower_pipeline_for_test();
     let transport = cluster.clone();
     // Seed distinct values, then read them back through propose_distributed concurrently: a
     // string_get's response carries the value, so a swapped response is immediately visible.
@@ -957,7 +957,6 @@ fn concurrent_proposers_get_their_own_responses() {
 /// is the test that proves it closed, through the binary record encoding and the on-disk WAL.
 #[test]
 fn restart_after_state_image_compaction_serves_every_value() {
-    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let dir = tempfile::tempdir().unwrap();
     let config = RaftConfig {
         // Compact as soon as anything is applied, so the test exercises the image path.
@@ -1017,7 +1016,6 @@ fn restart_after_state_image_compaction_serves_every_value() {
 /// carries state and one that re-encodes history.
 #[test]
 fn state_image_compaction_bounds_wal_bytes() {
-    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     fn wal_bytes(root: &std::path::Path) -> u64 {
         fn walk(path: &std::path::Path, total: &mut u64) {
             if let Ok(entries) = std::fs::read_dir(path) {
@@ -1327,7 +1325,6 @@ fn a_torn_binary_record_is_truncated_and_the_records_before_it_survive() {
 /// by at most one generation across the keys and never rise.
 #[test]
 fn off_lock_image_build_yields_consistent_images_under_writes() {
-    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = std::sync::Arc::new(
         RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
@@ -1414,8 +1411,6 @@ fn off_lock_image_build_yields_consistent_images_under_writes() {
 /// The =0 fallback -- one propose at a time through the same senders -- must stay correct too.
 #[test]
 fn serialized_pipeline_fallback_holds_the_invariant() {
-    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
-    let _serial = super::part4::EnvFlagGuard::off("TS_RAFT_PIPELINE_CONCURRENT_PROPOSE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -1424,6 +1419,8 @@ fn serialized_pipeline_fallback_holds_the_invariant() {
         RaftConfig::default(),
     )
     .unwrap();
+    cluster.use_follower_pipeline_for_test();
+    cluster.propose_one_at_a_time_for_test();
     let transport = OneInFlightTransport {
         cluster: cluster.clone(),
         in_flight: Default::default(),
@@ -1470,13 +1467,13 @@ fn serialized_pipeline_fallback_holds_the_invariant() {
 /// this test fails with NoMajority/LeaderUnavailable on the post-idle propose.
 #[test]
 fn idle_leader_lease_renews_on_quorum_contact() {
-    let _pipeline = super::part4::EnvFlagGuard::set("TS_RAFT_FOLLOWER_PIPELINE");
     let dir = tempfile::tempdir().unwrap();
     let config = RaftConfig {
         lease_duration_ms: 50,
         ..RaftConfig::default()
     };
     let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], config).unwrap();
+    cluster.use_follower_pipeline_for_test();
     let transport = cluster.clone();
     cluster
         .propose_distributed(
@@ -1558,7 +1555,6 @@ fn lagging_follower_beyond_the_window_still_catches_up() {
 /// trigger to fire.
 #[test]
 fn compaction_threshold_is_judged_on_the_logs_disk_footprint() {
-    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -1613,7 +1609,6 @@ fn compaction_threshold_is_judged_on_the_logs_disk_footprint() {
 /// it must still serve every value.
 #[test]
 fn the_state_image_file_is_compressed_and_still_restores() {
-    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -1829,7 +1824,6 @@ fn the_segment_report_matches_whether_it_is_cached_or_scanned() {
 /// every check, forever.
 #[test]
 fn compaction_does_not_rebuild_the_image_for_a_log_that_is_already_small() {
-    let _image = super::part4::EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),

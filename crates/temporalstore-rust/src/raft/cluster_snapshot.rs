@@ -547,7 +547,12 @@ impl RaftCluster {
         // lock and proves consistency by watermark instead; any failure there falls through
         // to the classic entry-carrying snapshot below, so the image path can never make
         // snapshotting worse.
-        if raft_snapshot_state_image_on() {
+        if self
+            .inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .snapshot_state_image
+        {
             if let Some(snapshot) = self.create_state_image_snapshot()? {
                 return Ok(snapshot);
             }

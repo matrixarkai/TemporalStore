@@ -2843,8 +2843,8 @@ fn r5_quorum_election_requires_majority_and_minority_cannot_elect() {
 /// leadership (the case a partitioned/just-superseded leader falls into).
 #[test]
 fn r4_new_leader_withholds_linearizable_read_until_committed_in_term() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_LEADER_READY_BARRIER");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster.withhold_reads_until_leader_ready_for_test();
 
     // Promote node 2 to a new term. It has not yet committed anything in that term.
     cluster.elect_leader(2).unwrap();
@@ -2873,7 +2873,6 @@ fn r4_new_leader_withholds_linearizable_read_until_committed_in_term() {
 /// image alone (O(state)) — no per-entry replay of the whole history.
 #[test]
 fn s2_state_image_snapshot_installs_without_replaying_full_entry_log() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     for i in 0..16 {
         cluster
@@ -2923,7 +2922,6 @@ fn s2_state_image_snapshot_installs_without_replaying_full_entry_log() {
 /// single-chunk, empty-entries stream) and the follower installs from it end-to-end.
 #[test]
 fn s2_state_image_snapshot_travels_through_chunk_stream() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_SNAPSHOT_STATE_IMAGE");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     for i in 0..8 {
         cluster
@@ -2973,9 +2971,9 @@ fn s2_state_image_snapshot_travels_through_chunk_stream() {
 /// S2 gate OFF (default): the snapshot still carries the committed entry log and no state image,
 /// so behavior is byte-identical to before.
 #[test]
-fn s2_snapshot_gate_off_still_carries_entries_and_no_image() {
-    let _gate = EnvFlagGuard::off("TS_RAFT_SNAPSHOT_STATE_IMAGE");
+fn s2_snapshot_carrying_entries_holds_them_and_no_image() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster.snapshot_carries_entries_for_test();
     for i in 0..4 {
         cluster
             .propose(Command::StringSet {
@@ -3181,13 +3179,12 @@ fn persist_local_only_writes_just_this_nodes_record() {
     }
 }
 
-/// P1 core: with `TS_RAFT_WAL_COALESCE` on, a burst of read-index calls (which only touch the
+/// P1 core: a burst of read-index calls (which only touch the
 /// volatile `read_safety_state` accounting counters) must NOT append/fsync a single new WAL
 /// record, while a real committed write still does. This is the idle read-index/tick fsync-storm
 /// fix, and the durability barrier of a write is preserved.
 #[test]
 fn raft_wal_coalesce_skips_volatile_only_read_index_persists() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
     let dir = tempfile::tempdir().unwrap();
     let cluster =
         RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
@@ -3216,15 +3213,15 @@ fn raft_wal_coalesce_skips_volatile_only_read_index_persists() {
     );
 }
 
-/// P1 contrast: with the gate OFF the shipped behavior is byte-identical -- every read-index
+/// P1 contrast: with the skip turned off for this cluster, every read-index
 /// persists, so the same burst grows the WAL by one record per call. This pins the win as real.
 #[test]
 fn raft_wal_coalesce_off_persists_every_read_index() {
-    let _gate = EnvFlagGuard::off("TS_RAFT_WAL_COALESCE");
     let dir = tempfile::tempdir().unwrap();
     let cluster =
         RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
             .unwrap();
+    cluster.persist_every_wal_record_for_test();
 
     let baseline = node_wal_record_count(dir.path(), 1, 1);
     for _ in 0..25 {
@@ -3241,7 +3238,6 @@ fn raft_wal_coalesce_off_persists_every_read_index() {
 /// drop the cluster, and recover from the WAL: commit_index and the full log must survive.
 #[test]
 fn raft_wal_coalesce_preserves_committed_entries_across_restart() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
     let dir = tempfile::tempdir().unwrap();
     {
         let cluster =
@@ -3289,7 +3285,6 @@ fn raft_wal_coalesce_preserves_committed_entries_across_restart() {
 /// coalesced away. Recover from the WAL and confirm the bumped term + vote survived.
 #[test]
 fn raft_wal_coalesce_keeps_hard_state_vote_durable_before_request() {
-    let _coalesce = EnvFlagGuard::set("TS_RAFT_WAL_COALESCE");
     let dir = tempfile::tempdir().unwrap();
     let term_before;
     {
@@ -3366,7 +3361,6 @@ fn raft_replication_deadline_is_configurable_and_bounds_propose() {
 /// pile of full-deadline stalls).
 #[test]
 fn raft_propose_serialize_commits_concurrent_proposals_in_order() {
-    let _guard = EnvFlagGuard::set("TS_RAFT_PROPOSE_SERIALIZE");
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     let started = Instant::now();
     let mut handles = Vec::new();
@@ -4053,6 +4047,46 @@ fn a_raft_cluster_restores_every_node_from_its_own_log_on_the_live_format() {
         "[raft] 3 nodes, {} writes, one outage and catch-up, all restored and serving",
         writes.len()
     );
+}
+
+// `a_raft_cluster_restores_on_the_legacy_record_content_too` stood here. Both halves of what
+// it varied -- the record encoding and whether a record keeps its operation -- belong to a
+// store now, and the stores it wanted are owned by nodes inside the cluster; it reached them
+// only by setting variables the whole process could see. With nothing left to vary it was
+// `a_raft_cluster_restores_every_node_from_its_own_log_on_the_live_format` a second time.
+// What it claimed -- that a record in the older shape still reads -- is pinned where it can
+// be stated directly, in `wal::tests` and in the record-level size comparison.
+
+// Nothing turns the overlapped barrier on in production and, by the note on the field, nothing
+// should until a leader appends an entry of its own term on taking office. This is what runs it:
+// without it the path is code no test has ever executed.
+#[test]
+fn overlapping_the_leader_barrier_still_commits_every_write() {
+    let cluster = RaftCluster::new_single_shard(26, [1, 2, 3]);
+    cluster.overlap_leader_barrier_for_test();
+    for index in 0..4u8 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("overlap-{index}"),
+                value: vec![index],
+            })
+            .unwrap();
+    }
+    // Every write is committed and readable on the leader, with its durability barrier taken
+    // alongside replication rather than after it.
+    for index in 0..4u8 {
+        assert_eq!(
+            cluster.read_local(
+                1,
+                Command::StringGet {
+                    key: format!("overlap-{index}"),
+                },
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(vec![index])
+            })
+        );
+    }
 }
 
 /// The same cluster, with the log written in the LEGACY encoding.

@@ -312,7 +312,6 @@ impl LocalRaftWal {
         // which shows up as write latency that climbs with the log. Write the entries
         // that are actually new instead, and re-base with a full record only when a
         // delta could not be folded back (start of a segment, or the log moved under us).
-        let delta_enabled = raft_wal_delta_entries_enabled();
         let log_first_index = record
             .entries
             .first()
@@ -331,8 +330,7 @@ impl LocalRaftWal {
         // A delta is only sound while the log still contains the exact entry we last
         // wrote, at the same term. A conflict overwrite (raft truncating a divergent
         // suffix) or a snapshot compaction (dropping a prefix) breaks that.
-        let delta_safe = delta_enabled
-            && cursor.has_base
+        let delta_safe = cursor.has_base
             && cursor.persisted_last_index > 0
             && log_last_index >= cursor.persisted_last_index
             && log_first_index > 0
@@ -416,11 +414,7 @@ impl LocalRaftWal {
         // never orphan a delta. Rotation still honours `max_segment_bytes`; it is only
         // clamped up to one base record so a segment can always hold the record that
         // opens it.
-        let rotate_threshold = if delta_enabled {
-            max_segment_bytes.max(cursor.base_bytes)
-        } else {
-            max_segment_bytes
-        };
+        let rotate_threshold = max_segment_bytes.max(cursor.base_bytes);
         // Size-based rotation as before -- plus: a COMPACTING base opens a segment. When the
         // snapshot boundary advanced, the base supersedes the history in the current segment,
         // and only at a segment boundary can pruning reclaim it. Ordinary re-bases (an empty

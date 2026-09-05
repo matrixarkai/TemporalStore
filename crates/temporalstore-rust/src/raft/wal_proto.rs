@@ -467,24 +467,6 @@ pub(crate) fn decode_append_entries(body: &[u8]) -> io::Result<AppendEntriesRequ
     })
 }
 
-/// Whether a leader takes its durability barrier alongside replication rather than after it.
-///
-/// Off unless asked for: it relies on the commit index being recoverable, which holds only once
-/// every leader commits an entry of its own term on taking office.
-pub(super) fn overlap_leader_barrier_enabled() -> bool {
-    std::env::var("TS_RAFT_OVERLAP_LEADER_BARRIER")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
-/// Whether replicated batches are sent in the binary encoding. Off unless asked for: a receiver
-/// accepts either, but a sender must not switch before every peer can read it.
-pub(super) fn binary_replication_enabled() -> bool {
-    std::env::var("TS_RAFT_BINARY_REPLICATION")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
 /// Encode one envelope as a binary message.
 pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
     let record = &envelope.record;
