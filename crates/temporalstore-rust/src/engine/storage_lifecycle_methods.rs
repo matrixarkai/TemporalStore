@@ -1212,7 +1212,10 @@ impl TemporalEngine {
                 .map(|shard| shard.bucket_recency.clone())
                 .unwrap_or_default()
         };
-        let victims = if super::evict_sampled_lru_enabled() {
+        let victims = if self
+            .evict_sampled_lru
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.sampled_eviction_victims(shard_id, batch_limit, &cache_by_bucket)
         } else {
             let mut victims = self

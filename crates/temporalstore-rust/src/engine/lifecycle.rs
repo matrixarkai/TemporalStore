@@ -74,13 +74,34 @@ impl TemporalEngine {
             maintenance_mirror: Arc::default(),
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            evict_sampled_lru: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             raft_apply_coalesce: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
+    }
+
+    /// Stop this engine's cache spilling evicted hot pages to a real slab, so a read has to come
+    /// from the log-resident path.
+    ///
+    /// Five tests want this, and `TS_HOT_PAGE_SPILL=0` was how they asked. Four could not work:
+    /// `install_spill_handler` reads that variable during construction and every one of them set
+    /// it afterwards, so the handler was already installed and the isolation they described never
+    /// happened. `register_eviction_callback` REPLACES the callback, so a no-op takes the handler
+    /// off the engine this test built, at the moment it asks.
+    #[cfg(test)]
+    pub(crate) fn disable_hot_page_spill_for_test(&self) {
+        self.cache.register_eviction_callback(|_| {});
     }
 
     /// Take the durable WAL barrier UNDER the `shards` write lock, for a test measuring what
     /// the other side of the lock costs. Scoped to this engine.
     #[cfg(test)]
+    /// Pick eviction victims by a sampled scan, for the test that measures what that costs.
+    #[cfg(test)]
+    pub(crate) fn use_sampled_eviction_for_test(&self) {
+        self.evict_sampled_lru
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     pub(crate) fn commit_under_lock_for_test(&self) {
         self.concurrent_commit
             .store(false, std::sync::atomic::Ordering::Relaxed);

@@ -274,7 +274,7 @@ pub(super) struct ShardState {
     pub(super) promote_scan_done: bool,
     /// Resume point and candidate pool for sampled eviction. In-memory and ephemeral like
     /// `bucket_recency`: on restart the scan simply restarts from the top, which costs one
-    /// pass, not correctness. Only consulted when `evict_sampled_lru_enabled()`.
+    /// pass, not correctness. Only consulted when the engine's `evict_sampled_lru` is on.
     #[serde(skip)]
     pub(super) evict_sampler: super::eviction_sampler::EvictionSamplerState,
 }

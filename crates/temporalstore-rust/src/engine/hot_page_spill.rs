@@ -35,21 +35,6 @@ use crate::types::ShardId;
 
 use super::constants::HOT_PAGE_SLAB_ID;
 
-/// TS_HOT_PAGE_SPILL: spill evicted hot pages to a real slab + serve the durable read-by-address
-/// fallback. Default ON -- it is strictly additive (adds a durable fallback + frees DRAM) and
-/// fixes an acked-write-reads-as-missing bug. Set to a falsey value to restore the prior
-/// memory-only behavior (evicted hot pages read as missing until reload).
-pub(super) fn spill_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_HOT_PAGE_SPILL")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 fn redirects() -> &'static Mutex<HashMap<(ShardId, u64), BlockAddress>> {
     static REDIRECTS: OnceLock<Mutex<HashMap<(ShardId, u64), BlockAddress>>> = OnceLock::new();
     REDIRECTS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -85,10 +70,13 @@ fn parse_hot_selector(selector: &str) -> Option<(u64, Option<u32>)> {
 /// cache's callback, so a cache used 1:1 with an engine ends up with the correct store; the shared
 /// redirect map stays coherent because hot-page offsets are globally unique (one process-wide
 /// atomic), so an engine only ever looks up offsets it minted itself.
+///
+/// Always installed. `TS_HOT_PAGE_SPILL` used to be able to skip it -- strictly additive, so the
+/// off position only restored an acked-write-reads-as-missing bug -- and the only callers that
+/// ever set it were four tests that set it AFTER building their engine, by which time this had
+/// already run. `TemporalEngine::disable_hot_page_spill_for_test` is how an engine is told, and
+/// it works because `register_eviction_callback` replaces the callback rather than adding one.
 pub(super) fn install_spill_handler(cache: &MultiLayerCache, block_store: &LocalBlockStore) {
-    if !spill_enabled() {
-        return;
-    }
     let block_store = block_store.clone();
     let hot_record_key = hot_page_record_key();
     cache.register_eviction_callback(move |record: CacheEvictionRecord| {
