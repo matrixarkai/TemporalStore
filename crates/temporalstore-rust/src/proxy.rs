@@ -3699,6 +3699,45 @@ mod tests {
         let counts = probe.stop();
         rows.push(("  (the clone above costs)", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
+        // The same ingest against a backend that ANSWERS, which is the number the rows above do
+        // not give: everything end-to-end here talks to a closed port and pays the error tail.
+        let backend = test_addr(18_620);
+        let backend_for_thread = backend.clone();
+        std::thread::spawn(move || {
+            let _ = serve_reserved(&backend_for_thread, |_request| {
+                crate::http::json_response(
+                    200,
+                    &ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::Empty,
+                    },
+                )
+            });
+        });
+        wait_for_http(&backend);
+        let serving = scoped_proxy(ProxyOptions::default());
+        serving
+            .client()
+            .insert_cached_route_for_test(serving.context_shard_id(0), backend.clone());
+        let (code, _) = serving.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/ingest".to_string(),
+            body: ingest_body.clone(),
+        });
+        assert_eq!(code, 200, "the stub backend must answer, or this measures the error tail again");
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = serving.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: ingest_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("POST /context/ingest, backend ANSWERS", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
         println!();
         println!("  path                    allocs/call   bytes/call");
         for (name, allocs, bytes) in &rows {
