@@ -65,6 +65,23 @@ mod bucket_ownership_tests {
     ///
     /// This pins the mapping that is real, so that a change to range routing is a deliberate one
     /// and not something discovered afterwards.
+    ///
+    /// If the two are ever reconciled, the RANGES are the side to keep and this mapping is the
+    /// side to change. Three things point that way, none of them a preference:
+    ///
+    /// - The ranges are already published. A key's owner is then a property of the topology the
+    ///   metaserver hands out, so a client that reads them cannot disagree with the cluster about
+    ///   who owns what; a modulo can, and does, the moment the two are derived differently.
+    /// - The ranges survive a split. Moving a contiguous slice of buckets to a new shard changes
+    ///   one range boundary and leaves every other key where it was. Changing `shard_count` under
+    ///   a modulo remaps very nearly everything -- at four shards to eight, seven keys in eight.
+    /// - A range lookup is not more expensive. It is a binary search over one entry per shard,
+    ///   against a hash and a division, and it happens once per keyed command either way.
+    ///
+    /// What makes it a migration rather than a fix is the remap itself: every key already written
+    /// was placed by the modulo, so switching the read path without moving the data would look
+    /// the store in the eye and miss. That is the decision, and it is why this is pinned instead
+    /// of changed.
     #[test]
     fn a_key_is_routed_by_bucket_modulo_count_not_by_the_published_range() {
         let shard_count = 4_u64;
