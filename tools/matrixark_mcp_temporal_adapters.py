@@ -2571,6 +2571,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         # every append batch. It only removes redundant pending markers -- a size
         # optimization, not correctness -- and paying an O(store) read per ingest to get it
         # is the wrong trade on this path.
+        # The raw half of the dual write. _TemporalDirectBackendMixin.append_many performs it,
+        # but this override wins the MRO and did not, so on the default backend the raw records
+        # were written NOWHERE: the only other caller, _flush_direct_write_items, runs on the
+        # queue path, and queuing is off by default. Gated rather than simply restored, because
+        # this adapter is the default backend and _append_raw_ingestion_records has no gate of
+        # its own -- calling it unconditionally would add a second store write to every ingest.
+        # Default off keeps today's behaviour byte for byte; turning it on is one flag.
+        if bool(getattr(self, "_direct_raw_ingestion_enabled", False)):
+            self._append_raw_ingestion_records(records)
         materialized = self._stamp_ingest_fields(materialize_serving_record_batch(records))
         if not materialized:
             return
@@ -2859,6 +2868,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
         self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
         self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
+        self._direct_raw_ingestion_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION", "0").strip().lower() in {"1", "true", "yes"}
         self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         self._direct_write_queue_done_key = f"{self._storage_prefix}:direct_write_queue_done"
         self._direct_write_queue_dead_key = f"{self._storage_prefix}:direct_write_queue_dead"
