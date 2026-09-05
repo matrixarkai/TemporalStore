@@ -147,7 +147,9 @@ ESSENTIAL_KEYS = {
 GROUPS: Dict[str, Json] = {
     "extraction": {
         "title": "Extraction model", "order": 10, "advanced": False,
-        "note": "The LLM that turns ingested text into memories. DeepSeek, vLLM, Ollama and OpenAI "
+        "note": "The LLM that turns ingested text into memories, and the one that writes the node "
+                 "summaries retrieval walks -- both on the endpoint and key below. DeepSeek, "
+                 "vLLM, Ollama and OpenAI "
                 "all speak the same OpenAI-compatible shape.",
     },
     "embedding": {
@@ -234,6 +236,38 @@ SETTINGS: List[Setting] = [
     Setting("extraction.max_tokens", "extraction", "MATRIXARK_EXTRACTION_MAX_TOKENS",
             "Extraction max tokens", "int", "1200", "restart",
             "Completion cap per extraction call."),
+
+    # ---- the summary model ----------------------------------------------------------------------
+    # The third model a deployment runs, and the one called most: every context node gets a summary,
+    # where extraction runs once per ingest. It needs no endpoint or key of its own --
+    # openai_compatible_json_call sends a summary to EXTRACTION_LLM_BASE_URL with the key named by
+    # MATRIXARK_EXTRACTION_API_KEY_ENV, and takes only the model and the budget as arguments -- so
+    # these three sit in the extraction group beside the endpoint and key they use.
+    #
+    # `restart` on all three, and for the same reason audit.mode carries it: SUMMARY_LLM_MODEL and
+    # SUMMARY_LLM_MAX_TOKENS are module constants in two modules, bound at import. The provider is
+    # the mixed one -- summary_provider() re-reads the environment on every call, so the CHOICE
+    # moves at once, while the model those constants carry does not. `restart` is the only label
+    # true of all three, and the help says which half moves first.
+    Setting("summary.provider", "extraction", "MATRIXARK_SUMMARY_PROVIDER",
+            "Summary provider", "str", "", "restart",
+            "Which provider writes the node summaries retrieval walks. Blank follows the extraction "
+            "provider above, which is the default. openai_compatible is the only value that calls a "
+            "model: anthropic returns rule-written summaries and no error, so a deployment on "
+            "anthropic extraction gets deterministic summaries unless it names openai_compatible "
+            "here. The choice itself takes effect on the next summary; the model below waits for a "
+            "restart.",
+            ["", "deterministic", "openai_compatible"]),
+    Setting("summary.model", "extraction", "MATRIXARK_SUMMARY_MODEL",
+            "Summary model", "str", "", "restart",
+            "Model for node summaries, sent to the extraction endpoint above with the same key. "
+            "Blank uses the extraction model. Naming a smaller one here is the point of the "
+            "setting: every node gets a summary, so this call is made far more often than an "
+            "extraction."),
+    Setting("summary.max_tokens", "extraction", "MATRIXARK_SUMMARY_MAX_TOKENS",
+            "Summary max tokens", "int", "900", "restart",
+            "Completion cap per summary call, separate from the extraction cap because a summary is "
+            "the shorter of the two and is paid for on every node."),
 
     # ---- audit trail ---------------------------------------------------------------------------
     # Two readers, and they disagree about when a change lands. matrixark_access reads os.environ
