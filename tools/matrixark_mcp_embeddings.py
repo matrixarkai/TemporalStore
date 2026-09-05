@@ -148,8 +148,8 @@ def embedding_for_text(text: str, role: str = "passage") -> list[float]:
         cached = _cache_get(cache_key)
         if cached is not None:
             return list(cached)
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+    provider = embedding_provider_name()
+    if provider in _OSS_EMBEDDING_PROVIDERS:
         vector = truncate_embedding(oss_embedding_for_text(text))
         with _EMBEDDING_VECTOR_CACHE_LOCK:
             _cache_put(cache_key, vector)
@@ -191,7 +191,7 @@ def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[f
                 missing.append((index, text))
             else:
                 results.append(list(cached))
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    provider = embedding_provider_name()
     if missing and provider in _API_EMBEDDING_PROVIDERS:
         vectors = api_embedding_for_texts([text for _index, text in missing], provider)
         with _EMBEDDING_VECTOR_CACHE_LOCK:
@@ -199,7 +199,7 @@ def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[f
                 materialized = truncate_embedding([round(float(value), 6) for value in vector])
                 _cache_put((model, text), materialized)
                 results[index] = materialized
-    elif missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+    elif missing and provider in _OSS_EMBEDDING_PROVIDERS:
         model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
             "intfloat/multilingual-e5-large",
@@ -227,8 +227,8 @@ def embeddings_for_texts(texts: list[str], role: str = "passage") -> list[list[f
 
 
 def embedding_model_name() -> str:
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+    provider = embedding_provider_name()
+    if provider in _OSS_EMBEDDING_PROVIDERS:
         return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
             "intfloat/multilingual-e5-large",
@@ -240,10 +240,10 @@ def embedding_model_name() -> str:
 
 
 def embedding_execution_mode_name() -> str:
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    provider = embedding_provider_name()
     if embedding_fallback_used():
         return "local_hash_embedding_fallback"
-    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+    if provider in _OSS_EMBEDDING_PROVIDERS:
         return "oss_embedding_model"
     if provider in _API_EMBEDDING_PROVIDERS:
         return "voyage_embedding_api" if provider == "voyage" else "openai_embedding_api"
@@ -262,6 +262,27 @@ def embedding_fallback_used() -> bool:
 # no embeddings API, so API embeddings are OpenAI/Voyage (or any OpenAI-compatible server, incl. a
 # local vLLM/Ollama endpoint via MATRIXARK_EMBEDDING_API_BASE). No new dependency: stdlib urllib only.
 _API_EMBEDDING_PROVIDERS = {"openai", "openai_compatible", "openai-compatible", "azure_openai", "voyage", "api"}
+#: The spellings that select the in-process sentence-transformers encoder. Written out at three
+#: dispatch sites before, which is three chances for one of them to learn a new spelling and the
+#: others not to.
+_OSS_EMBEDDING_PROVIDERS = {"oss", "open_source", "sentence_transformers", "sentence-transformers"}
+
+
+def embedding_provider_name() -> str:
+    """The configured embedding provider, normalised the way every dispatch site needs it.
+
+    Read per call, never captured into a module constant: a constant is resolved once at import and
+    a later write to the environment could not reach it, which is the difference between a setting
+    the portal calls live and one that only looks live.
+
+    Six sites spelled this out identically, each repeating the default. A seventh would have had to
+    remember it, and a default that is written down six times is a default that disagrees with
+    itself eventually -- which is exactly what the numeric-default check exists to catch one layer
+    up. Sites that deliberately report the RAW configured string, rather than dispatch on it, still
+    read the variable directly and should: they are answering "what is set", not "what will run".
+    """
+    return os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+
 
 
 def _deterministic_embedding_for_text(text: str) -> list[float]:
