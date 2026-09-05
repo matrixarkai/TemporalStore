@@ -1583,6 +1583,17 @@ SETUP_JS = r"""
             "one setting on this page that can quietly invalidate data you already have." }
   ];
 
+  /* Which setting a pick is written into. The route decides it from the selected provider --
+     on Anthropic the model lives in extraction.anthropic_model, and writing into extraction.model
+     there changed nothing. The static key stays as the fallback for a gateway that predates the
+     route saying so. */
+  function modelKey(target) {
+    var d = modelData[target] || {};
+    if (d.key) { return d.key; }
+    var entry = MODEL_TARGETS.filter(function (t) { return t.target === target; })[0];
+    return entry ? entry.key : "";
+  }
+
   function loadModels(probe) {
     if (!$("key").value.trim()) { return Promise.resolve(); }
     return Promise.all(MODEL_TARGETS.map(function (t) {
@@ -1694,10 +1705,11 @@ SETUP_JS = r"""
         return '<div class="mblock"><h3>' + esc(t.title) + '</h3><div class="mnote">' +
           esc(d.error) + "</div></div>";
       }
+      var key = modelKey(t.target);
       var chosen = Object.prototype.hasOwnProperty.call(pendingPick, t.target)
         ? pendingPick[t.target]
-        : ((Object.prototype.hasOwnProperty.call(edits, t.key) && edits[t.key] !== null)
-            ? edits[t.key] : (d.current || ""));
+        : ((Object.prototype.hasOwnProperty.call(edits, key) && edits[key] !== null)
+            ? edits[key] : (d.current || ""));
       var options = modelOptions(t.target);
       var known = options.some(function (o) { return sameModel(o.model, chosen); });
       var disc = d.discovered || {};
@@ -1792,19 +1804,23 @@ SETUP_JS = r"""
     if (!button) { return; }
     ev.preventDefault();
     var target = button.dataset.use;
+    var key = modelKey(target);
+    /* Still needed for the message at the end -- the KEY comes from the route, the TITLE is the
+       page's own label for the target. Dropping this is a ReferenceError after the field is
+       already set, which reads as a save that half-happened. */
     var entry = MODEL_TARGETS.filter(function (t) { return t.target === target; })[0];
     var value = pickedModel(target);
-    if (!entry || !value) {
+    if (!entry || !key || !value) {
       say($("saveMsg"), "Type a model name first.", "warn");
       return;
     }
-    var el = $("groups").querySelector('[data-key="' + entry.key + '"]');
+    var el = $("groups").querySelector('[data-key="' + key + '"]');
     if (!el) {
       say($("saveMsg"), "That field is not loaded — enter an admin key first.", "warn");
       return;
     }
     el.value = value;
-    edits[entry.key] = value;
+    edits[key] = value;
     pendingPick[target] = value;
     markDirty();
     renderModels();

@@ -399,8 +399,11 @@ class PickerPageTest(_ModelTest):
         # an encoder change saved on click is one nobody reviewed.
         source = _read_text(os.path.join(HERE, "portal", "build_portal_pages.py"))
         start = source.index('$("models").addEventListener("click"')
-        block = source[start:start + 1800]
-        self.assertIn("edits[entry.key] = value", block)
+        block = source[start:start + 2400]
+        # WHICH key is not pinned here: it comes from the route now, because the Anthropic path
+        # reads a different setting. What this test is about is that the pick lands in the pending
+        # set at all -- an encoder change saved on click is one nobody reviewed.
+        self.assertRegex(block, r"edits\[\w+\] = value")
         self.assertIn("markDirty()", block)
         self.assertNotIn('method: "POST"', block)
 

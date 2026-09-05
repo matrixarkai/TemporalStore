@@ -945,14 +945,27 @@ PRESETS: Dict[str, Json] = {
 # Extraction models worth suggesting. There is no measured catalogue for these -- unlike the
 # encoders, where `encoder_catalog()` in the gateway holds hit@1/throughput/footprint from a real
 # corpus and the picker serves THAT rather than a second list written from general knowledge.
+# `serves` names the dispatch the model belongs to, in the vocabulary of
+# `extraction_provider_effect`. A suggestion the selected provider cannot serve is not a suggestion:
+# the whole list was OpenAI-compatible, so an Anthropic deployment was offered six models Anthropic
+# does not have, and none of the ones it does.
 EXTRACTION_CATALOGUE: List[Json] = [
-    {"model": "deepseek-chat", "note": "DeepSeek's general model. No embeddings API — pair it "
-                                       "with a local encoder."},
-    {"model": "deepseek-reasoner", "note": "Slower and more deliberate; raise the timeout."},
-    {"model": "gpt-4o-mini", "note": "OpenAI, inexpensive, good enough for extraction."},
-    {"model": "gpt-4o", "note": "OpenAI, stronger and dearer."},
-    {"model": "qwen2.5:7b", "note": "Runs locally under Ollama."},
-    {"model": "qwen2.5:1.5b", "note": "Small enough for a laptop; extraction quality drops."},
+    {"model": "deepseek-chat", "serves": "openai",
+     "note": "DeepSeek's general model. No embeddings API — pair it with a local encoder."},
+    {"model": "deepseek-reasoner", "serves": "openai",
+     "note": "Slower and more deliberate; raise the timeout."},
+    {"model": "gpt-4o-mini", "serves": "openai",
+     "note": "OpenAI, inexpensive, good enough for extraction."},
+    {"model": "gpt-4o", "serves": "openai", "note": "OpenAI, stronger and dearer."},
+    {"model": "qwen2.5:7b", "serves": "openai", "note": "Runs locally under Ollama."},
+    {"model": "qwen2.5:1.5b", "serves": "openai",
+     "note": "Small enough for a laptop; extraction quality drops."},
+    {"model": "claude-opus-5", "serves": "anthropic",
+     "note": "Anthropic's strongest, and its dearest."},
+    {"model": "claude-sonnet-5", "serves": "anthropic",
+     "note": "Anthropic's default here — the balance most extraction wants."},
+    {"model": "claude-haiku-4-5-20251001", "serves": "anthropic",
+     "note": "Anthropic's fastest and cheapest; extraction quality drops."},
 ]
 
 
@@ -1013,17 +1026,42 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
             "count": len(set(models))}
 
 
-def model_catalogue(target: str) -> List[Json]:
-    """Extraction models to suggest.
+def extraction_model_setting(provider: Optional[str] = None) -> str:
+    """Which setting holds the model the selected extraction provider actually READS.
+
+    The Anthropic path reads MATRIXARK_ANTHROPIC_MODEL and ignores MATRIXARK_EXTRACTION_MODEL
+    entirely, so writing a pick into `extraction.model` on that deployment changed nothing at all.
+    """
+    resolved = provider if provider is not None else os.environ.get(
+        "MATRIXARK_UNDERSTANDING_PROVIDER",
+        os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+    if extraction_provider_effect(resolved) == "anthropic":
+        return "extraction.anthropic_model"
+    return "extraction.model"
+
+
+def model_catalogue(target: str, provider: Optional[str] = None) -> List[Json]:
+    """Extraction models to suggest, narrowed to the ones the selected provider serves.
 
     Embeddings are NOT served from here. The gateway builds that list from `encoder_catalog()`,
     which carries a measurement over a real corpus; a second hand-written list beside it did not
     stay agreed with it, and the disagreement was about which encoder to choose.
+
+    A provider that calls no model at all gets the whole list rather than an empty one: there is
+    nothing wrong to narrow towards yet, and an empty picker beside a provider dropdown reads as a
+    broken page rather than as a choice still to be made.
     """
     if target == "embedding":
         raise ValueError(
             "embedding models come from the gateway's measured encoder_catalog(), not from here")
-    return [dict(entry) for entry in EXTRACTION_CATALOGUE]
+    entries = [dict(entry) for entry in EXTRACTION_CATALOGUE]
+    if provider is None:
+        provider = os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER",
+                                  os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+    effect = extraction_provider_effect(provider)
+    if effect == "rules":
+        return entries
+    return [entry for entry in entries if entry.get("serves") == effect]
 
 
 # ================================================================================================
