@@ -90,7 +90,14 @@ ENV_MAP: Dict[str, str] = {
     "storage.page_store_compression_level": "TS_PAGE_STORE_COMPRESSION_LEVEL",
     "storage.page_store_compression_min_bytes": "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
     "storage.cross_shard_reclaim_guard": "TS_CROSS_SHARD_RECLAIM_GUARD",
-    "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
+    # The engine reads TS_INDEX_DUMP_WAL_GAP_BYTES first and falls back to
+    # TS_INDEX_DUMP_OPLOG_GAP_BYTES only when it is unset, so exporting the older name put
+    # every value from this file behind anything that set the current one -- including a
+    # portal write, which offers exactly that variable. The key keeps its name so deployed
+    # files keep working; only the variable it exports moves to the one the engine reads
+    # first. (Key and variable already differ elsewhere: block_slab_target_bytes exports
+    # TS_BLOCK_SEGMENT_TARGET_BYTES.)
+    "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_WAL_GAP_BYTES",
     # ---- [wal] --------------------------------------------------------------
     "wal.wal_legacy_recovery": "TS_WAL_LEGACY_RECOVERY",
     "wal.raft_wal_dir": "TS_RAFT_WAL_DIR",

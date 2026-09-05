@@ -80,7 +80,7 @@ page_store_compression_level = 3       # TS_PAGE_STORE_COMPRESSION_LEVEL    comp
 # worse again: at a 1-byte floor the saving stops and the median add rises to 256.0 ms.
 page_store_compression_min_bytes = 256  # TS_PAGE_STORE_COMPRESSION_MIN_BYTES  skip compressing pages smaller than this
 cross_shard_reclaim_guard = 1          # TS_CROSS_SHARD_RECLAIM_GUARD  1 = retain slabs referenced by ANY loaded shard during GC (safe default; 0 = legacy per-shard, unsafe under multi-shard hosting)
-index_dump_oplog_gap_bytes = 1048576   # TS_INDEX_DUMP_OPLOG_GAP_BYTES  undumped index-log gap (bytes, 1 MiB) that triggers a background catalog/index dump under the manifest-parity catalog fold (TS_INDEX_CATALOG_FOLD); 0 disables the threshold cadence
+index_dump_oplog_gap_bytes = 1048576   # TS_INDEX_DUMP_WAL_GAP_BYTES  undumped index-log gap (bytes, 1 MiB) that triggers a background catalog/index dump under the manifest-parity catalog fold (TS_INDEX_CATALOG_FOLD); 0 disables the threshold cadence. TS_INDEX_DUMP_OPLOG_GAP_BYTES is the previous variable name, still honoured by the engine when this one is unset
 # index_catalog_fold = 1               # TS_INDEX_CATALOG_FOLD  1 = fold the band/zone catalog into the index-log MetaItem (reference conformance) and drive it via the threshold dump above, instead of the per-write band-manifest file. Ships OFF (byte-identical); uncomment to enable.
 
 

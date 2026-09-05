@@ -241,5 +241,66 @@ class TheShippedConfigSaysWhenItOverridesANumberTest(unittest.TestCase):
             "them off -- either the default moved to meet them, or the key did." % stale)
 
 
+class AConfigKeyExportsTheNameTheEngineReadsFirstTest(unittest.TestCase):
+    """A key in the shipped config must not export a variable the engine has superseded.
+
+    `storage_config.rs` keeps a previous name for a renamed knob so a deployment that sets it goes
+    on working, and says exactly what that costs: it is "read only when the current name is
+    unset". A config file that exports the OLD name therefore does not lose loudly. It loses to
+    anything that sets the current one -- including a write from the portal, which offers exactly
+    that variable -- while the operator reads their value in the file and believes it applies.
+
+    That is what `storage.index_dump_oplog_gap_bytes` did: it exported
+    TS_INDEX_DUMP_OPLOG_GAP_BYTES, the fallback, rather than TS_INDEX_DUMP_WAL_GAP_BYTES. The key
+    keeps its name so deployed files keep working; only the variable moved.
+
+    The superseded names are read from the engine rather than listed here, so retiring another one
+    needs no edit to this file -- and if the engine stops marking them, the floor below fails
+    rather than the check going quiet.
+    """
+
+    STORAGE_CONFIG = os.path.join(
+        REPO, "crates", "temporalstore-rust", "src", "storage_config.rs")
+    LOADER = os.path.join(TOOLS, "matrixark_load_config.py")
+
+    _SUPERSEDED = re.compile(
+        r'pub const [A-Z][A-Z0-9_]*_PREVIOUS_NAME\s*:\s*&str\s*=\s*"([A-Z0-9_]+)"\s*;')
+    _MAPPING = re.compile(r'^\s*"([a-z0-9_.]+)"\s*:\s*"([A-Z][A-Z0-9_]+)"\s*,', re.M)
+
+    EXPECTED_MAPPING_FLOOR = 30
+
+    def _superseded(self):
+        with open(self.STORAGE_CONFIG, encoding="utf-8") as handle:
+            return set(self._SUPERSEDED.findall(handle.read()))
+
+    def _mappings(self):
+        with open(self.LOADER, encoding="utf-8") as handle:
+            return self._MAPPING.findall(handle.read())
+
+    def test_the_engine_still_marks_a_superseded_name(self) -> None:
+        found = self._superseded()
+        self.assertTrue(
+            found,
+            "no const named *_PREVIOUS_NAME in storage_config.rs, so the check below compares "
+            "against an empty set and would pass over any deprecated export.")
+
+    def test_the_scan_still_reads_the_mapping_table(self) -> None:
+        mappings = self._mappings()
+        self.assertGreaterEqual(
+            len(mappings), self.EXPECTED_MAPPING_FLOOR,
+            "read %d config-key mappings, expected at least %d -- if the table's shape changed, "
+            "the assertion below is checking nothing"
+            % (len(mappings), self.EXPECTED_MAPPING_FLOOR))
+
+    def test_no_config_key_exports_a_superseded_variable(self) -> None:
+        superseded = self._superseded()
+        wrong = ["%s -> %s" % (key, env) for key, env in self._mappings() if env in superseded]
+        self.assertEqual(
+            [], wrong,
+            "these config keys export a variable the engine reads only when the current one is "
+            "unset, so their value loses silently to anything that sets the current name: %s"
+            % wrong)
+
+
 if __name__ == "__main__":
     unittest.main()
