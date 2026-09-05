@@ -2675,14 +2675,7 @@ fn next_batch_id() -> u64 {
 }
 
 fn wal_bulk_relaxed_durability() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::engine::bulk_ingest_mode()
 }
 
 /// TS_PHASE1_FLAT: make per-append WAL sequence resolution O(1) so phase-1 (the work under the

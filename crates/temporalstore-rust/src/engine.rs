@@ -1861,7 +1861,13 @@ pub(crate) fn timestamp_range_bounds(
     }
 }
 
-fn bulk_ingest_mode() -> bool {
+/// Whether this process is running a bulk backfill, which defers per-append durability work
+/// to an explicit `sync_durable`.
+///
+/// The one reader of `MATRIXARK_BULK_INGEST`. block_store, index_log and wal each parsed it
+/// themselves and gate their own half of the same decision; a copy that drifted would leave one
+/// subsystem in bulk mode and the rest on the live path.
+pub(crate) fn bulk_ingest_mode() -> bool {
     matches!(
         std::env::var("MATRIXARK_BULK_INGEST")
             .unwrap_or_default()
@@ -2873,7 +2879,7 @@ fn sync_parent_dir(path: &Path) -> Result<(), std::io::Error> {
 /// path) AND delta-fold recovery. Default OFF -> the single write-path durability barrier
 /// (WAL-only fsync) + base-only recovery is the DEFAULT. This exists solely so an operator can
 /// revert the default in the field without a rebuild; steady state runs single-barrier.
-pub(super) fn wal_legacy_recovery() -> bool {
+pub(crate) fn wal_legacy_recovery() -> bool {
     env_flag_on("TS_WAL_LEGACY_RECOVERY")
 }
 

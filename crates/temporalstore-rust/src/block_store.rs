@@ -1386,14 +1386,7 @@ fn slab_is_at_target(write_offset: u64, slab_target_bytes: u64) -> bool {
 /// resumable/WAL-backed chunk* for far fewer fsyncs. The live path (env unset)
 /// keeps full per-append durability.
 pub(crate) fn bulk_relaxed_durability() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::engine::bulk_ingest_mode()
 }
 
 /// On the live path, defer the per-record extent-manifest persist to sync_durable()/slab-seal
@@ -1414,14 +1407,10 @@ pub(crate) fn page_wal_only_sync() -> bool {
 /// a synchronous per-write data-page fdatasync (with delta-fold recovery) only under the
 /// TS_WAL_LEGACY_RECOVERY escape hatch.
 pub(crate) fn page_wal_single_barrier() -> bool {
-    !matches!(
-        std::env::var("TS_WAL_LEGACY_RECOVERY")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    // One reader for the hatch, in `engine`. This parsed it itself, as did index_log, and the
+    // three barriers they gate have to move together -- a copy that drifted would leave one of
+    // them on the legacy path and the others on the default.
+    !crate::engine::wal_legacy_recovery()
 }
 
 /// Bands are neither preallocated nor recycled, and both are deliberate.
