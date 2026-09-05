@@ -1202,6 +1202,10 @@
   }
 
   var controller = null, backoff = 1000, buffer = "";
+  /* Set the first time this deployment refuses an anonymous read. Until then there is
+     no reason to assume a key is needed; afterwards there is no reason to ask again
+     without one. */
+  var wantsKey = false;
 
   function open() {
     /* The drop below aborts the request; the abort rejects the fetch; the catch schedules another
@@ -1210,12 +1214,19 @@
        visibility handler's `!controller` test is what brings it back. */
     if (document.hidden) { controller = null; return; }
     var k = key();
-    if (!k) { setTimeout(open, 2000); return; }   /* inert without a key, like every page */
+    /* No key is not the same as no access: on the developer default the gateway answers every
+       admin route anonymously, and refusing to ask left the strip dark on the deployment somebody
+       is most likely to be looking at first. So the first attempt goes out without one.
+
+       Once a deployment has refused, this is the old behaviour exactly -- watch for a key and
+       make no request until there is one. One 401 per page load, never a loop. */
+    if (!k && wantsKey) { setTimeout(open, 2000); return; }
     controller = new AbortController();
     fetch("/v1/admin/events", {
-      headers: { Authorization: "Bearer " + k },
+      headers: k ? { Authorization: "Bearer " + k } : {},
       signal: controller.signal
     }).then(function (r) {
+      if (r.status === 401 || r.status === 403) { wantsKey = true; }
       if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
       dot.className = "live-dot";
       backoff = 1000;
@@ -1237,6 +1248,13 @@
       }
       return pump();
     }).catch(function () {
+      /* Refused for want of a key: not stale. Stale means a gateway that was answering has
+         stopped, and a deployment waiting for somebody to paste a key is not in trouble. */
+      if (wantsKey && !key()) {
+        controller = null;
+        setTimeout(open, 2000);
+        return;
+      }
       dot.className = "live-dot stale";
       setTimeout(open, backoff);
       backoff = Math.min(backoff * 2, 30000);  /* a gateway that is down must not be hammered */
