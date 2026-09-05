@@ -49,7 +49,7 @@ Anything else is blank, and a blank means go and look.
 | total | 296 |
 | booleans whose default this could read off the source | 30 |
 | **defaulting on, and set by nothing** | 2 |
-| offered on the portal | 23 |
+| offered on the portal | 25 |
 | **that nothing in this repository sets** | 175 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
@@ -173,8 +173,8 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_INDEX_DUMP_WAL_GAP_BYTES` | — | portal | 1 | — |
 | `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_SCHEDULER_SNAPSHOT` | — | nothing | 1 | — |
-| `TS_WAL_BINARY_FRAME` | on | launch, test | 1 | — |
-| `TS_WAL_BINARY_RECORDS` | on | launch, test | 1 | — |
+| `TS_WAL_BINARY_FRAME` | on | launch, test, portal | 1 | — |
+| `TS_WAL_BINARY_RECORDS` | on | launch, test, portal | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | — | config | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
 | `TS_WAL_LEGACY_RECOVERY` | — | config, harness, script | 1 | yes |
