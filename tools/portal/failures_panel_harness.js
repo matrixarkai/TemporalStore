@@ -30,7 +30,10 @@ const FRAME = {
                         statuses: { "200": 1, "401": 1, "503": 1 } }
     },
     recent_failures: [
-      { at: NOW - 5, route: "/v1/retrieve", method: "POST", status: 503 },
+      /* A backend failure carries the token its exception was logged under; a refusal does not,
+         because nothing went wrong inside to log. Both shapes are here on purpose. */
+      { at: NOW - 5, route: "/v1/retrieve", method: "POST", status: 503,
+        incident: "9f2c41ab77de" },
       { at: NOW - 400, route: "/v1/retrieve", method: "POST", status: 401 },
       { at: NOW - 7200, route: "/v1/memories", method: "GET", status: 404 }
     ]
@@ -138,6 +141,16 @@ setTimeout(function () {
   ok("minutes read as minutes", /\b7m ago\b/.test(fails), fails.slice(0, 300));
   ok("hours read as hours", /\b2h ago\b/.test(fails), fails.slice(0, 400));
   ok("newest is first", fails.indexOf("503") < fails.indexOf("401"), fails.slice(0, 300));
+  /* Every backend failure now mints an incident token: the caller is told it and the exception is
+     logged under it. Without it here, an operator reading "503 on /v1/retrieve, 5 seconds ago" has
+     to guess at timestamps in a log that may hold many. */
+  ok("a failure that carries a token shows it", /9f2c41ab77de/.test(fails), fails.slice(0, 500));
+  ok("the column is there even for the rows without one", /<th>Incident<\/th>/.test(fails),
+     "most rows here are refusals, which mint none; a column that came and went with the data "
+     + "would shift the table under whoever is reading it");
+  ok("a row without one shows a dash rather than an empty cell", /—/.test(fails),
+     fails.slice(0, 700));
+
   ok("no identity is rendered",
      !/tenant|api[_-]?key|user_id|acme/i.test(fails), fails.slice(0, 300));
 

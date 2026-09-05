@@ -1136,6 +1136,15 @@ _HTML_SAFETY_HEADERS = _SAFETY_HEADERS + [
 # by destroying the only copy, so both halves are done together.
 _GATEWAY_LOG = logging.getLogger("matrixark.gateway")
 
+# The incident minted while serving this request, if one was.
+#
+# It is minted inside a handler and the request is recorded in the wrapper's `finally`, after that
+# handler has returned, so something has to carry it the few frames up. A context variable does --
+# the same way the request's Accept-Encoding reaches the response helpers -- and asyncio copies the
+# context per task, so one request cannot read another's.
+_INCIDENT: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "matrixark_incident", default="")
+
 # What the caller is told instead. Deliberately about the call and not about the deployment: which
 # storage this runs on and where it lives is not the caller's business.
 _FAILURE_DETAIL = {
@@ -1156,6 +1165,7 @@ def _incident(scope: Json, code: str, exc: BaseException) -> str:
     logger and this keeps working.
     """
     token = uuid.uuid4().hex[:12]
+    _INCIDENT.set(token)
     _GATEWAY_LOG.error("%s %s -> %s [incident %s]", scope.get("method", "?"),
                        scope.get("path", "?"), code, token, exc_info=exc)
     return token
@@ -3927,6 +3937,9 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         # encoding without being handed the scope. Before the legacy branch as well: those
         # responses go through the same helpers.
         _ACCEPT_ENCODING.set(_headers_map(scope).get("accept-encoding", ""))
+        # Cleared per request: a connection can serve several, and a token left behind would
+        # attach the previous failure's log entry to this one.
+        _INCIDENT.set("")
 
         # First HTTP request on this loop/worker installs the sized threadpool (if configured).
         if not executor_state["installed"]:
@@ -5314,7 +5327,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                     scope.get("path", ""), scope.get("method", ""), observed["status"],
                     time.time() - started,
                     request_bytes=observed["request_bytes"],
-                    response_bytes=observed["response_bytes"])
+                    response_bytes=observed["response_bytes"],
+                    incident=_INCIDENT.get(""))
             except Exception:  # pragma: no cover - metrics must never break a response
                 pass
 

@@ -148,7 +148,8 @@ class GatewayMetrics:
         # Route label, method, status, time. Nothing that identifies who made the request: the
         # portal shows this to anyone who can read it, and identity added here would be invisible
         # in the panel and permanent in the process.
-        self._failures: Deque[Tuple[float, str, str, int]] = deque(maxlen=RECENT_FAILURES)
+        self._failures: Deque[Tuple[float, str, str, int, str]] = deque(
+            maxlen=RECENT_FAILURES)
 
         # The last datanode probe: (state, when). Set by the readiness route, published on scrape.
         # Not probed here -- a metrics endpoint that opens an outbound connection is one that can
@@ -167,7 +168,7 @@ class GatewayMetrics:
                 self._in_flight -= 1
 
     def record(self, path: str, method: str, status: int, duration_s: float,
-               request_bytes: int = 0, response_bytes: int = 0) -> None:
+               request_bytes: int = 0, response_bytes: int = 0, incident: str = "") -> None:
         route = route_label(path)
         # A long-lived stream is one request that lasts minutes. Its duration is not a latency and
         # putting it in the histogram poisons every quantile drawn across routes -- a p99 of ten
@@ -204,7 +205,7 @@ class GatewayMetrics:
             if response_bytes:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
             if status >= 400:
-                self._failures.append((time.time(), route, method, status))
+                self._failures.append((time.time(), route, method, status, incident))
 
     def note_datanode(self, state: str) -> None:
         """Record what the readiness probe just found."""
@@ -250,8 +251,11 @@ class GatewayMetrics:
                 # Newest first, because a panel reads top-down and the useful one is the last thing
                 # that happened.
                 "recent_failures": [
-                    {"at": round(at, 3), "route": route, "method": method, "status": status}
-                    for at, route, method, status in reversed(self._failures)
+                    # The token only where there is one: a refusal mints none, and an empty field
+                    # on every row would be weight on a frame that goes to every open panel.
+                    dict({"at": round(at, 3), "route": route, "method": method, "status": status},
+                         **({"incident": incident} if incident else {}))
+                    for at, route, method, status, incident in reversed(self._failures)
                 ],
             }
 

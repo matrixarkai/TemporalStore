@@ -2700,11 +2700,16 @@ SETUP_JS = r"""
       return;
     }
     $("failures").innerHTML =
-      "<table><thead><tr><th>When</th><th>Status</th><th>Method</th><th>Route</th></tr></thead>" +
+      "<table><thead><tr><th>When</th><th>Status</th><th>Method</th><th>Route</th>" +
+      "<th>Incident</th></tr></thead>" +
       "<tbody>" + rows.map(function (row) {
+        /* Always a column, a dash where there is none. Most rows here are refusals -- a 401 for a
+           wrong key mints no incident, because nothing went wrong inside -- and a column that came
+           and went with the data would shift the table under whoever is reading it. */
         return "<tr><td>" + esc(agoText(row.at)) + "</td><td><span class='status-chip bad'>" +
           esc(String(row.status)) + "</span></td><td class='mono'>" + esc(row.method || "") +
-          "</td><td class='mono'>" + esc(row.route || "") + "</td></tr>";
+          "</td><td class='mono'>" + esc(row.route || "") + "</td><td class='mono'>" +
+          (row.incident ? esc(row.incident) : "—") + "</td></tr>";
       }).join("") + "</tbody></table>";
   }
   /* Leaving with unsaved edits loses them silently otherwise; on a form this long that is a
