@@ -92,7 +92,7 @@ class _TemporalDirectBackendMixin:
         if not hasattr(self, "_direct_write_queue_allow_sync_context"):
             self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
         if not hasattr(self, "_direct_write_queue_autostart"):
-            self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
+            self._direct_write_queue_autostart = True
         if not hasattr(self, "_native_side_index_assume_fresh"):
             self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
         if not hasattr(self, "_direct_raw_ingestion_queue_enabled"):

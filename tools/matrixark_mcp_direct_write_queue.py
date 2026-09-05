@@ -90,7 +90,7 @@ def ensure_direct_write_queue_fields(target: Any) -> None:
     if not hasattr(target, "_direct_write_queue_allow_sync_context"):
         target._direct_write_queue_allow_sync_context = _env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
     if not hasattr(target, "_direct_write_queue_autostart"):
-        target._direct_write_queue_autostart = _env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", True)
+        target._direct_write_queue_autostart = True
     if not hasattr(target, "_native_side_index_assume_fresh"):
         target._native_side_index_assume_fresh = _env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
     if not hasattr(target, "_direct_raw_ingestion_queue_enabled"):

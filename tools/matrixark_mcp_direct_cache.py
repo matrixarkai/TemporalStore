@@ -293,10 +293,7 @@ def placement_candidate_records_from_cache_or_load(
 def ensure_direct_context_pack_response_cache(target: Any) -> None:
     if hasattr(target, "_direct_context_pack_response_cache"):
         return
-    target._direct_context_pack_response_cache_enabled = (
-        os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE", "1").strip().lower()
-        not in {"0", "false", "no"}
-    )
+    target._direct_context_pack_response_cache_enabled = True
     target._direct_context_pack_response_cache_max_entries = max(
         1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "256"))
     )
