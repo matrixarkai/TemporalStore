@@ -136,8 +136,18 @@ class StripHonestyTest(unittest.TestCase):
         self.assertIn("Math.min(backoff * 2, 30000)", self.script)
 
     def test_it_stays_quiet_without_a_key(self) -> None:
-        # Every page is inert without one; the strip must not be the thing that 401s in a loop.
-        self.assertIn("if (!k) { setTimeout(open, 2000); return; }", self.script)
+        # The strip must not be the thing that 401s in a loop.
+        #
+        # It used to keep that promise by never asking at all, which was too strong: on the
+        # developer default the gateway answers anonymously, so the strip stayed dark on the
+        # deployment most likely to be somebody's first. It now asks ONCE and, if refused, reverts
+        # to exactly this -- watching for a key and making no request until there is one.
+        #
+        # Asserted on the shape rather than the old literal, and asserted for real by running it:
+        # test_matrixark_no_key_is_not_no_access advances a fake minute against a refusing gateway
+        # and counts the requests, which is the only way to tell "asks once" from "asks forever".
+        self.assertIn("if (!k && wantsKey) { setTimeout(open, 2000); return; }", self.script)
+        self.assertIn("var wantsKey = false;", self.script)
 
 
 class StripLinksTest(unittest.TestCase):
