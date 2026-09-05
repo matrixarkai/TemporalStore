@@ -115,6 +115,8 @@ meta_auto_rebalance = 0                # TS_META_AUTO_REBALANCE 1 = enable the a
 # -----------------------------------------------------------------------------
 [recovery]
 bulk_ingest = 0                        # MATRIXARK_BULK_INGEST  1 = bulk-ingest fast path (fsync deferral + linear promote); reload optimizations
+# OVERRIDES the engine, which defaults this ON. Warming every record on load pays the whole
+# cache cost before the first read is served; three binaries and the one-box turn it off too.
 eager_cache_warm_on_load = 0           # MATRIXARK_EAGER_CACHE_WARM_ON_LOAD  1 = warm the record cache eagerly on shard load
 # bulk_ingest_replay_from_sequence = 0 # MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE  anchor sequence for bulk replay
 
