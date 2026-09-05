@@ -2117,31 +2117,63 @@ SETUP_JS = r"""
     return series;
   }
 
+  /* One table, whichever source drew it.
+   *
+   * This panel is drawn twice: once at load from the /v1/metrics text, which needs no key and so
+   * works before the reader has authenticated, and again from every live frame. They used to build
+   * DIFFERENT tables -- four columns and then six -- so the panel changed shape under the reader on
+   * every load, and a deployment whose stream never connects stayed on the four-column one with
+   * nothing to say that a tail statistic existed.
+   *
+   * Callers normalise into {name, requests, statuses, errors, avg_ms, p95_ms} and this builds it.
+   * A column neither source can fill is a dash, not a missing column. */
+  function trafficTable(rows) {
+    if (!rows.length) {
+      return '<div class="empty">No requests recorded yet on this worker.</div>';
+    }
+    rows.sort(function (a, b) { return b.requests - a.requests; });
+    return "<table><thead><tr><th>Route</th><th>Requests</th><th>Answers</th>" +
+      "<th>Errors</th><th>Mean</th><th>95% within</th></tr></thead><tbody>" +
+      rows.map(function (row) {
+        return "<tr><td><span class='mono'>" + esc(row.name) + "</span></td><td class='num'>" +
+          row.requests + "</td><td>" + statusChips(row.statuses) + "</td><td class='num'>" +
+          (row.errors || 0) + "</td><td class='num'>" +
+          (row.avg_ms == null ? "—" : row.avg_ms + " ms") + "</td><td class='num'>" +
+          (row.p95_ms == null ? "—" : "~" + row.p95_ms + " ms") + "</td></tr>";
+      }).join("") + "</tbody></table>";
+  }
+
   function renderTraffic(series) {
     var byRoute = {};
+    function row(name) {
+      if (!byRoute[name]) {
+        byRoute[name] = { name: name, requests: 0, errors: 0, statuses: {},
+                          avg_ms: null, p95_ms: null };
+      }
+      return byRoute[name];
+    }
     (series.matrixark_gateway_requests_total || []).forEach(function (s) {
-      var r = byRoute[s.labels.route] = byRoute[s.labels.route] || { n: 0, err: 0 };
-      r.n += s.value;
-      if (parseInt(s.labels.status, 10) >= 400) { r.err += s.value; }
+      var r = row(s.labels.route);
+      r.requests += s.value;
+      /* The status is a label on this series and was being summed away into one "errors" number.
+         A route answering 401 to somebody with the wrong key read the same as one answering 500. */
+      r.statuses[s.labels.status] = (r.statuses[s.labels.status] || 0) + s.value;
+      if (parseInt(s.labels.status, 10) >= 400) { r.errors += s.value; }
     });
     (series.matrixark_gateway_request_duration_seconds_sum || []).forEach(function (s) {
-      (byRoute[s.labels.route] = byRoute[s.labels.route] || { n: 0, err: 0 }).sum = s.value;
+      row(s.labels.route).sum = s.value;
     });
     (series.matrixark_gateway_request_duration_seconds_count || []).forEach(function (s) {
-      (byRoute[s.labels.route] = byRoute[s.labels.route] || { n: 0, err: 0 }).cnt = s.value;
+      row(s.labels.route).cnt = s.value;
     });
-    var routes = Object.keys(byRoute).sort(function (a, b) { return byRoute[b].n - byRoute[a].n; });
-    if (!routes.length) {
-      $("traffic").innerHTML = '<div class="empty">No requests recorded yet on this worker.</div>';
-      return;
-    }
-    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Errors</th>" +
-      "<th>Mean latency</th></tr></thead><tbody>" + routes.map(function (r) {
-        var v = byRoute[r];
-        var mean = v.cnt ? (v.sum / v.cnt * 1000).toFixed(1) + " ms" : "—";
-        return "<tr><td><span class='mono'>" + esc(r) + "</span></td><td class='num'>" +
-          v.n + "</td><td class='num'>" + (v.err || 0) + "</td><td class='num'>" + mean + "</td></tr>";
-      }).join("") + "</tbody></table>";
+    $("traffic").innerHTML = trafficTable(Object.keys(byRoute).map(function (name) {
+      var r = byRoute[name];
+      r.avg_ms = r.cnt ? Math.round(r.sum / r.cnt * 100000) / 100 : null;
+      /* p95 stays empty here. The text carries the buckets, but walking them in JS beside the walk
+         the gateway already does in Python is two implementations of one quantile, which is how
+         they come to disagree. The first frame fills the column in. */
+      return r;
+    }));
   }
 
   function loadTraffic() {
@@ -2619,22 +2651,12 @@ SETUP_JS = r"""
   /* The same table the scrape used to draw, from the frame instead of a /v1/metrics parse. */
   function renderLiveTraffic(traffic) {
     var routes = (traffic || {}).routes || {};
-    var names = Object.keys(routes).sort(function (a, b) {
-      return routes[b].requests - routes[a].requests;
-    });
-    if (!names.length) {
-      $("traffic").innerHTML = '<div class="empty">No requests recorded yet on this worker.</div>';
-      return;
-    }
-    $("traffic").innerHTML = "<table><thead><tr><th>Route</th><th>Requests</th><th>Answers</th>" +
-      "<th>Errors</th><th>Mean</th><th>95% within</th></tr></thead><tbody>" + names.map(function (name) {
-        var row = routes[name];
-        return "<tr><td><span class='mono'>" + esc(name) + "</span></td><td class='num'>" +
-          row.requests + "</td><td>" + statusChips(row.statuses) + "</td><td class='num'>" +
-          (row.errors || 0) + "</td><td class='num'>" +
-          (row.avg_ms ? row.avg_ms + " ms" : "—") + "</td><td class='num'>" +
-          (row.p95_ms == null ? "—" : "~" + row.p95_ms + " ms") + "</td></tr>";
-      }).join("") + "</tbody></table>";
+    $("traffic").innerHTML = trafficTable(Object.keys(routes).map(function (name) {
+      var row = routes[name];
+      return { name: name, requests: row.requests, statuses: row.statuses,
+               errors: row.errors, avg_ms: row.avg_ms == null ? null : row.avg_ms,
+               p95_ms: row.p95_ms };
+    }));
   }
 
   /* What a route actually answered, in order. One "errors" count cannot tell a customer holding the
