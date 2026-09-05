@@ -1932,6 +1932,23 @@ impl LocalWriteAheadLogStore {
             if cursor >= walk_until {
                 break;
             }
+            // Step over a block footer this lands on, before reading. The branch below only
+            // catches a boundary with PADDING in front of its footer; a block whose records end
+            // flush against the footer has none, and the footer is then read as a record -- its
+            // first byte is not a frame marker, so the reader falls to newline-delimited mode and
+            // returns a fragment.
+            //
+            // That matters more here than in a scan that only counts: `cursor` becomes `split`
+            // below, the byte offset this reclaim keeps from. A fragment read at a boundary moves
+            // the line between what is copied and what is dropped, so the pass can retain or
+            // discard the wrong records rather than merely report the wrong number of them.
+            let stepped = skip_block_footer_if_due(&mut reader, cursor, header_len)?;
+            if stepped != cursor {
+                cursor = stepped;
+                if cursor >= walk_until {
+                    break;
+                }
+            }
             let Some(line) = read_raw_record(&mut reader)? else {
                 // Padding before a closed block's footer, or the end. The footer decides.
                 match block_is_closed(&mut reader, cursor, header_len, walk_until)? {
@@ -2151,6 +2168,10 @@ impl LocalWriteAheadLogStore {
         let info_len = path.metadata().map(|meta| meta.len()).unwrap_or(0);
         let mut info_at = info_header_len;
         loop {
+            // The same first step the other walkers take. Without it a footer landed on flush
+            // against a block's last record is read as a record, and the counts and sequences
+            // reported here describe a log that stops at the first such boundary.
+            info_at = skip_block_footer_if_due(&mut reader, info_at, info_header_len)?;
             let Some(mut line) = read_raw_record(&mut reader)? else {
                 match block_is_closed(&mut reader, info_at, info_header_len, info_len)? {
                     Some(next) => {
