@@ -42,6 +42,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from typing import Any, Awaitable, Callable, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
@@ -1124,6 +1125,49 @@ _HTML_SAFETY_HEADERS = _SAFETY_HEADERS + [
     (b"content-security-policy", _CONTENT_SECURITY_POLICY.encode("ascii")),
     (b"x-frame-options", b"DENY"),
 ]
+
+
+# A backend failure goes to the log; the caller gets a token that names it.
+#
+# `except Exception` catches whatever the backend raised -- an OSError naming a store directory, a
+# connection error naming an internal host and port, a driver message quoting the statement it
+# choked on. That text was returned to whoever made the call, including a service-key holder who is
+# not an operator here, and it was recorded nowhere: sanitising it alone would have closed the leak
+# by destroying the only copy, so both halves are done together.
+_GATEWAY_LOG = logging.getLogger("matrixark.gateway")
+
+# What the caller is told instead. Deliberately about the call and not about the deployment: which
+# storage this runs on and where it lives is not the caller's business.
+_FAILURE_DETAIL = {
+    "backend_error": "The backend could not complete this call.",
+    "backend_unavailable": "The backend could not be reached.",
+    "storage_quota_exceeded": "The storage quota for this deployment is exhausted.",
+    "settings_unavailable": "The settings registry could not be read.",
+    "extraction_failed": "Extraction did not finish; the write itself is durable.",
+}
+
+
+def _incident(scope: Json, code: str, exc: BaseException) -> str:
+    """Record one failure and return the token that names it.
+
+    ERROR level, so it is visible without configuring anything: with no handler installed Python
+    writes WARNING and above to stderr through its last-resort handler, which is where a container's
+    logs already go. A deployment that wants them elsewhere configures the `matrixark.gateway`
+    logger and this keeps working.
+    """
+    token = uuid.uuid4().hex[:12]
+    _GATEWAY_LOG.error("%s %s -> %s [incident %s]", scope.get("method", "?"),
+                       scope.get("path", "?"), code, token, exc_info=exc)
+    return token
+
+
+def _failure(scope: Json, code: str, exc: BaseException) -> Json:
+    """The body for a failure the caller must not be told the inside of."""
+    return {
+        "error": code,
+        "detail": _FAILURE_DETAIL.get(code, _FAILURE_DETAIL["backend_error"]),
+        "incident": _incident(scope, code, exc),
+    }
 
 
 async def _json(send: Callable, status: int, payload: Json,
@@ -3801,7 +3845,7 @@ async def _dispatch_direct(client: "DirectBackendClient", cfg: GatewayConfig, to
                            "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
     except Exception as exc:
         return await _json(send, _classify_backend_error(exc),
-                           {"error": "backend_error", "detail": str(exc)}, rl_headers)
+                           _failure(scope, "backend_error", exc), rl_headers)
 
     if status >= 400:
         return await _json(send, status if status in (429, 507) else 502,
@@ -3988,7 +4032,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                     cfg.backend_timeout)
             except Exception as exc:
                 return await _json(send, 502,
-                                   {"error": "backend_unavailable", "detail": str(exc)})
+                                   _failure(scope, "backend_unavailable", exc))
             rows = (result or {}).get("audit_logs") if isinstance(result, dict) else None
             rows = rows if isinstance(rows, list) else []
             return await _json(send, 200, {
@@ -4017,7 +4061,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             try:
                 snapshot["settings"] = _gwconfig.snapshot()
             except Exception as exc:  # never let the write-side registry break the read
-                snapshot["settings"] = {"status": "unavailable", "detail": str(exc)}
+                snapshot["settings"] = dict(_failure(scope, "settings_unavailable", exc),
+                                                    status="unavailable")
             return await _json(send, 200, snapshot)
 
         # ---- the deployment chooser (auth + admin scope) --------------------------------------
@@ -4505,7 +4550,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 # A backend that cannot answer this must not read as "nothing is pending" -- the
                 # honest answer is that the state is unknown.
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             body = _ok_body(result)
             body["encoder"] = _encoder_summary()
             return await _json(send, 200, body)
@@ -4801,7 +4846,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             return await _json(send, 200, _ok_body(result))
 
         # ---- who holds memories: GET /v1/users (auth + context:retrieve) ---------------------
@@ -4837,7 +4882,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             return await _json(send, 200, _ok_body(result))
 
         # ---- skill / resource catalog (auth + resource:read / skill:read) --------------------
@@ -4888,7 +4933,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             return await _json(send, 200, _ok_body(result))
 
         # ---- enable / disable a skill (auth + skill:manage) ----------------------------------
@@ -4929,7 +4974,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             return await _json(send, 200, _ok_body(result))
 
         # ---- keyed recall via GET /v1/memory/by-key?identity_key=... (auth + context:retrieve) --
@@ -4969,7 +5014,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             if result.get("found") is False:
                 return await _json(send, 404, _ok_body(result))
             return await _json(send, 200, _ok_body(result))
@@ -5005,7 +5050,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"})
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)})
+                                   _failure(scope, "backend_error", exc))
             if tool == "matrixark_get_memory" and result.get("found") is False:
                 return await _json(send, 404, _ok_body(result))
             return await _json(send, 200, _ok_body(result))
@@ -5118,7 +5163,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                                    "detail": f"backend did not respond within {cfg.backend_timeout}s"}, rl_headers)
             except Exception as exc:
                 return await _json(send, _classify_backend_error(exc),
-                                   {"error": "backend_error", "detail": str(exc)}, rl_headers)
+                                   _failure(scope, "backend_error", exc), rl_headers)
             return await _json(send, 200, resp, rl_headers)
 
         args = parsed.get("arguments") if isinstance(parsed.get("arguments"), dict) else parsed
@@ -5190,8 +5235,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
         except Exception as exc:
             status = _classify_backend_error(exc)
             body = {"error": "rate_limited"} if status == 429 else (
-                {"error": "storage_quota_exceeded", "detail": str(exc)} if status == 507
-                else {"error": "backend_error", "detail": str(exc)})
+                _failure(scope, "storage_quota_exceeded", exc) if status == 507
+                else _failure(scope, "backend_error", exc))
             headers = rl_headers + ([(b"retry-after", b"1")] if status == 429 else [])
             return await _json(send, status, body, headers)
 
@@ -5213,7 +5258,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                     out["extraction_error"] = "backend_timeout"
                 except Exception as exc:  # extraction failure must NOT lose the durable ingest
                     out["finalized"] = False
-                    out["extraction_error"] = str(exc)
+                    out["extraction_error"] = "extraction_failed"
+                    out["extraction_incident"] = _incident(scope, "extraction_failed", exc)
             elif args.get("idle_commit_timeout_ms"):
                 # Plain streaming ingest: register the scope so the gateway's background
                 # materializer drains its scheduled idle-commit after the debounce, making the

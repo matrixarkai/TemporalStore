@@ -806,6 +806,13 @@
     if (body.required && body.required.length) {
       text += " — this needs " + [].concat(body.required).join(" or ");
     }
+    /* A backend failure now answers with a sentence that deliberately says nothing about the
+       inside of the deployment, and a token naming the log entry that does. Showing the token is
+       the whole point of it: without it the reader has a polite sentence and no way to get any
+       further, and an operator has a log they cannot tie to the report. */
+    if (body.incident) {
+      text += " — incident " + body.incident;
+    }
     return text;
   };
 
