@@ -171,7 +171,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_BARRIER_PROFILE_WRITES` | 50 | nothing | 1 | — |
 | `TS_CROSS_SHARD_RECLAIM_GUARD` | on | config | 1 | yes |
 | `TS_DATA_NODE_LIFECYCLE_SNAPSHOT` | — | nothing | 1 | — |
-| `TS_INDEX_DUMP_WAL_GAP_BYTES` | 1048576 | portal | 1 | — |
+| `TS_INDEX_DUMP_WAL_GAP_BYTES` | 1048576 | config, portal | 1 | — |
 | `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_SCHEDULER_SNAPSHOT` | — | nothing | 1 | — |
 | `TS_WAL_BINARY_FRAME` | on | launch, test, portal | 1 | — |
