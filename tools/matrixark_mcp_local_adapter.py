@@ -111,7 +111,6 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 }
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
-LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
 LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 # Records the tail file may hold before the base is folded back in. Bounds both the
 # delta file and the work a load does stitching it onto the base.
@@ -6255,7 +6254,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         records = self.read_all()
         if len(records) <= limit:
             return records
-        return records[-limit:] if LOCAL_READ_CACHE_COPY else list(records[-limit:])
+        # Slicing a list copies it, so the caller cannot reach the cache through this. The
+        # branch that used to wrap this in `list(...)` copied a copy.
+        return records[-limit:]
 
     def read_all(self) -> list[Json]:
         """Live view: the compacted, tombstone-filtered log with expired / pre-cutoff records and
