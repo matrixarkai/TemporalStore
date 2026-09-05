@@ -3484,7 +3484,9 @@ def compact_embedding_vector(vector: list[float]) -> list[float]:
 
 
 def embedding_model_name() -> str:
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    from matrixark_mcp_embeddings import embedding_provider_name
+
+    provider = embedding_provider_name()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
         return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
             "MATRIXARK_EMBEDDING_MODEL",
@@ -3497,7 +3499,9 @@ def embedding_model_name() -> str:
 
 
 def embedding_execution_mode_name() -> str:
-    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    from matrixark_mcp_embeddings import embedding_provider_name
+
+    provider = embedding_provider_name()
     if embedding_fallback_used():
         return "local_hash_embedding_fallback"
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
