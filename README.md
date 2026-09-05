@@ -213,6 +213,11 @@ Every knob is environment-overridable; defaults are tuned for large-window servi
 | `MATRIXARK_OBJECT_RPC_URL` / `MATRIXARK_OBJECT_STORE_DIR` | — | store resource/skill raw blobs in **MatrixObject** (object storage) in distributed mode |
 | `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | promote disk → memory on restart for a warm start |
 
+Those are the ones worth knowing first. The full list — every `TS_*`, `MATRIXARK_*` and
+`TEMPORALSTORE_*` variable the engine reads, grouped by what it decides, with its default where
+the source states one, who sets it, and whether the portal offers it — is generated from the
+source into [`docs/ops/temporalstore-engine-flags.md`](docs/ops/temporalstore-engine-flags.md).
+
 ---
 
 ## Deploy: laptop → replicated cluster
