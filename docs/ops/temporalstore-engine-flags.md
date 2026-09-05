@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 316 of them, read by 113 functions.
+There are 314 of them, read by 111 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 316 |
-| booleans whose default this could read off the source | 50 |
+| total | 314 |
+| booleans whose default this could read off the source | 48 |
 | **defaulting on, and set by nothing** | 9 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 184 |
@@ -371,7 +371,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING` | on | nothing | 1 | — |
 
-## behaviour (70)
+## behaviour (68)
 
 Everything else that changes what the engine does.
 
@@ -403,7 +403,6 @@ Everything else that changes what the engine does.
 | `TS_CACHE_DISK_TIER` | — | test | 1 | — |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | — | config, portal | 1 | — |
 | `TS_DATA_RAFT_READ_MODE` | — | config | 1 | — |
-| `TS_ENGINE_CONCURRENT_COMMIT` | on | test | 1 | — |
 | `TS_EVICT_SAMPLED_LRU` | — | test | 1 | — |
 | `TS_EVICT_SAMPLES` | — | nothing | 1 | — |
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
@@ -424,7 +423,6 @@ Everything else that changes what the engine does.
 | `TS_PROXY_ROUTE_CACHE_TTL_MS` | — | nothing | 1 | — |
 | `TS_PROXY_SERVICE_REGISTRY_TTL_MS` | — | nothing | 1 | — |
 | `TS_PROXY_SERVING_MODE` | — | nothing | 1 | — |
-| `TS_RAFT_APPLY_COALESCE` | on | test | 1 | — |
 | `TS_RAFT_CA_CERT_PATH` | — | nothing | 1 | — |
 | `TS_RAFT_CA_PATH` | — | nothing | 1 | — |
 | `TS_RAFT_CERT_PATH` | — | nothing | 1 | — |

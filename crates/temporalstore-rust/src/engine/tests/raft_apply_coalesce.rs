@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Tests for the raft state-machine apply-path fsync coalescing (`TS_RAFT_APPLY_COALESCE`).
+//! Tests for the raft state-machine apply-path fsync coalescing.
 //! On the raft apply path the raft log is the durability + reconstruction source, so a batch of
 //! committed entries (an AppendEntries batch on a follower, a recovery replay, or a pipelined
 //! propose group) only needs ONE engine-WAL durability barrier instead of one per entry. These
@@ -16,11 +16,10 @@
 //!       apply returned, so nothing acked-and-applied is lost.
 #![allow(clippy::all)]
 use super::*;
-use std::sync::Mutex;
 
-// The gate is a process-global env var; serialize the sub-tests that toggle it so an OFF baseline
-// never observes an ON window from a sibling (and vice versa).
-static RAFT_APPLY_ENV_LOCK: Mutex<()> = Mutex::new(());
+// These used to serialize against each other through a mutex, because the choice was a
+// process-global env var and an OFF baseline could observe an ON window from a sibling. It is a
+// property of an engine now, and each of these builds its own.
 
 const BATCH: usize = 64;
 
@@ -66,30 +65,27 @@ fn assert_all_present(engine: &TemporalEngine) {
 /// fdatasync per entry with the gate OFF -- both applying every command correctly.
 #[test]
 fn raft_apply_batch_coalesces_to_one_fsync_while_off_is_one_per_entry() {
-    let _serial = RAFT_APPLY_ENV_LOCK.lock().unwrap();
 
-    // --- Baseline: gate OFF -> per-entry execute_raft_apply -> one fsync per committed entry. ---
-    std::env::set_var("TS_RAFT_APPLY_COALESCE", "0");
+    // --- Baseline: per-entry execute_raft_apply -> one fsync per committed entry. ---
     let off_dir = tempfile::tempdir().unwrap();
     let off = new_engine(off_dir.path());
+    off.apply_raft_batch_per_entry_for_test();
     let before = off.write_ahead_log_store().stats(1).syncs;
     let off_responses = off.execute_raft_apply_batch(batch_requests());
     let off_fsyncs = off.write_ahead_log_store().stats(1).syncs - before;
-    assert!(off_responses.iter().all(|r| r.status.ok), "gate OFF: all apply ok");
+    assert!(off_responses.iter().all(|r| r.status.ok), "per-entry: all apply ok");
     assert_all_present(&off);
     assert_eq!(
         off_fsyncs, BATCH as u64,
-        "gate OFF: each committed entry takes its own fsync ({BATCH} entries, {off_fsyncs} fsyncs)"
+        "per-entry: each committed entry takes its own fsync ({BATCH} entries, {off_fsyncs} fsyncs)"
     );
 
-    // --- Fix: gate ON -> one coalesced barrier for the whole batch. ---
-    std::env::set_var("TS_RAFT_APPLY_COALESCE", "1");
+    // --- What ships: one coalesced barrier for the whole batch. ---
     let on_dir = tempfile::tempdir().unwrap();
     let on = new_engine(on_dir.path());
     let before = on.write_ahead_log_store().stats(1).syncs;
     let on_responses = on.execute_raft_apply_batch(batch_requests());
     let on_fsyncs = on.write_ahead_log_store().stats(1).syncs - before;
-    std::env::remove_var("TS_RAFT_APPLY_COALESCE");
     eprintln!(
         "[raft_apply_coalesce] batch={BATCH} off_fsyncs={off_fsyncs} on_fsyncs={on_fsyncs}"
     );
@@ -108,8 +104,6 @@ fn raft_apply_batch_coalesces_to_one_fsync_while_off_is_one_per_entry() {
 /// durable before the apply returned (so `applied => engine-WAL-durable` holds).
 #[test]
 fn raft_apply_coalesced_batch_survives_wal_replay_reload() {
-    let _serial = RAFT_APPLY_ENV_LOCK.lock().unwrap();
-    std::env::set_var("TS_RAFT_APPLY_COALESCE", "1");
 
     let dir = tempfile::tempdir().unwrap();
     {
@@ -123,6 +117,5 @@ fn raft_apply_coalesced_batch_survives_wal_replay_reload() {
     }
 
     let recovered = new_engine(dir.path());
-    std::env::remove_var("TS_RAFT_APPLY_COALESCE");
     assert_all_present(&recovered);
 }

@@ -125,6 +125,20 @@ pub struct TemporalEngine {
     /// Per-shard read and write rate limits. Empty and inert unless something sets a limit, or the
     /// environment carries a default.
     quotas: Arc<RwLock<quota::QuotaTable>>,
+    /// Whether a synchronous write takes its durable WAL barrier OUTSIDE the `shards` write lock.
+    ///
+    /// True everywhere but a test measuring what the other side of the lock costs.
+    /// `TS_ENGINE_CONCURRENT_COMMIT` used to decide it for every engine in the process at once,
+    /// which is why the tests that measure both sides had to be serialised against each other: a
+    /// baseline could otherwise observe a window its sibling had opened. Shared across clones,
+    /// because a clone is the same engine.
+    concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether a committed raft batch shares ONE durable engine-WAL barrier.
+    ///
+    /// True everywhere but a test measuring the per-entry loop. `TS_RAFT_APPLY_COALESCE` used to
+    /// decide it for every engine at once. Shared across clones, because a clone is the same
+    /// engine.
+    raft_apply_coalesce: Arc<std::sync::atomic::AtomicBool>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
     /// TS_PHASE1_FLAT this fires once per command (O(writes)); with the gate on the
@@ -388,7 +402,11 @@ impl TemporalEngine {
     /// so raft replay re-applies it. Gate OFF (or a single-entry batch) -> a plain per-entry
     /// `execute_raft_apply` loop (byte-identical).
     pub fn execute_raft_apply_batch(&self, requests: Vec<ExecuteRequest>) -> Vec<ExecuteResponse> {
-        if !raft_apply_coalesce() || requests.len() <= 1 {
+        if !self
+            .raft_apply_coalesce
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || requests.len() <= 1
+        {
             return requests
                 .into_iter()
                 .map(|request| self.execute_raft_apply(request))
@@ -868,7 +886,10 @@ impl TemporalEngine {
                 // recording write keeps its place in the group-commit queue.
                 let concurrent_commit = sync
                     && carried_pages.is_empty()
-                    && (engine_concurrent_commit() || raft_apply_batch_active());
+                    && (self
+                        .concurrent_commit
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                        || raft_apply_batch_active());
                 // Where each page this write stages ends up, so the index can carry it. Filled
                 // by the append below, which is the first moment the log id exists.
                 let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentPage)> =
@@ -2869,18 +2890,15 @@ pub(super) fn wal_single_barrier() -> bool {
     !wal_legacy_recovery()
 }
 
-/// TS_ENGINE_CONCURRENT_COMMIT: run the WAL durability barrier OUTSIDE the global `shards`
-/// write lock. When ON, a synchronous write reserves its WAL sequence and appends its record
-/// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
-/// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
-/// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
-/// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default ON; set
-/// the variable to 0 for byte-identical behaviour to the legacy in-lock `append_with_sync`
-/// barrier. The ack is always returned
-/// strictly AFTER the covering barrier succeeds, so durability is never weakened.
-fn engine_concurrent_commit() -> bool {
-    env_flag_default_on("TS_ENGINE_CONCURRENT_COMMIT")
-}
+// TS_ENGINE_CONCURRENT_COMMIT: run the WAL durability barrier OUTSIDE the global `shards`
+// write lock. When ON, a synchronous write reserves its WAL sequence and appends its record
+// UNDER the `shards` lock (preserving WAL-order == apply-order), then RELEASES the lock and
+// awaits the durable barrier (`commit_barrier`). This lets concurrent same-shard writers reach
+// the group-commit queue while a peer's fdatasync is in flight, so #45's fsync coalescing
+// actually engages (fewer fsyncs than writes; QPS scales with concurrency). Default ON; set
+// the variable to 0 for byte-identical behaviour to the legacy in-lock `append_with_sync`
+// barrier. The ack is always returned
+// strictly AFTER the covering barrier succeeds, so durability is never weakened.
 
 /// TS_PHASE1_FLAT: make phase-1 (the work under the global `shards` write lock in
 /// `execute_with_storage_override`) O(1) per write so it stops aging O(n) with data size. Two
@@ -2897,16 +2915,13 @@ fn phase1_flat_enabled() -> bool {
     env_flag_default_on("TS_PHASE1_FLAT")
 }
 
-/// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
-/// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
-/// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
-/// O(1) cached WAL sequence. Default ON; set the variable to 0 for per-entry
-/// `execute_raft_apply` (byte-identical). The
-/// raft log stays the durability + reconstruction source; the coalesced barrier still completes
-/// before the raft runtime advances the durable applied_index.
-fn raft_apply_coalesce() -> bool {
-    env_flag_default_on("TS_RAFT_APPLY_COALESCE")
-}
+// TS_RAFT_APPLY_COALESCE: on the raft state-machine apply path, coalesce the per-committed-entry
+// engine-WAL fdatasync across a whole committed batch (one fsync per AppendEntries batch / recovery
+// replay / pipelined-propose group instead of one per entry) and anchor the served index off the
+// O(1) cached WAL sequence. Default ON; set the variable to 0 for per-entry
+// `execute_raft_apply` (byte-identical). The
+// raft log stays the durability + reconstruction source; the coalesced barrier still completes
+// before the raft runtime advances the durable applied_index.
 
 fn env_flag_on(name: &str) -> bool {
     matches!(

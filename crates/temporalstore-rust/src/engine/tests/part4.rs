@@ -10389,7 +10389,6 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
     ];
     for (label, block_in_wal, concurrent, async_storage) in cases {
         std::env::set_var("TS_BLOCK_IN_WAL", block_in_wal);
-        std::env::set_var("TS_ENGINE_CONCURRENT_COMMIT", concurrent);
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -10397,6 +10396,11 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
             dir.path().join("pages"),
             dir.path().join("indexes"),
         );
+        // Said to THIS engine. `TS_ENGINE_CONCURRENT_COMMIT` used to carry it, which meant the
+        // case that wanted the barrier under the lock set it for every engine in the process.
+        if concurrent == "0" {
+            engine.commit_under_lock_for_test();
+        }
         engine.load_shard(1);
         if async_storage {
             assert!(
