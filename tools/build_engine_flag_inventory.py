@@ -188,8 +188,17 @@ def doc_for_flag(name, doc, lines, fn_line):
 # all -- a wrong default here would be read as fact and acted on, while a blank is read as "go
 # look", which is what it is. Non-boolean knobs have no ON/OFF to state and are blank by
 # construction.
-DEFAULT_ON = re.compile(r"unwrap_or\(\s*true\s*\)|env_flag_default_on\(|\.is_err\(\)")
-DEFAULT_OFF = re.compile(r"unwrap_or\(\s*false\s*\)|\.is_ok\(\)")
+# The shapes a reader states its default in. Two were added after the portal refused to offer a
+# knob whose default nothing could derive: `env_bool(NAME, false)` puts it in an argument, and
+# `env_flag_on` puts it in the helper's NAME -- that one is the default-OFF reader, where
+# `env_flag_default_on` is its opposite. The two helper names are close enough to read as the same
+# thing, which is why the alternation spells both rather than matching a prefix.
+DEFAULT_ON = re.compile(
+    r"unwrap_or\(\s*true\s*\)|env_flag_default_on\(|\.is_err\(\)"
+    r"|env_bool\([^)]*,\s*true\s*\)")
+DEFAULT_OFF = re.compile(
+    r"unwrap_or\(\s*false\s*\)|\.is_ok\(\)"
+    r"|env_flag_on\(|env_bool\([^)]*,\s*false\s*\)")
 
 
 def _end_of_flag_chain(body: str) -> int:
