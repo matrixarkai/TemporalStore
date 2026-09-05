@@ -1619,6 +1619,13 @@ impl ProxyService {
                             .map(|status| (status, ProxyRejectionKind::Policy))
                     })
                     .or_else(|| {
+                        // The key is built only when a drain is configured. `proxy_drop_rejection`
+                        // ignores it when `drop_percent` is 0, which is the default, but it was
+                        // being built to be passed in regardless -- and `format!` allocates twice,
+                        // so every context request paid two allocations for a string nothing read.
+                        if options.drop_percent.min(100) == 0 {
+                            return None;
+                        }
                         proxy_drop_rejection(options, &context_drop_key(scope))
                             .map(|status| (status, ProxyRejectionKind::Policy))
                     });
@@ -3398,6 +3405,55 @@ mod tests {
         println!(
             "BENCH shard_id_for_key threads={threads} ops={ops} ns_per_op={}",
             elapsed.as_nanos() / ops
+        );
+    }
+
+    /// Admitting a context request allocates nothing.
+    ///
+    /// Only compiled with `alloc-probe`: without the counting allocator every count reads zero and
+    /// this would pass while measuring nothing, so it asserts a canary first.
+    ///
+    /// It was one allocation, for a `{account}|{tenant}` drain key built with `format!` and handed
+    /// to a check that ignores it whenever `drop_percent` is 0 -- which is the default. The key is
+    /// built only when a drain is configured now, and this holds it there.
+    #[cfg(feature = "alloc-probe")]
+    #[test]
+    fn admitting_a_context_request_allocates_nothing() {
+        let canary = crate::alloc_probe::Probe::start();
+        let sink: Vec<u8> = Vec::with_capacity(8192);
+        assert!(
+            canary.stop().allocs > 0,
+            "counting allocator not installed despite the feature being on"
+        );
+        drop(sink);
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let scope = context_scope("acct", "t");
+        let _ = proxy.admit_context(&scope, false);
+
+        const ITERS: u64 = 200;
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let guard = proxy.admit_context(&scope, false);
+            std::hint::black_box(&guard);
+        }
+        let counts = probe.stop();
+        assert_eq!(
+            counts.allocs / ITERS,
+            0,
+            "admitting a context request must allocate nothing; it allocated {} over {ITERS} calls",
+            counts.allocs
+        );
+
+        // And with a drain configured the key IS built, so the zero above is the absence of
+        // wasted work rather than the absence of the check.
+        let draining = scoped_proxy(ProxyOptions {
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        assert!(
+            draining.admit_context(&scope, false).is_err(),
+            "a fully drained proxy must still refuse a context request"
         );
     }
 
