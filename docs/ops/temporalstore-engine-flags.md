@@ -47,7 +47,7 @@ Anything else is blank, and a blank means go and look.
 | flags | count |
 |---|---|
 | total | 296 |
-| booleans whose default this could read off the source | 30 |
+| booleans whose default this could read off the source | 32 |
 | **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 25 |
 | **that nothing in this repository sets** | 175 |
@@ -177,7 +177,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_BINARY_RECORDS` | on | launch, test, portal | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | — | config | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
-| `TS_WAL_LEGACY_RECOVERY` | — | config, harness, script | 1 | yes |
+| `TS_WAL_LEGACY_RECOVERY` | off | config, harness, script | 1 | yes |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
 | `TS_WAL_PREALLOCATE` | on | launch, test | 1 | yes |
 | `TS_WAL_PREALLOCATE_CHUNK` | — | nothing | 1 | — |
@@ -310,7 +310,7 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_EMBEDDING_MODEL` | — | config, script, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |
-| `MATRIXARK_EMBED_DRAINER` | — | config, launch, portal | 1 | — |
+| `MATRIXARK_EMBED_DRAINER` | off | config, launch, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | — | launch | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, portal | 1 | — |

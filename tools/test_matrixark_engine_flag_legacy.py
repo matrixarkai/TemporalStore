@@ -315,5 +315,39 @@ class TheInventoryReportsWhatItMeasuredTest(unittest.TestCase):
                         % (len(marked), len(self.rows)))
 
 
+class TheDefaultOfAHelperCallTest(unittest.TestCase):
+    """A reader can state its default in an argument, or in the helper's own name.
+
+    Both shapes were invisible until the portal refused to offer a knob whose default nothing
+    could derive -- the check that an offered knob shows a number the source agrees with is only
+    as good as the shapes this can read.
+    """
+
+    @staticmethod
+    def _default_of(body: str) -> str:
+        return predicates()["default_of"](body, 1)
+
+    def test_env_bool_states_its_default_in_an_argument(self) -> None:
+        self.assertEqual("off", self._default_of(
+            'fn f() -> bool {\n    env_bool("MATRIXARK_X", false)\n}'))
+        self.assertEqual("on", self._default_of(
+            'fn f() -> bool {\n    env_bool("MATRIXARK_X", true)\n}'))
+
+    def test_env_flag_on_is_the_default_off_reader(self) -> None:
+        self.assertEqual("off", self._default_of(
+            'fn f() -> bool {\n    env_flag_on("TS_X")\n}'))
+
+    def test_env_flag_default_on_is_not_read_as_its_opposite(self) -> None:
+        """The two helper names differ by one word, and one contains no substring of the other."""
+        self.assertEqual("on", self._default_of(
+            'fn f() -> bool {\n    env_flag_default_on("TS_X")\n}'))
+        self.assertEqual("on", self._default_of(
+            'fn f() -> bool {\n    wal_env_flag_default_on("TS_X")\n}'))
+
+    def test_a_function_reading_two_flags_still_states_nothing(self) -> None:
+        self.assertEqual("", predicates()["default_of"](
+            'fn f() -> bool {\n    env_flag_on("TS_A") && env_flag_on("TS_B")\n}', 2))
+
+
 if __name__ == "__main__":
     unittest.main()
