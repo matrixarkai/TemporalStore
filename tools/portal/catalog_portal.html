@@ -1102,6 +1102,12 @@
   }
 
   var controller = null, backoff = 1000, buffer = "";
+  /* Set when the gateway says it is closing on purpose, cleared by the reopen it
+     causes. A planned recycle and a gateway that stopped answering look identical
+     from here without it, and only one of them is      one of them is worth telling anybody about. */
+  var planned = false;
+  /* When the current connection was established; see the floor in the reopen above. */
+  var openedAt = 0;
   /* Set the first time this deployment refuses an anonymous read. Until then there is
      no reason to assume a key is needed; afterwards there is no reason to ask again
      without one. */
@@ -1130,18 +1136,35 @@
       if (!r.ok || !r.body) { throw new Error("stream " + r.status); }
       dot.className = "live-dot";
       backoff = 1000;
+      openedAt = Date.now();
       var reader = r.body.getReader(), decoder = new TextDecoder();
       function pump() {
         return reader.read().then(function (chunk) {
-          if (chunk.done) { throw new Error("stream ended"); }
+          if (chunk.done) {
+            /* Closed on purpose once the stream reached its maximum age. Reconnect at once and
+               leave the dot alone: this is the gateway keeping its own rule, not one that stopped
+               answering, and marking it stale every ten minutes teaches people to ignore the
+               one signal the strip has. */
+            var kept = planned && (Date.now() - openedAt) > 1000;
+            planned = false;
+            if (kept) { controller = null; backoff = 1000; open(); return; }
+            throw new Error("stream ended");
+          }
           buffer += decoder.decode(chunk.value, { stream: true });
           var parts = buffer.split("\n\n");
           buffer = parts.pop();
           parts.forEach(function (block) {
+            /* Read the label. A goodbye carries a data line of its own, and rendering it as a
+               frame empties every segment of the strip -- on all five pages that read the stream
+               through here, every ten minutes. */
+            var name = "", payload = null;
             block.split("\n").forEach(function (line) {
-              if (line.indexOf("data:") !== 0) { return; }
-              try { render(JSON.parse(line.slice(5).trim())); } catch (err) { /* ignore */ }
+              if (line.indexOf("event:") === 0) { name = line.slice(6).trim(); }
+              else if (line.indexOf("data:") === 0) { payload = line.slice(5).trim(); }
             });
+            if (name === "bye") { planned = true; return; }
+            if (name !== "status" || !payload) { return; }
+            try { render(JSON.parse(payload)); } catch (err) { /* ignore */ }
           });
           return pump();
         });
