@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 304 of them, read by 102 functions.
+There are 302 of them, read by 100 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,11 +46,11 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 304 |
-| booleans whose default this could read off the source | 39 |
+| total | 302 |
+| booleans whose default this could read off the source | 37 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 23 |
-| **that nothing in this repository sets** | 180 |
+| **that nothing in this repository sets** | 178 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 16 |
 | whose doc comment is really about another flag | 43 |
@@ -158,7 +158,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (25)
+## durability (24)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -181,7 +181,6 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_COMMIT_DELAY_US` | — | config | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
-| `TS_WAL_OUTCOME_STRICT` | off | nothing | 1 | — |
 | `TS_WAL_PREALLOCATE` | on | launch, test | 1 | — |
 | `TS_WAL_PREALLOCATE_CHUNK` | — | nothing | 1 | — |
 | `TS_WAL_RECLAIM_MAX_SEGMENTS_PER_PASS` | — | test | 1 | yes |
@@ -365,7 +364,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING` | on | nothing | 1 | — |
 
-## behaviour (64)
+## behaviour (63)
 
 Everything else that changes what the engine does.
 
@@ -386,7 +385,6 @@ Everything else that changes what the engine does.
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED` | — | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL` | — | test | 1 | — |
-| `MATRIXARK_RUST_SDK_MODE` | off | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_RUST_ROOT` | — | launch, script, test | 1 | — |
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG` | — | launch | 1 | — |
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG_ENABLE` | — | nothing | 1 | — |
@@ -436,7 +434,7 @@ Everything else that changes what the engine does.
 | `TS_SHARD_WRITE_QPS` | — | nothing | 1 | — |
 | `TS_TABLE_NAME` | — | test | 1 | — |
 
-## outside this document (6)
+## outside this document (7)
 
 `sdk/rust/temporalstore` is a second Rust tree, carrying its own copy of the
 proxy implementation -- a different file, not a stale duplicate. The root
@@ -450,5 +448,6 @@ is computed, so one more cannot appear quietly.
 - `MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK`
 - `MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK`
 - `MATRIXARK_RUST_SCAN_RECORD_CACHE_ENTRIES`
+- `MATRIXARK_RUST_SDK_MODE`
 - `TEMPORALSTORE_RUST_ALLOW_NATIVE_MATRIXARK_C_API`
 

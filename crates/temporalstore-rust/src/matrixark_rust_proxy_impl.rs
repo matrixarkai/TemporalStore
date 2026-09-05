@@ -688,14 +688,15 @@ fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (
     Ok((op, output))
 }
 
+/// Whether this binary is the direct SDK bridge.
+///
+/// Each bin that includes this file declares `DIRECT_SDK_BRIDGE`, so the answer is settled when
+/// the binary is built. It used to be asked of `MATRIXARK_RUST_SDK_MODE` and of a substring of
+/// argv[0]; the variable let a proxy process report itself as the bridge, and argv[0] is
+/// whatever the file was last renamed to. Neither can contradict the binary now, and a new bin
+/// that forgets to declare it does not compile.
 fn matrixark_rust_sdk_mode_is_direct() -> bool {
-    matches!(
-        env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref(),
-        Some("direct_sdk" | "direct-sdk" | "native-binding" | "rust-direct")
-    ) || env::args()
-        .next()
-        .map(|arg| arg.contains("matrixark_rust_direct_sdk"))
-        .unwrap_or(false)
+    DIRECT_SDK_BRIDGE
 }
 
 fn matrixark_rust_storage_mode() -> &'static str {
