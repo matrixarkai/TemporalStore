@@ -194,5 +194,91 @@ class ThePageFollowsTheFieldTheRouteNamesTest(unittest.TestCase):
         self.assertIn("var key = modelKey(target);", page)
 
 
+class TheDiscoveryAsksTheEndpointInUseTest(Case):
+    """The panel's other half. "Ask the endpoint what it serves" exists to stop a misspelt model
+    name reaching ingest, where it fails hours later as a silent fall back -- so pointing it at the
+    endpoint the OTHER provider uses removes exactly the check it is there to provide."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._get_json = cfg._get_json
+        self._load = cfg.load
+        cfg.load = lambda: {"values": {}}
+        self.asked = []
+
+        def recorder(url, headers, timeout):
+            self.asked.append({"url": url, "headers": dict(headers or {})})
+            return 200, {"data": [{"id": "claude-sonnet-5"}]}
+
+        cfg._get_json = recorder
+        for name in ("MATRIXARK_ANTHROPIC_API_BASE", "MATRIXARK_EXTRACTION_BASE_URL",
+                     "MATRIXARK_ANTHROPIC_VERSION", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+                     "MATRIXARK_EXTRACTION_API_KEY_ENV"):
+            self._saved.setdefault(name, os.environ.get(name))
+            os.environ.pop(name, None)
+
+    def tearDown(self) -> None:
+        cfg._get_json = self._get_json
+        cfg.load = self._load
+        super().tearDown()
+
+    def key(self, value: str) -> None:
+        os.environ[cfg._env_name(cfg.SETTINGS_BY_KEY["extraction.api_key"], {})] = value
+
+    def test_anthropic_is_asked_at_its_own_base(self) -> None:
+        self.on("anthropic")
+        self.key("k")
+        result = cfg.discover_models("extraction")
+        self.assertEqual(1, len(self.asked))
+        self.assertEqual("https://api.anthropic.com/v1/models", self.asked[0]["url"])
+        self.assertTrue(result["available"])
+        self.assertIn("claude-sonnet-5", result["models"])
+
+    def test_it_authenticates_the_way_anthropic_does(self) -> None:
+        self.on("anthropic")
+        self.key("k")
+        cfg.discover_models("extraction")
+        headers = self.asked[0]["headers"]
+        self.assertEqual("k", headers.get("x-api-key"))
+        self.assertIn("anthropic-version", headers)
+        self.assertNotIn("Authorization", headers)
+
+    def test_a_configured_anthropic_base_is_respected(self) -> None:
+        self.on("anthropic")
+        os.environ["MATRIXARK_ANTHROPIC_API_BASE"] = "https://anthropic.example/"
+        self.key("k")
+        cfg.discover_models("extraction")
+        self.assertEqual("https://anthropic.example/v1/models", self.asked[0]["url"])
+
+    def test_it_no_longer_asks_for_a_field_this_provider_does_not_read(self) -> None:
+        """Shipped behaviour: no OpenAI base URL, so it answered "Set the base URL first"."""
+        self.on("anthropic")
+        self.key("k")
+        self.assertNotEqual("no_base_url", cfg.discover_models("extraction").get("reason"))
+
+    def test_an_openai_compatible_endpoint_is_asked_exactly_as_before(self) -> None:
+        """The floor: if the branch swallowed everything, the assertions above would still pass."""
+        self.on("openai_compatible")
+        os.environ["MATRIXARK_EXTRACTION_BASE_URL"] = "https://api.example/v1"
+        self.key("k")
+        cfg.discover_models("extraction")
+        self.assertEqual("https://api.example/v1/models", self.asked[0]["url"])
+        self.assertEqual("Bearer k", self.asked[0]["headers"]["Authorization"])
+
+    def test_the_embedding_side_is_untouched(self) -> None:
+        os.environ["MATRIXARK_EMBEDDING_API_BASE"] = "https://encoder.example/v1"
+        os.environ[cfg._env_name(cfg.SETTINGS_BY_KEY["embedding.api_key"], {})] = "k"
+        cfg.discover_models("embedding")
+        self.assertEqual("https://encoder.example/v1/models", self.asked[0]["url"])
+        self.assertEqual("Bearer k", self.asked[0]["headers"]["Authorization"])
+
+    def test_no_key_still_asks_without_authenticating(self) -> None:
+        """A self-hosted endpoint that needs no auth has to stay askable."""
+        self.on("openai_compatible")
+        os.environ["MATRIXARK_EXTRACTION_BASE_URL"] = "http://127.0.0.1:11434/v1"
+        cfg.discover_models("extraction")
+        self.assertEqual({}, self.asked[0]["headers"])
+
+
 if __name__ == "__main__":
     unittest.main()

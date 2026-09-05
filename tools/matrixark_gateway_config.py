@@ -988,10 +988,22 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
     """
     document = load()
     values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
+    auth = "bearer"
     if target == "embedding":
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip())
         key_env = _env_name(SETTINGS_BY_KEY["embedding.api_key"], values)
+    elif extraction_provider_effect(
+            os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER",
+                           os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))) == "anthropic":
+        # Anthropic reads its own base URL and authenticates with x-api-key. Asking the OpenAI base
+        # URL, which this deployment never sets, answered "Set the base URL first" -- pointing at a
+        # field that provider does not read, in the one panel that exists to stop a misspelt model
+        # name reaching ingest.
+        base = os.environ.get("MATRIXARK_ANTHROPIC_API_BASE",
+                              "https://api.anthropic.com").strip().rstrip("/") + "/v1"
+        key_env = _env_name(SETTINGS_BY_KEY["extraction.api_key"], values)
+        auth = "anthropic"
     else:
         base = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", "").strip()
         key_env = _env_name(SETTINGS_BY_KEY["extraction.api_key"], values)
@@ -1000,7 +1012,14 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
         return {"available": False, "reason": "no_base_url",
                 "detail": "Set the base URL first; there is nothing to ask."}
     key = os.environ.get(key_env, "")
-    headers = {"Authorization": "Bearer " + key} if key else {}
+    if not key:
+        headers: Dict[str, str] = {}
+    elif auth == "anthropic":
+        headers = {"x-api-key": key,
+                   "anthropic-version": os.environ.get("MATRIXARK_ANTHROPIC_VERSION",
+                                                       "2023-06-01")}
+    else:
+        headers = {"Authorization": "Bearer " + key}
     try:
         status, parsed = _get_json(base + "/models", headers, timeout)
     except urllib.error.HTTPError as exc:
