@@ -71,6 +71,21 @@ def provider_membership_sets(filename: str) -> list:
                        if isinstance(e, ast.Constant) and isinstance(e.value, str)}
             if members:
                 found.append(members)
+        elif isinstance(right, ast.Name):
+            # `provider in _OSS_EMBEDDING_PROVIDERS` is the same dispatch as `provider in {...}`,
+            # and naming the set is what a reader should prefer. Resolving the name keeps this
+            # reading the dispatch rather than the spelling: the literal form went away when six
+            # copies of the check became one, and every branch's ratchet went red on it.
+            # Only a set this module ASSIGNS. A name imported from elsewhere is declared in
+            # another file, and this scan is per-file by design -- `assigned_string_set` is meant
+            # to fail loudly when a caller names a set that should be here, so it is not the right
+            # lookup for a walk that meets every comparison in the module.
+            try:
+                members = assigned_string_set(filename, right.id)
+            except AssertionError:
+                continue
+            if members:
+                found.append(members)
     return found
 
 

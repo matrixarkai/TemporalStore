@@ -96,7 +96,11 @@ class TheClaimsAboutLocalAreTrueTest(unittest.TestCase):
         with open(os.path.join(TOOLS, "matrixark_mcp_embeddings.py"), encoding="utf-8") as handle:
             source = handle.read()
         api = re.search(r"_API_EMBEDDING_PROVIDERS\s*=\s*\{([^}]*)\}", source)
-        oss = re.search(r'provider in \{("oss"[^}]*)\}', source)
+        # The OSS set is read where it is DECLARED, like the API set above it. It used to be read
+        # off a `provider in {...}` dispatch site, which stopped existing when six copies of that
+        # check became one -- so this was asserting on the spelling of the dispatch rather than on
+        # the set, and went red for a refactor that changed neither the set nor the behaviour.
+        oss = re.search(r"_OSS_EMBEDDING_PROVIDERS\s*=\s*\{([^}]*)\}", source)
         strip = lambda text: {v.strip().strip('"').strip("'") for v in text.split(",") if v.strip()}
         return strip(api.group(1)), strip(oss.group(1))
 
