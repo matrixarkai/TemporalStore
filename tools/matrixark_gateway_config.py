@@ -274,10 +274,14 @@ SETTINGS: List[Setting] = [
             "immediately, with no restart."),
     Setting("extraction.timeout_sec", "extraction", "MATRIXARK_EXTRACTION_TIMEOUT_SEC",
             "Extraction timeout (s)", "float", "30", "restart",
-            "A slow endpoint that exceeds this falls back to the deterministic path silently."),
+            "A slow endpoint that exceeds this falls back to the deterministic path "
+            "silently. The Anthropic path prefers MATRIXARK_ANTHROPIC_TIMEOUT_SEC where "
+            "that is set and falls back to this."),
     Setting("extraction.max_tokens", "extraction", "MATRIXARK_EXTRACTION_MAX_TOKENS",
             "Extraction max tokens", "int", "1200", "restart",
-            "Completion cap per extraction call."),
+            "Completion cap per extraction call. The Anthropic path prefers "
+            "MATRIXARK_ANTHROPIC_MAX_TOKENS where that is set and falls back to this, so "
+            "a value there overrides this field for that provider only."),
 
     # ---- the summary model ----------------------------------------------------------------------
     # The third model a deployment runs, and the one called most: every context node gets a summary,
@@ -404,8 +408,12 @@ SETTINGS: List[Setting] = [
     Setting("retrieval.default_max_context_tokens", "retrieval",
             "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS",
             "Default context budget (tokens)", "int", "500000", "restart",
-            "Budget applied when a caller does not name one. Callers can ask for less per request; "
-            "this is the ceiling they inherit."),
+            "Budget applied when a caller does not name one. Callers can ask for less per "
+            "request; this is the ceiling they inherit. The agent hooks are not such a "
+            "caller: they prefer MATRIXARK_HOOK_MAX_CONTEXT_TOKENS where it is set, which "
+            "the installation manual sets to 10000, and matrixark_codex_dual_hook.sh "
+            "passes its own 10000 without consulting this at all. Changing this does not "
+            "change what a hook sends."),
     Setting("retrieval.gateway_default_max_context_tokens", "retrieval",
             "MATRIXARK_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS",
             "Gateway default context budget", "int", "", "restart",
