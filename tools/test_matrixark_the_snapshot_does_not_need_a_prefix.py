@@ -69,11 +69,22 @@ class SnapshotDoesNotNeedAPrefixTest(unittest.TestCase):
         stat = self.base.stat()
         return (stat.st_size, stat.st_mtime_ns)
 
-    def _delta_lines(self):
-        if not self.delta.exists():
+    def _tail_records(self):
+        """How many records the tail holds, in whichever form it is written.
+
+        Counting lines was the same number while the tail was one document per line. A block-framed
+        tail is binary and holds many records per block, so this asks the module's decoder rather
+        than the filesystem.
+        """
+        from tools.matrixark_mcp_local_adapter import _decode_delta_blocks
+
+        tail = MatrixArkLocalAdapter(self.log)._durable_read_cache_tail_path()
+        if not tail.exists():
             return 0
-        with self.delta.open("r", encoding="utf-8") as handle:
-            return sum(1 for line in handle if line.strip())
+        raw = tail.read_bytes()
+        if tail.suffix == ".bin":
+            return len(_decode_delta_blocks(raw))
+        return sum(1 for line in raw.decode("utf-8").splitlines() if line.strip())
 
     def _snapshot_view(self):
         """The view a cold reader is served, with the source it came from."""
@@ -126,10 +137,10 @@ class SnapshotDoesNotNeedAPrefixTest(unittest.TestCase):
         self._ingest("first")
         MatrixArkLocalAdapter(self.log).read_all()          # checkpoint a base to extend
         self.assertTrue(self.base.exists(), "no base was written, so this test cannot bind")
-        before, delta_before = self._stamp(), self._delta_lines()
+        before, delta_before = self._stamp(), self._tail_records()
 
         self._ingest("second")
-        self.assertGreater(self._delta_lines(), delta_before,
+        self.assertGreater(self._tail_records(), delta_before,
                            "the append wrote nothing to the delta")
         self.assertEqual(before, self._stamp(),
                          "the append rewrote the base instead of extending the delta")
@@ -149,7 +160,7 @@ class SnapshotDoesNotNeedAPrefixTest(unittest.TestCase):
 
         view, source = self._snapshot_view()
         self.assertEqual(source, "durable", "the snapshot did not serve the read")
-        self.assertGreater(self._delta_lines(), 0, "nothing was stitched, so the seam is untested")
+        self.assertGreater(self._tail_records(), 0, "nothing was stitched, so the seam is untested")
         self.assertEqual(self._log_view(), view)
         for tag in ("alpha", "beta", "gamma", "epsilon"):
             self.assertTrue(self._mentions(view, tag), "%s is missing from the cold view" % tag)
@@ -200,7 +211,7 @@ class SnapshotDoesNotNeedAPrefixTest(unittest.TestCase):
         for index in range(12):
             self._ingest("doc-%d" % index)
             MatrixArkLocalAdapter(self.log).read_all()
-            peak = max(peak, self._delta_lines())
+            peak = max(peak, self._tail_records())
         self.assertGreater(peak, 0, "the delta was never used, so the bound is untested")
         self.assertLessEqual(peak, LOCAL_DURABLE_READ_CACHE_MAX_DELTA)
 

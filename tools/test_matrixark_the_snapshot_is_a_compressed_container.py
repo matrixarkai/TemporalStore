@@ -161,5 +161,82 @@ class SnapshotIsACompressedContainerTest(unittest.TestCase):
             _decode_snapshot_bytes(packed)
 
 
+    # -- the incremental half ---------------------------------------------------------------
+
+    def test_the_tail_is_block_framed_and_much_smaller(self):
+        """The tail is where the snapshot's bytes are once the base is compressed.
+
+        With the base 17.55x smaller the plain tail became 85-99.9% of the snapshot, so compressing
+        it is not a refinement -- it is most of what is left. One block per appended batch reaches
+        15.6x where per-record framing reaches 3.3x.
+        """
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = False
+        self._ingest(3)
+        plain = MatrixArkLocalAdapter(self.log)._durable_read_cache_delta_path()
+        plain_bytes = plain.stat().st_size if plain.exists() else 0
+        self.assertGreater(plain_bytes, 0, "no plain tail was written, so there is nothing to beat")
+
+        self._fresh_store()
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = True
+        self._ingest(3)
+        adapter = MatrixArkLocalAdapter(self.log)
+        packed = adapter._durable_read_cache_delta_binary_path()
+        self.assertTrue(packed.exists(), "no block-framed tail was written")
+        self.assertFalse(adapter._durable_read_cache_delta_path().exists(),
+                         "both tails are present; a reader could pick up the stale one")
+        self.assertLess(packed.stat().st_size, plain_bytes / 2,
+                        "the block-framed tail is not materially smaller than the plain one")
+
+    def test_a_cold_read_stitches_the_block_framed_tail(self):
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = True
+        written = self._ingest(3)
+        adapter = MatrixArkLocalAdapter(self.log)
+        self.assertTrue(adapter._durable_read_cache_delta_binary_path().exists(),
+                        "no tail was written, so this does not test stitching")
+        _clear_process_read_cache()
+        reader = MatrixArkLocalAdapter(self.log)
+        served = reader.read_all()
+        self.assertEqual("durable", getattr(reader, "_read_cache_source", "?"))
+        self.assertEqual(written, served)
+
+    def test_a_plain_tail_already_on_disk_still_loads(self):
+        """A store written before the block format keeps loading, like the base's JSON form."""
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = False
+        written = self._ingest(3)
+        adapter = MatrixArkLocalAdapter(self.log)
+        self.assertTrue(adapter._durable_read_cache_delta_path().exists())
+
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = True
+        _clear_process_read_cache()
+        reader = MatrixArkLocalAdapter(self.log)
+        self.assertEqual(written, reader.read_all())
+
+    def test_a_torn_final_block_is_dropped_not_raised(self):
+        """A half-written block must not make the snapshot unreadable.
+
+        The tail is derived state and the head says how many records it should hold, so a short read
+        is caught by the count check and the caller re-derives from the log. Raising here would turn
+        a torn append into an unreadable store when re-deriving is the answer.
+        """
+        from tools.matrixark_mcp_local_adapter import _decode_delta_blocks
+
+        adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = True
+        self._ingest(3)
+        packed = MatrixArkLocalAdapter(self.log)._durable_read_cache_delta_binary_path()
+        raw = packed.read_bytes()
+        whole = len(_decode_delta_blocks(raw))
+        self.assertGreater(whole, 0, "no records decoded, so truncation proves nothing")
+
+        torn = _decode_delta_blocks(raw[: len(raw) - 10])
+        self.assertLessEqual(len(torn), whole)
+
+    def _fresh_store(self) -> None:
+        self._dir.cleanup()
+        self._dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._dir.cleanup)
+        self.store = Path(self._dir.name)
+        self.log = self.store / "events.jsonl"
+        _clear_process_read_cache()
+
 if __name__ == "__main__":
     unittest.main()
