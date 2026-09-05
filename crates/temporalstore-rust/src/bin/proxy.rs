@@ -54,6 +54,10 @@ fn main() {
         ),
         pin_primary_reads: env_bool("TS_PROXY_PIN_PRIMARY_READS", defaults.pin_primary_reads),
         heartbeat_timeout_ms: env_u64("TS_PROXY_HEARTBEAT_TIMEOUT_MS", defaults.heartbeat_timeout_ms),
+        heartbeat_interval_ms: env_u64(
+            "TS_PROXY_HEARTBEAT_INTERVAL_MS",
+            defaults.heartbeat_interval_ms,
+        ),
         topology_check_interval_ms: env_u64(
             "TS_PROXY_TOPOLOGY_CHECK_INTERVAL_MS",
             defaults.topology_check_interval_ms,
@@ -67,8 +71,7 @@ fn main() {
         context_io_timeout_ms: env_u64("TS_PROXY_CONTEXT_IO_TIMEOUT_MS", defaults.context_io_timeout_ms),
     };
     let proxy = ProxyService::new(options);
-    let heartbeat_interval_ms = env_u64("TS_PROXY_HEARTBEAT_INTERVAL_MS", 10_000);
-    let _heartbeat_loop = proxy.start_heartbeat_loop(heartbeat_interval_ms);
+    let _heartbeat_loop = proxy.start_heartbeat_loop();
     info!(%addr, "temporalstore proxy listening");
     serve(&addr, move |request| proxy.handle(request)).expect("proxy failed");
 }

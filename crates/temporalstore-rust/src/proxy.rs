@@ -20,7 +20,7 @@ mod response;
 
 use config::{
     default_context_first_shard_id, default_context_io_timeout_ms, default_context_shard_count,
-    default_heartbeat_timeout_ms,
+    default_heartbeat_interval_ms, default_heartbeat_timeout_ms,
     default_auto_register_min_interval_ms,
     default_topology_check_interval_ms,
     default_pin_primary_reads, default_proxy_addr, default_service_registry_ttl_ms, now_ms,
@@ -149,6 +149,16 @@ pub struct ProxyOptions {
     /// declared dead. Liveness must not be decided by a data-path deadline.
     #[serde(default = "default_heartbeat_timeout_ms")]
     pub heartbeat_timeout_ms: u64,
+    /// How often this proxy beats to the metaserver.
+    ///
+    /// It was read from the environment in `main` and handed to the loop once, which made it the
+    /// only tunable an operator could neither see in the config report nor change with a config
+    /// push -- the beat that decides how quickly the metaserver notices this proxy is gone. It
+    /// lives here now, so it is reported like the rest and a push moves it: the loop reads it each
+    /// pass, and `proxy_config_version` covers the whole document, so a change refreshes the
+    /// snapshot the loop reads through.
+    #[serde(default = "default_heartbeat_interval_ms")]
+    pub heartbeat_interval_ms: u64,
     /// Shortest interval (ms) between metaserver topology checks on the request path.
     ///
     /// Every command entry point asks the metaserver "has topology changed" before it
@@ -279,6 +289,7 @@ impl Default for ProxyOptions {
             context_shard_count: default_context_shard_count(),
             context_io_timeout_ms: default_context_io_timeout_ms(),
             heartbeat_timeout_ms: default_heartbeat_timeout_ms(),
+            heartbeat_interval_ms: default_heartbeat_interval_ms(),
             topology_check_interval_ms: default_topology_check_interval_ms(),
             auto_register_min_interval_ms: default_auto_register_min_interval_ms(),
             listen_addr: String::new(),
@@ -4748,6 +4759,36 @@ mod tests {
     }
 
     #[test]
+    fn the_heartbeat_interval_is_configuration_and_a_push_moves_it() {
+        // It used to be an environment variable read once in `main`, so it appeared in no report
+        // and no push could change it -- the one knob that needed a restart. These assertions are
+        // what "it is configuration now" means: it is in the document, a push moves it, and the
+        // default is what `main` passed before, so nothing changed for anyone not setting it.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        assert_eq!(
+            proxy.options().heartbeat_interval_ms,
+            10_000,
+            "the default must stay what main passed, or moving it changes behaviour"
+        );
+
+        let before = proxy_config_version(&proxy.options());
+        let mut pushed = (*proxy.options()).clone();
+        pushed.heartbeat_interval_ms = 2_500;
+        let report = proxy.update_options_report(pushed);
+        assert!(report.applied, "the push must apply: {report:?}");
+        assert_eq!(proxy.options().heartbeat_interval_ms, 2_500);
+
+        // The loop reads through the options snapshot, which only refreshes when the version
+        // moves. If the interval were not part of the hashed document the loop would keep the
+        // old beat while the report claimed the new one.
+        assert_ne!(
+            before,
+            proxy_config_version(&proxy.options()),
+            "changing the interval must move the config version, or the running loop never sees it"
+        );
+    }
+
+    #[test]
     fn a_config_push_reaches_a_context_path_that_already_served() {
         // `admit_context` reads the options through the per-thread snapshot, which is only
         // refreshed when the config version moves. A thread that has already admitted a context
@@ -7130,7 +7171,7 @@ mod tests {
             namespace: "ns".to_string(),
             ..ProxyOptions::default()
         });
-        let _loop = proxy.start_heartbeat_loop(10);
+        let _loop = proxy.start_heartbeat_loop();
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             let stats = proxy.info().stats;
