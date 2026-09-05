@@ -3714,10 +3714,10 @@ fn last_wal_sequence_in(path: &Path) -> Result<(u64, u64), WriteAheadLogError> {
     }
     if crate::log_framing::binary_frame_enabled() {
         // The footer says where to start, so the walk covers the open block instead of the log.
-        if true {
-            if let Some((sequence, from)) = footer_tail_hint(path)? {
-                return last_wal_sequence_forward_from(path, from, sequence);
-            }
+        // Without one -- a log written before blocks, or an empty one -- the walk starts at the
+        // header and covers everything, which is the same answer for more reading.
+        if let Some((sequence, from)) = footer_tail_hint(path)? {
+            return last_wal_sequence_forward_from(path, from, sequence);
         }
         return last_wal_sequence_forward(path);
     }
