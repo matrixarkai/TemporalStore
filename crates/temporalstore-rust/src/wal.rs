@@ -5302,16 +5302,6 @@ mod tests {
         );
     }
 
-    /// What a record actually costs on disk AT THE DEFAULTS.
-    ///
-    /// The neighbouring size analysis builds its "today" baseline by hand, as JSON. Both encoding
-    /// flags now default ON, so that hand-built baseline is not necessarily what the log writes,
-    /// and a stale baseline overstates what is left -- which is the exact error that analysis
-    /// warns about. This one asks the store instead, with no flags set.
-    ///
-    /// Measured as the DELTA between records rather than the file size: the log preallocates in
-    /// large steps, so file size answers a different question.
-    #[test]
     /// What a batch costs on disk each way, as the batch grows.
     ///
     /// The comparison tree pays its record envelope once per COMMIT: its logger accumulates items
@@ -5385,6 +5375,16 @@ mod tests {
         }
     }
 
+    /// What a record actually costs on disk AT THE DEFAULTS.
+    ///
+    /// The neighbouring size analysis builds its "today" baseline by hand, as JSON. Both encoding
+    /// flags now default ON, so that hand-built baseline is not necessarily what the log writes,
+    /// and a stale baseline overstates what is left -- which is the exact error that analysis
+    /// warns about. This one asks the store instead, with no flags set.
+    ///
+    /// Measured as the DELTA between records rather than the file size: the log preallocates in
+    /// large steps, so file size answers a different question.
+    #[test]
     fn what_a_record_actually_costs_on_disk() {
         for value_len in [64usize, 1024, 4096] {
             let dir = tempfile::tempdir().unwrap();
