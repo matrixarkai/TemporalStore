@@ -471,8 +471,18 @@ TOOLS: list[Json] = [
                 "api_key": API_KEY_SCHEMA,
                 "max_context_tokens": {
                     "type": "integer",
-                    "default": 128000,
-                    "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS, currently 128000.",
+                    # Both taken from the constant every server path falls back to when the caller
+                    # omits this, rather than written out beside it. They said 128000 while the
+                    # three consumers applied 500000, so an agent reading this schema was told a
+                    # budget four times smaller than the one it would actually be given -- and
+                    # nothing applies the schema's own default, so the number here is a claim about
+                    # the server rather than an instruction to it.
+                    "default": DEFAULT_MAX_CONTEXT_TOKENS,
+                    "description": (
+                        "Optional shared prompt context budget for local plus MatrixArk remote "
+                        "context. Defaults to MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS, currently %d."
+                        % DEFAULT_MAX_CONTEXT_TOKENS
+                    ),
                 },
                 "include_superseded_resources": {
                     "type": "boolean",
