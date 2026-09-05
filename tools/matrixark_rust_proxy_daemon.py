@@ -278,6 +278,8 @@ class RustProxyDaemon:
     def _call_proxy(self, request: Json) -> Json:
         started = time.monotonic()
         with self._lock:
+            lock_acquired = time.monotonic()
+            waited_ms = int((lock_acquired - started) * 1000)
             self._ensure_proxy()
             proc = self._proc
             if proc is None or proc.stdin is None or proc.stdout is None:
@@ -297,6 +299,18 @@ class RustProxyDaemon:
                     response = json.loads(line)
                     response.setdefault("rust_proxy_daemon", True)
                     response.setdefault("daemon_elapsed_ms", int((time.monotonic() - started) * 1000))
+                    held_ms = int((time.monotonic() - lock_acquired) * 1000)
+                    response.setdefault("daemon_queue_wait_ms", waited_ms)
+                    response.setdefault("daemon_work_ms", held_ms)
+                    if waited_ms > 1000 or held_ms > 5000:
+                        self._write_log(
+                            {
+                                "event": "proxy_call_slow",
+                                "op": request.get("op"),
+                                "queue_wait_ms": waited_ms,
+                                "work_ms": held_ms,
+                            }
+                        )
                     return response
                 return {"ok": False, "error": "rust proxy daemon timed out waiting for proxy response"}
             except Exception as exc:  # noqa: BLE001 - bridge must fail closed into JSON.

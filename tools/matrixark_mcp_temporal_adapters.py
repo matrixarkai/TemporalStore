@@ -1423,7 +1423,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
             return self.read_all()
         try:
             latest_state = self._load_latest_context_state_records()
-        except Exception:  # noqa: BLE001 - the full read is the fallback, not a guess.
+        except Exception as fallback_reason:  # noqa: BLE001 - the full read is the fallback.
+            try:
+                _debug = _os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
+                if _debug:
+                    with open(_debug, "a", encoding="utf-8") as _log:
+                        _log.write(
+                            "prior_context_records fell back to the full read: {}: {}".format(
+                                fallback_reason.__class__.__name__, fallback_reason
+                            ) + chr(10)
+                        )
+            except OSError:
+                pass
             return self.read_all()
         folded = compact_latest_context_state_records(list(subset) + list(latest_state))
         live_subset = filter_live_memory_records(compact_and_apply_tombstones(folded))
@@ -5132,7 +5143,6 @@ class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter)
 
     def _backend_label(self) -> str:
         return "temporalstore-rust-direct"
-
 
 
 

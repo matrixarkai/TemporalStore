@@ -1118,6 +1118,26 @@ def additional_context_from_retrieve(retrieve: Json | None, *, max_chars: int = 
     return (header + "\n" + body)[:max_chars]
 
 
+def call_write_tool(
+    server: Any,
+    tool: str,
+    tool_args: Json,
+    *,
+    failures: list[Json],
+) -> Json:
+    """Call a write-side tool without denying the later read path."""
+    try:
+        return call_tool(server, tool, tool_args)
+    except Exception as write_error:  # noqa: BLE001 - hook writes must fail into JSON.
+        failures.append(
+            {
+                "tool": tool,
+                "error": f"{write_error.__class__.__name__}: {write_error}"[:500],
+            }
+        )
+        return {}
+
+
 def main() -> int:
     args = parse_args()
     validate_hook_backend_policy(args.backend)
@@ -1183,6 +1203,7 @@ def main() -> int:
 
     ingest: Json = {}
     feedback: Json = {}
+    write_failures: list[Json] = []
     if is_feedback_event(args.event):
         feedback_args: Json = {
             **common,
@@ -1196,7 +1217,7 @@ def main() -> int:
             "agent_hook": hook_meta,
             "storage_options": hook_storage_options(),
         }
-        feedback = call_tool(server, "matrixark_feedback", feedback_args)
+        feedback = call_write_tool(server, "matrixark_feedback", feedback_args, failures=write_failures)
     elif is_resource_event(args.event) or raw_uri:
         kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" or norm(args.event).startswith("skill") else "resource"
         ingest_args = {
@@ -1212,7 +1233,7 @@ def main() -> int:
             "storage_options": hook_storage_options(),
             "wait": bool(payload.get("wait", False)),
         }
-        ingest = call_tool(server, "matrixark_ingest", ingest_args)
+        ingest = call_write_tool(server, "matrixark_ingest", ingest_args, failures=write_failures)
     elif text:
         hook_messages = hook_messages_from_payload(payload, event=args.event, text=text)
         selection_metadata = agent_memory_selection_metadata(
@@ -1235,7 +1256,7 @@ def main() -> int:
         ingest_args["session_buffer_threshold"] = args.session_commit_threshold
         if auto_batch_extract and args.idle_commit_timeout_ms > 0:
             ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
-        ingest = call_tool(server, "matrixark_ingest", ingest_args)
+        ingest = call_write_tool(server, "matrixark_ingest", ingest_args, failures=write_failures)
 
     if not retrieve and (should_retrieve(args.event) or args.query):
         retrieve_metadata = {
@@ -1259,7 +1280,7 @@ def main() -> int:
     commit: Json = {}
     if should_commit(args.event):
         reason = commit_reason(args.event)
-        commit = call_tool(
+        commit = call_write_tool(
             server,
             "matrixark_session_commit",
             {
@@ -1282,6 +1303,7 @@ def main() -> int:
                     "session_id_source": session_id_source,
                 },
             },
+            failures=write_failures,
         )
 
     ingest_session_buffer = normalized_session_buffer_from_ingest(ingest)
@@ -1326,6 +1348,7 @@ def main() -> int:
         "resource_type": resource_type,
         "retrieved": retrieved_summary,
         "committed": session_commit_summary(commit),
+        "write_failures": write_failures,
     }
     # Emit the Claude Code hook contract so retrieved memory actually reaches the
     # model. The wrapper (matrixark_claude_hook.sh) passes through
