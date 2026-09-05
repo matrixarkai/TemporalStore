@@ -207,6 +207,19 @@ GROUPS: Dict[str, Json] = {
 # persisted but only effective after a restart. The extraction API KEY is different -- the request
 # path does `os.environ.get(EXTRACTION_LLM_API_KEY_ENV)` per call, so a key written here is live on
 # the very next extraction. Every embedding setting is read per call in matrixark_mcp_embeddings.
+# What changing an encoder costs a store that already holds documents, said once and shared by the
+# three controls that change one. Embeddings are keyed by a model-specific ref and
+# `embedding_conflicts` declines a stored vector whose model differs from the active one, so the
+# vectors already in the store stop being usable the moment the encoder changes. The engine's own
+# MIGRATION note calls the result "a quiet degradation rather than an error" -- which is exactly why
+# it belongs beside the control rather than in a comment somebody has to go and find.
+ENCODER_CHANGE_NOTE = (
+    " Changing this on a store that already holds documents leaves every vector in it made by the "
+    "previous encoder: they are declined as a different model, so retrieval falls back to lexical "
+    "and recency until context_embed_backfill re-encodes them."
+)
+
+
 SETTINGS: List[Setting] = [
     # ---- extraction (the LLM that turns raw text into memories) --------------------------------
     Setting("extraction.provider", "extraction", "MATRIXARK_UNDERSTANDING_PROVIDER",
@@ -256,7 +269,7 @@ SETTINGS: List[Setting] = [
     Setting("embedding.provider", "embedding", "MATRIXARK_EMBEDDING_PROVIDER",
             "Embedding provider", "str", "deterministic", "live",
             "deterministic produces hash vectors — retrieval still answers 200, but it is not "
-            "semantic. openai_compatible calls the encoder below.",
+            "semantic. openai_compatible calls the encoder below." + ENCODER_CHANGE_NOTE,
             ["deterministic", "openai_compatible", "voyage", "local"]),
     Setting("embedding.api_base", "embedding", "MATRIXARK_EMBEDDING_API_BASE",
             "Embedding base URL", "str", "", "live",
@@ -265,10 +278,11 @@ SETTINGS: List[Setting] = [
             "Embedding model", "str", "", "live",
             "Encoder model name, e.g. paraphrase-multilingual-MiniLM-L12-v2. The gateway picks "
             "this up on the next call, but a co-located encoder server reads it at ITS startup — "
-            "restart that too if you are running one."),
+            "restart that too if you are running one." + ENCODER_CHANGE_NOTE),
     Setting("embedding.model_path", "embedding", "MATRIXARK_EMBEDDING_MODEL_PATH",
             "Embedding model path", "str", "", "live",
-            "Local path to a downloaded encoder; wins over the model name when set."),
+            "Local path to a downloaded encoder; wins over the model name when set."
+            + ENCODER_CHANGE_NOTE),
     Setting("embedding.api_key_env", "embedding", "MATRIXARK_EMBEDDING_API_KEY_ENV",
             "Embedding key variable", "str", "OPENAI_API_KEY", "live",
             "Name of the environment variable holding the encoder key."),
