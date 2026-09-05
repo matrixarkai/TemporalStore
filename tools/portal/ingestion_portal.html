@@ -549,7 +549,23 @@
   function cancelJob(id) {
     fetch("/v1/admin/ingestion/jobs/" + encodeURIComponent(id) + "/cancel",
           { method: "POST", headers: auth() })
-      .then(loadJobs)
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          return { ok: r.ok, status: r.status, body: b };
+        });
+      })
+      .then(function (res) {
+        /* fetch resolves for a 403 as readily as for a 200, so without this the list reloaded on
+           a refusal and said nothing -- the reader saw the import still running and took the stop
+           for a slow one. Same shape as retryJob directly above, for the sibling action. */
+        if (!res.ok) {
+          say($("startMsg"), window.__matrixarkWhy(res.body, failure(res.status)), "err");
+          /* Not reloaded on purpose: loadJobs clears this message, and the table it would draw is
+             the one already on screen. */
+          return;
+        }
+        loadJobs();
+      })
       .catch(function () { say($("startMsg"), "Could not stop " + id + ".", "err"); });
   }
 
