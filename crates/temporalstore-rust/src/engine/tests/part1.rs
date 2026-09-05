@@ -3389,7 +3389,7 @@ fn what_reading_one_summary_actually_costs() {
         println!(
             "         {wal_resident}/120 wal_resident addresses, {with_page_id} carry a page_id, {} distinct slabs, block_in_wal enabled={}",
             distinct_slabs.len(),
-            std::env::var("TS_BLOCK_IN_WAL").unwrap_or_else(|_| "unset(on)".to_string()),
+            engine.page_store.block_in_wal(),
         );
         let extent_total: u64 = addresses.iter().map(|a| a.length).sum();
 

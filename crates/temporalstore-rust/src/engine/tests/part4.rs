@@ -7183,7 +7183,6 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
         },
     });
 
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     // The spill path would otherwise mask what is being tested by copying the value to a real
     // slab on eviction.
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
@@ -7210,7 +7209,6 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
             key: key.to_string(),
         },
     });
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     assert_eq!(
         read.response,
@@ -7245,7 +7243,6 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
         },
     });
 
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
     engine.disable_hot_page_spill_for_test();
@@ -7270,7 +7267,6 @@ fn an_evicted_derived_page_is_served_from_its_wal_record() {
             field: "f1".to_string(),
         },
     });
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     assert_eq!(
         read.response,
@@ -7304,7 +7300,6 @@ fn a_carried_page_is_what_reaches_the_log_record() {
             ..Config::default()
         },
     });
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
 
     let carried = vec![crate::wal::StagedPage {
         object_id: 4242,
@@ -7321,7 +7316,6 @@ fn a_carried_page_is_what_reaches_the_log_record() {
         },
         carried.clone(),
     );
-    std::env::remove_var("TS_BLOCK_IN_WAL");
     assert!(write.status.ok, "the write must be acked: {write:?}");
 
     let records = engine
@@ -7511,7 +7505,6 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
         },
     });
 
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
     engine.disable_hot_page_spill_for_test();
@@ -7539,7 +7532,6 @@ fn a_block_in_wal_page_still_reads_back_after_a_shard_reload() {
             key: key.to_string(),
         },
     });
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     assert_eq!(
         read.response,
@@ -7574,7 +7566,6 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
             ..Config::default()
         },
     });
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     // Said to THIS engine. `TS_HOT_PAGE_SPILL=0` was how this asked, and it could not
     // work: the handler is installed during construction, which already happened above.
     engine.disable_hot_page_spill_for_test();
@@ -7620,7 +7611,6 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
             key: "logged".to_string(),
         },
     });
-    std::env::remove_var("TS_BLOCK_IN_WAL");
     assert_eq!(
         read.response,
         CommandResponse::Bytes { value: Some(value) },
@@ -7628,33 +7618,64 @@ fn a_wal_resident_page_records_where_it_lives_in_the_index() {
     );
 }
 
-/// With the feature off, nothing is recorded -- the index does not grow for stores that put no
+/// With the feature off, nothing is recorded -- the index does not grow for a store that puts no
 /// pages in the log.
+///
+/// Both halves are here because the assertion is `== 0`, and a zero is what this test would report
+/// if the write never staged a page for any other reason. It did exactly that until now: it wrote
+/// synchronously, and a synchronous write goes straight to the block store whatever this setting
+/// says, so the test passed with the feature ON as readily as OFF. The control below is the write
+/// that DOES stage, under the same configuration, differing only in the setting.
 #[test]
 fn a_store_that_puts_no_pages_in_the_log_carries_no_locations() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        1024 * 1024,
-        dir.path().join("cache"),
-        dir.path().join("pages"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
-    std::env::set_var("TS_BLOCK_IN_WAL", "0");
+    fn resident_pages_after_a_staging_write(put_pages_in_the_log: bool) -> usize {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        // Asynchronous storage is what leaves a page somewhere other than the block store, and
+        // the spill handler is what would then catch it. Without both, nothing stages and the
+        // count is zero for reasons that have nothing to do with the setting.
+        engine.set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                async_storage: true,
+                ..Config::default()
+            },
+        });
+        engine.disable_hot_page_spill_for_test();
+        if !put_pages_in_the_log {
+            engine.block_store().stop_putting_pages_in_the_log_for_test();
+        }
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "plain".to_string(),
+                        value: b"v".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.wal_resident_page_count(1)
+    }
+
     assert!(
-        engine
-            .execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::StringSet {
-                    key: "plain".to_string(),
-                    value: b"v".to_vec(),
-                },
-            })
-            .status
-            .ok
+        resident_pages_after_a_staging_write(true) > 0,
+        "the control has to stage something, or the zero below means nothing"
     );
-    std::env::remove_var("TS_BLOCK_IN_WAL");
-    assert_eq!(engine.wal_resident_page_count(1), 0);
+    assert_eq!(
+        resident_pages_after_a_staging_write(false),
+        0,
+        "a store that puts no pages in the log records no locations"
+    );
 }
 
 /// A record can state what the write DID, and that statement has to match what the command
@@ -7805,7 +7826,6 @@ fn two_engines_in_one_process_do_not_read_each_others_pages() {
         engine
     };
 
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
 
     let first = make("first");
     let second = make("second");
@@ -7843,7 +7863,6 @@ fn two_engines_in_one_process_do_not_read_each_others_pages() {
     };
     let first_read = read(&first);
     let second_read = read(&second);
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     assert_eq!(
         first_read,
@@ -7888,7 +7907,6 @@ fn one_engines_retention_floor_ignores_another_engines_registrations() {
         engine
     };
 
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     let busy = make("busy");
     let quiet = make("quiet");
 
@@ -7906,7 +7924,6 @@ fn one_engines_retention_floor_ignores_another_engines_registrations() {
             .ok
         );
     }
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     // The quiet engine's log has nothing registered against it, so nothing holds its floor.
     assert_eq!(
@@ -9482,7 +9499,6 @@ fn recording_results_still_coalesces_fsyncs() {
     let syncs = engine.write_ahead_log_store().stats(1).syncs - syncs_before;
     let writes = acked.load(Ordering::Relaxed);
     std::env::remove_var("TS_WAL_OUTCOME_ITEMS");
-    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
 
     println!("[coalescing] writes={writes} fdatasyncs={syncs} while recording results");
     assert_eq!(writes, WRITERS * PER_WRITER, "every write must ack");
@@ -9534,7 +9550,6 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
         },
     });
     assert!(response.status.ok);
-    std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
 
     let carried: usize = engine
         .write_ahead_log_store()
@@ -10398,7 +10413,6 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         ("async + group-commit OFF", "1", "0", true),
     ];
     for (label, block_in_wal, concurrent, async_storage) in cases {
-        std::env::set_var("TS_BLOCK_IN_WAL", block_in_wal);
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -10408,6 +10422,9 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         );
         // Said to THIS engine. `TS_ENGINE_CONCURRENT_COMMIT` used to carry it, which meant the
         // case that wanted the barrier under the lock set it for every engine in the process.
+        if block_in_wal == "0" {
+            engine.block_store().stop_putting_pages_in_the_log_for_test();
+        }
         if concurrent == "0" {
             engine.commit_under_lock_for_test();
         }
@@ -10466,8 +10483,6 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
                 }
             );
         }
-        std::env::remove_var("TS_BLOCK_IN_WAL");
-        std::env::remove_var("TS_ENGINE_CONCURRENT_COMMIT");
     }
 }
 
@@ -10484,7 +10499,6 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
 /// slab that is not a file -- and every value still reads.
 #[test]
 fn a_checkpoint_index_names_no_place_only_this_process_can_reach() {
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -10525,7 +10539,6 @@ fn a_checkpoint_index_names_no_place_only_this_process_can_reach() {
     let moved = engine.materialize_synthetic_pages(1);
     let after = engine.synthetic_address_count_for_test(1);
     println!("[portable] {before} in-process-only address(es), {moved} materialised, {after} left");
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     assert_eq!(
         after, 0,
@@ -10683,7 +10696,6 @@ fn what_a_live_record_is_made_of() {
 /// Measured, not asserted, until the numbers say which.
 #[test]
 fn what_the_log_resident_registry_holds_after_a_dump() {
-    std::env::set_var("TS_BLOCK_IN_WAL", "1");
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -10751,7 +10763,6 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
     println!(
         "[registry] after materialising: {moved} page(s) moved, {after_materialise} registration(s) left, {synthetic_left} synthetic address(es) left"
     );
-    std::env::remove_var("TS_BLOCK_IN_WAL");
 
     // Whatever the counts, every value must still read -- a registry that shrank too far would
     // show up here rather than as a number.
