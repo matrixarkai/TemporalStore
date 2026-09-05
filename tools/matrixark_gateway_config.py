@@ -237,8 +237,10 @@ SETTINGS: List[Setting] = [
     # ---- extraction (the LLM that turns raw text into memories) --------------------------------
     Setting("extraction.provider", "extraction", "MATRIXARK_UNDERSTANDING_PROVIDER",
             "Extraction provider", "str", "deterministic", "restart",
-            "deterministic runs local rules and calls no model at all. openai_compatible calls the "
-            "endpoint below — this is the setting for DeepSeek, vLLM, Ollama, or OpenAI.",
+            "deterministic runs local rules and calls no model at all. openai_compatible calls "
+            "the endpoint below — this is the setting for DeepSeek, vLLM, Ollama, or OpenAI. "
+            "anthropic calls the Messages API and reads Anthropic model and Anthropic base URL "
+            "instead of the two fields below.",
             ["deterministic", "openai_compatible", "anthropic"]),
     Setting("extraction.base_url", "extraction", "MATRIXARK_EXTRACTION_BASE_URL",
             "Extraction base URL", "str", "", "restart",
@@ -328,7 +330,11 @@ SETTINGS: List[Setting] = [
     Setting("embedding.provider", "embedding", "MATRIXARK_EMBEDDING_PROVIDER",
             "Embedding provider", "str", "deterministic", "live",
             "deterministic produces hash vectors — retrieval still answers 200, but it is not "
-            "semantic. openai_compatible calls the encoder below." + ENCODER_CHANGE_NOTE,
+            "semantic. openai_compatible calls the encoder below. voyage calls Voyage with the same "
+            "three fields, defaulting to api.voyageai.com, VOYAGE_API_KEY and voyage-3 when they "
+            "are blank. local is a synonym for deterministic and runs NO encoder — to run one on "
+            "this box, choose openai_compatible and point it at the bundled encoder server, which "
+            "is what the Local MiniLM preset does." + ENCODER_CHANGE_NOTE,
             ["deterministic", "openai_compatible", "voyage", "local"]),
     Setting("embedding.api_base", "embedding", "MATRIXARK_EMBEDDING_API_BASE",
             "Embedding base URL", "str", "", "live",
