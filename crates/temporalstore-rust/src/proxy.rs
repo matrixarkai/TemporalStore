@@ -3636,6 +3636,36 @@ mod tests {
         let counts = probe.stop();
         rows.push(("POST /context/ingest", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
+        // Split the ingest into its three parts, because "parse and reply" was an inference from
+        // the total, not a measurement. Each row is measured on its own so the next look starts
+        // where the allocations actually are.
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let parsed =
+                crate::http::parse_json::<context::ProxyContextIngestRequest>(&ingest_body);
+            std::hint::black_box(&parsed);
+        }
+        let counts = probe.stop();
+        rows.push(("  of which: parse the body", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let parsed_once =
+            crate::http::parse_json::<context::ProxyContextIngestRequest>(&ingest_body)
+                .expect("body parses");
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = proxy.context_ingest(parsed_once.clone());
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("  of which: handle + reply", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            std::hint::black_box(&parsed_once.clone());
+        }
+        let counts = probe.stop();
+        rows.push(("  (the clone above costs)", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
         println!();
         println!("  path                    allocs/call   bytes/call");
         for (name, allocs, bytes) in &rows {
