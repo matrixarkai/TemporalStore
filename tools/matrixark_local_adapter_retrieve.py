@@ -1675,13 +1675,9 @@ class _LocalAdapterRetrieveMixin:
         # query-selected (a cross-session entity, or a current-session turn on an unselected
         # batch node) never becomes a candidate even when captured, scored, and scope-eligible.
         # Admit scope-matching exact_value_fact entities that are embedding- or lexically
-        # relevant to the query (capped), so the value token can be packed. Additive + gated
-        # (MATRIXARK_VALUE_FACT_ADMISSION, default on); reversible to prior fetch behavior.
-        if (
-            str(_os.environ.get("MATRIXARK_VALUE_FACT_ADMISSION", "1")).strip().lower()
-            not in {"0", "false", "no", "off"}
-            and not traversal.get("fallback_to_flat")
-        ):
+        # relevant to the query (capped), so the value token can be packed. Additive, so it has
+        # nothing to undo: it can only add a candidate the fetch would otherwise never see.
+        if not traversal.get("fallback_to_flat"):
             _admitted_value_hashes = {
                 record.get("entity_hash")
                 for record in tree_candidate_records
@@ -1754,13 +1750,10 @@ class _LocalAdapterRetrieveMixin:
                 _tree_prefilter_source.append(_bucket_record)
             if _bucket_type in ("resource_chunk", "skill_section"):
                 _tree_resource_skill_source.append(_bucket_record)
-        # Default ON. Measured on the local backend, both arms scoring the same 212 candidates from
-        # identical corpora in isolated event logs: 1272 record visits per retrieve against 122, a
-        # 10.4x reduction, and the returned packs were IDENTICAL across five queries. Set the
-        # variable to a falsey value to walk the whole candidate list per scan again.
-        _type_buckets_enabled = str(
-            _os.environ.get("MATRIXARK_RETRIEVE_TYPE_BUCKETS", "1")
-        ).strip().lower() not in {"0", "false", "no", "off"}
+        # Measured on the local backend, the bucketed and whole-list arms scored the same 212
+        # candidates from identical corpora in isolated event logs: 122 record visits per retrieve
+        # against 1272, a 10.4x reduction, and the returned packs were IDENTICAL across five
+        # queries. That is what retired the whole-list walk rather than leaving it selectable.
         _scan_visits = [0]
 
         def _scan_source(bucketed):
@@ -1769,9 +1762,8 @@ class _LocalAdapterRetrieveMixin:
             Counted rather than timed: this host runs other work, and a visit count cannot be
             flattered by a quiet minute.
             """
-            source = bucketed if _type_buckets_enabled else tree_candidate_records
-            _scan_visits[0] += len(source)
-            return source
+            _scan_visits[0] += len(bucketed)
+            return bucketed
 
         extraction_committed_event_ids = {
             int(record.get("event_id_hash") or 0)
@@ -3921,8 +3913,8 @@ class _LocalAdapterRetrieveMixin:
             try:
                 with open(_visits_path, "a", encoding="utf-8") as _visits_file:
                     _visits_file.write(
-                        "%d %d %s\n"
-                        % (_scan_visits[0], len(tree_candidate_records), _type_buckets_enabled)
+                        "%d %d\n"
+                        % (_scan_visits[0], len(tree_candidate_records))
                     )
             except OSError:
                 # A measurement channel must never break the request it is measuring.
@@ -3971,7 +3963,6 @@ class _LocalAdapterRetrieveMixin:
             "auxiliary_candidate_count": len(auxiliary_matches),
             "tree_candidate_records": len(tree_candidate_records),
             "record_scan_visits": _scan_visits[0],
-            "record_scan_type_buckets": _type_buckets_enabled,
             "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
             "fanout_dropped_count": fanout_dropped_count,
             "records_declined_by_encoder_change": embedding_model_conflict_records,
