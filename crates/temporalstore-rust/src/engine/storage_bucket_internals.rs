@@ -1511,6 +1511,35 @@ pub(super) fn sync_bucket_index_object_pages(
     addresses: Vec<BlockAddress>,
     dirty: bool,
 ) {
+    sync_bucket_index_object_pages_with_mode(shard, shard_id, kind, object_key, addresses, dirty, true)
+}
+
+/// Publish pages for an object into the bucket index.
+///
+/// `replace_existing` is the whole cost of this function. With it true the object's pages are
+/// dropped and rebuilt from `addresses`, which is the only way to express "the live set is
+/// exactly this" -- and it costs the object's whole page count on every call, however few pages
+/// the write actually touched.
+///
+/// A pure APPEND does not need that. Nothing was removed, and the pages already filed are still
+/// correct, so publishing only the new addresses leaves the index in the same state for a
+/// fraction of the work. Callers may pass false ONLY when both hold:
+///
+///   * nothing was evicted (a trim that dropped points must re-state the live set), and
+///   * no appended key REPLACED an existing one (a replacement must drop the superseded page,
+///     or the object would carry two entries for one key).
+///
+/// Both are decidable at the call site: `BTreeMap::insert` reports the value it displaced, and
+/// the trim reports whether it removed anything.
+pub(super) fn sync_bucket_index_object_pages_with_mode(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    addresses: Vec<BlockAddress>,
+    dirty: bool,
+    replace_existing: bool,
+) {
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
     // An empty lookup means "not established yet", which callers read as a signal to fall back to
@@ -1546,6 +1575,10 @@ pub(super) fn sync_bucket_index_object_pages(
             .unwrap_or_default()
     };
     for routing_bucket in target_buckets {
+        if !replace_existing {
+            // Additive publish: nothing is being superseded, so the pages already filed stay.
+            break;
+        }
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
