@@ -14751,6 +14751,111 @@ fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
     );
 }
 
+/// A context write leaves nothing in the `hash`, `set` or `feature` cache namespaces.
+///
+/// This is the premise `invalidate_context_record` rests on. `invalidate_record_all` sweeps those
+/// three namespaces, and each sweep is `invalidate_record`, which walks EVERY key in all three
+/// cache tiers -- so the sweeps cost more as the cache fills, and for a context object they were
+/// walking the whole cache to find nothing. The context arms now invalidate only what they can
+/// actually have cached.
+///
+/// If a context object ever does end up cached under one of those namespaces, this fails and the
+/// narrowing has to be reconsidered -- which is the point of holding the premise rather than the
+/// conclusion.
+#[test]
+fn a_context_write_leaves_the_record_namespaces_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let record_namespace = |engine: &TemporalEngine| -> Vec<String> {
+        engine
+            .cache
+            .entries_for_shard(1)
+            .into_iter()
+            .filter(|entry| matches!(entry.namespace.as_str(), "hash" | "set" | "feature"))
+            .map(|entry| format!("{}/{}", entry.namespace, entry.record_key))
+            .collect()
+    };
+
+    for n in 1..=64u64 {
+        for command in [
+            Command::ContextUpsertNode {
+                tenant_hash: 41,
+                node: Box::new(crate::types::ContextNode {
+                    node_hash: n,
+                    parent_hash: 0,
+                    kind: 1,
+                    canonical_name: format!("node-{n}"),
+                    status: 1,
+                    last_event_time_ms: 1_787_270_070_000 + n,
+                    raw_metadata_ref: String::new(),
+                    l0: String::new(),
+                    l1_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
+                }),
+            },
+            Command::ContextWriteIndexRef {
+                tenant_hash: 41,
+                index_name: "source".to_string(),
+                index_value_hash: n,
+                scope_hash: 0,
+                event_time_ms: 1_700_000_000_000 + n,
+                index_ref: crate::types::ContextIndexRef {
+                    primary_node_hash: n,
+                    primary_event_time_ms: 1_700_000_000_000 + n,
+                    event_id_hash: 5_000 + n,
+                },
+            },
+        ] {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(out.status.ok, "{n}: {:?}", out.status);
+        }
+    }
+
+    assert!(
+        record_namespace(&engine).is_empty(),
+        "a context write cached something in a record namespace, so dropping those sweeps would          leave it stale: {:?}",
+        record_namespace(&engine)
+    );
+
+    // The positive control, and it is what makes the emptiness above mean anything: a real hash
+    // record DOES show up in the same view, so the filter is not simply blind to these entries.
+    let set = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "a-real-hash".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(set.status.ok, "{:?}", set.status);
+    let got = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashGet {
+            key: "a-real-hash".to_string(),
+            field: "f".to_string(),
+        },
+    });
+    assert!(got.status.ok, "{:?}", got.status);
+    assert!(
+        record_namespace(&engine)
+            .iter()
+            .any(|entry| entry.contains("a-real-hash")),
+        "a hash record did not appear in the record namespaces, so the assertion above passes          whether or not context writes cache there"
+    );
+}
+
 /// What `SequenceQuery`'s single bound costs a filtered caller.
 ///
 /// `ContextQueryEvents` has TWO bounds -- `max_scan` for work, `limit` for results after filtering --

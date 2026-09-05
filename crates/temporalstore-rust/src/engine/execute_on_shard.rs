@@ -137,7 +137,7 @@ fn write_context_node(
             .insert(CONTEXT_NODE_FIELD.to_string(), address);
         wrote = true;
     }
-    invalidate_record_all(cache, shard_id, object_key);
+    invalidate_context_record(cache, shard_id, object_key);
     wrote
 }
 
@@ -2605,7 +2605,7 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &object_key);
             if !bulk_ingest_mode()
                 && maybe_auto_compress_context_node(
                     cache,
@@ -2685,7 +2685,7 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
-            invalidate_record_all(cache, shard_id, &event_object_key);
+            invalidate_context_record(cache, shard_id, &event_object_key);
 
             let index_ref = ContextIndexRef {
                 primary_node_hash: node_hash,
@@ -2723,7 +2723,7 @@ pub(crate) fn execute_on_shard(
                             series.insert(timestamp_ms, address);
                             mutated = true;
                         }
-                        invalidate_record_all(cache, shard_id, &object_key);
+                        invalidate_context_record(cache, shard_id, &object_key);
                         index_object_keys.push(object_key);
                     }
                 };
@@ -2851,7 +2851,7 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &object_key);
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextQueryIndex {
@@ -2984,7 +2984,7 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &object_key);
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextQueryPackAudit {
@@ -3232,8 +3232,8 @@ pub(crate) fn execute_on_shard(
                     .insert(entity.entity_hash, address);
                 mutated = true;
             }
-            invalidate_record_all(cache, shard_id, &object_key);
-            invalidate_record_all(cache, shard_id, &collection_key_for_response);
+            invalidate_context_record(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &collection_key_for_response);
             CommandResponse::ContextObjectKey {
                 object_key: collection_key_for_response,
             }
@@ -3328,7 +3328,7 @@ pub(crate) fn execute_on_shard(
                     }
                 }
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &object_key);
             CommandResponse::ContextChildRefs {
                 object_key,
                 refs: Vec::new(),
@@ -3408,7 +3408,7 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &object_key);
             // Keep the node's copy of this vector current. The summary record just written
             // remains the owner; the copy exists so the scoring pass, which fetches the node
             // anyway, does not have to come back here for one field.
@@ -3547,7 +3547,7 @@ pub(crate) fn execute_on_shard(
                     mutated = true;
                 }
             }
-            invalidate_record_all(cache, shard_id, &object_key);
+            invalidate_context_record(cache, shard_id, &object_key);
             CommandResponse::ContextObjectKey { object_key }
         }
         Command::ContextQueryCompressionEvents {
@@ -3661,7 +3661,7 @@ pub(crate) fn execute_on_shard(
                         mutated = true;
                     }
                 }
-                invalidate_record_all(cache, shard_id, &object_key);
+                invalidate_context_record(cache, shard_id, &object_key);
                 CommandResponse::ContextCompressionEvents {
                     object_key,
                     events: vec![event],
