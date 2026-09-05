@@ -50,7 +50,7 @@ class AWriteDoesNotRewriteTheSnapshot(unittest.TestCase):
         """A list that is not a continuation used to cost a full rewrite on every append."""
         with tempfile.TemporaryDirectory() as store:
             adapter, records = self._seeded(store)
-            base = adapter._durable_read_cache_path()
+            base = adapter._durable_read_cache_snapshot_path()
             before = base.read_bytes()
 
             diverged = [dict(r) for r in records]

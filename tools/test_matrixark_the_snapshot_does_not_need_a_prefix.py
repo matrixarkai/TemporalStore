@@ -46,7 +46,7 @@ class SnapshotDoesNotNeedAPrefixTest(unittest.TestCase):
         self.addCleanup(self._dir.cleanup)
         self.store = Path(self._dir.name)
         self.log = self.store / "events.jsonl"
-        self.base = self.store / "events.jsonl.read-cache.json"
+        self.base = MatrixArkLocalAdapter(self.log)._durable_read_cache_snapshot_path()
         self.delta = self.store / ".events.jsonl.read-cache-delta.jsonl"
         _clear_process_read_cache()
         self.addCleanup(_clear_process_read_cache)
@@ -85,6 +85,7 @@ class SnapshotDoesNotNeedAPrefixTest(unittest.TestCase):
         """The same store rebuilt from the log alone, then restored exactly as it was."""
         names = (
             "events.jsonl.read-cache.json",
+            "events.jsonl.read-cache.bin",
             ".events.jsonl.read-cache-delta.jsonl",
             ".events.jsonl.read-cache-head.json",
         )

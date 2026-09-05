@@ -46,7 +46,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
         adapter = A.MatrixArkLocalAdapter(self.path)
         adapter.append_many(_records(0, self.SEED))
         adapter.read_all()
-        self.assertTrue(adapter._durable_read_cache_path().exists(),
+        self.assertTrue(adapter._durable_read_cache_snapshot_path().exists(),
                         "priming read did not establish a durable base")
         return adapter
 
@@ -65,7 +65,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
     def test_appends_do_not_rewrite_the_base(self):
         """The point of the whole change: appending must not re-serialize the corpus."""
         adapter = self._primed()
-        base = adapter._durable_read_cache_path()
+        base = adapter._durable_read_cache_snapshot_path()
         before_bytes = base.read_bytes()
 
         for record in _records(50, 10):
@@ -160,7 +160,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
             adapter.append(record)
         adapter._clear_jsonl_read_caches()
         for cache_file in (
-            adapter._durable_read_cache_path(),
+            adapter._durable_read_cache_snapshot_path(),
             adapter._durable_read_cache_delta_path(),
             adapter._durable_read_cache_head_path(),
         ):
@@ -187,7 +187,9 @@ class IncrementalReadCacheCase(unittest.TestCase):
         head_path = adapter._durable_read_cache_head_path()
         self.assertTrue(head_path.exists(), "no head was written")
         head = json.loads(head_path.read_text(encoding="utf-8"))
-        base = json.loads(adapter._durable_read_cache_path().read_text(encoding="utf-8"))
+        # Through the module's decoder, so this reads the snapshot however it is stored.
+        base = A._decode_snapshot_bytes(
+            adapter._durable_read_cache_snapshot_path().read_bytes())
         tail = [l for l in adapter._durable_read_cache_delta_path().read_text(
             encoding="utf-8").splitlines() if l.strip()]
         # `record_count` counts DATA records, which is what the load path recovers and compares

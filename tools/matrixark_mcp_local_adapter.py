@@ -140,20 +140,16 @@ LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_
 #:
 #: zlib rather than zstd because `dependencies = []` in pyproject is deliberate: zstd measured
 #: 27.53x, better but not enough to earn the project its first runtime dependency.
-#: OFF by default, which is a separate decision from shipping the mechanism.
+#: ON. Measured on three 1.00 MB skills: the snapshot goes 12.97 MB -> 0.74 MB (17.55x), 1,909 B
+#: a record -> 109 B, for about 32 ms of decode. An existing JSON snapshot still loads, so a store
+#: written before this needs no migration -- it is simply rewritten in the container on the next
+#: full write.
 #:
-#: Turning it on moves the snapshot to a different filename, and about twenty tests across eight
-#: files name the JSON one to mean "the snapshot" -- existence checks, mtime comparisons, a shard
-#: filter, fixtures captured in setUp before the file exists. They are not wrong; the JSON-ness is
-#: baked into how the suite describes the store. Each wants pointing at
-#: `_durable_read_cache_snapshot_path()`, and doing that carefully deserves its own change rather
-#: than riding along with a format.
-#:
-#: Everything needed to flip it is here and measured: on three 1.00 MB skills the snapshot goes
-#: 12.97 MB -> 0.74 MB (17.55x), 1,909 -> 109 B a record, and an existing JSON snapshot still
-#: loads with the container enabled.
+#: `MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS=0` returns the JSON form, and reading never depends
+#: on the flag: the loader decides by what the bytes say they are, so a store written across a flip
+#: reads either way and turning it off again is not a one-way door.
 LOCAL_DURABLE_READ_CACHE_COMPRESS = os.environ.get(
-    "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS", "0"
+    "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
 LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL = max(
     1, min(9, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL", "6")))
