@@ -635,6 +635,16 @@ SETTINGS: List[Setting] = [
             "reads without replaying it. Turning it off makes the first read after a restart "
             "much slower and saves the disk the snapshot occupies, which is comparable to the "
             "event log itself."),
+    Setting("ingestion.durable_read_cache_min_write_ms", "ingestion",
+            "MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS",
+            "Durable read snapshot rewrite floor (ms)", "float", "0", "restart",
+            "How long to leave between full rewrites of that snapshot. At 0, every write the "
+            "append-only path cannot apply rewrites the whole record set. Measured over 12 "
+            "queries interleaved with ingest across 128 documents: a floor of 5000 removed all "
+            "12 rewrites and took the median query from 2,352 ms to 1,922 ms, while the cold "
+            "load rose from 1,391 ms to 1,507 ms. Queries are frequent and restarts are not, so "
+            "a floor pays for most deployments -- but it buys query time with startup time, "
+            "which is why it ships at 0 and is offered here."),
 
     # ---- edge limits ---------------------------------------------------------------------------
     Setting("limits.ingest_rps", "limits", "MATRIXARK_RL_INGEST_RPS",
