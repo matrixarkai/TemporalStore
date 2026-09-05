@@ -1588,9 +1588,14 @@ def _model_config_snapshot() -> Json:
     extraction_provider = _env(
         "MATRIXARK_UNDERSTANDING_PROVIDER", _env("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")
     )
-    extraction_key_env = _env("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
     embedding_provider = _env("MATRIXARK_EMBEDDING_PROVIDER", "deterministic")
-    embedding_key_env = _env("MATRIXARK_EMBEDDING_API_KEY_ENV", "OPENAI_API_KEY")
+    # Which variable a key lands in is the registry's decision, and asking it is the only way this
+    # page can be right about it. Recomputing the name here is what let the portal report
+    # OPENAI_API_KEY -- flat, for every provider -- while a Voyage encoder read VOYAGE_API_KEY and
+    # an Anthropic extraction read ANTHROPIC_API_KEY. The warnings below tell a customer where to
+    # put their key, so a second answer here is worse than none.
+    extraction_key_env = _gwconfig._env_name(_gwconfig.SETTINGS_BY_KEY["extraction.api_key"], {})
+    embedding_key_env = _gwconfig._env_name(_gwconfig.SETTINGS_BY_KEY["embedding.api_key"], {})
     require_model_embeddings = _env("MATRIXARK_REQUIRE_MODEL_EMBEDDINGS") in {"1", "true", "yes", "on"}
 
     extraction: Json = {

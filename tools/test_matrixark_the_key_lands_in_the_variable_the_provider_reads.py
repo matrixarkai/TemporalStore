@@ -232,5 +232,76 @@ class EveryPresetLandsItsKeySomewhereTheProviderReadsTest(unittest.TestCase):
                         self.assertIn(value, setting.choices)
 
 
+class TheStatusPageReportsTheSameVariableTest(unittest.TestCase):
+    """The portal's model-configuration panel names the variable a customer should put their key in.
+    It used to work that name out for itself, flat across providers, so it could disagree with where
+    the key was actually written -- and the customer would follow the wrong instruction."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            from tools import matrixark_v1_gateway as gw  # type: ignore
+        except ImportError:
+            import matrixark_v1_gateway as gw  # type: ignore
+        cls.gw = gw
+        # The gateway binds its own module object for the registry. Comparing against a separately
+        # imported one compares two different modules, which is how an earlier suite passed while
+        # the thing it tested was broken.
+        cls.cfg = gw._gwconfig
+
+    def _snapshot_for(self, provider_variable: str, provider: str) -> dict:
+        previous = os.environ.get(provider_variable)
+        os.environ[provider_variable] = provider
+        try:
+            return self.gw._model_config_snapshot()
+        finally:
+            if previous is None:
+                os.environ.pop(provider_variable, None)
+            else:
+                os.environ[provider_variable] = previous
+
+    def test_the_encoder_panel_names_what_the_encoder_reads(self) -> None:
+        for provider, reads in encoder_key_variables().items():
+            chosen = provider or "openai_compatible"
+            with self.subTest(provider=chosen):
+                snapshot = self._snapshot_for("MATRIXARK_EMBEDDING_PROVIDER", chosen)
+                self.assertEqual(reads, snapshot["embedding"]["api_key_env"])
+
+    def test_the_extraction_panel_names_what_extraction_reads(self) -> None:
+        for provider, reads in extraction_key_variables().items():
+            chosen = provider or "openai_compatible"
+            with self.subTest(provider=chosen):
+                snapshot = self._snapshot_for("MATRIXARK_UNDERSTANDING_PROVIDER", chosen)
+                self.assertEqual(reads, snapshot["extraction"]["api_key_env"])
+
+    def test_the_panel_and_the_registry_are_one_answer_not_two(self) -> None:
+        """Both sides must be read while the SAME provider is selected. Taking the registry's answer
+        after the environment is restored compares two different deployments, which is how this
+        first failed against a snapshot that was already right."""
+        for group, variable in (("embedding", "MATRIXARK_EMBEDDING_PROVIDER"),
+                                ("extraction", "MATRIXARK_UNDERSTANDING_PROVIDER")):
+            secret = self.cfg.SETTINGS_BY_KEY[group + ".api_key"]
+            for choice in self.cfg.SETTINGS_BY_KEY[group + ".provider"].choices:
+                with self.subTest(group=group, provider=choice):
+                    previous = os.environ.get(variable)
+                    os.environ[variable] = choice
+                    try:
+                        panel = self.gw._model_config_snapshot()[group]["api_key_env"]
+                        registry = self.cfg._env_name(secret, {})
+                    finally:
+                        if previous is None:
+                            os.environ.pop(variable, None)
+                        else:
+                            os.environ[variable] = previous
+                    self.assertEqual(registry, panel)
+
+    def test_the_warning_still_tells_the_customer_where_the_key_goes(self) -> None:
+        """The name is only useful because a warning quotes it; if the warning stops naming a
+        variable the panel is back to being a number nobody can act on."""
+        snapshot = self._snapshot_for("MATRIXARK_EMBEDDING_PROVIDER", "voyage")
+        named = [w for w in snapshot["warnings"] if snapshot["embedding"]["api_key_env"] in w]
+        self.assertTrue(named, "no warning names the variable the encoder key goes into")
+
+
 if __name__ == "__main__":
     unittest.main()
