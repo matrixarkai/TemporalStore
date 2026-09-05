@@ -855,10 +855,9 @@ impl TemporalEngine {
             // a recovery inherited the recovery's items and recorded them as changes it had
             // made itself. A later replay then installs them, and if one cannot be applied it
             // aborts the whole shard load, taking unrelated keys down with it.
+            // Nothing can be staged while recording is off, because the staging function is
+            // where that is now decided -- so there is nothing left here to clear.
             let mut staged_outcomes = block_in_wal::take_outcomes();
-            if !crate::wal::wal_outcome_items_enabled() {
-                staged_outcomes.clear();
-            }
             if write_command && !replaying_wal() {
                 // A write that changed the shard and recorded nothing cannot be replaced by
                 // its record. Every existing test that writes anything is a probe for that,
@@ -3336,7 +3335,7 @@ fn mark_bucket_index_page_deleted(
     // Removing a member IS an outcome, and it is the one a command log states worst: replay has
     // to re-run the removal and hope the state it removes from matches. Saying "this component
     // is gone" needs no such hope. Recorded here because every typed removal comes through.
-    if crate::wal::wal_outcome_items_enabled() {
+    {
         block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: model_id.to_string(),
             object_key: key.to_string(),

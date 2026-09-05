@@ -82,15 +82,25 @@ thread_local! {
 /// Staged for the same reason pages are -- the record does not exist yet, so there is nowhere
 /// to put it until the append.
 pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
+    // Asked here rather than by each caller. Six of them asked it immediately before calling,
+    // which is six chances to write a seventh that does not -- and the answer belongs with the
+    // table that holds the result, not with the code that produced it.
+    //
+    // The cost of asking late is that a caller now builds the item before learning it is not
+    // wanted. That lands only on the opted-out path: recording results is the default, and the
+    // variable exists to write records an older build can still replay.
+    if !crate::wal::wal_outcome_items_enabled() {
+        return;
+    }
     OUTCOMES.with(|outcomes| outcomes.borrow_mut().push(item));
 }
 
-/// Take what this write recorded doing, leaving nothing behind.
 /// How many outcomes this write has staged so far, without consuming them.
 pub(super) fn staged_outcome_count() -> usize {
     OUTCOMES.with(|outcomes| outcomes.borrow().len())
 }
 
+/// Take what this write recorded doing, leaving nothing behind.
 pub(super) fn take_outcomes() -> Vec<crate::wal::WalOutcomeItem> {
     OUTCOMES.with(|outcomes| std::mem::take(&mut *outcomes.borrow_mut()))
 }

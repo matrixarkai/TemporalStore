@@ -25,9 +25,6 @@ fn stage_component_outcome(
     address: Option<crate::block_store::BlockAddress>,
     value: Option<Vec<u8>>,
 ) {
-    if !crate::wal::wal_outcome_items_enabled() {
-        return;
-    }
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),
@@ -52,9 +49,6 @@ fn stage_meta_outcome(
     ttl: Option<u64>,
     deleted: bool,
 ) {
-    if !crate::wal::wal_outcome_items_enabled() {
-        return;
-    }
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
         object_key: object_key.to_string(),

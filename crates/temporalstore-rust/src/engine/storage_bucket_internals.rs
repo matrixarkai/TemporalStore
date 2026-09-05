@@ -1377,7 +1377,7 @@ pub(super) fn upsert_bucket_index_page_with(
     // This IS the outcome: an object, its identity, and where its page ended up. Put it aside
     // for the record, so replay has the option of installing it instead of re-running the
     // command that produced it.
-    if stage && crate::wal::wal_outcome_items_enabled() {
+    if stage {
         super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
             kind: kind.to_string(),
             object_key: object_key.to_string(),
