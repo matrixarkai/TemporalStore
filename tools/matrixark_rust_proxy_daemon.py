@@ -285,9 +285,35 @@ class RustProxyDaemon:
             if proc is None or proc.stdin is None or proc.stdout is None:
                 return {"ok": False, "error": "rust proxy is not available"}
             try:
+                # The budget runs from ARRIVAL, not from winning the lock. One lock serializes
+                # every caller, so a lock-relative deadline let this process spend a full minute
+                # on an answer whose caller had already timed out -- holding that lock while the
+                # next caller queued behind a result nobody would read, which made the next
+                # caller more likely to be abandoned in turn.
+                budget_s = max(2.0, float(request.get("request_timeout_ms") or 60000) / 1000.0 + 2.0)
+                deadline = started + budget_s
+                if time.monotonic() >= deadline:
+                    # Already spent queueing. Free the lock now rather than start work that no
+                    # one is waiting for.
+                    self._write_log(
+                        {
+                            "event": "proxy_call_abandoned",
+                            "op": request.get("op"),
+                            "queue_wait_ms": waited_ms,
+                            "budget_ms": int(budget_s * 1000),
+                        }
+                    )
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"request spent its whole {budget_s:.1f}s budget queueing for the "
+                            f"shared proxy ({waited_ms}ms); not started"
+                        ),
+                        "daemon_queue_wait_ms": waited_ms,
+                        "daemon_abandoned": True,
+                    }
                 proc.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
                 proc.stdin.flush()
-                deadline = time.monotonic() + max(2.0, float(request.get("request_timeout_ms") or 60000) / 1000.0 + 2.0)
                 while time.monotonic() < deadline:
                     line = proc.stdout.readline()
                     if not line:
