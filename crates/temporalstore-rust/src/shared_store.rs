@@ -316,10 +316,14 @@ pub struct SharedStoreReplicator<O> {
     object_store: Arc<O>,
     retry_policy: SharedStoreRetryPolicy,
     wal_append_mode: SharedStoreWalAppendMode,
-    /// Durable single-writer fence. When set (and `TS_SHARED_STORE_FENCE` is on), every WAL
-    /// append and checkpoint publish first re-validates that this writer's `load_version`
-    /// still owns the shard lease in the object store, aborting a superseded stale owner
-    /// before it can double-append.
+    /// Durable single-writer fence, configured by `with_fence` and applying whenever it is.
+    /// Every WAL append and checkpoint publish then re-validates that this writer's
+    /// `load_version` still owns the shard lease in the object store, aborting a superseded
+    /// stale owner before it can double-append.
+    ///
+    /// `TS_SHARED_STORE_FENCE` used to gate this as well, so a caller could configure a fence
+    /// and have it silently not apply. Nothing outside the R2 test configures one, so nothing
+    /// production does changes by the gate going: with no fence there is nothing to enforce.
     fence: Option<ShardFenceConfig>,
 }
 
@@ -343,9 +347,6 @@ struct ShardLease {
     owner: String,
 }
 
-/// `TS_SHARED_STORE_FENCE`: gate for the durable single-writer fence (R2). Default OFF so the
-/// shared-store write path is byte-identical to the pre-fence behavior unless explicitly
-/// enabled.
 /// TS_SHARED_STORE_MAX_PENDING: how many entries the async queue may hold before a write
 /// stops being allowed to defer its own durability.
 ///
@@ -362,17 +363,6 @@ fn shared_store_max_pending() -> usize {
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(50_000)
-}
-
-fn shared_store_fence_enabled() -> bool {
-    matches!(
-        std::env::var("TS_SHARED_STORE_FENCE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 impl<O> Clone for SharedStoreReplicator<O> {
@@ -565,9 +555,12 @@ where
     }
 
     /// Attach a durable single-writer fence: this replicator (and every storage writer it
-    /// spawns) claims `load_version` for its shard leases. Combine with
-    /// [`acquire_shard_lease`](Self::acquire_shard_lease) to install the lease and with
-    /// `TS_SHARED_STORE_FENCE=1` to enforce re-validation on every append/checkpoint.
+    /// spawns) claims `load_version` for its shard leases, and re-validates that claim on every
+    /// append and checkpoint. Combine with
+    /// [`acquire_shard_lease`](Self::acquire_shard_lease) to install the lease.
+    ///
+    /// Attaching one IS enabling it. `TS_SHARED_STORE_FENCE` used to be a second condition, so a
+    /// caller could ask for a fence and not get one.
     pub fn with_fence(mut self, load_version: u64, owner: impl Into<String>) -> Self {
         self.fence = Some(ShardFenceConfig {
             load_version,
@@ -657,7 +650,7 @@ where
     }
 
     /// Fence check invoked on every WAL append + checkpoint publish. A no-op unless a fence is
-    /// configured AND `TS_SHARED_STORE_FENCE` is enabled, so the default write path is
+    /// configured, which is a decision the caller makes by name, so the default write path is
     /// unchanged. When active it re-validates the durable lease, aborting a superseded writer.
     async fn enforce_fence(
         &self,
@@ -666,9 +659,6 @@ where
         let Some(fence) = &self.fence else {
             return Ok(());
         };
-        if !shared_store_fence_enabled() {
-            return Ok(());
-        }
         self.validate_shard_lease(shard_id, fence.load_version).await
     }
 
@@ -5436,7 +5426,6 @@ mod tests {
     /// an in-memory load_version check.
     #[tokio::test]
     async fn r2_stale_load_version_writer_is_rejected_at_store_layer() {
-        std::env::set_var("TS_SHARED_STORE_FENCE", "1");
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
         let shard: ShardId = 7;
@@ -5511,8 +5500,6 @@ mod tests {
             .await
             .expect_err("CAS with a mismatched expected value must fail");
         assert!(matches!(cas_err, ObjectStoreError::ConditionFailed { .. }));
-
-        std::env::remove_var("TS_SHARED_STORE_FENCE");
     }
 
     #[derive(Debug)]
