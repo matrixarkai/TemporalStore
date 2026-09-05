@@ -3206,7 +3206,20 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     for (key, address) in &shard.strings {
         assert_eq!(decoded.strings.get(key), Some(address), "address changed for {key}");
     }
-    assert_eq!(decoded.hashes, shard.hashes);
+    // `hashes` is deliberately NOT in the payload: it carries `#[serde(default,
+    // skip_serializing)]` because it is rebuildable from the durable bucket/page index on load,
+    // and duplicating it in every checkpoint is what that attribute exists to avoid. So the
+    // round-trip must drop it, and this asserts the drop rather than the impossible equality it
+    // asserted before -- which is why this test was failing on main.
+    assert!(
+        decoded.hashes.is_empty(),
+        "hashes must not ride the checkpoint; it is rebuilt on load, got {:?}",
+        decoded.hashes
+    );
+    assert!(
+        !shard.hashes.is_empty(),
+        "the shard under test must actually have hashes, or the assertion above proves nothing"
+    );
     assert_eq!(decoded.applied_wal_sequence, shard.applied_wal_sequence);
     assert_eq!(decoded.index_format_version, shard.index_format_version);
 
