@@ -333,7 +333,7 @@ def literal_consts(bodies):
 
 
 def numeric_default_of_statement(lines, read_line, consts):
-    """A number, as text, or "" -- the default of a flag whose read states one.
+    r"""A number, as text, or "" -- the default of a flag whose read states one.
 
     `default_of_statement` answers this for booleans and says so: a statement reading a
     millisecond count has no ON/OFF to state. It had no answer for the count itself, so a page
