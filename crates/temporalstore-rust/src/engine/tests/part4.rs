@@ -15741,3 +15741,103 @@ fn what_a_bigger_read_cache_buys() {
     let _ = (first, last);
 }
 
+
+/// What does the String family cost as the store grows?
+///
+/// `StringSet` declares its index component; `StringGet`, `StringDelete` and `StringSetEx` do
+/// not. On every other family, a write that declares nothing restated every page of its object
+/// and cost megabytes -- so `StringDelete` sits on the shape that was worth 16x elsewhere.
+///
+/// The prediction is that it does NOT matter here, because a string is one page per key
+/// (`component: None`), so "every page of the object" is one page. This checks that, because the
+/// same reasoning applied to sets and lists would have been wrong.
+///
+/// Two-sided control, both asserted.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_the_string_family_costs_against_the_store() {
+    const REPS: usize = 20;
+    let cost = |kind: &str, fill: usize| -> (u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let seed = |i: usize| -> Command {
+            match kind {
+                "FeatureAppend" => Command::FeatureAppend {
+                    key: "f".to_string(),
+                    points: vec![FeaturePoint { timestamp_ms: 1_000 + i as u64, value: vec![b'v'; 8] }],
+                },
+                "SetAdd" => Command::SetAdd {
+                    key: "s".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                },
+                _ => Command::StringSet {
+                    key: format!("k{i:07}"),
+                    value: vec![b'v'; 128],
+                },
+            }
+        };
+        for i in 0..fill {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: seed(i) });
+            assert!(out.status.ok, "{kind} fill refused: {:?}", out.status);
+        }
+        let make = |i: usize| -> Command {
+            match kind {
+                "StringSet" => Command::StringSet {
+                    key: format!("k{:07}", fill + i),
+                    value: vec![b'v'; 128],
+                },
+                "StringGet" => Command::StringGet { key: format!("k{:07}", i % fill.max(1)) },
+                "StringDelete" => Command::StringDelete { key: format!("k{:07}", i) },
+                "SetAdd" => Command::SetAdd {
+                    key: "s".to_string(),
+                    member: format!("m{:07}", fill + i).into_bytes(),
+                },
+                "FeatureAppend" => Command::FeatureAppend {
+                    key: "f".to_string(),
+                    points: vec![FeaturePoint { timestamp_ms: 1_000 + (fill + i) as u64, value: vec![b'v'; 8] }],
+                },
+                other => panic!("unknown {other}"),
+            }
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        let mut ok = 0u64;
+        for i in 0..REPS {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+            assert!(out.status.ok, "{kind} refused: {:?}", out.status);
+            ok += 1;
+        }
+        (probe.stop().alloc_bytes / REPS as u64, ok)
+    };
+
+    println!("  command          declares?   bytes @200   bytes @3200    ratio");
+    let mut flat = 0.0f64;
+    let mut scaling = 0.0f64;
+    for (kind, declares) in [
+        ("SetAdd", "yes"),
+        ("FeatureAppend", "no"),
+        ("StringSet", "yes"),
+        ("StringGet", "n/a"),
+        ("StringDelete", "no"),
+    ] {
+        let (small, sa) = cost(kind, 200);
+        let (large, la) = cost(kind, 3200);
+        assert!(small > 0, "{kind}: measured zero bytes");
+        assert!(sa == REPS as u64 && la == REPS as u64, "{kind}: not every op answered");
+        let ratio = large as f64 / small as f64;
+        match kind {
+            "SetAdd" => flat = ratio,
+            "FeatureAppend" => scaling = ratio,
+            _ => {}
+        }
+        println!("  {kind:14}  {declares:9}   {small:10}  {large:12}   {ratio:6.2}x");
+    }
+    assert!(flat < 1.5, "the flat control reported {flat:.2}x");
+    assert!(scaling > 3.0, "the scaling control reported {scaling:.2}x -- probe cannot see growth");
+    println!("  A string is one page per key, so declaring or not should not matter here.");
+}
