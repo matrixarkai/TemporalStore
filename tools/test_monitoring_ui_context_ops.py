@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +19,40 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_DIR = ROOT / "tools" / "temporalstore-monitoring-ui"
+
+# The eight test_context_app_js_* cases below run app.js under node. app.js is written for the
+# browsers the portal targets and uses syntax added after node 12 (nullish coalescing, optional
+# chaining), so an old local node fails to PARSE it and every one of those tests dies on a
+# CalledProcessError that says nothing about the behaviour under test. CI runs a modern node and
+# they pass there, so skipping locally costs no coverage -- but reporting eight failures that are
+# really one missing toolchain costs a reader real time, and did.
+APP_JS_TESTS_PREFIX = "test_context_app_js_"
+
+
+@functools.lru_cache(maxsize=1)
+def node_cannot_parse_app_js() -> str:
+    """Empty when the available node can parse app.js; otherwise why it cannot."""
+    app_js = UI_DIR / "app.js"
+    if not app_js.exists():
+        return ""
+    try:
+        check = subprocess.run(["node", "--check", str(app_js)], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "node is not usable here (%s), so app.js cannot be exercised" % type(exc).__name__
+    if check.returncode == 0:
+        return ""
+    try:
+        found = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        found = "unknown"
+    first_error = next((line.strip() for line in (check.stderr or "").splitlines()
+                        if "Error" in line), "").strip()
+    return (
+        "node %s cannot parse %s -- %s. app.js targets browsers and uses syntax added after "
+        "node 12; node 14 or newer is required to exercise it. CI runs a modern node and these "
+        "tests pass there. This skips the %s* cases only." % (
+            found or "unknown", app_js.name, first_error or "it failed --check", APP_JS_TESTS_PREFIX)
+    )
 
 
 class IdCollector(HTMLParser):
@@ -47,6 +82,14 @@ class IdCollector(HTMLParser):
 
 
 class MonitoringUiContextOpsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Scoped to the app.js cases by name: a module-level skip would take the whole file with
+        # it, and the other six here read the HTML and never invoke node.
+        if self._testMethodName.startswith(APP_JS_TESTS_PREFIX):
+            reason = node_cannot_parse_app_js()
+            if reason:
+                self.skipTest(reason)
+
     def test_context_operations_markup_contract(self) -> None:
         parser = IdCollector()
         parser.feed((UI_DIR / "index.html").read_text(encoding="utf-8"))
