@@ -355,7 +355,7 @@
   }
 
   /* ---------- deployment config ---------- */
-  function renderConfig(d) {
+  function renderConfig(d, changedElsewhere) {
     var rows = [
       ["Embedding", d.embedding.provider + (d.embedding.model ? " · " + d.embedding.model : "")],
       ["Encoder endpoint", d.embedding.api_base || "not set"],
@@ -392,13 +392,17 @@
       return "<tr><th>" + esc(r[0]) + "</th><td>" + esc(r[1]) + "</td></tr>";
     }).join("") + "</table>";
     $("config").innerHTML = html;
-    $("cfgTime").textContent = "checked " + new Date().toLocaleTimeString();
+    /* "checked" is about when this looked, not about what it found. When the re-read happened
+       because somebody changed the configuration elsewhere, say that instead -- otherwise the
+       table silently becomes a different table. */
+    $("cfgTime").textContent = (changedElsewhere ? "changed elsewhere — re-read " : "checked ")
+      + new Date().toLocaleTimeString();
   }
 
-  function loadConfig() {
+  function loadConfig(changedElsewhere) {
     fetch("/v1/admin/config", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) { conn("live", "connected"); renderConfig(d); })
+      .then(function (d) { conn("live", "connected"); renderConfig(d, changedElsewhere); })
       .catch(function (e) {
         if (e === 401 || e === 403) {
           conn("live", "connected");
@@ -722,6 +726,32 @@
       else { sessionStorage.removeItem("matrixark_admin_key"); }
     } catch (e) { /* storage unavailable */ }
   }
+  /* What this panel shows IS the configuration -- the provider an import will call, the endpoint
+     it will call it at, whether a failed encoder call errors or quietly falls back. Somebody
+     changes that on the Setup page and this table described the old deployment until the tab was
+     reloaded.
+
+     Through the queue, not by calling the register function: this script runs before the nav block
+     defines it, and a direct call registers nothing at all. The catalog page lost its watcher to
+     exactly that and carries the comment.
+
+     No throttle here, unlike the catalog's watcher on the stored count. config_changed_at moves
+     only when somebody writes configuration, which is rare and deliberate; a record count moves
+     with every import. */
+  var lastConfigAt = null;
+  (window.__matrixarkFrameQueue = window.__matrixarkFrameQueue || []).push(
+    function (frame) {
+      var at = frame.config_changed_at;
+      if (at == null) { return; }
+      /* The first frame records only: the configuration was read a moment ago on load, and
+         treating the first sighting as a change would re-read it for nothing. */
+      if (lastConfigAt === null) { lastConfigAt = at; return; }
+      if (at === lastConfigAt) { return; }
+      lastConfigAt = at;
+      if (document.hidden || !$("key").value.trim()) { return; }
+      loadConfig(true);
+    });
+
   $("key").addEventListener("change", function () { persistKey(); loadConfig(); loadJobs(); });
   $("remember").addEventListener("change", persistKey);
 
