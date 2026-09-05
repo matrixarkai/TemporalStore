@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import copy as _copy
 import hashlib as _hashlib
 import queue as thread_queue
+import zlib
 from typing import Any
 
 try:
@@ -130,6 +131,38 @@ LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_
 # cap further, because most of it is the load-time compaction rather than the delta parse (at a cap
 # of 50, where the delta empties, cold still measured ~86 ms against main's ~64). It is paid once
 # per process, and one read plus one ingest already returns ~281 ms of it.
+#: Store the snapshot as a compressed binary container instead of plain JSON.
+#:
+#: The snapshot is the largest artifact this module writes and the most repetitive: interning
+#: leaves it full of repeated bundle tokens and structure. Measured on 3 x 1.00 MB skills, 12.57 MB
+#: of snapshot, zlib level 6 gives 21.08x for 32 ms of decode -- against 4.51 GB projected at 2.35M
+#: records, that is the difference between 4.5 GB and 0.21 GB.
+#:
+#: zlib rather than zstd because `dependencies = []` in pyproject is deliberate: zstd measured
+#: 27.53x, better but not enough to earn the project its first runtime dependency.
+#: OFF by default, which is a separate decision from shipping the mechanism.
+#:
+#: Turning it on moves the snapshot to a different filename, and about twenty tests across eight
+#: files name the JSON one to mean "the snapshot" -- existence checks, mtime comparisons, a shard
+#: filter, fixtures captured in setUp before the file exists. They are not wrong; the JSON-ness is
+#: baked into how the suite describes the store. Each wants pointing at
+#: `_durable_read_cache_snapshot_path()`, and doing that carefully deserves its own change rather
+#: than riding along with a format.
+#:
+#: Everything needed to flip it is here and measured: on three 1.00 MB skills the snapshot goes
+#: 12.97 MB -> 0.74 MB (17.55x), 1,909 -> 109 B a record, and an existing JSON snapshot still
+#: loads with the container enabled.
+LOCAL_DURABLE_READ_CACHE_COMPRESS = os.environ.get(
+    "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS", "0"
+).strip().lower() not in ("0", "false", "no", "off")
+LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL = max(
+    1, min(9, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL", "6")))
+)
+#: Container prefix. A JSON snapshot always starts with `{`, so this can never be mistaken for one,
+#: and the codec byte after it leaves room for another encoding without a second format.
+_SNAPSHOT_CONTAINER_MAGIC = b"MASNAP\x01"
+_SNAPSHOT_CODEC_ZLIB = b"\x01"
+
 LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
     1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "250"))
 )
@@ -162,6 +195,25 @@ LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
 # -21.8% on every query against roughly +16% on a cold start. Worth it for most deployments, since
 # queries are frequent and restarts are not -- but that is an operator's call, not a default.
 LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "0")))
+
+
+def _decode_snapshot_bytes(raw: bytes) -> Json:
+    """Turn snapshot bytes into the payload, whatever wrote them.
+
+    Sniffs the container prefix, so a plain-JSON snapshot written by any earlier build keeps
+    loading unchanged and a container written by a newer one is refused with a clear error rather
+    than mis-parsed. Every decode goes through here.
+
+    The interning hook is applied either way: it is worth 24.5% of the loaded cache, and losing it
+    on the compressed path would trade durable bytes for resident ones.
+    """
+    if raw.startswith(_SNAPSHOT_CONTAINER_MAGIC):
+        body = raw[len(_SNAPSHOT_CONTAINER_MAGIC):]
+        codec, payload = body[:1], body[1:]
+        if codec != _SNAPSHOT_CODEC_ZLIB:
+            raise ValueError(f"unknown snapshot codec {codec!r}")
+        raw = zlib.decompress(payload)
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=_interned_pairs)
 
 
 def _snapshot_prefix_fingerprint(record: "Json") -> str:
@@ -4744,6 +4796,32 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _durable_read_cache_path(self) -> Path:
         return self.event_log.with_name(f"{self.event_log.name}.read-cache.json")
 
+    def _durable_read_cache_binary_path(self) -> Path:
+        """The compressed container, when one is written.
+
+        Deliberately NOT the same name as the JSON form. `_load_durable_read_cache` opens the
+        snapshot with `encoding="utf-8"` and catches `(FileNotFoundError, json.JSONDecodeError,
+        OSError)`; compressed bytes raise `UnicodeDecodeError`, which is a ValueError but not a
+        JSONDecodeError, so a reader from before this change would crash on them. Under its own
+        name it simply sees no snapshot -- which it already knows how to handle.
+        """
+        return self.event_log.with_name(f"{self.event_log.name}.read-cache.bin")
+
+    def _durable_read_cache_snapshot_path(self) -> Path:
+        """Where the snapshot is, whichever form it was written in.
+
+        Callers that want the snapshot itself -- rather than one encoding of it -- ask here, so a
+        change of container does not read as a missing file.
+        """
+        # Which form this build WRITES, not whichever happens to be on disk. A caller asking
+        # "where is the snapshot" usually asks before there is one -- a test fixture, or the gate
+        # deciding whether a base exists -- and an answer that changes once the file appears would
+        # have them looking at the wrong path. The LOADER still checks both explicitly, so a store
+        # carrying the older JSON form keeps loading.
+        if LOCAL_DURABLE_READ_CACHE_COMPRESS:
+            return self._durable_read_cache_binary_path()
+        return self._durable_read_cache_path()
+
     def _durable_read_cache_delta_path(self) -> Path:
         """Records appended since the base snapshot, one JSON object per line.
 
@@ -4800,7 +4878,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         try:
             with self._durable_read_cache_head_path().open("r", encoding="utf-8") as handle:
                 head = json.load(handle)
-            with self._durable_read_cache_path().open("r", encoding="utf-8") as handle:
+            binary_path = self._durable_read_cache_binary_path()
+            if binary_path.exists():
+                payload = _decode_snapshot_bytes(binary_path.read_bytes())
+            else:
+                with self._durable_read_cache_path().open("r", encoding="utf-8") as handle:
                 # Decode the snapshot exactly as the log is decoded. Both paths return the same
                 # records, so they have to return them at the same cost, and a bare json.load
                 # here does not: it gives every record a private copy of every repeated VALUE.
@@ -4815,8 +4897,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # process. The delta tail below already used the hook, so until now a store served
                 # from its snapshot held a cache a third larger than the same store served from
                 # its log, for byte-identical content.
-                payload = json.load(handle, object_pairs_hook=_interned_pairs)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    payload = json.load(handle, object_pairs_hook=_interned_pairs)
+        # zlib.error and ValueError join the list for the container: a truncated or unknown-codec
+        # snapshot is derived state like any other unreadable one, and re-deriving from the log is
+        # the answer for all of them.
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError, zlib.error):
             return None
         if not isinstance(head, dict) or not isinstance(payload, dict):
             return None
@@ -5029,7 +5114,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if (
             appended_records
             and base_count > 0
-            and path.exists()
+            # The snapshot in whichever form it was written, not one encoding of it. Asking
+            # `path.exists()` here tied the tail to the JSON file, so a container base answered
+            # False and no tail was ever written.
+            and self._durable_read_cache_snapshot_path().exists()
             and covers_log_before_this_write
             and delta_count + len(appended_records) <= LOCAL_DURABLE_READ_CACHE_MAX_DELTA
         ):
@@ -5057,7 +5145,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             contiguous
             and base_count > 0
             and delta_count + appended <= LOCAL_DURABLE_READ_CACHE_MAX_DELTA
-            and path.exists()
+            and self._durable_read_cache_snapshot_path().exists()
         ):
             try:
                 with delta_path.open("a", encoding="utf-8") as handle:
@@ -5108,10 +5196,28 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with tmp_path.open("w", encoding="utf-8") as handle:
-                json.dump(payload, handle, separators=(",", ":"))
-                handle.write("\n")
-            tmp_path.replace(path)
+            binary_path = self._durable_read_cache_binary_path()
+            if LOCAL_DURABLE_READ_CACHE_COMPRESS:
+                encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                tmp_path.write_bytes(
+                    _SNAPSHOT_CONTAINER_MAGIC
+                    + _SNAPSHOT_CODEC_ZLIB
+                    + zlib.compress(encoded, LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL)
+                )
+                tmp_path.replace(binary_path)
+                stale = path
+            else:
+                with tmp_path.open("w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, separators=(",", ":"))
+                    handle.write("\n")
+                tmp_path.replace(path)
+                stale = binary_path
+            # Only one form is the snapshot. Leaving the other behind would let a reader that
+            # prefers it serve a record set from a different write.
+            try:
+                stale.unlink()
+            except FileNotFoundError:
+                pass
             try:
                 delta_path.unlink()
             except FileNotFoundError:
@@ -5143,6 +5249,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             _LOCAL_READ_CACHE.pop(cache_key, None)
             _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
         for cache_file in (self._durable_read_cache_path(),
+                           self._durable_read_cache_binary_path(),
                            self._durable_read_cache_delta_path(),
                            self._durable_read_cache_head_path()):
             try:
@@ -6282,6 +6389,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 _LOCAL_READ_CACHE.pop(cache_key, None)
                 _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
             for cache_file in (self._durable_read_cache_path(),
+                               self._durable_read_cache_binary_path(),
                                self._durable_read_cache_delta_path(),
                                self._durable_read_cache_head_path()):
                 try:
