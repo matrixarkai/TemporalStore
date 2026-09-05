@@ -1653,13 +1653,13 @@ impl LocalWriteAheadLogStore {
         if !path.exists() {
             return Ok(WriteAheadLogFlushReport {
                 shard_id,
-                path,
+                path: path.as_ref().clone(),
                 last_sequence,
                 persistent_bytes: 0,
                 synced: false,
             });
         }
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let file = OpenOptions::new().read(true).write(true).open(path.as_path())?;
         crate::durability_metrics::record_barrier("engine_wal_flush");
         file.sync_all()?;
         sync_parent_dir(&path)?;
@@ -1677,7 +1677,7 @@ impl LocalWriteAheadLogStore {
             .insert(shard_id, last_sequence);
         Ok(WriteAheadLogFlushReport {
             shard_id,
-            path,
+            path: path.as_ref().clone(),
             last_sequence,
             persistent_bytes,
             synced: true,
@@ -1877,7 +1877,7 @@ impl LocalWriteAheadLogStore {
         // One line at a time. A log is not bounded by memory, so neither this search nor the
         // copy below may hold it: reclaiming a large log otherwise costs a transient allocation
         // the size of the whole file.
-        let mut source = File::open(&path)?;
+        let mut source = File::open(path.as_path())?;
         source.seek(SeekFrom::Start(header_len))?;
         // Bounded by the cursor below rather than by `take`, because a Take is not seekable and
         // stepping over a block's footer is a seek. the reclaim walk crosses blocks now.
@@ -1972,7 +1972,7 @@ impl LocalWriteAheadLogStore {
             // Copy the retained records byte for byte rather than decoding and re-encoding
             // them. Re-encoding could change a record's length, which would break the offset
             // arithmetic this whole scheme rests on, and it costs a parse per record.
-            let mut source = File::open(&path)?;
+            let mut source = File::open(path.as_path())?;
             source.seek(SeekFrom::Start(split))?;
             std::io::copy(
                 &mut BufReader::new(source.take(record_end.saturating_sub(split))),
@@ -1981,7 +1981,7 @@ impl LocalWriteAheadLogStore {
             temp.flush()?;
             temp.sync_all()?;
         }
-        fs::rename(&temp_path, &path)?;
+        fs::rename(&temp_path, path.as_path())?;
         sync_parent_dir(&path)?;
         // Reclaim is the only thing that moves the base, so refresh the cache here rather than
         // letting an append compute a log id against a stale one.
@@ -2351,7 +2351,7 @@ fn ensure_active_wal_segment(
         return Ok(());
     }
     let header = crate::log_framing::encode_base_header(start);
-    let mut file = File::create(&path)?;
+    let mut file = File::create(path.as_path())?;
     file.write_all(&header)?;
     file.flush()?;
     file.sync_all()?;
@@ -2408,7 +2408,7 @@ fn roll_wal_segment_if_due(
     // this deliberately ("the outgoing slab may hold relaxed (un-fsynced) bulk appends; make them
     // durable before we seal"); this one now does too.
     {
-        let file = OpenOptions::new().write(true).open(&path)?;
+        let file = OpenOptions::new().write(true).open(path.as_path())?;
         if record_end < length {
             file.set_len(record_end)?;
         }
@@ -2419,7 +2419,7 @@ fn roll_wal_segment_if_due(
 
     // Seal by rename: atomic, so the piece is either being written or sealed, never neither.
     let sealed = sealed_wal_path(&inner.root, shard_id, base);
-    fs::rename(&path, &sealed)?;
+    fs::rename(path.as_path(), &sealed)?;
     sync_parent_dir(&sealed)?;
     // Sealed, and nothing to append to yet. A crash here leaves a log whose pieces are all sealed,
     // and an absent piece reads as starting at log id zero -- which those pieces already own.
@@ -2428,7 +2428,7 @@ fn roll_wal_segment_if_due(
     // Start the next piece where this one ended. If a crash lands before this, the next append
     // derives the same starting point from the sealed pieces.
     let next_base = base.saturating_add(holds);
-    let mut file = File::create(&path)?;
+    let mut file = File::create(path.as_path())?;
     // Created, no header yet. A crash here leaves a piece of zero length, which reads as starting
     // at log id zero for the same reason.
     crate::fault::point("wal/roll/after_create");
@@ -2458,15 +2458,26 @@ fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
 /// Same answer as [`write_ahead_log_path`], without rebuilding it. Used on the append path, which
 /// asked for it six times a write; callers that are not per-write can keep using the free
 /// function.
-fn active_wal_path(inner: &mut WriteAheadLogInner, shard_id: ShardId) -> PathBuf {
+/// How many times an append asks for the active path. Test-only: the answer decides whether
+/// returning the cached `Arc` instead of a copy of it is worth the call sites it would touch.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static ACTIVE_PATH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn active_wal_path(inner: &mut WriteAheadLogInner, shard_id: ShardId) -> std::sync::Arc<PathBuf> {
+    #[cfg(test)]
+    ACTIVE_PATH_CALLS.with(|calls| calls.set(calls.get() + 1));
     if let Some(path) = inner.active_path_by_shard.get(&shard_id) {
-        return path.as_ref().clone();
+        // The Arc, not a copy of what it holds. Measured at four asks per append and a
+        // thirty-three byte name, the copies were 132 of the append's 225 allocated bytes.
+        return path.clone();
     }
     // NOTE: the free function, deliberately. This IS the thing that builds the name; calling the
     // accessor here would be infinite recursion.
     let built = std::sync::Arc::new(write_ahead_log_path(&inner.root, shard_id));
     inner.active_path_by_shard.insert(shard_id, built.clone());
-    built.as_ref().clone()
+    built
 }
 
 /// An earlier piece of a shard's log, named by the log id its contents start at.
@@ -3031,9 +3042,9 @@ fn append_record_locked(
     let mut file = if prealloc {
         // Positioned write, not O_APPEND: with a reservation, the physical end of the file is
         // zeros, and O_APPEND would put this record after them.
-        OpenOptions::new().create(true).write(true).open(&path)?
+        OpenOptions::new().create(true).write(true).open(path.as_path())?
     } else {
-        OpenOptions::new().create(true).append(true).open(&path)?
+        OpenOptions::new().create(true).append(true).open(path.as_path())?
     };
     if prealloc {
         let needed = offset.saturating_add(bytes.len() as u64);
@@ -3068,7 +3079,7 @@ fn append_record_locked(
         if let Some((at, slot)) = close_block_and_advance.as_ref() {
             // Without preallocation the file is opened for append, so the footer needs its own
             // positioned handle: a footer belongs at a computed offset, never at the end.
-            let mut positioned = OpenOptions::new().write(true).open(&path)?;
+            let mut positioned = OpenOptions::new().write(true).open(path.as_path())?;
             positioned.seek(SeekFrom::Start(*at))?;
             positioned.write_all(slot)?;
             positioned.flush()?;
@@ -5135,6 +5146,105 @@ mod tests {
     /// a timing on a shared machine. Reported per append across value sizes, so a cost that scales
     /// with the payload can be told apart from a fixed one -- a fixed cost is the one worth
     /// attacking, since it is paid by every write however small.
+    /// How many times one append asks for the active log path, and what each ask costs.
+    ///
+    /// The path is cached as an `Arc`, but every caller gets a COPY of it: the cache removed the
+    /// cost of BUILDING the name and left the cost of copying it. Whether that is worth chasing
+    /// is a question of how often an append asks, which is cheaper to count than to find out by
+    /// rewriting every call site.
+    ///
+    /// No `alloc-probe` feature here -- it counts calls, not allocations. An earlier version of
+    /// this probe inherited that cfg from the test it was pasted above and vanished from the
+    /// build entirely.
+    #[test]
+    #[ignore]
+    fn how_often_an_append_asks_for_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append(1, Command::StringSet { key: "warm".to_string(), value: vec![1] })
+            .unwrap();
+
+        super::ACTIVE_PATH_CALLS.with(|calls| calls.set(0));
+        let runs = 50usize;
+        for index in 0..runs {
+            store
+                .append(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![118u8; 256],
+                    },
+                )
+                .unwrap();
+        }
+        let calls = super::ACTIVE_PATH_CALLS.with(|calls| calls.get());
+        let path_len = write_ahead_log_path(dir.path(), 1).as_os_str().len();
+        println!(
+            "  PATHCALLS {:.2} per append | the name is {path_len} B, so the copies cost about {:.0} B/append",
+            calls as f64 / runs as f64,
+            calls as f64 / runs as f64 * path_len as f64,
+        );
+        assert!(calls > 0, "the counter must observe the appends");
+    }
+
+    /// How much of a record's envelope could a batch actually share?
+    ///
+    /// Their logger pays its record header once per COMMIT and ours once per RECORD, so the
+    /// amortisation prize looks like the whole envelope. It is not: part of what sits outside the
+    /// value travels WITH each item and cannot be shared -- the key above all. Only the part that
+    /// is per-record can amortise.
+    ///
+    /// This separates the two by writing the same value under keys of two lengths. What moves
+    /// with the key is per-item; what stays is the fixed, shareable remainder.
+    #[test]
+    #[ignore]
+    fn how_much_of_the_envelope_can_amortise() {
+        let value_len = 64usize;
+        let measure = |key_len: usize| -> f64 {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            let path = write_ahead_log_path(dir.path(), 1);
+            let value = vec![118u8; value_len];
+            let append = |index: usize| {
+                let key = format!("{:0width$}", index, width = key_len);
+                store
+                    .append(1, Command::StringSet { key, value: value.clone() })
+                    .unwrap();
+            };
+            append(0);
+            let (_, before) = last_wal_sequence_in(&path).unwrap();
+            let runs = 16usize;
+            for index in 1..=runs {
+                append(index);
+            }
+            let (_, after) = last_wal_sequence_in(&path).unwrap();
+            (after - before) as f64 / runs as f64
+        };
+
+        let short = measure(8);
+        let long = measure(40);
+        // Each extra key byte costs one byte on the wire, so the difference IS the key span.
+        let per_key_byte = (long - short) / 32.0;
+        let key_part = 8.0 * per_key_byte;
+        let fixed = short - value_len as f64 - key_part;
+
+        println!(
+            "  AMORTISE 8-char key {short:.1} B/record, 40-char {long:.1} B/record | value {value_len} B | key ~{key_part:.1} B | FIXED (shareable) {fixed:.1} B"
+        );
+        for items in [8usize, 64] {
+            let n_records = short * items as f64;
+            let one_record = fixed + (short - fixed) * items as f64;
+            println!(
+                "    at {items:>3} items: {n_records:.0} B as records vs {one_record:.0} B sharing the fixed part = {:.1}% ",
+                100.0 * (n_records - one_record) / n_records
+            );
+        }
+
+        assert!(short > 0.0 && long > short, "the probe must observe a key-length difference");
+        assert!(fixed > 0.0, "the fixed part cannot be negative: {fixed}");
+    }
+
     #[test]
     #[cfg(feature = "alloc-probe")]
     #[ignore]
