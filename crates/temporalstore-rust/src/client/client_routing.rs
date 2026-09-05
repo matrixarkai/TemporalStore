@@ -220,9 +220,37 @@ impl TemporalStoreClient {
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
     ) -> Result<BatchExecuteResponse, ClientError> {
+        self.batch_execute_with_http_and_policy(
+            request,
+            http_options,
+            continuous_failed_time_ms,
+            ReplicaReadPolicy::PinPrimary,
+            None,
+        )
+    }
+
+    /// A batch sent under a chosen replica read policy.
+    ///
+    /// The route is resolved with the policy on every attempt, including the refreshes after a
+    /// backend failure -- a retry that silently fell back to the primary would make the policy
+    /// hold only until the first error.
+    pub(super) fn batch_execute_with_http_and_policy(
+        &self,
+        request: BatchExecuteRequest,
+        http_options: HttpRequestOptions,
+        continuous_failed_time_ms: Option<u64>,
+        replica_read_policy: ReplicaReadPolicy,
+        preferred_location: Option<&str>,
+    ) -> Result<BatchExecuteResponse, ClientError> {
         if self.inner.options.meta_addr.is_some() {
             let server_addr =
-                self.resolve_route(request.shard_id, false, continuous_failed_time_ms)?;
+                self.resolve_route_with_policy(
+                request.shard_id,
+                false,
+                continuous_failed_time_ms,
+                replica_read_policy,
+                preferred_location,
+            )?;
             return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
@@ -244,12 +272,22 @@ impl TemporalStoreClient {
                             .lock()
                             .expect("client stats lock poisoned")
                             .record_write_of_unknown_outcome();
-                        let _ =
-                            self.resolve_route(request.shard_id, true, continuous_failed_time_ms);
+                        let _ = self.resolve_route_with_policy(
+                            request.shard_id,
+                            true,
+                            continuous_failed_time_ms,
+                            replica_read_policy,
+                            preferred_location,
+                        );
                         return Err(ClientError::WriteOutcomeUnknown(err.to_string()));
                     }
-                    let refreshed =
-                        self.resolve_route(request.shard_id, true, continuous_failed_time_ms)?;
+                    let refreshed = self.resolve_route_with_policy(
+                        request.shard_id,
+                        true,
+                        continuous_failed_time_ms,
+                        replica_read_policy,
+                        preferred_location,
+                    )?;
                     let response = post_json_with_options(
                         &refreshed,
                         "/batch_execute",
@@ -451,23 +489,45 @@ impl TemporalStoreClient {
     }
 }
 
+/// Which replica policy a batch reads under, and from where.
+///
+/// A batch may carry writes and those must reach the primary, so the table's policy applies only
+/// to a batch that carries none -- the same distinction `force_primary` draws on the single
+/// command path, drawn from the same two inputs. `pin_primary` still wins, and a table that has
+/// configured nothing reads `PinPrimary`, so a default table's batches do not move.
+pub(super) fn batch_read_policy(
+    write: bool,
+    table_options: &TableOptions,
+) -> (ReplicaReadPolicy, Option<&str>) {
+    if write || table_options.pin_primary {
+        return (ReplicaReadPolicy::PinPrimary, None);
+    }
+    (
+        table_options.replica_read_policy,
+        if table_options.preferred_location.is_empty() {
+            None
+        } else {
+            Some(table_options.preferred_location.as_str())
+        },
+    )
+}
+
 #[cfg(test)]
 mod batch_routing_tests {
     use super::*;
 
-    /// A batch is always sent to the primary; a single command is not.
+    /// The client-level batch still takes the primary. The table-level one no longer has to.
     ///
-    /// `execute_routed_with_http_and_policy` threads the table's `ReplicaReadPolicy` and its
-    /// `preferred_location` through to route selection, so a table configured to read from a
-    /// nearby replica does. `batch_execute_with_options` calls plain `resolve_route`, which
-    /// hard-codes `PinPrimary` and no location -- so the same table's batch reads go to the
-    /// primary, and cross-zone if that is where it is.
+    /// `batch_execute_with_options` resolves through plain `resolve_route`, which hard-codes
+    /// `PinPrimary` and no location. It is handed a bare `BatchExecuteRequest` with no table
+    /// options, so there is no policy for it to read and it stays as it is -- this holds it there.
     ///
-    /// Pinned rather than changed. Sending a batch to the primary is SAFE: a batch may contain
-    /// writes and those must go there. What is not distinguished is a batch containing none,
-    /// which is the case that could follow the table's policy. Making that distinction moves
-    /// read traffic onto replicas, so it wants a deliberate decision and a check that a replica
-    /// serves `/batch_execute` at all -- neither of which belongs in a quiet change.
+    /// The table-level batch is what changed. It has the table's options, so `batch_read_policy`
+    /// gives a batch carrying no writes the table's own policy and location, and a table
+    /// configured to read from a nearby replica now does so for its batches too. A batch carrying
+    /// a write still takes the primary, because the write must; so does `pin_primary`, which is
+    /// on by default -- so a default table's batches do not move. The tests below hold each of
+    /// those.
     #[test]
     fn a_batch_goes_to_the_primary_even_when_a_single_read_would_not() {
         let client = TemporalStoreClient::new("127.0.0.1:1");
@@ -499,6 +559,94 @@ mod batch_routing_tests {
         assert_ne!(
             single, batch,
             "the two paths disagree by construction -- if they ever agree, one of them changed              and the comment above needs to change with it"
+        );
+    }
+
+    /// A batch carrying no writes reads under the table's own policy, and from its own location.
+    #[test]
+    fn a_read_only_batch_reads_under_the_table_policy() {
+        let options = TableOptions {
+            pin_primary: false,
+            replica_read_policy: ReplicaReadPolicy::FirstReplica,
+            preferred_location: "zone-a".to_string(),
+            ..TableOptions::default()
+        };
+        assert_eq!(
+            batch_read_policy(false, &options),
+            (ReplicaReadPolicy::FirstReplica, Some("zone-a")),
+            "a batch of reads should route like the reads it is made of"
+        );
+    }
+
+    /// One write in the batch sends the whole batch to the primary.
+    ///
+    /// The batch is one request to one server, so the policy is decided for the batch, not per
+    /// command. A single write in it therefore takes all of it to the primary -- there is no
+    /// splitting the difference.
+    #[test]
+    fn one_write_takes_the_whole_batch_to_the_primary() {
+        let options = TableOptions {
+            pin_primary: false,
+            replica_read_policy: ReplicaReadPolicy::FirstReplica,
+            preferred_location: "zone-a".to_string(),
+            ..TableOptions::default()
+        };
+        assert_eq!(
+            batch_read_policy(true, &options),
+            (ReplicaReadPolicy::PinPrimary, None),
+            "a batch containing a write must reach the primary"
+        );
+    }
+
+    /// `pin_primary` outranks the read policy, as it does on the single-command path.
+    #[test]
+    fn pin_primary_outranks_the_read_policy() {
+        let options = TableOptions {
+            pin_primary: true,
+            replica_read_policy: ReplicaReadPolicy::FirstReplica,
+            preferred_location: "zone-a".to_string(),
+            ..TableOptions::default()
+        };
+        assert_eq!(
+            batch_read_policy(false, &options),
+            (ReplicaReadPolicy::PinPrimary, None),
+            "pin_primary is the operator saying primary, and it wins"
+        );
+    }
+
+    /// A table that configured nothing routes exactly where it did before.
+    ///
+    /// The blast radius of the change, stated as a test: `TableOptions::default()` sets
+    /// `pin_primary` AND `PinPrimary`, so a table nobody configured sends its batches to the
+    /// primary whether or not they carry writes. Only a table that asked for replica reads moves.
+    #[test]
+    fn a_default_table_batches_where_it_always_did() {
+        let options = TableOptions::default();
+        assert_eq!(
+            batch_read_policy(false, &options),
+            (ReplicaReadPolicy::PinPrimary, None)
+        );
+        assert_eq!(
+            batch_read_policy(true, &options),
+            (ReplicaReadPolicy::PinPrimary, None)
+        );
+    }
+
+    /// An unset location is no location, not a location named "".
+    ///
+    /// `preferred_location` is a `String` and its unset value is empty, so passing it through
+    /// unchecked would ask route selection to match a zone whose name is the empty string.
+    #[test]
+    fn an_unset_location_is_no_location() {
+        let options = TableOptions {
+            pin_primary: false,
+            replica_read_policy: ReplicaReadPolicy::FirstReplica,
+            preferred_location: String::new(),
+            ..TableOptions::default()
+        };
+        assert_eq!(
+            batch_read_policy(false, &options),
+            (ReplicaReadPolicy::FirstReplica, None)
         );
     }
 }

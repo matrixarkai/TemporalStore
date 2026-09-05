@@ -32,6 +32,7 @@ mod table_control_state;
 mod retry;
 mod routing;
 
+use client_routing::batch_read_policy;
 use commands::{command_is_dropped, command_key, is_write};
 use retry::{
     classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
@@ -1578,14 +1579,19 @@ impl TemporalStoreTable {
         table_options: TableOptions,
     ) -> Result<BatchExecuteResponse, ClientError> {
         let write = request.commands.iter().any(is_write);
+        // A batch with no writes reads under the table's policy, like any other read. A batch
+        // that carries one takes the primary, because the write has to.
+        let (replica_read_policy, preferred_location) = batch_read_policy(write, &table_options);
         let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
         let response = loop {
-            let current = self.client.batch_execute_with_http(
+            let current = self.client.batch_execute_with_http_and_policy(
                 request.clone(),
                 self.http_options(&table_options),
                 Some(table_options.continuous_failed_time_ms),
+                replica_read_policy,
+                preferred_location,
             )?;
             let decision = classify_retry_decision(
                 &current.status,

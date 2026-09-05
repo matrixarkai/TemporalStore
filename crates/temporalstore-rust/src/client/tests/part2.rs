@@ -1065,6 +1065,138 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
     assert!(client.stats().route_cache_hits >= 2);
 }
 
+/// A batch of reads reaches the replica; a batch carrying a write reaches the primary.
+///
+/// This is the WIRING, not the decision. `batch_read_policy` is unit-tested beside the route
+/// selection it feeds, but a correct decision that nothing consults routes nothing -- reverting
+/// the call site leaves those unit tests green. Both servers answer `/batch_execute` with their
+/// own name, so the value that comes back names the node that served the batch.
+#[test]
+fn a_read_only_batch_reaches_the_replica_and_a_write_batch_the_primary() {
+    fn answering(addr: &str, name: &'static str) {
+        let addr = addr.to_string();
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/batch_execute") => {
+                        let req = parse_json::<BatchExecuteRequest>(&request.body).unwrap();
+                        json_response(
+                            200,
+                            &BatchExecuteResponse {
+                                status: Status::ok(),
+                                responses: req
+                                    .commands
+                                    .iter()
+                                    .map(|_| ExecuteResponse {
+                                        status: Status::ok(),
+                                        response: CommandResponse::Bytes {
+                                            value: Some(name.as_bytes().to_vec()),
+                                        },
+                                    })
+                                    .collect(),
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+    }
+
+    let primary_addr = free_local_addr();
+    let replica_addr = free_local_addr();
+    let meta_addr = free_local_addr();
+    answering(&primary_addr, "primary");
+    answering(&replica_addr, "replica");
+
+    let primary_for_meta = primary_addr.clone();
+    let replica_for_meta = replica_addr.clone();
+    let meta_addr_for_listener = meta_addr.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => json_response(
+                    200,
+                    &TableTopologyResponse {
+                        status: Status::ok(),
+                        table: Some(TableMetaInfo {
+                            table_id: 7,
+                            namespace: "ns".to_string(),
+                            table_name: "tbl".to_string(),
+                            state: crate::meta::MetaEntityState::Normal,
+                            topology_version: 1,
+                            first_shard_id: 1,
+                            shard_count: 1,
+                            replica_count: 2,
+                            partition_version: 0,
+                            serving_options: crate::meta::TableServingOptions::default(),
+                        }),
+                        shards: vec![TableShard {
+                            shard_id: 1,
+                            start_bucket: 0,
+                            end_bucket: u64::MAX,
+                            primary: Some(primary_for_meta.clone()),
+                            replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
+                            primary_endpoint: None,
+                            replica_endpoints: Vec::new(),
+                        }],
+                        unchanged: false,
+                    },
+                ),
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&primary_addr);
+    wait_for_http(&replica_addr);
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some(meta_addr.clone()),
+        route_cache_ttl_ms: 60_000,
+        ..ClientOptions::default()
+    });
+    let synced = client.sync_table_topology("ns", "tbl").unwrap();
+    let table = client.open_table(
+        "ns",
+        "tbl",
+        TableOptions {
+            pin_primary: false,
+            replica_read_policy: ReplicaReadPolicy::FirstReplica,
+            ..synced
+        },
+    );
+
+    let reads = table
+        .batch_execute(vec![
+            Command::StringGet { key: "k".to_string() },
+            Command::StringGet { key: "k2".to_string() },
+        ])
+        .unwrap();
+    assert!(reads.status.ok, "{:?}", reads.status);
+    assert_eq!(
+        reads.responses[0].response,
+        CommandResponse::Bytes { value: Some(b"replica".to_vec()) },
+        "a batch carrying no writes must follow the table's replica policy, as its reads do          one at a time"
+    );
+
+    let mixed = table
+        .batch_execute(vec![
+            Command::StringGet { key: "k".to_string() },
+            Command::StringSet { key: "k".to_string(), value: b"v".to_vec() },
+        ])
+        .unwrap();
+    assert!(mixed.status.ok, "{:?}", mixed.status);
+    assert_eq!(
+        mixed.responses[0].response,
+        CommandResponse::Bytes { value: Some(b"primary".to_vec()) },
+        "one write takes the whole batch to the primary"
+    );
+}
+
 #[test]
 fn client_router_matches_crc64_bucket_formula() {
     assert_eq!(crc64_jones(b"123456789"), 0xe9c6d914c4b8d9ca);
