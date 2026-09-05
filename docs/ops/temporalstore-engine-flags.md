@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 316 of them, read by 112 functions.
+There are 316 of them, read by 113 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried

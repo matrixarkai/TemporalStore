@@ -296,7 +296,7 @@ def classify(name: str) -> str:
 
 
 sources = {}
-for path in SRC.rglob("*.rs"):
+for path in sorted(SRC.rglob("*.rs")):
     rel = str(path.relative_to(SRC)).replace("\\", "/")
     sources[rel] = path.read_text(encoding="utf-8", errors="ignore")
 
