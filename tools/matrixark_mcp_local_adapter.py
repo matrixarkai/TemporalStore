@@ -1714,7 +1714,7 @@ INLINE_VECTOR_OWNER_BY_REF_TYPE = {
 # Fields the owner record carries in its own right. They are stripped from `embedding_meta` when
 # they match the owner's, which they do for every writer today -- an embedding is addressed by the
 # owner's hash, so it inherits the owner's node and timestamp. Kept when they differ.
-_EMBEDDING_META_SAME_AS_OWNER = ("node_path", "updated_at_ms", "node_hash")
+_EMBEDDING_META_SAME_AS_OWNER = ("updated_at_ms", "node_hash")
 
 # `embedding_type` repeats the owner's record_type whenever the fold's owner map is identity, which
 # it is for chunks: skill_section -> skill_section, resource_chunk -> resource_chunk. It is NOT
@@ -1743,6 +1743,21 @@ _EMBEDDING_META_SKIP = (
     # -- 99,280 of 100,122 records -- inherits the RETIRED row's identity, and
     # `latest_value_record_key` prefers a stamped key over deriving one.
     "row_key",
+    # The owning record's own path, restated. It sat in _EMBEDDING_META_SAME_AS_OWNER, which drops a
+    # field only when the OWNER carries the same value -- and the two types that are 99.1% of a
+    # skill corpus carry `node_hash` and no `node_path`, so the comparison never ran and the path
+    # was written on every record. 54.9 B a row, one distinct value across the whole corpus,
+    # ~129 MB of durable bytes at 1,000 x 1 MB.
+    #
+    # Checked both ways, as the rest of this tuple was. A recording dict over every embedding_meta,
+    # driven through read_all and a retrieve, was asked for `node_path` 0 times across 4,326
+    # records while the positive control `model` was read 4,324 times; and no Python reader exists
+    # outside a comment, with the Rust `node_path` matches belonging to an unrelated Raft
+    # file-path helper.
+    #
+    # Only the copy INSIDE embedding_meta goes. The top-level `node_path` other record types carry
+    # is read in 614 places and is untouched -- the same split as `row_key` above.
+    "node_path",
     "storage_route",
     "storage_options",
     # The placement/storage half of the same routing blob, inherited the same way and read by
