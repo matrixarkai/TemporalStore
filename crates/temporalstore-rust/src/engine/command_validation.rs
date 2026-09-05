@@ -943,17 +943,74 @@ pub(super) fn validate_command_preconditions(
 /// contained to the pair of functions here. A stored entry that does not decode is dropped and
 /// recomputed, which is what the JSON path already did -- so an entry written by an older build
 /// in the same process costs one recompute, not an error.
-fn encode_cached_response(response: &CommandResponse) -> Option<Vec<u8>> {
+/// Reading a cached answer without building it one byte at a time.
+///
+/// `CommandResponse` is an internally tagged enum (`#[serde(tag = "kind")]`). Serde cannot pick the
+/// variant until it has read the tag, so reading one back buffers the whole content first, and a
+/// `Vec<u8>` buffers as one element per BYTE at 32 bytes each. Measured on a hit, decoding a stored
+/// answer for a 4,096-byte value allocated 135,296 bytes, of which 131,072 is exactly 4,096 x 32.
+/// That was 97% of everything a warm read allocated.
+///
+/// None of it shows in what is stored: the same answer packs into 4,117 bytes, a 1.005x encoding.
+/// The cost is entirely on the read side.
+///
+/// So the tag is read on its own first, and the payload is then read into a plain struct that
+/// carries no tag and so needs no buffering. What is STORED does not change at all -- these are the
+/// same bytes the encoder already wrote -- which matters because the cache admits and evicts by
+/// size, and an entry of a different size lives a different life.
+#[derive(serde::Deserialize)]
+struct CachedKind {
+    kind: String,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedBytes {
+    value: Option<Vec<u8>>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedMembers {
+    members: Vec<Vec<u8>>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedValues {
+    values: Vec<Option<Vec<u8>>>,
+}
+
+/// Encode a cached response.
+///
+/// Nothing on disk depends on this being msgpack rather than anything else, but it does depend on
+/// it staying the SAME: these entries are sized by the cache, so changing the encoding changes
+/// which of them survive pressure. This writes what it has always written.
+pub(super) fn encode_cached_response(response: &CommandResponse) -> Option<Vec<u8>> {
     let mut packed = Vec::new();
     let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
-    // struct-as-MAP: `CommandResponse` is internally tagged (`#[serde(tag = "kind")]`), which
-    // needs the field names present to read back. The array form would drop them.
+    // struct-as-MAP: the internal tag needs the field names present to read back. The array form
+    // would drop them.
     serde::Serialize::serialize(response, &mut serializer).ok()?;
     Some(packed)
 }
 
-fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
-    rmp_serde::from_slice::<CommandResponse>(bytes).ok()
+pub(super) fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
+    // Reading the tag on its own steps over the payload instead of building it: the fields this
+    // struct does not name are skipped, not materialised.
+    let kind = rmp_serde::from_slice::<CachedKind>(bytes).ok()?.kind;
+    match kind.as_str() {
+        "bytes" => Some(CommandResponse::Bytes {
+            value: rmp_serde::from_slice::<CachedBytes>(bytes).ok()?.value,
+        }),
+        "members" => Some(CommandResponse::Members {
+            members: rmp_serde::from_slice::<CachedMembers>(bytes).ok()?.members,
+        }),
+        "values" => Some(CommandResponse::Values {
+            values: rmp_serde::from_slice::<CachedValues>(bytes).ok()?.values,
+        }),
+        // Every other shape carries no bulk payload, so the buffering costs nothing worth avoiding
+        // and the whole enum reads back as itself. A variant added later lands here: slower than it
+        // could be, never wrong.
+        _ => rmp_serde::from_slice::<CommandResponse>(bytes).ok(),
+    }
 }
 
 pub(super) fn cached_response(
