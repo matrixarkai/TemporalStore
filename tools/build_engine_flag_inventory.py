@@ -307,6 +307,92 @@ UNWRAP_NUMBER = re.compile(r"\.unwrap_or\(\s*(-?\d[\d_]*)\s*\)")
 UNWRAP_NAMED = re.compile(r"\.unwrap_or\(\s*([A-Z][A-Z0-9_]{2,})\s*\)")
 CONST_LITERAL = re.compile(
     r"const ([A-Z][A-Z0-9_]+)\s*:\s*[a-z][a-z0-9]*\s*=\s*([^;]+);")
+# `env_usize_any(&[A, B], 256)` and friends: one knob, several accepted spellings, one default.
+_ANY_HELPER = re.compile(r"env_(?:bool|usize|u64|u32|i32|i64|f64)_any\s*\(")
+_INT_LITERAL = re.compile(r"-?\d[\d_]*")
+_CONST_NAME = re.compile(r"[A-Z][A-Z0-9_]{2,}")
+
+
+def _balanced(text: str, open_paren: int) -> int:
+    """Index of the ) that closes the ( at `open_paren`, or -1."""
+    depth = 0
+    for index in range(open_paren, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _last_argument(span: str) -> str:
+    """The last top-level argument of an argument list.
+
+    Comments are removed FIRST, because a comma inside one is not an argument separator and the
+    numbers here are surrounded by prose that has commas in it -- the measurement that chose the
+    value is written directly above it. Splitting first put half a sentence in the result.
+    """
+    clean = NEWLINE.join(line.split("//")[0] for line in span.split(NEWLINE))
+    depth = 0
+    start = 0
+    pieces = []
+    for index, char in enumerate(clean):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            pieces.append(clean[start:index])
+            start = index + 1
+    pieces.append(clean[start:])
+    # Rust permits a trailing comma, so the last piece is usually empty.
+    for piece in reversed(pieces):
+        stripped = piece.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _any_helper_default(lines, read_line, consts):
+    """The default of a knob offered under SEVERAL names by one `env_*_any` call.
+
+    These helpers take a list of accepted spellings -- a current name and the one it replaced --
+    and ONE default that belongs to all of them. The statement is the wrong unit here: the calls
+    sit as fields of a struct literal, so the statement runs to the end of the struct and picks up
+    the sibling knobs' names and numbers. The call itself is the unit, bounded by its own
+    parentheses, and the default is its last top-level argument.
+
+    A default that is an expression rather than a literal or a named const is left unread. That is
+    most of `compression_enabled`, whose default is `defaults.compression_enabled` -- following
+    that would mean evaluating Rust.
+    """
+    text = NEWLINE.join(lines)
+    offset = sum(len(line) + 1 for line in lines[:read_line])
+    match = FLAG_READ.search(text, offset)
+    if not match:
+        return ""
+    helper = None
+    for found in _ANY_HELPER.finditer(text, max(0, match.start() - 4000)):
+        if found.start() > match.start():
+            break
+        helper = found
+    if helper is None:
+        return ""
+    open_paren = text.index("(", helper.end() - 1)
+    close = _balanced(text, open_paren)
+    if close < 0 or not open_paren < match.start() < close:
+        return ""
+    tail = _last_argument(text[open_paren + 1:close])
+    if _INT_LITERAL.fullmatch(tail):
+        return tail.replace("_", "")
+    if _CONST_NAME.fullmatch(tail) and tail in consts:
+        value = consts[tail]
+        return value if value not in ("on", "off") else ""
+    return ""
+
+
 ARITHMETIC = re.compile(r"^[\d_ ()*<+]+$")
 
 
@@ -350,8 +436,10 @@ def numeric_default_of_statement(lines, read_line, consts):
     """
     statement = statement_around(lines, read_line)
     first = FLAG_READ.search(statement)
-    if not first or len(FLAG_READ.findall(statement)) != 1:
+    if not first:
         return ""
+    if len(FLAG_READ.findall(statement)) != 1:
+        return _any_helper_default(lines, read_line, consts)
     after = statement[first.end():]
     number = UNWRAP_NUMBER.search(after)
     if number:

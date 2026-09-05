@@ -48,7 +48,7 @@ Anything else is blank, and a blank means go and look.
 |---|---|
 | total | 296 |
 | booleans whose default this could read off the source | 33 |
-| numbers whose default this could read off the source | 31 |
+| numbers whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 25 |
 | **that nothing in this repository sets** | 175 |
@@ -208,8 +208,8 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `TS_RAFT_HEARTBEAT_INTERVAL_MS` | — | harness, script | 3 | — |
-| `TS_PAGE_STORE_COMPRESSION_MIN_BYTES` | — | config, test | 2 | — |
-| `TS_PROXY_CONTEXT_IO_TIMEOUT_MS` | — | nothing | 2 | — |
+| `TS_PAGE_STORE_COMPRESSION_MIN_BYTES` | 256 | config, test | 2 | — |
+| `TS_PROXY_CONTEXT_IO_TIMEOUT_MS` | 30000 | nothing | 2 | — |
 | `TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT` | — | nothing | 2 | — |
 | `MATRIXARK_BACKFILL_CACHE_BYTES` | — | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_MAX_BODY` | 2000 | nothing | 1 | — |
@@ -220,9 +220,9 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `MATRIXARK_EMBED_DRAINER_MAX_NODES_PER_PASS` | — | nothing | 1 | — |
 | `MATRIXARK_RETRIEVAL_MAX_CANDIDATES` | 64 | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_CACHE_BYTES` | — | nothing | 1 | — |
-| `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES` | — | test | 1 | — |
+| `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES` | 256 | test | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
-| `MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS` | — | nothing | 1 | — |
+| `MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS` | 30000 | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_INGEST_CHUNK_SIZE` | 64 | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | nothing | 1 | — |
 | `TS_BLOB_CHUNK_BYTES` | — | config | 1 | — |
