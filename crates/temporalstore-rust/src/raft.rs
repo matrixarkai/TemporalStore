@@ -197,83 +197,24 @@ pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
 const DATA_RAFT_LOG_HEADER_LEN: usize = 56;
 const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
 
-/// Read a boolean gate env var (`1`/`true`/`yes`/`on`), default OFF.
-///
-/// The replication-SAFETY properties (quorum election, durable pre-vote persistence, applied-read
-/// freshness, §7 snapshot-boundary truncation) are no longer gated -- they are what makes this
-/// Raft, not options, and shipping them dark meant the default build was the only configuration
-/// nobody tested. What remains behind this helper is genuinely optional: an optimization whose
-/// cost profile an operator may not want, or a hardening that is not yet complete enough to be
-/// the default. Each surviving gate documents which of the two it is.
-fn raft_env_flag_on(name: &str) -> bool {
-    matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
+// S2: snapshot the engine STATE IMAGE (exported index + page slabs) instead of every committed
+// log entry. `create_snapshot` captures an opaque image at the leader's applied index and drops
+// the replayable entries, so a far-behind follower installs in O(state) rather than replaying
+// O(total history); install reconstructs state from the image.
+//
+// `TS_RAFT_SNAPSHOT_STATE_IMAGE` used to select entry-carrying snapshots instead, for every
+// cluster in the process. It is `RaftClusterInner::snapshot_state_image` now, and only a test
+// about entry chunking asks for entries, of the cluster it built.
 
-/// Default-ON gate read: the fix is LIVE unless explicitly disabled with
-/// `=0|false|no|off`. Shipped write-path/raft fixes use this so production gets the
-/// fixed behavior by default; the env var remains only as an escape hatch.
-fn raft_env_flag_default_on(name: &str) -> bool {
-    !matches!(
-        std::env::var(name)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
-/// R4: after an election, withhold read-index/lease reads until the new leader has committed a
-/// no-op entry in its own term (leader-ready barrier).
-///
-/// STILL GATED, deliberately. Raft releases this barrier by having a new leader append a no-op
-/// entry at its own term the moment it is elected (§8). This implementation never appends one:
-/// `leader_has_committed_current_term` can only be satisfied by a CLIENT write landing at the new
-/// term. Enabling the gate unconditionally would therefore reject every leader-served
-/// read-index/lease read from the end of an election until the next write commits -- indefinitely
-/// on an idle cluster. Promoting this gate requires appending the election no-op first, which is a
-/// new `Command` variant and thus a wire-format change for `#[serde(tag = "kind")]` peers.
-fn raft_leader_ready_barrier_on() -> bool {
-    raft_env_flag_on("TS_RAFT_LEADER_READY_BARRIER")
-}
-
-/// S2: snapshot the engine STATE IMAGE (exported index + page slabs) instead of every committed
-/// log entry. When on, `create_snapshot` captures an opaque image at the leader's applied index
-/// and drops the replayable entries, so a far-behind follower installs in O(state) rather than
-/// replaying O(total history); install reconstructs state from the image. Default ON; set the
-/// variable to 0 and the snapshot still carries entries and behavior is byte-identical.
-fn raft_snapshot_state_image_on() -> bool {
-    // Default ON since the restore path learned to install images and compaction proved to
-    // bound the log with them (a restart after compaction serves every value; the log stays a
-    // fraction of the history). TS_RAFT_SNAPSHOT_STATE_IMAGE=0 opts back to entry-carrying
-    // snapshots, which re-encode history rather than reduce it.
-    raft_env_flag_default_on("TS_RAFT_SNAPSHOT_STATE_IMAGE")
-}
-
-/// P1 (fsync coalescing): skip a node's WAL fdatasync when none of its DURABILITY-relevant state
-/// changed since the last persist. Driven purely by whether hard_state / log / membership /
-/// snapshot / fences changed, so it can never skip a persist that Raft safety requires -- only the
-/// volatile `pipeline_state` + `read_safety_state` (match/next index, inflight/queue depths,
-/// read-index accounting counters) are excluded from the change check. Default ON; set the
-/// variable to 0 and every call fsyncs exactly as before (byte-identical).
-fn raft_wal_coalesce_on() -> bool {
-    raft_env_flag_default_on("TS_RAFT_WAL_COALESCE")
-}
-
-/// P2 (in-order propose): hold a per-cluster serialize lock across the append+replicate+commit
-/// critical section of `propose_distributed_one` so concurrent proposals reach followers in log
-/// order and never trigger a `prev_log` mismatch + full-deadline stall. Default ON; set the
-/// variable to 0 to propose without the serialize lock.
-fn raft_propose_serialize_on() -> bool {
-    raft_env_flag_default_on("TS_RAFT_PROPOSE_SERIALIZE")
-}
+// P1 (fsync coalescing): skip a node's WAL fdatasync when none of its DURABILITY-relevant state
+// changed since the last persist. Driven purely by whether hard_state / log / membership /
+// snapshot / fences changed, so it can never skip a persist that Raft safety requires -- only the
+// volatile `pipeline_state` + `read_safety_state` (match/next index, inflight/queue depths,
+// read-index accounting counters) are excluded from the change check.
+//
+// `TS_RAFT_WAL_COALESCE` used to decide this for every cluster in the process. It is
+// `RaftClusterInner::wal_coalesce` now, and only a test measuring what the skip saves turns it
+// off, of the one cluster it built.
 
 /// Fingerprint of the DURABILITY-relevant subset of a WAL record. `pipeline_state` and
 /// `read_safety_state` are cleared before hashing because they are volatile (reinitialised on
@@ -1445,19 +1386,6 @@ pub(crate) fn randomized_election_timeout_ticks(node_id: RaftNodeId) -> u64 {
     RAFT_ELECTION_TIMEOUT_BASE_TICKS + (hasher.finish() % RAFT_ELECTION_TIMEOUT_SPREAD_TICKS)
 }
 
-/// `TS_RAFT_WAL_DELTA_ENTRIES=0` restores the legacy full-log-per-record WAL payload.
-/// Note that a WAL containing incremental records cannot be read by a build that
-/// predates them, so roll the binary forward before flipping this back on.
-fn raft_wal_delta_entries_enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        !matches!(
-            std::env::var("TS_RAFT_WAL_DELTA_ENTRIES").ok().as_deref(),
-            Some("0") | Some("false") | Some("off")
-        )
-    })
-}
-
 #[derive(Debug, Clone)]
 pub struct LocalRaftWal {
     root: PathBuf,
@@ -1981,6 +1909,12 @@ where
 pub struct HttpRaftTransport {
     peers: BTreeMap<RaftNodeId, String>,
     options: HttpRequestOptions,
+    /// Whether replicated batches go out in the binary encoding.
+    ///
+    /// True everywhere: a receiver sniffs the body and accepts either, so this is the sender's
+    /// half of a decision the reader already handles. A test sends JSON to keep the receiver's
+    /// other branch exercised.
+    binary_replication: bool,
 }
 
 impl HttpRaftTransport {
@@ -1988,11 +1922,22 @@ impl HttpRaftTransport {
         Self {
             peers,
             options: HttpRequestOptions::default(),
+            binary_replication: true,
         }
     }
 
     pub fn with_options(peers: BTreeMap<RaftNodeId, String>, options: HttpRequestOptions) -> Self {
-        Self { peers, options }
+        Self {
+            peers,
+            options,
+            binary_replication: true,
+        }
+    }
+
+    /// Send append-entries as JSON, for the test that keeps the receiver's JSON branch covered.
+    #[cfg(test)]
+    pub(crate) fn send_json_append_entries_for_test(&mut self) {
+        self.binary_replication = false;
     }
 
     fn peer_addr(&self, node_id: RaftNodeId) -> Result<&str, RaftError> {
@@ -2009,7 +1954,7 @@ impl RaftTransport for HttpRaftTransport {
         request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, RaftError> {
         let addr = self.peer_addr(request.target_id)?.to_string();
-        if wal_proto::binary_replication_enabled() {
+        if self.binary_replication {
             let body = wal_proto::encode_append_entries(&request)
                 .map_err(|err| RaftError::Transport(err.to_string()))?;
             // The response is a handful of integers either way, so it stays as it was; the size
@@ -4022,9 +3967,57 @@ struct RaftClusterInner {
     read_safety_state: RaftReadSafetyRuntimeState,
     membership_evidence: RaftMembershipRuntimeEvidence,
     /// P1: last durable fingerprint persisted per node (see `raft_durable_fingerprint`). Only
-    /// consulted when `TS_RAFT_WAL_COALESCE` is on; otherwise left untouched.
+    /// consulted while `wal_coalesce` is on; otherwise left untouched.
     last_durable_fingerprint: BTreeMap<RaftNodeId, u64>,
-    /// P2: serialize proposes into the log in order under `TS_RAFT_PROPOSE_SERIALIZE`.
+    /// Whether a node whose durability-relevant state is unchanged skips its fdatasync.
+    ///
+    /// True everywhere but a test measuring what the skip saves.
+    wal_coalesce: bool,
+    /// Whether replication runs through the per-follower senders.
+    ///
+    /// FALSE. The senders were correctness-clean on a live cluster where the fan-out was not,
+    /// but two throughput anomalies are open -- the text-body arm lost about a third under
+    /// concurrency, and the binary-body arm amplified the leader's log writes -- so the proven
+    /// default stays until both are run down on hardware. Four tests turn it on, each of one
+    /// cluster, because each IS the pipeline's invariant and must not silently test the default.
+    follower_pipeline: bool,
+    /// Whether proposers run concurrently through those senders, rather than one at a time.
+    ///
+    /// TRUE, and only read when `follower_pipeline` is on. Serializing proposers starved the
+    /// senders of batches -- every entry paying the whole doorbell/sender/ack/commit-signal
+    /// chain alone -- which is the concurrency collapse measured on small machines. One test
+    /// takes the serialized fallback, which has to stay correct too.
+    pipeline_concurrent_propose: bool,
+    /// R4: whether a leader withholds read-index and lease reads until it has committed an entry
+    /// in its own term.
+    ///
+    /// FALSE, and it cannot simply be turned on. Raft releases this barrier by having a new
+    /// leader append a no-op entry at its own term the moment it is elected (S8). This
+    /// implementation never appends one, so `leader_has_committed_current_term` is satisfiable
+    /// only by a CLIENT write landing at the new term -- and enabling the barrier would reject
+    /// every leader-served read from the end of an election until that write commits,
+    /// indefinitely on an idle cluster. Appending the election no-op is a new `Command` variant
+    /// and so a wire-format change for `#[serde(tag = "kind")]` peers.
+    ///
+    /// The same missing entry is what `overlap_leader_barrier` below waits on. One test turns
+    /// this on, of the cluster it built, to hold the property for when the entry exists.
+    leader_ready_barrier: bool,
+    /// Whether a leader takes its durability barrier alongside replication rather than after.
+    ///
+    /// FALSE, and only a test that runs the path sets it. It relies on the commit index being
+    /// recoverable, which holds once every leader commits an entry of its own term on taking
+    /// office -- and this implementation never appends that entry, as the note on
+    /// `raft_leader_ready_barrier_on` says of the same missing mechanism. Adding it is a new
+    /// `Command` variant, and so a wire-format change; until then this stays off, and being a
+    /// field rather than a variable is what keeps a deployment from reaching it.
+    overlap_leader_barrier: bool,
+    /// Whether a snapshot carries an opaque state image instead of the replayable entries.
+    ///
+    /// True everywhere but a test about entry chunking, for which one image is a single unit and
+    /// therefore not the thing under test.
+    snapshot_state_image: bool,
+    /// P2: serialize proposes into the log in order. Held across the whole
+    /// append+replicate+commit critical section, so index N commits before N+1 begins.
     propose_serialize: Arc<Mutex<()>>,
     /// P3/P6: which node THIS process actually is, when the deployed runtime declares it.
     /// `None` for the in-process test cluster, which genuinely hosts every node -- so both of
@@ -4110,6 +4103,12 @@ impl RaftCluster {
                 read_safety_state: RaftReadSafetyRuntimeState::default(),
                 membership_evidence: RaftMembershipRuntimeEvidence::default(),
                 last_durable_fingerprint: BTreeMap::new(),
+                wal_coalesce: true,
+                follower_pipeline: false,
+                pipeline_concurrent_propose: true,
+                leader_ready_barrier: false,
+                overlap_leader_barrier: false,
+                snapshot_state_image: true,
                 propose_serialize: Arc::new(Mutex::new(())),
                 local_node_id: None,
                 persist_deferred_owner: None,
@@ -4121,6 +4120,75 @@ impl RaftCluster {
     }
 
     /// WAL-backed local Raft fixture for durability tests and harnesses only.
+    /// Persist every node's WAL record on every call, skipping nothing, for a test measuring
+    /// what the fingerprint skip saves. Scoped to this cluster: `TS_RAFT_WAL_COALESCE` used to
+    /// turn it off for every cluster in the process.
+    /// Whether replication runs through the per-follower senders. Read on the propose path and
+    /// by the production runtime's heartbeat, which must not start a second sender.
+    pub(crate) fn follower_pipeline_on(&self) -> bool {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .follower_pipeline
+    }
+
+    /// Replicate through the per-follower senders, for the tests that assert their invariant.
+    #[cfg(test)]
+    pub(crate) fn use_follower_pipeline_for_test(&self) {
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .follower_pipeline = true;
+    }
+
+    /// Take the serialized fallback -- one propose at a time through the same senders -- for the
+    /// test that keeps it correct.
+    #[cfg(test)]
+    pub(crate) fn propose_one_at_a_time_for_test(&self) {
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .pipeline_concurrent_propose = false;
+    }
+
+    /// Withhold leader-served reads until the leader has committed in its own term, for the test
+    /// that holds that property. Scoped to this cluster; see the field for why it is off.
+    #[cfg(test)]
+    pub(crate) fn withhold_reads_until_leader_ready_for_test(&self) {
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .leader_ready_barrier = true;
+    }
+
+    /// Overlap the leader's durability barrier with replication, for the test that runs that
+    /// path. Scoped to this cluster; see the field for why it is not on anywhere else.
+    #[cfg(test)]
+    pub(crate) fn overlap_leader_barrier_for_test(&self) {
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .overlap_leader_barrier = true;
+    }
+
+    /// Take entry-carrying snapshots rather than state images, for a test about how entries
+    /// chunk. Scoped to this cluster.
+    #[cfg(test)]
+    pub(crate) fn snapshot_carries_entries_for_test(&self) {
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .snapshot_state_image = false;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn persist_every_wal_record_for_test(&self) {
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .wal_coalesce = false;
+    }
+
     pub fn new_single_shard_with_wal(
         root: impl AsRef<Path>,
         shard_id: ShardId,
@@ -4239,6 +4307,12 @@ impl RaftCluster {
                 read_safety_state,
                 membership_evidence,
                 last_durable_fingerprint: BTreeMap::new(),
+                wal_coalesce: true,
+                follower_pipeline: false,
+                pipeline_concurrent_propose: true,
+                leader_ready_barrier: false,
+                overlap_leader_barrier: false,
+                snapshot_state_image: true,
                 propose_serialize: Arc::new(Mutex::new(())),
                 local_node_id: None,
                 persist_deferred_owner: None,
@@ -4526,9 +4600,11 @@ impl RaftCluster {
         // every entry paid the whole doorbell -> sender -> ack -> commit-signal chain alone,
         // which is exactly the concurrency collapse measured on small machines. =0 falls back
         // to one propose at a time through the same senders.
-        if follower_pipeline::follower_pipeline_enabled()
-            && raft_env_flag_default_on("TS_RAFT_PIPELINE_CONCURRENT_PROPOSE")
-        {
+        let (pipeline, concurrent) = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            (inner.follower_pipeline, inner.pipeline_concurrent_propose)
+        };
+        if pipeline && concurrent {
             return self.propose_pipelined_concurrent(command, transport);
         }
         // P2: serialize proposes into the log in order. Concurrent proposers otherwise append
@@ -4536,51 +4612,32 @@ impl RaftCluster {
         // so their AppendEntries race and can reach a follower out of order -> `prev_log` mismatch
         // -> reject -> a full-deadline stall. Holding this per-cluster lock across the whole
         // append+replicate+commit critical section forces index N to commit before N+1 begins.
-        let propose_gate = if raft_propose_serialize_on() {
+        let propose_gate = {
             let inner = self.inner.read().expect("raft cluster lock poisoned");
-            Some(inner.propose_serialize.clone())
-        } else {
-            None
+            inner.propose_serialize.clone()
         };
         let _propose_guard = propose_gate
-            .as_ref()
-            .map(|gate| gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // P4: the propose lock makes us the only proposer, so nested persists can record that a
-        // barrier is owed and let one flush below cover the final state -- before the ack. Still
-        // conditioned on actually holding that lock: without it there can be several proposers,
-        // and a shared deferral would then have no single owner.
-        let deferring = _propose_guard.is_some();
-        if deferring {
-            self.inner
-                .write()
-                .expect("raft cluster lock poisoned")
-                .begin_deferred_persist();
-        }
+        // barrier is owed and let one flush below cover the final state -- before the ack. That
+        // single owner is what the lock buys; a shared deferral among several proposers would
+        // have none, which is why the deferral lives inside the lock rather than beside it.
+        self.inner
+            .write()
+            .expect("raft cluster lock poisoned")
+            .begin_deferred_persist();
         let mut entry_barrier = None;
         // The senders replicate when the pipeline is on; this thread then appends, rings them,
         // and waits on the quorum-commit signal instead of sending to any peer itself. Branching
         // here keeps both paths inside the same deferral bookkeeping: the caller-side staging
         // and barrier-join below are what propose_pipelined leaves for its caller, exactly as
         // the fan-out body does.
-        let outcome = if follower_pipeline::follower_pipeline_enabled() {
+        let outcome = if pipeline {
             self.propose_pipelined(command, transport, &mut entry_barrier)
         } else {
             self.propose_distributed_one_locked(command, transport, &mut entry_barrier)
         };
-        if !deferring {
-            // An overlapped barrier is still joined before the ack, whatever path leaves here.
-            if let Some(handle) = entry_barrier {
-                let joined = handle
-                    .join()
-                    .unwrap_or_else(|_| Err(RaftError::Wal("barrier thread panicked".to_string())));
-                return match (outcome, joined) {
-                    (Ok(response), Ok(())) => Ok(response),
-                    (Ok(_), Err(err)) => Err(err),
-                    (Err(err), _) => Err(err),
-                };
-            }
-            return outcome;
-        }
         // Write what the deferral owes while the propose lock still orders it. Records carry the
         // log, so an older record landing after a newer one would regress the log on recovery --
         // the write must stay ordered.
@@ -4844,7 +4901,12 @@ impl RaftCluster {
         // The entry is in the log. Write it and start its barrier NOW, so the leader's disk
         // wait runs alongside the followers' instead of after them. Unchanged from the fan-out
         // path: the commit index is recoverable and never has to be durable before the ack.
-        if wal_proto::overlap_leader_barrier_enabled() {
+        if self
+            .inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .overlap_leader_barrier
+        {
             let staged = self
                 .inner
                 .write()
@@ -4972,7 +5034,12 @@ impl RaftCluster {
         // runs alongside the followers' instead of after them. The commit index is not known yet
         // and does not need to be: it is recoverable, so it never has to be durable before the
         // acknowledgement.
-        if wal_proto::overlap_leader_barrier_enabled() {
+        if self
+            .inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .overlap_leader_barrier
+        {
             let staged = self
                 .inner
                 .write()
@@ -5805,10 +5872,11 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         .binary_search_by_key(&node.applied_index.saturating_add(1), |entry| entry.index)
         .unwrap_or_else(|position| position);
     // Collect the committed entries that pass the exactly-once floor (and are freshly inserted
-    // into `applied`) into a single batch, then apply them via `execute_raft_apply_batch`. Under
-    // TS_RAFT_APPLY_COALESCE this coalesces the batch's engine-WAL fdatasync into ONE barrier; with
-    // the gate off (or a single-entry batch) the batch method degrades to the same per-entry
-    // `execute_raft_apply` calls, so the exactly-once + durability semantics are byte-identical.
+    // into `applied`) into a single batch, then apply them via `execute_raft_apply_batch`, which
+    // coalesces the batch's engine-WAL fdatasync into ONE barrier. For a single-entry batch -- or
+    // an engine a test has asked to apply per entry -- the batch method degrades to the same
+    // per-entry `execute_raft_apply` calls, so the exactly-once + durability semantics are
+    // byte-identical either way.
     // Cursor advances happen in-order exactly as before (skipped/already-applied entries update the
     // apply cursor inline; executed entries advance applied_index/max_applied_index after apply),
     // and nothing observes node state mid-loop (all under the caller's `inner` write lock).

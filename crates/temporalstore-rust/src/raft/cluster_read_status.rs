@@ -155,7 +155,7 @@ impl RaftCluster {
         // its own term. A leader freshly elected (or one that has just superseded a partitioned
         // predecessor) has not established its commit point until it commits in-term, so serving
         // now risks returning stale linearizable state.
-        if raft_leader_ready_barrier_on()
+        if inner.leader_ready_barrier
             && node_id == inner.leader_id
             && !inner.leader_has_committed_current_term()
         {

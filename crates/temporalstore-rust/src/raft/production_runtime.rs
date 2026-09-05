@@ -441,7 +441,7 @@ impl ProductionRaftRuntime {
                     last_contact_epoch = cluster.leader_contact_epoch();
                     if force_heartbeat || last_heartbeat.elapsed() >= heartbeat_interval {
                         force_heartbeat = false;
-                        if super::follower_pipeline::follower_pipeline_enabled() {
+                        if cluster.follower_pipeline_on() {
                             // Heartbeats, catch-up batches and liveness all ride the per-follower
                             // senders: a second sender here is exactly the interleaving the
                             // pipeline exists to end. Check-quorum reads what the senders saw.

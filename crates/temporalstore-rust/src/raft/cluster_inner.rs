@@ -743,7 +743,7 @@ impl RaftClusterInner {
         let shard_id = self.shard_id;
         let max_segment_bytes = self.config.max_segment_bytes;
         let min_keep_segment_num = self.config.min_keep_segment_num as usize;
-        let coalesce = raft_wal_coalesce_on();
+        let coalesce = self.wal_coalesce;
         // P3: a deployed process owns exactly one node but keeps a full cluster view, so
         // `wal_records()` emits a record per peer and this loop fsyncs every one of them. A
         // leader owes its peers no durability: each persists its own hard state before answering
