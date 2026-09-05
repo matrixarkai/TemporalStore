@@ -982,6 +982,24 @@ def _shared_container(field, value, table, depth):
     return value
 
 
+#: What a dict BUILT to a given key count costs on this interpreter, memoised by key count.
+#:
+#: Measured rather than tabulated, because the growth policy is CPython's and a table written here
+#: would silently stop matching. Only a handful of key counts occur, so the cache stays tiny.
+_RIGHT_SIZED_BYTES: dict[int, int] = {}
+
+
+def _right_sized_bytes(key_count: int) -> int:
+    cached = _RIGHT_SIZED_BYTES.get(key_count)
+    if cached is None:
+        probe: dict = {}
+        for index in range(key_count):
+            probe[index] = None
+        cached = _sys.getsizeof(probe)
+        _RIGHT_SIZED_BYTES[key_count] = cached
+    return cached
+
+
 def share_repeated_values(records: list[Json], table: dict, already: set | None = None) -> list[Json]:
     """Give every record that carries the same flat dict value the SAME object.
 
@@ -1027,10 +1045,33 @@ def share_repeated_values(records: list[Json], table: dict, already: set | None 
                 if replacements is None:
                     replacements = {}
                 replacements[field] = shared
+        # Right-size the table on the way in, whichever branch takes it.
+        #
+        # CPython grows a dict's table on insert and never shrinks it, and the table a dict ends on
+        # depends on HOW it was built rather than on what it holds. Both paths that reach the cache
+        # build records the expensive way -- expansion copies the encoded record, drops the intern
+        # token and puts the bundle's six fields back; the append path assembles field by field --
+        # and a dict that arrives at 21 keys that way keeps a 64-slot table costing 1,176 B where
+        # one BUILT to the same 21 keys gets 32 slots and costs 640.
+        #
+        # 536 B on every cached record, for identical keys and identical values. Rebuilding by
+        # ITEMS is what reclaims it: `dict(record)` and `{**record}` both presize from the source's
+        # capacity and copy the oversize faithfully.
+        #
+        # This is the right site because it is the one both paths pass through. Doing it in
+        # `expand_interned_records` instead fixed the cold load and left the warm cache -- the one a
+        # long-running box actually serves from -- still paying, which is how the shortfall came to light.
+        #
+        # Measured on a 1 MB skill corpus, where skill_section and resource_chunk are 99.2% of rows:
+        # the container falls 1,173 -> 641 B/record, the whole cache 2,759 -> 2,227 B/record
+        # (-19.3%), for about 3% on a cold load.
+        oversized = _sys.getsizeof(record) > _right_sized_bytes(len(record))
         if replacements is None:
-            shared_out.append(record)
+            shared_out.append(dict(record.items()) if oversized else record)
         else:
-            copied = dict(record)
+            # `update` here only replaces values under keys the record already has, so it cannot
+            # grow the table it was just given.
+            copied = dict(record.items()) if oversized else dict(record)
             copied.update(replacements)
             shared_out.append(copied)
     return shared_out
