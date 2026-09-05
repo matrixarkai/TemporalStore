@@ -79,9 +79,21 @@ pub(crate) const FRAME_MAGIC_V3: u8 = 0xB3;
 /// records where its last record is as it writes, which bounds even that; the descriptors for
 /// it exist in `storage_descriptor` and are not yet wired.)
 ///
-/// Off (`TS_WAL_BINARY_FRAME=0`) writes the delimited frame again. Reading never depends on this
-/// flag: which frame a record uses is a property of the record, so a log holding both -- which
-/// is what an upgrade leaves -- reads end to end either way.
+/// Off (`TS_WAL_BINARY_FRAME=0`) writes the delimited frame again.
+///
+/// DECODING a record never depends on this flag: which frame a record uses is a property of the
+/// record, and `next_frame` dispatches on its first bytes across all four shapes, so a log holding
+/// both -- which is what an upgrade leaves -- reads end to end either way.
+///
+/// Finding the TAIL does depend on it, and the doc here used to say otherwise.
+/// `last_wal_sequence_in` chooses its strategy from this flag rather than from the file: on, it
+/// takes the footer hint and walks forward; off, it searches BACKWARDS for the last newline, which
+/// is an assumption only a delimited log satisfies. A binary frame carries newlines freely inside
+/// its payload, so that search is not looking for a record boundary in a log written binary.
+///
+/// So the off position belongs to a log whose records are delimited. It is not a switch that can
+/// be thrown over an existing binary-framed log and it never was; what was wrong is the sentence
+/// that said it could be.
 pub(crate) fn binary_frame_enabled() -> bool {
     !matches!(
         std::env::var("TS_WAL_BINARY_FRAME")
