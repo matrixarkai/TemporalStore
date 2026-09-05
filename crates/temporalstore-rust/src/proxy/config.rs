@@ -30,6 +30,11 @@ pub(super) fn default_context_shard_count() -> u64 {
     0
 }
 
+pub(super) fn default_heartbeat_interval_ms() -> u64 {
+    // Unchanged from what `main` passed before this became configuration.
+    10_000
+}
+
 pub(super) fn default_heartbeat_timeout_ms() -> u64 {
     5_000
 }

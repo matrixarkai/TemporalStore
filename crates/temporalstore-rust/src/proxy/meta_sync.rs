@@ -143,10 +143,15 @@ impl ProxyService {
         }
     }
 
-    pub fn start_heartbeat_loop(&self, interval_ms: u64) -> thread::JoinHandle<()> {
+    pub fn start_heartbeat_loop(&self) -> thread::JoinHandle<()> {
         let service = self.clone();
-        let interval = Duration::from_millis(interval_ms.max(1));
         thread::spawn(move || loop {
+            // Read per pass, not captured: pushing a new interval should not need a restart.
+            let interval = Duration::from_millis(
+                service
+                    .with_options(|options| options.heartbeat_interval_ms)
+                    .max(1),
+            );
             let started = std::time::Instant::now();
             let _ = service.heartbeat_to_meta();
             let elapsed = started.elapsed();
