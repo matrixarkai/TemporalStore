@@ -169,7 +169,8 @@ pub struct IndexItem {
         rename = "pk",
         alias = "page_ref_key",
         default,
-        deserialize_with = "page_ref_key_either_shape"
+        deserialize_with = "page_ref_key_either_shape",
+        serialize_with = "page_ref_key_as_number_when_it_is_one"
     )]
     pub page_ref_key: String,
     #[serde(rename = "ok", alias = "object_key", default)]
@@ -210,6 +211,28 @@ fn is_zero_u64(value: &u64) -> bool {
 ///
 /// The handle is a `u64`; it has been carried as decimal text. This lets a reader consume a log
 /// whose writer has moved to the number, so the writer can move whenever every reader has this.
+/// Write the page-ref key as a NUMBER when it is one, and as text when it is not.
+///
+/// This is the second half of the two-step change the reader half landed for. The key is a `u64`
+/// everywhere else and the write path stringifies it on the way in; as decimal text it was 20
+/// bytes of a 161-byte item, and as a msgpack integer it is about nine.
+///
+/// Safe to flip because `page_ref_key_either_shape` already takes both, and it has shipped: a
+/// reader that had only ever seen the string would have had msgpack refuse the type outright
+/// rather than degrade, which is exactly why the reader went first.
+///
+/// A key that does NOT parse as a number still goes out as text, so nothing depends on the write
+/// path's stringification being reversible.
+fn page_ref_key_as_number_when_it_is_one<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value.parse::<u64>() {
+        Ok(number) => serializer.serialize_u64(number),
+        Err(_) => serializer.serialize_str(value),
+    }
+}
+
 fn page_ref_key_either_shape<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -2382,13 +2405,34 @@ mod tests {
         let round_tripped: IndexItem = decode_index_payload(&as_text).expect("text must decode");
         assert_eq!(round_tripped.page_ref_key, handle.to_string());
 
-        // Nothing writes the number yet: that is the second step, and it needs every reader to
-        // have this one first.
+        // The writer now emits the number, so `as_text` above is ALSO numeric and the two are no
+        // longer a text-vs-number comparison -- they are two different structs. `NumericHandle`
+        // is a hand-rolled mirror that does not skip its false bools, where `IndexItem` does, so
+        // it comes out SEVEN BYTES LARGER despite carrying the same handle. Comparing them was
+        // only ever meaningful while the text penalty outweighed that difference.
+        //
+        // Compare like with like instead: the same item, with a handle that parses as a number
+        // and one of the same length that does not.
+        let mut unparseable = textual.clone();
+        unparseable.page_ref_key = format!("x{}", &handle.to_string()[1..]);
+        assert_eq!(
+            unparseable.page_ref_key.len(),
+            handle.to_string().len(),
+            "the two handles must be the same length or the comparison measures the length"
+        );
+        let as_forced_text =
+            encode_index_payload(&unparseable).expect("encode the unparseable handle");
         assert!(
-            as_text.len() > as_number.len(),
-            "the numeric shape should be the smaller one: text {} vs number {}",
+            as_forced_text.len() > as_text.len(),
+            "a handle that parses should be written as a number and be smaller: text {} vs number {}",
+            as_forced_text.len(),
+            as_text.len()
+        );
+        println!(
+            "  HANDLE same item, 20-char handle: as text {} B, as a number {} B (saves {} B a record)",
+            as_forced_text.len(),
             as_text.len(),
-            as_number.len()
+            as_forced_text.len() - as_text.len()
         );
         println!(
             "  HANDLE text {} B vs number {} B ({} B a record if the writer ever moves)",
