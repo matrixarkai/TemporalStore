@@ -1256,7 +1256,13 @@ SETUP_JS = r"""
      Applies to any setting whose variable ends in _BYTES, so it covers the two quota settings
      that predate the engine group as well. */
   function byteHint(f) {
-    if (!f.env || !/_BYTES$/.test(f.env)) { return ""; }
+    /* Byte counts whose NAME does not end in _BYTES. Without these they render as bare integers:
+       1073741824 beside 268435456 look alike at a glance, which is how a zone gets sized wrong by
+       someone reading carefully. Declared INSIDE the function on purpose -- the byte-hint harness
+       extracts this function alone and calls it, so anything it needs has to travel with it.
+       test_matrixark_byte_settings_read_in_units keeps the list in step with the settings. */
+    var byteValued = { TS_STORAGE_ZONE_SIZE: 1, TS_STREAM_MAX_BLOB_SIZE: 1 };
+    if (!f.env || (!/_BYTES$/.test(f.env) && !byteValued[f.env])) { return ""; }
     var raw = (f.value === "" || f.value == null) ? f.default : f.value;
     var size = Number(raw);
     if (!isFinite(size) || size <= 0) { return ""; }
