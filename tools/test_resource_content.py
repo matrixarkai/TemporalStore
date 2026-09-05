@@ -154,5 +154,47 @@ class ResourceContentTest(unittest.TestCase):
         self.assertFalse(out["has_more"])
 
 
+class WhatTheParserOwesACjkCorpusTest(unittest.TestCase):
+    """Two behaviours that used to be switchable, and are now simply how the parser works.
+
+    Both switches defaulted on and nothing anywhere selected the off position, so retiring them
+    kept the live path -- but neither function had a test, which is the state that lets a live
+    path be edited away as easily as a dead one.
+    """
+
+    @staticmethod
+    def _parser():
+        try:
+            from tools import matrixark_resource_parser as parser  # noqa: PLC0415
+        except ImportError:  # run from tools/ dir
+            import matrixark_resource_parser as parser  # type: ignore[no-redef]  # noqa: PLC0415
+        return parser
+
+    def test_a_cjk_sentence_is_not_counted_as_one_token(self) -> None:
+        parser = self._parser()
+        chinese = "中文测试句子内容很长"
+        latin_runs = len(parser._LATIN_RUN_RE.findall(chinese))
+        self.assertEqual(0, latin_runs, "the control: this sample has no Latin runs at all")
+        self.assertGreater(
+            parser.token_estimate(chinese), 4,
+            "a Chinese sentence counted by Latin runs alone scores 1, which understates it by "
+            "about 37x and silently blows any max_context_tokens budget")
+
+    def test_a_mixed_passage_gives_both_halves_keywords(self) -> None:
+        parser = self._parser()
+        chinese = "向量检索系统"
+        keywords = parser.keywords_for_text("alpha beta gamma delta " + chinese, limit=6)
+        self.assertTrue(keywords, "the control: something must be indexed")
+        cjk = [k for k in keywords if parser._CJK_CHAR_RE.search(k)]
+        self.assertTrue(
+            cjk,
+            "Latin runs alone leave Chinese text with NO keywords, so on a CJK corpus the part "
+            "of the secondary index carrying any selectivity indexes nothing. Got: %r" % keywords)
+        self.assertTrue(
+            all(len(k) == 2 for k in cjk),
+            "Chinese has no spaces to split on, so runs contribute overlapping character "
+            "bigrams a lexical index can match without a segmenter. Got: %r" % cjk)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

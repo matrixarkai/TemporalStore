@@ -39,7 +39,6 @@ DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUN
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
 DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
-DEFAULT_MD_PACK_SECTIONS = os.environ.get("MATRIXARK_RESOURCE_MD_PACK_SECTIONS", "1") not in {"0", "false", "False", ""}
 DEFAULT_SLIM_CHUNK_METADATA = os.environ.get("MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA", "0") not in {"0", "false", "False", ""}
 # How many tokens each encoder actually reads. A window is a property of the MODEL, not a
 # constant: e5 and MiniLM stop at 512, BGE-M3 and jina-v3 at 8192. Anything beyond a model's
@@ -199,7 +198,6 @@ _CJK_CLASS = "぀-ヿ㐀-䶿一-鿿豈-﫿ｦ-ﾟ"
 _LATIN_RUN_RE = re.compile(r"[A-Za-z0-9_]+")
 _CJK_CHAR_RE = re.compile("[" + _CJK_CLASS + "]")
 _OTHER_SYMBOL_RE = re.compile("[^" + _CJK_CLASS + r"\sA-Za-z0-9_]")
-CJK_AWARE_TOKENS = os.environ.get("MATRIXARK_RESOURCE_CJK_TOKENS", "1") not in {"0", "false", "False", ""}
 _SPLIT_SPAN_RE = re.compile(
     "[" + _CJK_CLASS + r"]|[A-Za-z0-9_]+|[^" + _CJK_CLASS + r"\sA-Za-z0-9_]+"
 )
@@ -237,8 +235,6 @@ def token_estimate(text: str) -> int:
     a CJK corpus. Coefficients calibrated against the multilingual MiniLM
     tokenizer: median estimate/actual 1.00 over a mixed CN/EN sample.
     """
-    if not CJK_AWARE_TOKENS:
-        return max(1, len(_LATIN_RUN_RE.findall(text)))
     latin = len(_LATIN_RUN_RE.findall(text))
     cjk = len(_CJK_CHAR_RE.findall(text))
     other = len(_OTHER_SYMBOL_RE.findall(text))
@@ -298,7 +294,6 @@ def resource_content_version(raw_uri: str, units: list[Json]) -> str:
     return digest.hexdigest()[:16]
 
 
-CJK_KEYWORD_BIGRAMS = os.environ.get("MATRIXARK_RESOURCE_CJK_KEYWORDS", "1") not in {"0", "false", "False", ""}
 _CJK_RUN_RE = re.compile("[" + _CJK_CLASS + "]{2,}")
 
 
@@ -326,14 +321,13 @@ def keywords_for_text(text: str, limit: int = 12) -> list[str]:
         seen.add(token)
         latin.append(token)
     cjk: list[str] = []
-    if CJK_KEYWORD_BIGRAMS:
-        for run in _CJK_RUN_RE.findall(text):
-            for index in range(len(run) - 1):
-                bigram = run[index : index + 2]
-                if bigram in seen:
-                    continue
-                seen.add(bigram)
-                cjk.append(bigram)
+    for run in _CJK_RUN_RE.findall(text):
+        for index in range(len(run) - 1):
+            bigram = run[index : index + 2]
+            if bigram in seen:
+                continue
+            seen.add(bigram)
+            cjk.append(bigram)
     out: list[str] = []
     for index in range(max(len(latin), len(cjk))):
         if index < len(latin):
@@ -479,7 +473,7 @@ def parse_resource(
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
     max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
     max_inline_text_chars: int | None = None,
-    pack_markdown_sections: bool | None = None,
+    pack_markdown_sections: bool = True,
     slim_chunk_metadata_fields: bool | None = None,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
@@ -521,8 +515,6 @@ def parse_resource(
 
     if slim_chunk_metadata_fields is None:
         slim_chunk_metadata_fields = DEFAULT_SLIM_CHUNK_METADATA
-    if pack_markdown_sections is None:
-        pack_markdown_sections = DEFAULT_MD_PACK_SECTIONS
     if pack_markdown_sections and kind in {"md", "skill"}:
         units = _pack_markdown_units(units, max_chunk_tokens)
 
