@@ -64,12 +64,10 @@ fn main() {
     // Bulk backfill writes many WAL records into an already-large live hook store.
     // Trust the WAL's verified in-process sequence cache so each append does not
     // rescan the full WAL file to find the tail.
-    if std::env::var("TS_PHASE1_FLAT").is_err() {
-        std::env::set_var("TS_PHASE1_FLAT", "1");
-    }
-    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
-        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
-    }
+    // Only the default moves: an operator who set the variable keeps what they asked for. This
+    // used to be a write into the process environment, aimed at an engine built further down.
+    let warm_cache_in_background =
+        std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err();
     let raw_first = env_bool("MATRIXARK_BACKFILL_RAW_FIRST");
     let checkpoint_only = env_bool("MATRIXARK_BACKFILL_CHECKPOINT_ONLY")
         || std::env::args().any(|arg| arg == "--checkpoint-only");
@@ -132,6 +130,9 @@ fn main() {
         root.join("pages"),
         root.join("indexes"),
     );
+    if warm_cache_in_background {
+        engine.warm_cache_in_background_on_load();
+    }
     engine.load_shard(1);
     let load_seconds = load_started.elapsed().as_secs_f64();
     let replay_from_sequence = engine.write_ahead_log_store().stats(1).last_sequence;

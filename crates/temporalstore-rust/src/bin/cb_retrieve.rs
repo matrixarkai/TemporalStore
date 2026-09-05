@@ -64,9 +64,10 @@ fn main() {
     // Retrieval probes should measure serving-read latency, not block startup on
     // full page-cache warmup. The decoded serving maps are still rebuilt during
     // load; cold pages can then warm through read-through or a separate warmer.
-    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
-        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
-    }
+    // Only the default moves: an operator who set the variable keeps what they asked for. This
+    // used to be a write into the process environment, aimed at an engine built further down.
+    let warm_cache_in_background =
+        std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err();
     let root = PathBuf::from(arg("--root", "/tmp/ts-cb/store"));
     let agent = arg("--agent-name", "claude");
     let session = arg("--session-id", "s000");
@@ -116,6 +117,9 @@ fn main() {
         eprintln!("stage=engine_open root={}", root.display());
     }
     let load_started = Instant::now();
+    if warm_cache_in_background {
+        engine.warm_cache_in_background_on_load();
+    }
     engine.load_shard(1);
     let shard_load_seconds = load_started.elapsed().as_secs_f64();
     if trace_stages {

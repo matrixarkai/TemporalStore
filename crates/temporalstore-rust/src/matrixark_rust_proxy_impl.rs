@@ -4164,9 +4164,9 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
     // restart. Rebuild decoded serving maps during load, then warm the page cache
     // in the background so first requests can read through storage instead of
     // waiting for a full synchronous cache promotion pass.
-    let defaulted_nonblocking_warm = env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err();
-    if defaulted_nonblocking_warm {
-        env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
+    if env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
+        // Only the DEFAULT moves: an operator who set the variable keeps what they asked for.
+        engine.warm_cache_in_background_on_load();
     }
     // A shard load can be REFUSED (corrupt delta stream, WAL hole, replay failure) or can
     // genuinely fail partway. `load_shard` discards that answer, and the engine below is

@@ -207,12 +207,10 @@ fn main() {
     // Embedding backfill is an additive bulk maintenance task. Coalesce per-node
     // persistence and persist the served index once at the end.
     std::env::set_var("MATRIXARK_BULK_INGEST", "1");
-    if std::env::var("TS_PHASE1_FLAT").is_err() {
-        std::env::set_var("TS_PHASE1_FLAT", "1");
-    }
-    if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
-        std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
-    }
+    // Only the default moves: an operator who set the variable keeps what they asked for. This
+    // used to be a write into the process environment, aimed at an engine built further down.
+    let warm_cache_in_background =
+        std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err();
 
     let root = PathBuf::from(arg("--root", "/tmp/ts-cb/store"));
     let agent = arg("--agent-name", "claude");
@@ -242,6 +240,9 @@ fn main() {
         root.join("indexes"),
     );
     let load_started = Instant::now();
+    if warm_cache_in_background {
+        engine.warm_cache_in_background_on_load();
+    }
     engine.load_shard(1);
     let shard_load_seconds = load_started.elapsed().as_secs_f64();
 
