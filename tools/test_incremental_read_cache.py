@@ -46,7 +46,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
         adapter = A.MatrixArkLocalAdapter(self.path)
         adapter.append_many(_records(0, self.SEED))
         adapter.read_all()
-        self.assertTrue(adapter._durable_read_cache_path().exists(),
+        self.assertTrue(adapter._durable_read_cache_snapshot_path().exists(),
                         "priming read did not establish a durable base")
         return adapter
 
@@ -65,7 +65,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
     def test_appends_do_not_rewrite_the_base(self):
         """The point of the whole change: appending must not re-serialize the corpus."""
         adapter = self._primed()
-        base = adapter._durable_read_cache_path()
+        base = adapter._durable_read_cache_snapshot_path()
         before_bytes = base.read_bytes()
 
         for record in _records(50, 10):
@@ -73,7 +73,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
 
         self.assertEqual(before_bytes, base.read_bytes(),
                          "base was rewritten -- the append path fell back to a full write")
-        self.assertTrue(adapter._durable_read_cache_delta_path().exists(),
+        self.assertTrue(adapter._durable_read_cache_tail_path().exists(),
                         "nothing was written to the tail")
         self.assertEqual(60, len(self._fresh_view()),
                          "a cold reader must see the appended records")
@@ -94,7 +94,7 @@ class IncrementalReadCacheCase(unittest.TestCase):
         for name in globbed:
             self.assertNotIn("read-cache-delta", name)
             self.assertNotIn("read-cache-head", name)
-        self.assertNotIn(adapter._durable_read_cache_delta_path().name, globbed)
+        self.assertNotIn(adapter._durable_read_cache_tail_path().name, globbed)
         self.assertNotIn(adapter._durable_read_cache_head_path().name, globbed)
 
     def test_a_second_writer_does_not_corrupt_the_view(self):
@@ -160,8 +160,8 @@ class IncrementalReadCacheCase(unittest.TestCase):
             adapter.append(record)
         adapter._clear_jsonl_read_caches()
         for cache_file in (
-            adapter._durable_read_cache_path(),
-            adapter._durable_read_cache_delta_path(),
+            adapter._durable_read_cache_snapshot_path(),
+            adapter._durable_read_cache_tail_path(),
             adapter._durable_read_cache_head_path(),
         ):
             self.assertFalse(cache_file.exists(), f"{cache_file.name} survived the clear")
@@ -171,14 +171,53 @@ class IncrementalReadCacheCase(unittest.TestCase):
         adapter = self._primed()
         for record in _records(self.SEED, 8):
             adapter.append(record)
-        delta = adapter._durable_read_cache_delta_path()
+        delta = adapter._durable_read_cache_tail_path()
         self.assertTrue(delta.exists(), "no tail was written -- nothing to damage")
-        text = delta.read_text(encoding="utf-8")
-        delta.write_text(text[: max(1, len(text) - 20)], encoding="utf-8")
+        # Damage the LAST bytes, whatever the tail is encoded as. Reading it as text would fail
+        # outright on a block-framed tail, which would test the harness rather than the loader.
+        raw = delta.read_bytes()
+        delta.write_bytes(raw[: max(1, len(raw) - 20)])
         A._LOCAL_READ_CACHE.clear()
         view = A.MatrixArkLocalAdapter(self.path).read_all()
         self.assertEqual(self.SEED + 8, len(view),
                          "a damaged tail must fall back to the log, not truncate")
+
+    def test_both_append_paths_write_the_same_tail(self):
+        """Two paths extend the tail, and they must agree on which file it is.
+
+        A write holds the batch it just appended; a read has to slice it out of the record set.
+        While the tail had a single form, writing it in two places was duplication. Once the tail
+        could be block-framed it became a correctness hazard: the writer extended one file, the
+        reader extended the other, the loader read whichever it prefers, its count disagreed with
+        the head, and every read re-derived from the log with a good snapshot sitting beside it.
+        Silently -- nothing raises and the answer stays right, only the latency moves.
+
+        The out-of-band write is what forces the read-side path: those records never pass through
+        this process's writer, so the next read is what has to persist them.
+        """
+        adapter = self._primed()
+        with self.path.open("a", encoding="utf-8") as handle:
+            for record in _records(self.SEED, 4):
+                print(json.dumps(record, separators=(",", ":")), file=handle)
+
+        A._LOCAL_READ_CACHE.clear()
+        reader = A.MatrixArkLocalAdapter(self.path)
+        view = reader.read_all()
+        # Before anything else looks at the store: _log_view builds another adapter, and a read
+        # can fold the tail back into the base, which would clear what this is here to inspect.
+        on_disk = [path for path in (reader._durable_read_cache_delta_path(),
+                                     reader._durable_read_cache_delta_binary_path())
+                   if path.exists()]
+        self.assertEqual([reader._durable_read_cache_tail_path()], on_disk,
+                         "the two append paths disagree about where the tail is")
+        self.assertEqual(self._log_view(), view)
+
+        # And the snapshot still SERVES, which is what two tails quietly cost.
+        A._LOCAL_READ_CACHE.clear()
+        again = A.MatrixArkLocalAdapter(self.path)
+        self.assertEqual(view, again.read_all())
+        self.assertEqual("durable", getattr(again, "_read_cache_source", "?"),
+                         "the snapshot stopped serving reads")
 
     def test_head_counts_track_what_was_persisted(self):
         adapter = self._primed()
@@ -187,9 +226,18 @@ class IncrementalReadCacheCase(unittest.TestCase):
         head_path = adapter._durable_read_cache_head_path()
         self.assertTrue(head_path.exists(), "no head was written")
         head = json.loads(head_path.read_text(encoding="utf-8"))
-        base = json.loads(adapter._durable_read_cache_path().read_text(encoding="utf-8"))
-        tail = [l for l in adapter._durable_read_cache_delta_path().read_text(
-            encoding="utf-8").splitlines() if l.strip()]
+        # Through the module's decoder, so this reads the snapshot however it is stored.
+        base = A._decode_snapshot_bytes(
+            adapter._durable_read_cache_snapshot_path().read_bytes())
+        # `delta_count` counts RECORDS. While the tail was one document per line those were the
+        # same number; a block-framed tail holds many records per block and its payload contains
+        # newlines of its own, so read it the way the loader does.
+        tail_path = adapter._durable_read_cache_tail_path()
+        tail_bytes = tail_path.read_bytes()
+        if tail_path.suffix == ".bin":
+            tail = A._decode_delta_blocks(tail_bytes)
+        else:
+            tail = [l for l in tail_bytes.decode("utf-8").splitlines() if l.strip()]
         # `record_count` counts DATA records, which is what the load path recovers and compares
         # after expansion. The stored array is longer by the intern sidecars it carries, so count
         # what the head is actually describing rather than the raw array length.

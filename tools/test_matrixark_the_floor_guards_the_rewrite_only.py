@@ -51,9 +51,12 @@ class FloorGuardsTheRewriteOnlyTest(unittest.TestCase):
         from the same list still changes nothing -- which is why the tests below write a list with
         a row REMOVED, the case compaction produces and the floor exists to bound.
         """
-        path = self.root / "events.jsonl.read-cache.json"
+        path = MatrixArkLocalAdapter(self.log)._durable_read_cache_snapshot_path()
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            # Through the module's decoder: the snapshot may be a compressed container, and
+            # reading it as text raises UnicodeDecodeError -- a ValueError, which the handler
+            # below would swallow into "there is no snapshot".
+            payload = adapter_module._decode_snapshot_bytes(path.read_bytes())
         except (FileNotFoundError, ValueError):
             return (0, 0)
         records = payload.get("records")
