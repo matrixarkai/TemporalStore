@@ -511,6 +511,20 @@ def _note_full_read_fallback(where: str, reason: BaseException) -> None:
         pass
 
 
+def disk_fallback_store_path() -> str:
+    """Where a direct adapter falls back to on disk, or "" when no fallback is configured.
+
+    Two adapters set this in their constructors and a third restores it for an instance that
+    predates the attribute; all three spelled out the same read, including the strip. The strip is
+    the part worth having in one place: a path with a stray newline from a shell export is not the
+    same string as the path, and two of the three would have had to remember to remove it.
+
+    Read per call rather than captured at import, so a deployment that sets the variable after this
+    module loads still gets it.
+    """
+    return os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirectBackendMixin, _TemporalDirectWriteMixin, _TemporalDirectReadMixin, _TemporalDirectRetrieveMixin):
     # The base class precedes the mixins in the MRO, so without this the buffered audit
     # implementation the __init__ prepares for (MATRIXARK_DIRECT_AUDIT_MODE, buffer, flusher)
@@ -2934,7 +2948,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._append_engine_ms_total = 0.0
         self._append_engine_count = 0
         self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
-        self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+        self._disk_fallback_path = disk_fallback_store_path()
         self._disk_fallback_enabled = bool(self._disk_fallback_path)
         self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path)
         self._disk_fallback_recovery_attempted = False
@@ -3076,7 +3090,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         if not hasattr(self, "_disk_fallback_adapter"):
             self._disk_fallback_adapter = None
         if not hasattr(self, "_disk_fallback_path"):
-            self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+            self._disk_fallback_path = disk_fallback_store_path()
         if not hasattr(self, "_disk_fallback_enabled"):
             self._disk_fallback_enabled = bool(self._disk_fallback_path)
         if not hasattr(self, "_disk_fallback_recovery_enabled"):
@@ -4554,7 +4568,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._retrieval_candidate_cache: dict[str, Json] = {}
         self._retrieval_candidate_cache_lock = threading.RLock()
         self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
-        self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
+        self._disk_fallback_path = disk_fallback_store_path()
         self._disk_fallback_enabled = bool(self._disk_fallback_path)
         self._disk_fallback_write_failures = 0
         self._metaserver = metaserver
