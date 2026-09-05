@@ -59,6 +59,83 @@ KNOWN_UNWIRED: Set[str] = {
 # scans source has to assert its own extent or it silently degrades into checking nothing.
 EXPECTED_GATE_FLOOR = 14
 
+# The registry, not one module, is the real universe. Everything above looks for `*_enabled`
+# functions in `matrixark_index_growth_bound.py`, and asserts it found at least fourteen -- an
+# extent check that is honest about the module and silent about everything outside it. A knob whose
+# gate lives in another file is not reported as unwired; it is not reported at all.
+#
+# Three were sitting in exactly that shadow. They are tenant-visible controls that resolve
+# correctly and change nothing, which is the same defect this file was written for.
+KNOWN_UNREAD_KNOBS: Set[str] = {
+    # Its gate exists, in `matrixark_pipeline_task_slim.py`, and reads the process environment
+    # directly rather than resolving the knob -- so the registry offers a per-tenant control over
+    # a process-wide value. Default True: collapsing duplicate pipeline-task rows stays on.
+    "collapse_pipeline_task_rows",
+    # Same module, same shape. Default False, so nothing is happening that a tenant did not ask
+    # for; what they cannot do is ask for it.
+    "slim_terminal_pipeline_tasks",
+    # No gate at all. Nothing in production names it, and no function exists to. Wiring it means
+    # building the path, not attaching a gate.
+    "write_secondary_index",
+    # Already listed above by its gate name; repeated here because this check is keyed by knob.
+    "dedupe_index_postings",
+}
+
+# Asserted for the same reason as EXPECTED_GATE_FLOOR: if the registry moves or the parse stops
+# matching, every assertion below becomes vacuously true.
+EXPECTED_KNOB_FLOOR = 30
+
+REGISTRY_MODULE = os.path.join(TOOLS, "matrixark_tenant_policy.py")
+
+_RESOLVER = (r"(?:resolve_tenant_policy|explicit_bool|explicit_int|explicit_str)"
+             r"\(\s*")
+
+_KNOB = re.compile(r'Knob\(\s*"([a-z0-9_]+)"\s*,\s*"(\w+)"\s*,\s*"([A-Z][A-Z0-9_]+)"')
+
+
+def _registry_knobs() -> Dict[str, str]:
+    """Knob name -> environment variable, as the registry declares them."""
+    with open(REGISTRY_MODULE, encoding="utf-8") as handle:
+        return {m.group(1): m.group(3) for m in _KNOB.finditer(handle.read())}
+
+
+def _knobs_resolved_in_production() -> Set[str]:
+    """Knobs something actually RESOLVES by name.
+
+    Resolving is the only thing that makes a tenant's setting reach anything. Calling a gate that
+    reads the environment does not: the value it returns is the same for every tenant on the
+    process, which is precisely the state that looks wired and is not.
+    """
+    knobs = _registry_knobs()
+    resolved: Set[str] = set()
+    # Not _production_sources(): that one excludes the module defining the gates, which is right
+    # for asking who CALLS a gate and wrong here -- most resolve_tenant_policy() calls live in it.
+    for path in _all_sources():
+        try:
+            with open(os.path.join(REPO, path), encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        for knob in knobs:
+            if knob in resolved:
+                continue
+            for quote in (chr(34), chr(39)):
+                resolver = _RESOLVER + re.escape(quote + knob + quote)
+                if re.search(resolver, text):
+                    resolved.add(knob)
+                    break
+    return resolved
+
+
+def _all_sources() -> List[str]:
+    """Every tracked production .py except the registry that declares the knobs."""
+    listed = subprocess.run(["git", "ls-files", "*.py"], cwd=REPO,
+                            capture_output=True, text=True).stdout.split()
+    registry = os.path.basename(REGISTRY_MODULE)
+    return [path for path in listed
+            if not os.path.basename(path).startswith("test_")
+            and os.path.basename(path) != registry]
+
 
 def _gates() -> List[str]:
     with open(GATES_MODULE, encoding="utf-8") as handle:
@@ -163,6 +240,47 @@ class PolicyGatesAreWiredTest(unittest.TestCase):
             [], vanished,
             "KNOWN_UNWIRED names gates that no longer exist: %s. A renamed gate leaves an entry "
             "here that excuses nothing and silently shrinks what is checked." % vanished)
+
+
+class EveryRegisteredKnobIsReadOrListedTest(unittest.TestCase):
+    """The check above is keyed by gate; this one is keyed by knob.
+
+    A gate is one way a knob gets read, and it is not the only way -- nor is it where every gate
+    lives. Asking the registry instead found three controls the gate census could not see.
+    """
+
+    def test_the_registry_still_parses(self) -> None:
+        knobs = _registry_knobs()
+        self.assertGreaterEqual(
+            len(knobs), EXPECTED_KNOB_FLOOR,
+            "parsed %d knobs from the registry, expected at least %d -- if the declaration changed "
+            "shape this file stopped reading it, and every assertion below passes on an empty set"
+            % (len(knobs), EXPECTED_KNOB_FLOOR))
+
+    def test_no_new_knob_is_offered_without_being_read(self) -> None:
+        knobs = set(_registry_knobs())
+        unread = knobs - _knobs_resolved_in_production()
+        new = sorted(unread - KNOWN_UNREAD_KNOBS)
+        self.assertEqual(
+            [], new,
+            "these knobs are in the registry and nothing resolves them, so a tenant sets them and "
+            "nothing changes: %s. Either wire the consumer to resolve the knob, or list it here "
+            "with the reason it cannot be." % new)
+
+    def test_a_knob_that_got_wired_is_struck_off(self) -> None:
+        wired = sorted(KNOWN_UNREAD_KNOBS & _knobs_resolved_in_production())
+        self.assertEqual(
+            [], wired,
+            "listed as unread but now resolved: %s. Strike them off -- a stale list of known "
+            "problems hides the fix as well as it hid the defect." % wired)
+
+    def test_every_listed_knob_is_still_registered(self) -> None:
+        vanished = sorted(KNOWN_UNREAD_KNOBS - set(_registry_knobs()))
+        self.assertEqual(
+            [], vanished,
+            "these are listed as unread knobs but the registry no longer declares them: %s. An "
+            "entry for a knob that does not exist excuses nothing and shrinks what is checked."
+            % vanished)
 
 
 if __name__ == "__main__":
