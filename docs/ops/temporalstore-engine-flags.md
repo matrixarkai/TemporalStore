@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 309 of them, read by 106 functions.
+There are 308 of them, read by 105 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 309 |
-| booleans whose default this could read off the source | 44 |
+| total | 308 |
+| booleans whose default this could read off the source | 43 |
 | **defaulting on, and set by nothing** | 9 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 184 |
@@ -292,7 +292,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_STORAGE_ZONE_SIZE` | — | config, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | — | config, portal | 1 | — |
 
-## context (28)
+## context (27)
 
 The memory pipeline: what gets extracted, embedded, drained and packed. The surface a deployment tunes for recall rather than for throughput.
 
@@ -323,7 +323,6 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, portal | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_SUMMARIES` | off | config, portal | 1 | — |
 | `MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K` | — | nothing | 1 | — |
-| `MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN` | on | test | 1 | — |
 | `TS_PROXY_CONTEXT_FIRST_SHARD` | — | nothing | 1 | — |
 | `TS_PROXY_CONTEXT_SHARD_COUNT` | — | nothing | 1 | — |
 
