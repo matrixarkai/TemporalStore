@@ -442,12 +442,14 @@ pub struct StorageSlabIntegrityReport {
 /// Measured on a 4,000-bucket manifest: the field names are 592,046 bytes of a 1,367,875-byte
 /// document -- 43% of it, once the whitespace came out.
 ///
-/// The second step has been taken: the writer emits the short names by default, which is worth
-/// 43% of the document. `TS_MANIFEST_SHORT_FIELD_NAMES=0` restores the long spelling for a fleet
-/// that still holds a reader older than the release which taught them.
+/// The second step has been taken and the switch that guarded it is gone: the writer emits the
+/// short names, which is worth 43% of the document.
 ///
-/// Reading never depends on the switch. Both spellings deserialize, so a directory holding
-/// manifests written either way -- which is what flipping it leaves behind -- loads end to end.
+/// Reading never depended on that switch and still does not. Both spellings deserialize, so a
+/// directory holding manifests written either way -- which every fleet that has run both has --
+/// loads end to end. What no longer exists is a way to ASK for the long spelling: producing a
+/// manifest for a reader older than the release that taught the aliases now means running such a
+/// build, not setting a variable on this one.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 pub struct BucketStorageSummary {
     #[serde(rename = "routing_slot", alias = "rs")]
@@ -486,19 +488,6 @@ pub struct BucketStorageSummary {
 /// Python tool reads this document -- the `logical_bytes`/`physical_bytes` names in `tools/`
 /// belong to the band extent manifest, which is a different file with different fields.
 ///
-/// `TS_MANIFEST_SHORT_FIELD_NAMES=0` restores the long spelling. Reading never depends on the
-/// switch either way, so a directory holding manifests written both ways loads end to end.
-pub(crate) fn manifest_short_field_names_enabled() -> bool {
-    !matches!(
-        std::env::var("TS_MANIFEST_SHORT_FIELD_NAMES")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 impl BucketStorageSummary {
     /// Write the summary under one spelling or the other.
     ///
@@ -565,7 +554,7 @@ impl serde::Serialize for BucketStorageSummary {
     where
         S: serde::Serializer,
     {
-        self.serialize_named(serializer, manifest_short_field_names_enabled())
+        self.serialize_named(serializer, true)
     }
 }
 
@@ -3696,18 +3685,14 @@ mod manifest_field_name_tests {
         }
     }
 
-    /// The DEFAULT is now the short spelling.
+    /// The writer emits the short spelling, and nothing can ask it not to.
     ///
-    /// Reads the switch and sets nothing: the variable is process-global, and several hundred
-    /// sites in this crate already race over environment. Nothing in the suite sets this one.
-    /// Without this test the flip would be invisible -- every other test here names the spelling
-    /// explicitly, so all of them would pass with the default either way.
+    /// Every other test here names the spelling explicitly through `serialize_named`, so all of
+    /// them would pass whichever one `Serialize` chose. This is the only test that exercises the
+    /// choice `Serialize` actually makes, which is why it asserts the BYTES rather than a
+    /// setting -- there is no longer a setting to read.
     #[test]
     fn the_default_is_now_the_short_spelling() {
-        assert!(
-            super::manifest_short_field_names_enabled(),
-            "the switch should default on"
-        );
         let written = serde_json::to_vec(&BucketStorageSummary::default()).expect("serialize");
         let text = String::from_utf8_lossy(&written);
         assert!(

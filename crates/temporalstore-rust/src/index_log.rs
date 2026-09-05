@@ -43,41 +43,26 @@ pub(crate) const INDEX_LOG_CONTAINER_MAGIC: &[u8] = b"TSILOG\x01";
 /// Payload codec: msgpack, struct-as-map.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK: u8 = 1;
 
-/// `TS_INDEX_LOG_BINARY` writes records as JSON when it is off. Default **on**.
-///
-/// The decoder shipped first and separately: every build that can be rolled back to reads a
-/// binary container already, which is the condition this flip was waiting on. Set it to 0 to
-/// write JSON again -- readers keep taking both, so a log may hold either shape and a node may
-/// be moved between them without a rewrite.
-fn index_log_binary_enabled() -> bool {
-    std::env::var("TS_INDEX_LOG_BINARY")
-        .ok()
-        .map(|value| !matches!(value.trim(), "0" | "false" | "FALSE" | "no" | "NO" | "off"))
-        .unwrap_or(true)
-}
-
 /// The single place an index-log record becomes payload bytes.
 ///
 /// Both append paths go through here so the whole-index record and the delta record cannot
 /// drift into different shapes -- the reader tells them apart by their fields, which only
 /// works while both are encoded the same way.
 fn encode_index_payload<T: serde::Serialize>(record: &T) -> Result<Vec<u8>, IndexLogError> {
-    if index_log_binary_enabled() {
-        // struct-as-MAP, not struct-as-array. The array form is positional, which mis-reads a
-        // struct that skipped an absent optional -- and GC's anchor probe pulls two fields out
-        // of an arbitrary record BY NAME, which positional makes impossible.
-        let mut packed = Vec::new();
-        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
-        if serde::Serialize::serialize(record, &mut serializer).is_ok() {
-            let mut out =
-                Vec::with_capacity(packed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1);
-            out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
-            out.push(INDEX_LOG_CODEC_MSGPACK);
-            out.extend_from_slice(&packed);
-            return Ok(out);
-        }
-        // An encode failure must not cost the record: fall through to the bytes that always work.
+    // struct-as-MAP, not struct-as-array. The array form is positional, which mis-reads a
+    // struct that skipped an absent optional -- and GC's anchor probe pulls two fields out
+    // of an arbitrary record BY NAME, which positional makes impossible.
+    let mut packed = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+    if serde::Serialize::serialize(record, &mut serializer).is_ok() {
+        let mut out = Vec::with_capacity(packed.len() + INDEX_LOG_CONTAINER_MAGIC.len() + 1);
+        out.extend_from_slice(INDEX_LOG_CONTAINER_MAGIC);
+        out.push(INDEX_LOG_CODEC_MSGPACK);
+        out.extend_from_slice(&packed);
+        return Ok(out);
     }
+    // An encode failure must not cost the record: fall through to the bytes that always work,
+    // which the reader still takes. This is the only path that now produces JSON.
     Ok(serde_json::to_vec(record)?)
 }
 
@@ -2493,12 +2478,13 @@ mod tests {
         assert!(whole > 0, "the probe must encode something");
     }
 
-    /// The writer is on, and every reader has been able to decode a container since the step
-    /// before this one. What this pins is that the two never move in the wrong order: a
-    /// container is only written where one can be read.
+    /// A container is only written where one can be read, and both halves are asserted here.
+    ///
+    /// The writer has no switch any more, so what pins it is the bytes it produces rather than
+    /// the setting it consulted -- and the reader half matters more than before, because a log
+    /// written by an older build is now the only way JSON gets into one.
     #[test]
     fn the_binary_writer_is_on_and_its_reader_shipped_first() {
-        assert!(index_log_binary_enabled(), "TS_INDEX_LOG_BINARY defaults on");
         // The reader takes a container whatever the writer is set to -- that is the property
         // that made the flip safe, so it is worth holding rather than assuming.
         let json = serde_json::to_vec(&IndexDeltaRecord {

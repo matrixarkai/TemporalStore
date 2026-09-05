@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 300 of them, read by 98 functions.
+There are 297 of them, read by 95 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,11 +46,11 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 300 |
-| booleans whose default this could read off the source | 34 |
-| **defaulting on, and set by nothing** | 5 |
+| total | 297 |
+| booleans whose default this could read off the source | 31 |
+| **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 23 |
-| **that nothing in this repository sets** | 178 |
+| **that nothing in this repository sets** | 175 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -158,7 +158,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (23)
+## durability (22)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -173,7 +173,6 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_INDEX_DUMP_WAL_GAP_BYTES` | — | portal | 1 | — |
 | `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_SCHEDULER_SNAPSHOT` | — | nothing | 1 | — |
-| `TS_RAFT_WAL_BINARY_RECORDS` | on | nothing | 1 | — |
 | `TS_WAL_BINARY_FRAME` | on | launch, test | 1 | — |
 | `TS_WAL_BINARY_RECORDS` | on | launch, test | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | — | config | 1 | — |
@@ -188,7 +187,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RESIDENT_PAGES` | — | test | 1 | — |
 | `TS_WAL_SEGMENT_BYTES` | — | nothing | 1 | — |
 
-## format (8)
+## format (7)
 
 The shape of what is written. Readers generally accept both shapes, which is what makes these safe to flip and hard to retire.
 
@@ -197,7 +196,6 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_INDEX_BINARY` | on | launch, test | 1 | — |
 | `TS_INDEX_CATALOG_FOLD` | on | config | 1 | yes |
 | `TS_INDEX_CODEC` | — | test | 1 | — |
-| `TS_INDEX_LOG_BINARY` | on | nothing | 1 | — |
 | `TS_NODE_SUMMARY_VECTOR` | on | test, portal | 1 | — |
 | `TS_PROXY_BINARY_VERSION` | — | nothing | 1 | — |
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
@@ -363,7 +361,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING` | on | nothing | 1 | — |
 
-## behaviour (62)
+## behaviour (61)
 
 Everything else that changes what the engine does.
 
@@ -394,7 +392,6 @@ Everything else that changes what the engine does.
 | `TS_EVICT_SAMPLES` | — | nothing | 1 | — |
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
 | `TS_MALLOC_TRIM` | on | test, portal | 1 | — |
-| `TS_MANIFEST_SHORT_FIELD_NAMES` | on | nothing | 1 | — |
 | `TS_MATRIXOBJECT_CHECKPOINT_ON_START` | — | nothing | 1 | — |
 | `TS_MATRIXOBJECT_FLUSH_BATCH` | — | nothing | 1 | — |
 | `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` | — | nothing | 1 | — |

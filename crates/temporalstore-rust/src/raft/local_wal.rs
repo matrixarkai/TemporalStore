@@ -61,10 +61,7 @@ impl LocalRaftWal {
             delta: None,
         };
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        file.write_all(&wal_proto::encode_record_line(
-            &envelope,
-            wal_proto::binary_records_enabled(),
-        )?)?;
+        file.write_all(&wal_proto::encode_record_line(&envelope, true)?)?;
         crate::durability_metrics::record_barrier("raft_wal_append_unsegmented");
         file.sync_data()?;
         Ok(())
@@ -394,7 +391,7 @@ impl LocalRaftWal {
                     delta: None,
                 }
             };
-            wal_proto::encode_record_line(&envelope, wal_proto::binary_records_enabled())
+            wal_proto::encode_record_line(&envelope, true)
         };
 
         let mut wrote_base = !delta_safe;
@@ -833,11 +830,10 @@ impl LocalRaftWal {
             .write(true)
             .truncate(true)
             .open(&path)?;
-        // Rewriting the retained records adopts whichever encoding is current; a reader
-        // handles either, but a file written whole in one encoding is easier to reason about.
-        let binary = wal_proto::binary_records_enabled();
+        // Rewriting the retained records writes them binary, as every append does. A reader
+        // handles either, so a file that still holds text records loads until it is rewritten.
         for envelope in retained {
-            file.write_all(&wal_proto::encode_record_line(&envelope, binary)?)?;
+            file.write_all(&wal_proto::encode_record_line(&envelope, true)?)?;
         }
         crate::durability_metrics::record_barrier("raft_wal_compact");
         file.sync_data()?;
