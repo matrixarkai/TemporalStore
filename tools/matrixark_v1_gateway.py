@@ -101,6 +101,10 @@ _LOG = logging.getLogger("matrixark.gateway")
 # Fires the no-auth startup warning at most once per process.
 _AUTH_WARNED = {"done": False}
 
+# Set by `_warn_if_auth_disabled` at startup, which is where the posture is already known.
+# Absent means this process never asked, and the snapshot then says nothing rather than guessing.
+_AUTH_POSTURE: Dict[str, bool] = {}
+
 _NO_AUTH_WARNING = (
     "MatrixArk gateway is running WITHOUT authentication (dev default). Anyone who "
     "can reach this address has full anonymous access and there is NO tenant "
@@ -112,7 +116,14 @@ _NO_AUTH_WARNING = (
 def _warn_if_auth_disabled(cfg: "GatewayConfig") -> None:
     """Emit a one-time, NON-BLOCKING warning when auth is effectively off
     (``require_auth`` False). Never rejects requests or blocks startup — behavior
-    stays fully anonymous-allowed; this only surfaces the posture to the operator."""
+    stays fully anonymous-allowed; this only surfaces the posture to the operator.
+
+    Also records the posture for the configuration snapshot, which has no ``GatewayConfig`` of its
+    own. ``require_auth`` can be set by the config dict as well as the environment, so reading the
+    environment there would be a guess -- and a guess about whether a deployment is open is worse
+    than saying nothing. Recorded in BOTH branches: a process that ran this and found auth ON is
+    just as much evidence as one that found it off."""
+    _AUTH_POSTURE["require_auth"] = bool(getattr(cfg, "require_auth", False))
     if getattr(cfg, "require_auth", False):
         return
     if _AUTH_WARNED["done"]:
@@ -1607,6 +1618,16 @@ def _model_config_snapshot() -> Json:
     }
 
     warnings: List[str] = []
+    # First, because it is the one that matters most and the only one about who may ask rather than
+    # about what the answer is worth. `is False` on purpose: a process that never recorded a posture
+    # does not know, and "we did not check" must not read as "you are safe".
+    if _AUTH_POSTURE.get("require_auth") is False:
+        warnings.append(
+            "This gateway accepts anonymous requests: anyone who can reach this address has full "
+            "access to every tenant's data, and there is no tenant isolation. That is the "
+            "out-of-the-box default so the API works with no configuration. Set "
+            "MATRIXARK_REQUIRE_AUTH=1 and MATRIXARK_ACCESS_MODE=enforced, then restart."
+        )
     deterministic = {"", "deterministic", "rules", "local"}
     if extraction_provider in deterministic:
         warnings.append(
