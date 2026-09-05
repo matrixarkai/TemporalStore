@@ -2335,6 +2335,9 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
         "traffic": shared["traffic"],
         "imports": shared["imports"],
         "warnings": shared["warnings"],
+        # Built once per tick beside the rest and, until now, left behind here -- so the strip's
+        # "awaiting restart" segment had nothing to render and never appeared, on any deployment.
+        "settings_waiting": shared.get("settings_waiting"),
         "config_changed_at": shared.get("config_changed_at"),
         "embedding": embedding,
         # Absent when nothing has looked yet. "not known" and "unreachable" are different answers
