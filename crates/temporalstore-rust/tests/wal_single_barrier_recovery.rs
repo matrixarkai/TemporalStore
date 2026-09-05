@@ -172,8 +172,10 @@ fn single_barrier_full_page_loss_no_dump_rebuilds_from_wal() {
 }
 
 fn populate_feature(root: &str) {
+    // `TS_GROUP_COMMIT=1` used to be set here. Nothing reads it -- `group_commit_configured`
+    // returns true unconditionally -- so passing it made this look like it configured the child
+    // when it configured nothing.
     let out = Command::new(bin())
-        .env("TS_GROUP_COMMIT", "1")
         .args(["--mode", "populate-feature", "--root", root])
         .output()
         .expect("populate-feature should run");

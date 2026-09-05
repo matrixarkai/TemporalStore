@@ -45,7 +45,11 @@ const cases = [
   { env: "MATRIXARK_QUOTA_MAX_BLOB_BYTES", value: "5368709120", expect: "5 GiB" },
   { env: "MATRIXARK_QUOTA_MAX_BODY_BYTES", value: "16777216", expect: "16 MiB" },
   { env: "TS_PAGE_INDEX_CACHE_BYTES", value: "", default: "67108864", expect: "64 MiB" },
-  { env: "TS_STREAM_MAX_BLOB_SIZE_BYTES", value: "1500000", expect: "1.4 MiB" }
+  /* Both are byte counts whose names do NOT end in _BYTES. The case here used to read
+     TS_STREAM_MAX_BLOB_SIZE_BYTES, a variable that exists nowhere -- so it exercised the suffix
+     rule against a name invented to satisfy it, and said nothing about the setting it was for. */
+  { env: "TS_STREAM_MAX_BLOB_SIZE", value: "10485760", expect: "10 MiB" },
+  { env: "TS_STORAGE_ZONE_SIZE", value: "1073741824", expect: "1 GiB" }
 ];
 
 for (const c of cases) {
@@ -58,7 +62,11 @@ for (const c of cases) {
   }
 }
 
-for (const env of ["TS_VECTOR_SCALED", "TS_MAX_RETAINED_FINISHED_JOBS", "MATRIXARK_HTTP_PORT"]) {
+/* `MATRIXARK_SUMMARY_REFRESH_LIMIT` is the interesting one: an int setting whose name ends in a
+   size-ish word but which counts summaries, not bytes. It belongs here rather than above, where
+   an `expect: ""` would have asserted nothing -- `"anything".includes("")` is true. */
+for (const env of ["TS_VECTOR_SCALED", "TS_MAX_RETAINED_FINISHED_JOBS", "MATRIXARK_HTTP_PORT",
+                   "MATRIXARK_SUMMARY_REFRESH_LIMIT"]) {
   const out = byteHint({ env: env, value: "1024" });
   if (out !== "") {
     console.log("FAIL " + env + " is not a byte count and gained " + JSON.stringify(out));

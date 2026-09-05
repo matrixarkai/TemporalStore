@@ -92,7 +92,6 @@ ENV_MAP: Dict[str, str] = {
     "storage.cross_shard_reclaim_guard": "TS_CROSS_SHARD_RECLAIM_GUARD",
     "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
     # ---- [wal] --------------------------------------------------------------
-    "wal.group_commit": "TS_GROUP_COMMIT",
     "wal.wal_legacy_recovery": "TS_WAL_LEGACY_RECOVERY",
     "wal.raft_wal_dir": "TS_RAFT_WAL_DIR",
     # ---- [replication] ------------------------------------------------------
@@ -112,8 +111,6 @@ ENV_MAP: Dict[str, str] = {
     # ---- [recovery] ---------------------------------------------------------
     "recovery.bulk_ingest": "MATRIXARK_BULK_INGEST",
     "recovery.eager_cache_warm_on_load": "MATRIXARK_EAGER_CACHE_WARM_ON_LOAD",
-    "recovery.delta_served_index": "MATRIXARK_DELTA_SERVED_INDEX",
-    "recovery.enable_indexlog": "MATRIXARK_ENABLE_INDEXLOG",
     "recovery.bulk_ingest_replay_from_sequence": "MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE",
     # ---- [retrieval] --------------------------------------------------------
     "retrieval.default_max_context_tokens": "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS",

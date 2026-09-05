@@ -142,21 +142,127 @@ class TheDocMustBeAboutTheFlagTest(unittest.TestCase):
                          "sharing the doc comment of this one")
 
 
+class TheDefaultOfAnInlineReadTest(unittest.TestCase):
+    """`default_of_statement` reads a default off a flag read that has no accessor of its own.
+
+    `default_of` needs a one-flag function returning bool, so a read in the middle of a larger
+    function reported nothing -- and the summary row that matters most, flags defaulting ON that
+    nothing sets, counted zero while `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD` sat inline,
+    defaulting on, set by nothing. It was not that there were none; it was that the scan could
+    only see one shape.
+
+    The unit is the STATEMENT and not a window of lines, and these pin why: the `!` that inverts
+    `!matches!(env::var(X)...)` sits above the name, so a window has to guess how far up to look
+    while a statement contains it by construction.
+    """
+
+    def setUp(self) -> None:
+        self.ns = predicates()
+
+    def _read(self, source: str) -> str:
+        lines = source.split("\n")
+        read = next(i for i, line in enumerate(lines) if "env::var(" in line)
+        return self.ns["default_of_statement"](lines, read)
+
+    def test_a_negated_matches_reads_as_on(self) -> None:
+        """The shape that a line window gets wrong: the `!` is three lines above the name."""
+        self.assertEqual("on", self._read(
+            'let warm = !matches!(\n'
+            '    env::var("TS_ONE")\n'
+            '        .unwrap_or_default()\n'
+            '        .as_str(),\n'
+            '    "0" | "false"\n'
+            ');'))
+
+    def test_a_bare_matches_reads_as_off(self) -> None:
+        self.assertEqual("off", self._read(
+            'let gate = matches!(\n'
+            '    env::var("TS_ONE").unwrap_or_default().as_str(),\n'
+            '    "1" | "true"\n'
+            ');'))
+
+    def test_an_unwrap_or_true_reads_as_on(self) -> None:
+        self.assertEqual("on", self._read(
+            'let scoring = env::var("TS_ONE")\n'
+            '    .map(|v| matches!(v.as_str(), "1"))\n'
+            '    .unwrap_or(true);'))
+
+    def test_a_string_fallback_reads_as_on(self) -> None:
+        """`unwrap_or_else(|_| "1")` states the default as the value, not as a bool."""
+        self.assertEqual("on", self._read(
+            'let warm = !matches!(\n'
+            '    env::var("TS_ONE").unwrap_or_else(|_| "1".to_string()).as_str(),\n'
+            '    "0" | "false"\n'
+            ');'))
+
+    def test_a_millisecond_count_states_no_default(self) -> None:
+        """A number has no ON/OFF, and reporting one would be read as fact."""
+        self.assertEqual("", self._read(
+            'let timeout = env::var("TS_ONE")\n'
+            '    .ok()\n'
+            '    .and_then(|v| v.parse::<u64>().ok())\n'
+            '    .unwrap_or(5_000);'))
+
+    def test_a_statement_reading_two_flags_states_no_default(self) -> None:
+        """Two flags in one statement have no single default to attribute to either."""
+        self.assertEqual("", self._read(
+            'let both = matches!(env::var("TS_ONE").unwrap_or_default().as_str(), "1")\n'
+            '    || matches!(env::var("TS_TWO").unwrap_or_default().as_str(), "1");'))
+
+    def test_it_does_not_reach_past_the_statement(self) -> None:
+        """A default belonging to the NEXT statement is not this one's.
+
+        The first statement is deliberately boolean-shaped and default-less, so that if the scan
+        ran past the `;` the `unwrap_or(true)` below would answer "on" -- which is the failure
+        this exists to catch. A non-boolean first statement would hide behind the shape check
+        instead of testing the bound.
+        """
+        self.assertEqual("", self._read(
+            'let named = matches!(env::var("TS_ONE").ok().as_deref(), Some("x"));\n'
+            'let other = std::env::args().next().is_some();\n'
+            'let third = other.then_some(false).unwrap_or(true);'))
+
+
 class TheInventoryReportsWhatItMeasuredTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.text = DOC.read_text(encoding="utf-8")
-        self.rows = [line for line in self.text.splitlines() if re.match(r"^\| `TS_", line)]
+        # All three prefixes. Matching `TS_` alone made every marked MATRIXARK_ or
+        # TEMPORALSTORE_ flag invisible here, so `test_the_count_matches_the_rows` compared the
+        # summary against a subset and reported the document as inconsistent with itself.
+        self.rows = [line for line in self.text.splitlines()
+                     if re.match(r"^\| `(TS|MATRIXARK|TEMPORALSTORE)_", line)]
+        self.legacy_column = self._column_index("keeps an older path")
+
+    def _column_index(self, heading: str) -> int:
+        """Which cell of a row holds `heading`, found by reading the header.
+
+        This used to be the literal 4, and adding a column to the table moved the legacy flag
+        under it: every assertion here then read the new column instead, and "0 rows are marked"
+        is a passing-looking answer to the wrong question in two of the three tests below.
+        """
+        for line in self.text.splitlines():
+            if line.startswith("| flag ") and heading in line:
+                cells = line.split("|")
+                for index, cell in enumerate(cells):
+                    if heading in cell:
+                        return index
+        raise AssertionError("no table header carries a %r column" % heading)
+
+    def _marked(self):
+        return [r for r in self.rows if r.split("|")[self.legacy_column].strip() == "yes"]
 
     def test_a_flag_is_not_marked_legacy_on_a_barrier_sentence(self) -> None:
+        """`TS_WAL_LEGACY_RECOVERY` is credited with block_store's doc, which says when pages are
+        fsynced and nothing else. That is a fact about ordering, not about a path kept alive."""
         row = [line for line in self.rows if line.startswith("| `TS_WAL_LEGACY_RECOVERY`")]
         self.assertTrue(row, "the flag is missing from the inventory entirely")
-        self.assertNotEqual("yes", row[0].split("|")[4].strip(),
+        self.assertNotEqual("yes", row[0].split("|")[self.legacy_column].strip(),
                             "marked as keeping an older path alive, on a doc comment that "
                             "describes when pages are fsynced and nothing else")
 
     def test_the_count_matches_the_rows(self) -> None:
-        marked = [r for r in self.rows if r.split("|")[4].strip() == "yes"]
+        marked = self._marked()
         stated = re.search(r"documented as keeping an older path alive \| (\d+) \|", self.text)
         self.assertIsNotNone(stated, "the summary no longer states the count")
         self.assertEqual(int(stated.group(1)), len(marked),
@@ -165,7 +271,7 @@ class TheInventoryReportsWhatItMeasuredTest(unittest.TestCase):
 
     def test_a_meaningful_number_of_flags_are_not_legacy(self) -> None:
         """If nearly everything is legacy-shaped the column has stopped distinguishing."""
-        marked = [r for r in self.rows if r.split("|")[4].strip() == "yes"]
+        marked = self._marked()
         self.assertLess(len(marked), len(self.rows) // 4,
                         "%d of %d flags are marked legacy-shaped, which reads as a rule matching "
                         "prose rather than a claim about code paths"

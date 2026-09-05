@@ -14,6 +14,7 @@ function from the built page and calls it.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -44,26 +45,71 @@ class AByteSettingReadsInUnitsTest(unittest.TestCase):
 
 
 class EveryByteSettingIsCoveredTest(unittest.TestCase):
-    """The hint keys off a `_BYTES` suffix, so a byte setting named otherwise gets nothing."""
+    """Every byte-valued setting renders with a readable size -- checked by rendering it.
 
-    def test_no_byte_shaped_setting_is_missed_by_the_suffix_rule(self) -> None:
+    The hint keys off a `_BYTES` suffix plus a short list of names that lack one, so a byte
+    setting named otherwise gets a bare integer. Two did: `TS_STORAGE_ZONE_SIZE` (1 GiB) and
+    `TS_STREAM_MAX_BLOB_SIZE` (10 MiB).
+
+    This test existed to catch that and did not, because it asked whether a setting's help
+    contained the word "bytes" -- and both of them say "1 KiB". A detector that misses every
+    member of the class it guards passes exactly as loudly as one that works.
+
+    So it stops pattern-matching prose and renders instead: it finds the byte-shaped settings by
+    unit words in their help, then calls the built page's own `byteHint` on each. A name the list
+    forgets comes back empty, and empty fails.
+    """
+
+    UNIT = re.compile(r"\b(bytes?|[KMGT]iB)\b")
+
+    def _byte_shaped(self):
         import matrixark_gateway_config as cfgmod
 
-        suspicious = []
+        found = []
         for setting in cfgmod.SETTINGS:
             if setting.kind != "int" or not setting.env:
                 continue
-            if setting.env.endswith("_BYTES"):
-                continue
-            # A setting whose help talks about bytes but whose name does not end in _BYTES would
-            # render as a bare integer with no hint, and nothing else would notice.
-            help_text = (setting.help or "").lower()
-            if "bytes" in help_text and "per" not in help_text:
-                suspicious.append("%s (%s)" % (setting.key, setting.env))
+            # By NAME or by what the help calls it. Only four settings name a unit in their help,
+            # so the help alone is far too narrow a scan to rest an "everything is covered" claim
+            # on -- and the suffix alone is what missed these two in the first place.
+            if setting.env.endswith("_BYTES") or self.UNIT.search(setting.help or ""):
+                found.append(setting)
+        return found
+
+    def test_the_scan_finds_the_byte_settings(self) -> None:
+        """A scan that found none would make the check below pass over an empty list."""
+        found = self._byte_shaped()
+        self.assertGreaterEqual(
+            len(found), 8,
+            "only %d byte-shaped settings found; the scan is broken" % len(found))
+        self.assertTrue(
+            any(not s.env.endswith("_BYTES") for s in found),
+            "no byte setting outside the _BYTES suffix was found, which is the case this exists "
+            "for -- the scan has stopped seeing them")
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed; the page's own JS cannot be run")
+    def test_every_byte_shaped_setting_renders_with_a_size(self) -> None:
+        missing = []
+        for setting in self._byte_shaped():
+            value = setting.default or "1073741824"
+            script = (
+                "const fs=require('fs');"
+                "const page=fs.readFileSync(process.argv[1],'utf8');"
+                "const start=page.indexOf('function byteHint');"
+                "const end=page.indexOf('function fieldHtml');"
+                "const fn=new Function(page.slice(start,end)+'; return byteHint;')();"
+                "process.stdout.write(fn({env:process.argv[2],value:process.argv[3]}));"
+            )
+            proc = subprocess.run(["node", "-e", script, PAGE, setting.env, str(value)],
+                                  capture_output=True, text=True, timeout=120)
+            self.assertEqual(0, proc.returncode,
+                             "rendering %s failed: %s" % (setting.env, proc.stderr))
+            if not proc.stdout.strip():
+                missing.append("%s (%s = %s)" % (setting.key, setting.env, value))
         self.assertEqual(
-            [], suspicious,
-            "these look like byte counts but do not end in _BYTES, so they render without a "
-            "readable size: %s" % ", ".join(suspicious))
+            [], missing,
+            "these hold byte counts and render as bare integers, with no readable size beside "
+            "them:\n  %s" % "\n  ".join(missing))
 
 
 if __name__ == "__main__":

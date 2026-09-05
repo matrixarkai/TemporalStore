@@ -856,7 +856,9 @@ pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
     // Group-commit coordinator: serializes WAL fsyncs so many concurrent writers
-    // share one durability barrier. Consulted ONLY when TS_GROUP_COMMIT is set.
+    // share one durability barrier. Always consulted -- `group_commit_configured` returns true,
+    // and `TS_GROUP_COMMIT`, which this comment used to name as its condition, is read by
+    // nothing.
     // Writers append their bytes under the `inner` lock, RELEASE it, then coalesce
     // their fsync here -- so a burst of concurrent writes amortizes onto ~1 fsync.
     sync_coord: Arc<Mutex<HashMap<ShardId, GroupCommitState>>>,
@@ -3090,8 +3092,9 @@ fn append_record_locked(
         file.sync_data()?;
         // The parent-directory entry for the WAL file only needs a durable barrier when
         // the file is first created; appends grow the file (inode) without changing the
-        // directory. Under relaxed-sync (single-barrier default / TS_GROUP_COMMIT) skip the
-        // redundant per-append dir fsync once the file already has content (offset > 0).
+        // directory. Under relaxed-sync -- the single-barrier default, with group commit
+        // unconditional -- skip the redundant per-append dir fsync once the file already has
+        // content (offset > 0).
         // `offset == 0` is the file's first write, which is the usual reason the directory entry
         // is not yet durable. After a roll it is not zero -- the header is already there -- so the
         // debt the roll recorded is what says the entry still has to reach disk.

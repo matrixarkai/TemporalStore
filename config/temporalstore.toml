@@ -86,7 +86,6 @@ index_dump_oplog_gap_bytes = 1048576   # TS_INDEX_DUMP_OPLOG_GAP_BYTES  undumped
 # multi-barrier write path + delta-fold recovery without a rebuild.
 # -----------------------------------------------------------------------------
 [wal]
-group_commit = 1                       # TS_GROUP_COMMIT        1 = coalesce concurrent WAL fsyncs into shared barriers (sub-ms/write under load); also coalesces the shared-store object-store SYNC publish onto one durable barrier per group. DEFAULT.
 commit_delay_us = 0                     # TS_WAL_COMMIT_DELAY_US  group-commit batch-widening delay in microseconds. 0 = pure timer-less (batch = whatever accrues during one barrier's in-flight duration); >0 deliberately widens batches under extreme load.
 wal_legacy_recovery = 0                # TS_WAL_LEGACY_RECOVERY  1 = emergency fallback to the legacy multi-barrier write path + delta-fold recovery.
 # raft_wal_dir = ""                    # TS_RAFT_WAL_DIR        raft WAL directory (raft/replicated modes)
@@ -117,8 +116,6 @@ meta_auto_rebalance = 0                # TS_META_AUTO_REBALANCE 1 = enable the a
 [recovery]
 bulk_ingest = 0                        # MATRIXARK_BULK_INGEST  1 = bulk-ingest fast path (fsync deferral + linear promote); reload optimizations
 eager_cache_warm_on_load = 0           # MATRIXARK_EAGER_CACHE_WARM_ON_LOAD  1 = warm the record cache eagerly on shard load
-delta_served_index = 0                 # MATRIXARK_DELTA_SERVED_INDEX  1 = use the delta served-index cost path
-# enable_indexlog = 0                  # MATRIXARK_ENABLE_INDEXLOG  1 = enable the index-log subsystem
 # bulk_ingest_replay_from_sequence = 0 # MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE  anchor sequence for bulk replay
 
 
