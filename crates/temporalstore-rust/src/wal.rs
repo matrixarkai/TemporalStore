@@ -1343,6 +1343,7 @@ impl LocalWriteAheadLogStore {
             let batch_path = active_wal_path(&mut inner, shard_id);
             let prealloc = wal_preallocate_enabled();
             WAL_FILE_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut batch_physical: u64 = 0;
             let mut batch_file = if prealloc {
                 OpenOptions::new()
                     .create(true)
@@ -1377,7 +1378,7 @@ impl LocalWriteAheadLogStore {
                     &rec,
                     false,
                     None,
-                    Some(&mut batch_file),
+                    Some((&mut batch_file, &mut batch_physical)),
                 )?;
                 inner.stats.last_sequence = report.current_sequence;
                 batch_end = Some(report.persistent_bytes);
@@ -2990,6 +2991,19 @@ fn shard_uses_blocks(
 /// shows up as a count rather than as a timing that this machine cannot resolve.
 static WAL_FILE_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// How many times an append asks the filesystem for the piece's physical length.
+///
+/// Under preallocation every record used to `fstat` to find out whether the reservation still had
+/// room. Within a batch nothing else can change that length -- the append lock and the `inner`
+/// lock are both held -- so the batch reads it once and carries it, growing its own copy when it
+/// grows the file.
+static WAL_FILE_STATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Physical-length stats of the active piece since the last reset.
+pub fn wal_file_stats() -> u64 {
+    WAL_FILE_STATS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Opens of the active piece since the last reset.
 pub fn wal_file_opens() -> u64 {
     WAL_FILE_OPENS.load(std::sync::atomic::Ordering::Relaxed)
@@ -2998,6 +3012,7 @@ pub fn wal_file_opens() -> u64 {
 /// Reset the open counter. For tests measuring one append path's syscall volume.
 pub fn reset_wal_file_opens() {
     WAL_FILE_OPENS.store(0, std::sync::atomic::Ordering::Relaxed);
+    WAL_FILE_STATS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn append_record_locked(
@@ -3020,7 +3035,7 @@ fn append_record_locked_on(
     record: &WriteAheadLogRecord,
     sync: bool,
     known_offset: Option<u64>,
-    reuse: Option<&mut std::fs::File>,
+    reuse: Option<(&mut std::fs::File, &mut u64)>,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = active_wal_path(inner, record.shard_id);
     // The caller has usually just measured this under the same append lock, so taking its answer
@@ -3147,8 +3162,12 @@ fn append_record_locked_on(
     }
     let prealloc = wal_preallocate_enabled();
     let mut opened;
+    let mut carried_physical: Option<&mut u64> = None;
     let file: &mut std::fs::File = match reuse {
-        Some(handle) => handle,
+        Some((handle, physical)) => {
+            carried_physical = Some(physical);
+            handle
+        }
         None => {
             WAL_FILE_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             opened = if prealloc {
@@ -3163,7 +3182,17 @@ fn append_record_locked_on(
     };
     if prealloc {
         let needed = offset.saturating_add(bytes.len() as u64);
-        let physical = file.metadata()?.len();
+        // The batch carries the length it already knows. Nothing else can change it while the
+        // append lock and the `inner` lock are both held, and the batch updates its copy below
+        // whenever it grows the file -- so asking the filesystem again would be a syscall to
+        // learn a number already in hand.
+        let physical = match carried_physical.as_deref() {
+            Some(&known) if known > 0 => known,
+            _ => {
+                WAL_FILE_STATS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                file.metadata()?.len()
+            }
+        };
         // Carried rather than re-read. The length after this block is either the one just read or
         // the one just set, so asking the filesystem again is a second stat a write to learn a
         // number already in hand.
@@ -3181,6 +3210,9 @@ fn append_record_locked_on(
         } else {
             physical
         };
+        if let Some(known) = carried_physical.as_deref_mut() {
+            *known = physical;
+        }
         inner
             .prealloc_physical_by_shard
             .insert(record.shard_id, physical);
@@ -5271,6 +5303,57 @@ mod tests {
     /// No `alloc-probe` feature here -- it counts calls, not allocations. An earlier version of
     /// this probe inherited that cfg from the test it was pasted above and vanished from the
     /// build entirely.
+    /// A batch that outgrows its reservation several times still reads back whole.
+    ///
+    /// 512 records of 4 KiB is ~2 MiB against a 256 KiB chunk, so the reservation is grown
+    /// roughly eight times inside one batch -- the case a single-chunk batch never reaches.
+    ///
+    /// What the carried physical length can and cannot break, since the distinction decides what
+    /// this test is worth: the carried number gates GROWTH only. The write offset comes from
+    /// `verified_len_by_shard`, not from the file's physical length, so a stale carried value
+    /// causes a redundant `set_len` and never a misplaced record. Checked by control -- refusing
+    /// to update it after a growth leaves this test passing and only the syscall count moving.
+    ///
+    /// So this is an end-to-end check that a multi-growth batch survives, not the discriminating
+    /// test for the carried length: `a_batch_opens_the_piece_once_not_once_per_record` is that.
+    #[test]
+    fn a_batch_that_outgrows_its_reservation_reads_back_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let commands: Vec<Command> = (0..512)
+            .map(|index| Command::StringSet {
+                key: format!("grown-{index:05}"),
+                value: vec![(index % 251) as u8; 4096],
+            })
+            .collect();
+
+        let written = store
+            .append_batch_atomic(1, commands, true)
+            .expect("the batch appends");
+        assert_eq!(written.len(), 512);
+
+        let read = store
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .expect("the log scans back");
+        assert_eq!(
+            read.len(),
+            512,
+            "the batch wrote 512 records and the log reads back {}; a carried physical length              that missed a growth puts records at the wrong offset",
+            read.len()
+        );
+
+        // Sequences are contiguous and in order -- a record landing at a wrong offset shows up
+        // here before it shows up anywhere a user would look.
+        let sequences: Vec<u64> = written.iter().map(|record| record.sequence).collect();
+        let mut expected = sequences.clone();
+        expected.sort_unstable();
+        expected.dedup();
+        assert_eq!(
+            sequences, expected,
+            "the batch produced out-of-order or duplicate sequences"
+        );
+    }
+
     /// A batch opens the active piece ONCE, not once per record.
     ///
     /// A batch is one crash-atomic group under one durability barrier, and that barrier is the
@@ -5299,12 +5382,14 @@ mod tests {
         super::reset_wal_file_opens();
         store.append_batch_atomic(1, commands.clone(), true).unwrap();
         let batched = super::wal_file_opens();
+        let batched_stats = super::wal_file_stats();
 
         super::reset_wal_file_opens();
         for command in commands {
             store.append_with_sync(1, command, true).unwrap();
         }
         let one_at_a_time = super::wal_file_opens();
+        let one_at_a_time_stats = super::wal_file_stats();
 
         assert!(
             one_at_a_time >= 64,
@@ -5313,6 +5398,19 @@ mod tests {
         assert_eq!(
             batched, 1,
             "a batch of 64 records opened the piece {batched} times; it holds the append lock and              the inner lock across the whole loop and rolls only afterwards, so one open covers it"
+        );
+
+        // The same argument covers the physical length. Under preallocation each record asked the
+        // filesystem whether the reservation still had room; nothing else can change that length
+        // while both locks are held, so the batch reads it once and carries it, growing its own
+        // copy when it grows the file.
+        assert!(
+            one_at_a_time_stats >= 1,
+            "the control never asked for the physical length ({one_at_a_time_stats}), so the              batch figure below is not measuring anything"
+        );
+        assert_eq!(
+            batched_stats, 1,
+            "a batch of 64 records asked for the piece's physical length {batched_stats} times"
         );
     }
 
