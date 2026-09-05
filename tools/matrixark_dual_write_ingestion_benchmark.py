@@ -144,6 +144,9 @@ def make_direct_adapter(args: argparse.Namespace, client: Any | None = None) -> 
     adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
     adapter._raw_storage_backend = args.raw_backend
     adapter._raw_entry_count_cache = None
+    # This benchmark exists to measure both writes, and its reported return policy
+    # claims append_many waits for both, so the raw half has to be on here.
+    adapter._direct_raw_ingestion_enabled = True
     adapter._shard_size = args.shard_size
     adapter._index_cache = None
     adapter._records_cache = None
