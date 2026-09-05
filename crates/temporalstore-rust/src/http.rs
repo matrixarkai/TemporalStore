@@ -366,7 +366,13 @@ pub fn request_bytes_with_options(
     content_type: &str,
     options: HttpRequestOptions,
 ) -> Result<Vec<u8>, HttpError> {
-    let headers = format!("Content-Type: {content_type}\r\n");
+    // The header line is only borrowed below, and every caller in this tree sends JSON, so
+    // the common case needs no allocation. `format!` here cost two on every request the proxy
+    // and the client make -- execute, batch, the context routes, meta sync, the heartbeat.
+    let headers: std::borrow::Cow<'static, str> = match content_type {
+        "application/json" => std::borrow::Cow::Borrowed("Content-Type: application/json\r\n"),
+        other => std::borrow::Cow::Owned(format!("Content-Type: {other}\r\n")),
+    };
     request_raw_with_options(addr, method, path, body, &headers, options)
 }
 
@@ -1066,5 +1072,35 @@ pub(crate) mod test_ports {
             return Ok(reserved);
         }
         Ok(TcpListener::bind(addr)?)
+    }
+}
+
+#[cfg(test)]
+mod content_type_header_tests {
+    /// The borrowed JSON header is byte-identical to the `format!` it replaced.
+    ///
+    /// This line goes on the wire ahead of every forwarded body, so "close enough" is a protocol
+    /// error rather than a cosmetic one. The non-JSON branch is checked too, because that is the
+    /// one that still formats and would be the one to rot.
+    #[test]
+    fn the_content_type_header_is_what_format_produced() {
+        for content_type in [
+            "application/json",
+            "application/octet-stream",
+            "text/plain; charset=utf-8",
+            "",
+        ] {
+            let borrowed: std::borrow::Cow<'static, str> = match content_type {
+                "application/json" => {
+                    std::borrow::Cow::Borrowed("Content-Type: application/json\r\n")
+                }
+                other => std::borrow::Cow::Owned(format!("Content-Type: {other}\r\n")),
+            };
+            assert_eq!(
+                borrowed.as_ref(),
+                format!("Content-Type: {content_type}\r\n"),
+                "header line changed for {content_type:?}"
+            );
+        }
     }
 }
