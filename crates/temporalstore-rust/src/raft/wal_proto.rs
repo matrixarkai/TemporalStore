@@ -341,22 +341,6 @@ fn entry_from_proto(entry: v1::WalLogEntry) -> io::Result<RaftLogEntry> {
 /// envelope starts with `#`.
 pub(super) const BINARY_RECORD_MAGIC: u8 = 0xA7;
 
-/// Whether new records are written in the binary encoding. On, and the variable opts out.
-///
-/// Reading either shape has been safe since the code landed -- a read dispatches on the first
-/// byte, and the magic was chosen so it cannot be confused with either text form. WRITING binary
-/// is the one-way half: a reader that predates this cannot take it. So the default stayed off
-/// until the encoding had proved out on real hardware, and this sentence said so long after it
-/// stopped being true, which is the failure worth naming -- the default was read as fact while
-/// deciding whether a neighbouring switch could be turned on.
-///
-/// A node that must produce records an older reader accepts sets the variable to 0.
-pub(super) fn binary_records_enabled() -> bool {
-    std::env::var("TS_RAFT_WAL_BINARY_RECORDS")
-        .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
-        .unwrap_or(true)
-}
-
 /// Encode one record as it should appear in a segment file.
 pub(super) fn encode_record_line(
     envelope: &RaftWalEnvelope,
