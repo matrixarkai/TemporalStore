@@ -132,9 +132,18 @@ def retrieval_ranking_limits(ranking: Json) -> RetrievalRankingLimits:
     )
 
 
-def retrieval_audit_policy(args: Json) -> tuple[str, float]:
+def retrieval_audit_policy(args: Json, default: str = "telemetry_only") -> tuple[str, float]:
+    """The audit mode and sample rate for one retrieve.
+
+    `default` is what an unset MATRIXARK_CONTEXT_AUDIT_MODE means for THIS caller, and the retrieve
+    paths do not agree on it: the request path and the direct read take telemetry_only, the local
+    adapter takes off. That disagreement used to live in a second copy of this function, where the
+    only way to notice it was to read both. As an argument it is visible at the call, and changing
+    it is a decision made in one place -- it decides whether a retrieve records anything at all,
+    since `telemetry_record` is `audit_mode != "off"`.
+    """
     audit_mode = str(
-        args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")
+        args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", default)
     ).strip().lower()
     if audit_mode not in {"full", "telemetry_only", "off"}:
         raise MatrixArkError("audit_mode must be full, telemetry_only, or off")

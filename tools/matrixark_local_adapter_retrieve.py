@@ -9,6 +9,11 @@ try:  # package path
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
 
+try:  # package path
+    from tools import matrixark_mcp_retrieve_planning as _retrieve_planning
+except ImportError:
+    import matrixark_mcp_retrieve_planning as _retrieve_planning
+
 
 # --- Lexical exact-recall lane -----------------------------------------------------------------
 # Dense (MiniLM) similarity under-weights rare/exact tokens -- numbers, units, counts, version
@@ -310,19 +315,11 @@ class _LocalAdapterRetrieveMixin:
         retrieval_query, _rewrite_info = _maybe_rewrite_retrieval_query(query, args, self, scope)
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
-        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "off")).strip().lower()
-        if audit_mode not in {"full", "telemetry_only", "off"}:
-            raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
-        if "audit_sample_rate" in args:
-            raw_audit_sample_rate = args.get("audit_sample_rate")
-        elif audit_mode == "full":
-            raw_audit_sample_rate = 1.0
-        else:
-            raw_audit_sample_rate = os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01)
-        try:
-            audit_sample_rate = clamp01(float(raw_audit_sample_rate))
-        except (TypeError, ValueError):
-            raise MatrixArkError("audit_sample_rate must be a number between 0 and 1")
+        # The same policy the other retrieve paths use, from one implementation. This path
+        # defaults to "off" where they default to "telemetry_only"; that difference is now the
+        # argument rather than a duplicated literal, and it is the only thing that differs.
+        audit_mode, audit_sample_rate = _retrieve_planning.retrieval_audit_policy(
+            args, default="off")
         raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
         try:
             deadline_ms = int(raw_deadline_ms or 0)
