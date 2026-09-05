@@ -5,8 +5,10 @@
 //!
 //! A shard's log is a sequence of pieces. `shard-{id}.wal.jsonl` is the one being written;
 //! sealed ones are `shard-{id}.wal.{start_log_id:020}.jsonl`, named so they sort into log order.
-//! `TS_WAL_SEGMENT_BYTES` sets when a piece is sealed; zero, the default, never seals one, and
-//! then the log is a single file and behaves exactly as it did before pieces existed.
+//! `TS_WAL_SEGMENT_BYTES` sets when a piece is sealed. It defaults to
+//! [`DEFAULT_WAL_SEGMENT_BYTES`], 256 KiB, so a log ROLLS unless something says
+//! otherwise. Zero is still accepted and still means never seal, which leaves the log a
+//! single file behaving exactly as it did before pieces existed.
 //!
 //! Positions are **log ids**: a byte position in the log's whole history, not in whichever file
 //! happens to hold it. Each piece records in its first bytes the log id its contents start at, so
