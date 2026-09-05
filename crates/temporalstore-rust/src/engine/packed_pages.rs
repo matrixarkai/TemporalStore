@@ -80,7 +80,7 @@ fn stage_timestamped_outcomes(
     refs: &[(u64, BlockAddress)],
     identity: Option<u64>,
 ) {
-    if refs.is_empty() || !crate::wal::wal_outcome_items_enabled() {
+    if refs.is_empty() {
         return;
     }
     for (timestamp_ms, address) in refs {
@@ -111,9 +111,6 @@ fn stage_timestamped_removal(
     routing_bucket: u32,
     timestamp_ms: u64,
 ) {
-    if !crate::wal::wal_outcome_items_enabled() {
-        return;
-    }
     let component = timestamp_ms.to_string();
     super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
         kind: kind.to_string(),
