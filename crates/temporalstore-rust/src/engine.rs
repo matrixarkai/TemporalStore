@@ -3694,7 +3694,12 @@ fn invalidate_context_record(cache: &MultiLayerCache, shard_id: ShardId, key: &s
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
     let _ = cache.invalidate(&CacheKey::string(shard_id, key));
     let _ = cache.invalidate_record(shard_id, "hash", key);
-    let _ = cache.invalidate_record(shard_id, "set", key);
+    // A set has exactly ONE cacheable entry -- `CacheKey::set_members` fixes the selector at
+    // "members" -- so naming it is equivalent to sweeping for it, and a sweep is
+    // `invalidate_record`, which walks every key in all three cache tiers.
+    let _ = cache.invalidate(&CacheKey::set_members(shard_id, key));
+    // `hash` and `feature` keep their sweeps: a hash caches one entry per FIELD and a feature
+    // one per query window, so neither has a single key to name.
     let _ = cache.invalidate_record(shard_id, "feature", key);
 }
 
