@@ -129,9 +129,23 @@ LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
 #   no structural fix, 250 ms floor  ingest ~2.0 s    time inside the writer ~2.9 s
 #   this, no floor                   ingest 0.768 s   time inside the writer 0.146 s
 #
-# So the delay is no longer buying anything, and it cost correctness: four tests assert that a
-# snapshot is refreshed promptly enough for a restart to use it, and a floor makes that false for
-# a quarter of a second. They pass again at 0.
+# So the delay is no longer buying anything on that path, and it cost correctness: four tests assert
+# that a snapshot is refreshed promptly enough for a restart to use it, and a floor made that false
+# for a quarter of a second. They pass again at 0.
+#
+# The reason it cost correctness was WHERE it was checked, not the idea. The floor sat at the top of
+# _write_durable_read_cache, so it gated the cheap tail append -- which is what keeps the head's
+# signature current after a write -- as well as the O(corpus) rewrite it was aimed at. It now guards
+# the rewrite alone, and those four tests pass with a floor set.
+#
+# The default stays 0, because turning it on is a real trade rather than a free win. Measured over
+# 12 queries interleaved with ingest, 128 documents, both orderings:
+#
+#   floor 0      12 of 12 base rewrites   median 2,352 / 2,713 ms   cold load 1,391 / 1,368 ms
+#   floor 5000    0 of 12 base rewrites   median 1,922 / 2,037 ms   cold load 1,507 / 1,694 ms
+#
+# -21.8% on every query against roughly +16% on a cold start. Worth it for most deployments, since
+# queries are frequent and restarts are not -- but that is an operator's call, not a default.
 LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS = max(0.0, float(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS", "0")))
 
 
@@ -4864,9 +4878,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         if int(signature.get("total_size", -1)) < 0:
             return
         now = now_ms()
-        if not force and LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS > 0:
-            if now - self._durable_read_cache_last_write_ms < LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS:
-                return
         path = self._durable_read_cache_path()
         delta_path = self._durable_read_cache_delta_path()
         head_path = self._durable_read_cache_head_path()
@@ -4941,6 +4952,14 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             # The caller is a write. A full rewrite here is O(corpus) per append; leave the snapshot
             # as it stands and let the next read refresh it.
             return
+        # Everything below rewrites the WHOLE record set, so the floor belongs here and nowhere
+        # earlier. It used to sit at the top of this function, where it gated the tail append above
+        # as well -- and the tail append is what keeps the head's signature current after a write,
+        # so a floor there made a snapshot unusable for a restart and broke four tests asserting
+        # exactly that. Guarding only the rewrite leaves appends as prompt as they were.
+        if not force and LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS > 0:
+            if now - self._durable_read_cache_last_write_ms < LOCAL_DURABLE_READ_CACHE_MIN_WRITE_MS:
+                return
         tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         payload = {
             "schema_version": LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION,
