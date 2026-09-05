@@ -44,7 +44,6 @@ ts_profile_perf_flags() {
   export TS_WAL_PREALLOCATE="${TS_WAL_PREALLOCATE:-1}"
 
   # Index log: binary codec rather than JSON lines.
-  export TS_INDEX_BINARY="${TS_INDEX_BINARY:-1}"
 
   # Embeddings: uniform scale=1e4 quantization, 1024 B for a 384-dim vector.
   #

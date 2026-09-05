@@ -167,7 +167,6 @@ if [[ "$BACKEND" == "python" ]]; then
   # record (records_written == 0) and leave retrieval permanently empty. This is
   # orthogonal to MATRIXARK_HOOK_STORAGE_ROUTE above (the route does not control
   # durability here); both stay overridable via env. Set to 0 to opt out.
-  export MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND="${MATRIXARK_DIRECT_SERVING_APPEND_TO_BACKEND:-1}"
   # Warm resident proxy daemon (kills the cold-start re-scan). Each hook invocation
   # is a fresh short-lived process; spawning a brand-new matrixark_rust_proxy every
   # call forces it to reload the shard and re-scan the full serving-record set
