@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+"""Two readers of one variable should agree about its numeric default.
+
+`test_flag_readers_agree` asks this of booleans, where a disagreement shows up as a setting that
+half-applies. A NUMBER drifts the same way and shows less: two readers with different fallbacks
+agree on every value anyone sets, and part company only for the deployment that leaves the variable
+alone -- which is most of them, and the one nobody tests.
+
+`MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS` is the worked example. The backend resolves an omitted budget
+to 500000 and the two agent hooks pass 128000, so an operator who sets nothing gets a quarter of the
+documented window through one path and all of it through another. The schema used to quote the wrong
+one of those two numbers at callers, which is what
+`test_matrixark_the_schema_quotes_the_budget_it_applies` was written for -- the same pair of numbers,
+one layer up.
+
+The six below were present when this was written and are NOT endorsed here. Several look like a
+deliberate difference between a client and the server it calls, and one is two reader paths in a
+benchmark. None has been examined, and this file does not pretend otherwise: it exists so a SEVENTH
+has to be looked at rather than joining them quietly. Strike an entry when its difference is either
+justified in the code or removed.
+"""
+from __future__ import annotations
+
+import collections
+import os
+import re
+import subprocess
+import unittest
+from typing import Dict, List, Set, Tuple
+
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(TOOLS)
+
+_READ = re.compile(
+    r'os\.(?:environ\.get|getenv)\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']\s*,\s*'
+    r'["\']?(-?\d+)["\']?\s*\)')
+
+# Known, unexamined. Each is a variable whose readers do not agree on the number to use when it is
+# unset. The note says what the difference looks like, not that it is right.
+KNOWN_DISAGREEMENTS: Dict[str, str] = {
+    "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS":
+        "hooks pass 128000, the backend resolves an omitted budget to 500000",
+    "MATRIXARK_HTTP_PORT":
+        "servers bind 8080, the CLI paths use 0 (an ephemeral port)",
+    "MATRIXARK_READER_MAX_TOKENS":
+        "two reader paths in one benchmark script, 160 and 64",
+    "MATRIXARK_RETRIEVAL_TIMEOUT_MS":
+        "the retrieve paths use 0 (no deadline), the MCP server 30000",
+    "MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS":
+        "hooks pass 60000, the backend resolver uses 20000",
+    "MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS":
+        "hooks pass 60000, the backend resolver uses 20000",
+}
+
+# 196 when this was written.
+EXPECTED_NUMERIC_READ_FLOOR = 120
+
+
+def _production_sources() -> List[str]:
+    listed = subprocess.run(["git", "ls-files", "*.py"], cwd=REPO,
+                            capture_output=True, text=True).stdout.split()
+    return [path for path in listed if not os.path.basename(path).startswith("test_")]
+
+
+def _numeric_reads() -> Dict[str, List[Tuple[str, int, str]]]:
+    found: Dict[str, List[Tuple[str, int, str]]] = collections.defaultdict(list)
+    for path in _production_sources():
+        try:
+            with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(lines, 1):
+            for match in _READ.finditer(line):
+                found[match.group(1)].append((path, number, match.group(2)))
+    return found
+
+
+def _disagreeing() -> Set[str]:
+    return {name for name, entries in _numeric_reads().items()
+            if len({value for _, _, value in entries}) > 1}
+
+
+class NumericDefaultsAgreeTest(unittest.TestCase):
+
+    def test_the_scan_still_finds_numeric_reads(self) -> None:
+        reads = _numeric_reads()
+        self.assertGreaterEqual(
+            len(reads), EXPECTED_NUMERIC_READ_FLOOR,
+            "found %d variables read with a numeric default, expected at least %d -- if the read "
+            "shape changed, the assertions below pass on an empty set"
+            % (len(reads), EXPECTED_NUMERIC_READ_FLOOR))
+
+    def test_the_list_has_not_emptied(self) -> None:
+        self.assertTrue(
+            KNOWN_DISAGREEMENTS,
+            "the list is empty, so the check below cannot tell a clean tree from a broken scan.")
+
+    def test_no_new_variable_disagrees_about_its_default(self) -> None:
+        reads = _numeric_reads()
+        new = sorted(_disagreeing() - set(KNOWN_DISAGREEMENTS))
+        detail = []
+        for name in new:
+            values = sorted({value for _, _, value in reads[name]})
+            detail.append("%s (%s)" % (name, ", ".join(values)))
+        self.assertEqual(
+            [], detail,
+            "these are read with more than one numeric default, so a deployment that sets nothing "
+            "gets a different number depending on which path asks: %s\nMake them agree, or list it "
+            "with what the difference is." % detail)
+
+    def test_a_listed_variable_that_now_agrees_is_struck_off(self) -> None:
+        settled = sorted(set(KNOWN_DISAGREEMENTS) - _disagreeing())
+        self.assertEqual(
+            [], settled,
+            "these are listed as disagreeing and no longer do: %s. Strike them off -- a list of "
+            "known differences that is allowed to go stale is read as a description of the tree."
+            % settled)
+
+
+if __name__ == "__main__":
+    unittest.main()
