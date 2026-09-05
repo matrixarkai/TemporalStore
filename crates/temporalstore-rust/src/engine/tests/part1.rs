@@ -4057,6 +4057,9 @@ fn which_write_primitive_grows_with_the_store() {
             vec![FeaturePoint { timestamp_ms: 1, value: payload.clone() }],
             0,
             false,
+            // promote_sync_writes: what execute_on_shard passes on every one of its calls. This
+            // probe exists to measure the path production takes, so it takes the same one.
+            true,
         );
         let key = format!("probe:series:{rung}");
         let probe = crate::alloc_probe::Probe::start();
@@ -4069,6 +4072,9 @@ fn which_write_primitive_grows_with_the_store() {
             vec![FeaturePoint { timestamp_ms: 1, value: payload.clone() }],
             0,
             false,
+            // promote_sync_writes: what execute_on_shard passes on every one of its calls. This
+            // probe exists to measure the path production takes, so it takes the same one.
+            true,
         );
         *series_out = probe.stop().allocs;
 
