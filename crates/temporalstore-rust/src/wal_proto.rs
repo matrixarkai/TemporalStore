@@ -97,9 +97,19 @@ fn unescape_newlines(bytes: &[u8]) -> Result<Vec<u8>, String> {
 /// written across the flip reads end to end in either direction, and turning it off again is not
 /// a one-way door.
 pub(crate) fn binary_records_enabled() -> bool {
-    std::env::var("TS_WAL_BINARY_RECORDS")
-        .map(|value| !(value == "0" || value.eq_ignore_ascii_case("false")))
-        .unwrap_or(true)
+    // Spelled the way every other engine flag is spelled. This read used to accept only "0" and
+    // "false", so "off" and "no" -- which turn any of its neighbours off -- left protobuf on
+    // here. It also put the default somewhere no check could find it, which is why the portal
+    // could not offer this setting: an offered knob has to show a default the source can be
+    // asked for.
+    !matches!(
+        std::env::var("TS_WAL_BINARY_RECORDS")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
 }
 /// The kinds common enough to be worth a code rather than a string on every item.
 ///

@@ -497,6 +497,24 @@ SETTINGS: List[Setting] = [
             "WAL growth before an index dump", "int", "1048576", "live",
             "How much undumped WAL growth triggers a background index dump. A dump writes the "
             "served index, so lowering this makes dumps more frequent and each recovery shorter."),
+    Setting("storage_engine.wal_binary_records", "storage_engine",
+            "TS_WAL_BINARY_RECORDS",
+            "Write log records as protobuf", "bool", "1", "restart",
+            "On, a write-ahead log record is protobuf rather than JSON. Reading never consults "
+            "this: a payload is decoded by what its first byte says it is, so a log written "
+            "across a change reads end to end and turning it back off is not a one-way door. "
+            "Measured on a live store, text records and their frames are the larger part of what "
+            "the store holds."),
+    Setting("storage_engine.wal_binary_frame", "storage_engine",
+            "TS_WAL_BINARY_FRAME",
+            "Frame log records by length", "bool", "1", "restart",
+            "On, each record carries a length and a checksum in about seven bytes. Off, records "
+            "are delimited by a newline in about twenty, and every newline inside a payload has to "
+            "be escaped out and back -- two more copies of every record. Decoding handles either, "
+            "so a log holding both still loads. Turning it OFF on a store already written with "
+            "length frames is NOT supported: finding the tail of the log follows this setting, and "
+            "off it searches backwards for a newline, which is not a record boundary in a "
+            "length-framed log."),
     Setting("storage_engine.vector_scaled", "storage_engine",
             "TS_VECTOR_SCALED",
             "Store vectors in the scaled form", "bool", "1", "live",
