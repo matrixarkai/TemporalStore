@@ -52,20 +52,6 @@ pub(crate) fn context_require_model_embeddings() -> bool {
         .unwrap_or(false)
 }
 
-/// When true (the default), a live-path embedding failure (provider error/timeout,
-/// after any fallback provider is also exhausted) does NOT discard the extraction:
-/// the node/event/summaries are still persisted and the node is marked
-/// embedding-dirty so the async drainer attaches vectors on retry, and the hybrid
-/// retrieve path keeps it rankable via lexical scoring meanwhile. Set
-/// `MATRIXARK_EMBED_DEFER_ON_FAILURE=0` to restore the old fail-closed behavior
-/// (embed failure aborts the whole extract and persists nothing).
-pub(crate) fn context_embed_defer_on_failure() -> bool {
-    std::env::var("MATRIXARK_EMBED_DEFER_ON_FAILURE")
-        .ok()
-        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-        .unwrap_or(true)
-}
-
 pub(crate) fn context_summaries_for_extract(
     provider: &ContextModelProviderConfig,
     request: &ContextExtractRequest,

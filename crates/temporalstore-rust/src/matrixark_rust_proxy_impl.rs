@@ -990,12 +990,6 @@ fn invalidate_record_count_cache(key: &str) {
     }
 }
 
-fn monotonic_record_count_enabled() -> bool {
-    env::var("MATRIXARK_MONOTONIC_RECORD_COUNT")
-        .map(|value| !matches!(value.trim(), "0" | "false" | "no" | "off"))
-        .unwrap_or(true)
-}
-
 // TemporalStore conformance with the native storage engine: the storage engine's
 // record/serving SEQUENCE is an engine-owned MONOTONIC log id, taken from the append
 // log's own iterator id and exposed read-only. It is advanced only by the append log /
@@ -1013,7 +1007,7 @@ fn monotonic_record_count_enabled() -> bool {
 // MATRIXARK_MONOTONIC_RECORD_COUNT=0 restores prior behavior). Inert for async, whose
 // counter already advances monotonically (the clamp only ever raises a low write).
 fn clamp_record_count_value(engine: &RecordStore, key: &str, value: Vec<u8>) -> Vec<u8> {
-    if !monotonic_record_count_enabled() || !is_record_count_key(key) {
+    if !is_record_count_key(key) {
         return value;
     }
     let Some(new_count) = std::str::from_utf8(&value)
@@ -4193,15 +4187,10 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
             load.status.message
         ));
     }
-    let async_cache_warm = !matches!(
-        env::var("MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD")
-            .unwrap_or_else(|_| "1".to_string())
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    );
-    if async_cache_warm {
+    // Warm the page cache on a background thread. `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD`
+    // could stop this and defaulted on; nothing set it, so every proxy that loaded a record-log
+    // root warmed, and this is simply what loading one does.
+    {
         let warm_engine = engine.clone();
         let warm_root = root.clone();
         std::thread::spawn(move || {
