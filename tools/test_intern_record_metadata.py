@@ -15,8 +15,8 @@ context_index postings for constant internal-metadata dimensions (memory_scope, 
 memory_layer, extraction_phase, ...), keeping the semantic dimensions that carry recall. Cuts posting
 COUNT ~65% with recall held at 5/5.
 
-Both are gated (MATRIXARK_INTERN_RECORD_METADATA / MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS, default
-ON); flag-OFF reproduces today's behaviour exactly.
+Interning is gated by MATRIXARK_INTERN_RECORD_METADATA (default ON); pruning is simply on, and this
+file sets its module constant to False below to isolate one lever from the other.
 """
 from __future__ import annotations
 
