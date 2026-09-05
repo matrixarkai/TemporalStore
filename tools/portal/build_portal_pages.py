@@ -673,7 +673,7 @@ LIVE_STRIP = """
       <a class="live-seg" href="/v1/admin/setup#encoding" id="liveEnc" hidden></a>
       <a class="live-seg" href="/v1/admin/ingestion" id="liveImp" hidden></a>
       <a class="live-seg" href="/v1/admin/setup#traffic" id="liveReq" hidden></a>
-      <a class="live-seg warn" href="/v1/admin/setup" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span><a class="live-seg warn" href="/v1/admin/setup" id="liveWaiting" hidden></a>
+      <a class="live-seg warn" href="/v1/admin/setup#warnings" id="liveWarn" hidden></a><span class="live-seg" id="liveNode" hidden></span><a class="live-seg warn" href="/v1/admin/setup#awaitingRestart" id="liveWaiting" hidden></a>
       <span class="live-dot" id="liveDot" title="live"></span>
     </div>"""
 
@@ -988,6 +988,10 @@ SETUP_BODY = """
   <section class="pane" role="tabpanel" aria-labelledby="tab-settings" id="pane-settings" hidden>
 
   <form id="settingsForm">
+    <!-- Where the strip's "awaiting restart" segment lands. The count rides every page; the names
+         lived only on a badge inside a group that is shut by default, so the number had nowhere to
+         take anybody. -->
+    <div id="awaitingRestart" class="note" hidden></div>
     <div class="toolbar">
       <label for="filter" class="visually-hidden">Filter settings</label>
       <input id="filter" type="search" placeholder="Filter settings — name, help text, or variable" spellcheck="false" autocomplete="off">
@@ -1380,6 +1384,43 @@ SETUP_JS = r"""
       .sort();
   }
 
+  /* Take somebody to a setting, uncovering whatever is folded over it.
+
+     A name on its own is not enough here. Four of the nine groups render shut -- 26 of the 47
+     restart-scoped settings are in one of them -- and a filter may have hidden the row outright, so
+     scrolling to it would scroll to something that is not on screen. */
+  function showSetting(key) {
+    var el = $("groups").querySelector('[data-key="' + key + '"]');
+    if (!el) {
+      say($("saveMsg"), "That setting is not loaded \u2014 enter an admin key first.", "warn");
+      return false;
+    }
+    var group = el.closest("details");
+    if (group) { group.hidden = false; group.open = true; }
+    var row = el.closest(".field");
+    if (row) { row.classList.remove("hidden"); }
+    window.showTab("settings");
+    el.scrollIntoView({ block: "center" });
+    if (el.focus) { el.focus(); }
+    return true;
+  }
+
+  /* The strip counts these from every page. This is the only place that can say WHICH, and until
+     now nothing did: the badge that names one sits on the field itself, behind a closed group. */
+  function renderAwaiting(keys) {
+    var box = $("awaitingRestart"), list = keys || [];
+    box.hidden = list.length === 0;
+    if (!list.length) { box.innerHTML = ""; return; }
+    box.innerHTML = "<b>" + list.length +
+      (list.length === 1 ? " setting is" : " settings are") + " waiting for a restart.</b> " +
+      "The gateway is still running the old value for " +
+      (list.length === 1 ? "it" : "them") + ": " +
+      list.map(function (k) {
+        return '<button type="button" class="link" data-goto="' + esc(k) + '">' + esc(k) +
+          "</button>";
+      }).join(", ");
+  }
+
   function renderGroups(settings) {
     var groups = (settings || {}).groups || {};
     var meta = (settings || {}).group_meta || {};
@@ -1401,6 +1442,7 @@ SETUP_JS = r"""
         (m.note ? '<p class="group-note">' + esc(m.note) + "</p>" : "") +
         '<div class="grid2">' + groups[g].map(fieldHtml).join("") + "</div></div></details>";
     }).join("");
+    renderAwaiting((settings || {}).pending_restart);
     $("cfgTime").textContent = settings && settings.updated_at
       ? "Stored in " + (settings.config_file || "the runtime config") + " · last saved " +
         new Date(settings.updated_at * 1000).toLocaleString()
@@ -2596,6 +2638,12 @@ SETUP_JS = r"""
     applyFilter();
   });
   $("onlyChanged").addEventListener("change", applyFilter);
+  /* Delegated: the names are rebuilt on every load, and a listener per name would be rebound each
+     time or leak the old ones. */
+  $("awaitingRestart").addEventListener("click", function (ev) {
+    var key = ev.target && ev.target.getAttribute && ev.target.getAttribute("data-goto");
+    if (key) { showSetting(key); }
+  });
   $("onlyEssential").addEventListener("change", function () {
     /* The required settings live in the two model groups, both of which are open by default; but
        ingestion.root is in an advanced one, so narrowing to "must set" has to reveal it. */
