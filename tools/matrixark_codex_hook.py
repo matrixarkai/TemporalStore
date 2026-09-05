@@ -2446,7 +2446,20 @@ def production_profile_enabled() -> bool:
 
 
 def local_backend_allowed() -> bool:
-    return os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "").strip().lower() in {"1", "true", "yes", "on"}
+    """Whether a local backend is permitted, spelled the way the guard that enforces it spells it.
+
+    `matrixark_mcp_backends` refuses a local backend under a production profile unless this is set,
+    and the refusal says to set it to 1. That guard accepts {1, true, yes}. This function also
+    accepted "on", so `MATRIXARK_ALLOW_LOCAL_BACKEND=on` permitted the backend here and was refused
+    there: a permission that half-applies, which is worse than one that does not apply, because
+    each half looks correct on its own.
+
+    The wider set in `matrixark_mcp_env.TRUE_VALUES` is deliberately NOT used here. A permission
+    should not gain accepting spellings by inheriting a general helper -- every spelling it gains
+    is another way to turn a production guard off, and the safe direction for a disagreement about
+    a guard is the narrower one.
+    """
+    return os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
 
 
 def default_hook_backend() -> str:
