@@ -75,6 +75,9 @@ impl TemporalEngine {
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             evict_sampled_lru: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            eager_cache_warm: Arc::new(std::sync::atomic::AtomicBool::new(
+                crate::engine::eager_cache_warm_on_load(),
+            )),
             raft_apply_coalesce: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
     }
@@ -90,6 +93,22 @@ impl TemporalEngine {
     #[cfg(test)]
     pub(crate) fn disable_hot_page_spill_for_test(&self) {
         self.cache.register_eviction_callback(|_| {});
+    }
+
+    /// Warm this engine's page cache in the BACKGROUND rather than during `load_shard`, so a
+    /// restart publishes serving state before the promotion pass finishes.
+    ///
+    /// A caller that holds the engine says this to the engine. The proxy used to say it to the
+    /// process, by setting `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` and never putting it back.
+    pub fn warm_cache_in_background_on_load(&self) {
+        self.eager_cache_warm
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether `load_shard` warms the cache as part of the load.
+    pub(crate) fn eager_cache_warm(&self) -> bool {
+        self.eager_cache_warm
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Take the durable WAL barrier UNDER the `shards` write lock, for a test measuring what
@@ -271,7 +290,7 @@ impl TemporalEngine {
             // deliberately NOT folded (load_index_base_only), so each tail record is applied
             // EXACTLY ONCE -- no double-apply of non-idempotent commands (counters, appends).
             let base_only =
-                self.load_index_base_only(request.shard_id, eager_cache_warm_on_load());
+                self.load_index_base_only(request.shard_id, self.eager_cache_warm());
             let base_watermark = base_only
                 .as_ref()
                 .and_then(|state| state.applied_wal_sequence)
@@ -315,7 +334,7 @@ impl TemporalEngine {
             // Fold-aware load: a corrupt served-index delta log is fatal here. Silently
             // folding a holed delta prefix would advance the anchor past a removal/eviction
             // recorded only in the delta -> silent loss. Refuse the load instead.
-            let loaded = match self.load_index_checked(request.shard_id, eager_cache_warm_on_load()) {
+            let loaded = match self.load_index_checked(request.shard_id, self.eager_cache_warm()) {
                 Ok(loaded) => loaded,
                 Err(status) => return LoadShardResponse { status },
             };
@@ -460,7 +479,7 @@ impl TemporalEngine {
             info.recovering = false;
         }
         // Disk->memory promotion on a normal restart is folded directly into
-        // load_index()/reconcile above (gated by eager_cache_warm_on_load()): the pages
+        // load_index()/reconcile above (gated by this engine's `eager_cache_warm`): the pages
         // reconcile reads to rebuild the secondary views are promoted into the cache
         // tier in the same pass, so we avoid a second warm pass re-reading every page
         // under the mutex-serialized block store. No-op on a fresh/empty shard.
@@ -1802,7 +1821,7 @@ impl TemporalEngine {
         let installed_manifest_watermark = self
             .install_latest_manifest_if_newer_on_load(shard_id)
             .expect("manifest install should succeed in test");
-        let loaded = self.load_index(shard_id, eager_cache_warm_on_load());
+        let loaded = self.load_index(shard_id, self.eager_cache_warm());
         let replay_watermark = match installed_manifest_watermark {
             Some(manifest_watermark) => manifest_watermark,
             None => match &loaded {

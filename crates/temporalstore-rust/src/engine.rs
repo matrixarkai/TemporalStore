@@ -133,6 +133,13 @@ pub struct TemporalEngine {
     /// baseline could otherwise observe a window its sibling had opened. Shared across clones,
     /// because a clone is the same engine.
     concurrent_commit: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether loading a shard warms the in-memory cache tier from the page store as part of
+    /// the load, rather than leaving it to be warmed in the background.
+    ///
+    /// Starts from `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD`, which the shipped config and several
+    /// binaries set, so this is a deployment knob and not a retired switch. The proxy turns it
+    /// off for its own engine, and used to do that by writing the variable into the process.
+    eager_cache_warm: Arc<std::sync::atomic::AtomicBool>,
     /// Whether eviction picks its victims by a sampled scan instead of enumerating and sorting
     /// every bucket.
     ///
@@ -1876,7 +1883,7 @@ fn defer_bucket_index_reconstruct() -> bool {
 /// Whether load_shard should eagerly warm the in-memory cache tier from the page
 /// store after reconstructing the index (disk->memory promotion on restart).
 /// Defaults ON; set MATRIXARK_EAGER_CACHE_WARM_ON_LOAD to 0/false/off/no to disable.
-fn eager_cache_warm_on_load() -> bool {
+pub(crate) fn eager_cache_warm_on_load() -> bool {
     !matches!(
         std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD")
             .unwrap_or_default()

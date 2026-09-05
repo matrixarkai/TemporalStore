@@ -52,7 +52,7 @@ Anything else is blank, and a blank means go and look.
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 184 |
 | documented as keeping an older path alive | 6 |
-| reaching more than two files | 17 |
+| reaching more than two files | 16 |
 | whose doc comment is really about another flag | 43 |
 
 ## topology (38)
@@ -374,8 +374,7 @@ Everything else that changes what the engine does.
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `MATRIXARK_BULK_INGEST` | off | config, test, portal | 6 | — |
-| `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | config, test | 5 | — |
-| `TS_PHASE1_FLAT` | on | test | 4 | — |
+| `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | config | 5 | — |
 | `TS_RAFT_ALLOW_PLAINTEXT` | — | harness, script | 4 | — |
 | `TS_RAFT_ELECTION_TICK_MS` | — | harness, script | 3 | — |
 | `TS_RAFT_ENABLE_LOCAL_ADMIN` | — | harness, script | 3 | — |
@@ -385,6 +384,7 @@ Everything else that changes what the engine does.
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
+| `TS_PHASE1_FLAT` | on | test | 2 | — |
 | `MATRIXARK_MONOTONIC_RECORD_COUNT` | on | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD` | on | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, test | 1 | — |
