@@ -14618,6 +14618,139 @@ fn a_no_page_command_leaves_the_index_matching_a_rebuild() {
 }
 
 
+/// The no-page rebuild exemption has to hold in a BATCH, not only alone.
+///
+/// `command_writes_no_page` exempts SeenCheck and the control-state change/selection writes from
+/// the post-command rebuild, because a command that files no page cannot have changed the page
+/// index -- measured at twice the shard's page count per call. The single-command path consults
+/// it. The batch path did not, so the SAME command cost a full index rebuild when it arrived in a
+/// batch and nothing when it arrived on its own.
+///
+/// Measured rather than argued, because the cost is invisible in the result: the command answers
+/// identically either way, and only the page-visit counter shows the walk.
+#[test]
+fn a_no_page_command_in_a_batch_does_not_rebuild_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // Unrelated page-backed keys, so a rebuild has a whole store to walk and its cost shows.
+    // Nothing below touches these.
+    for index in 0..512_usize {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("unrelated-{index:08}"),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(out.status.ok, "fill {index}: {:?}", out.status);
+    }
+
+    let seen = |member: &str| Command::SeenCheck {
+        key: "seen".to_string(),
+        member: member.as_bytes().to_vec(),
+        window_ms: 60_000,
+    };
+
+    // Warm both paths: the first call of either can set up state whose cost is not the per-call
+    // cost being measured.
+    assert!(
+        engine
+            .execute(ExecuteRequest { shard_id: 1, command: seen("warm-single") })
+            .status
+            .ok
+    );
+    assert!(
+        engine
+            .batch_execute(BatchExecuteRequest {
+                shard_id: 1,
+                commands: vec![seen("warm-batch")],
+            })
+            .status
+            .ok
+    );
+
+    crate::engine::bucket_visit_sites::reset();
+    let single = engine.execute(ExecuteRequest { shard_id: 1, command: seen("alone") });
+    let (alone_visits, ..) = crate::engine::bucket_visit_sites::snapshot();
+    assert!(single.status.ok, "{:?}", single.status);
+
+    // What the index holds, so skipping the rebuild can be shown not to leave it stale.
+    let page_rows = |engine: &TemporalEngine| -> Vec<String> {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        let mut rows: Vec<String> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .flat_map(|(routing_bucket, bucket)| {
+                bucket.page_index.values().map(move |page| {
+                    format!(
+                        "{routing_bucket}|{}|{}|{}",
+                        page.model_id,
+                        page.object_key,
+                        page.component.as_deref().unwrap_or("-")
+                    )
+                })
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    let index_before = page_rows(&engine);
+
+    crate::engine::bucket_visit_sites::reset();
+    let batched = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![seen("batched")],
+    });
+    let (batch_visits, ..) = crate::engine::bucket_visit_sites::snapshot();
+    assert!(batched.status.ok, "{:?}", batched.status);
+
+    // Skipping the rebuild is only sound because there was nothing to rebuild. If a no-page
+    // command ever does file a page, this fails rather than leaving a stale index to be found
+    // by a read that misses.
+    assert_eq!(
+        index_before,
+        page_rows(&engine),
+        "a batched no-page command changed the page index, so skipping the rebuild after it          leaves the index stale"
+    );
+
+    // The positive control, and it is not optional: both assertions below are `== 0`, and zero is
+    // also what a counter that never fires reports. A command genuinely missing from
+    // `command_updates_bucket_index_directly` still rebuilds, so this shows the counter is wired
+    // up on the very path the batch assertion measures.
+    crate::engine::bucket_visit_sites::reset();
+    let control = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![Command::CommonExpire {
+            key: "unrelated-00000000".to_string(),
+            ttl_ms: 60_000,
+        }],
+    });
+    let (control_visits, ..) = crate::engine::bucket_visit_sites::snapshot();
+    assert!(control.status.ok, "{:?}", control.status);
+    assert!(
+        control_visits > 0,
+        "the page-visit counter reported nothing for a command that does rebuild, so the zeroes          below would mean nothing"
+    );
+
+    assert_eq!(
+        alone_visits, 0,
+        "the single-command path stopped exempting a no-page command"
+    );
+    assert_eq!(
+        batch_visits, 0,
+        "a no-page command rebuilt the whole index because it arrived in a batch: {batch_visits}          page visits against {alone_visits} for the same command sent alone"
+    );
+}
+
 /// What `SequenceQuery`'s single bound costs a filtered caller.
 ///
 /// `ContextQueryEvents` has TWO bounds -- `max_scan` for work, `limit` for results after filtering --
