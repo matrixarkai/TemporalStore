@@ -15635,3 +15635,83 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
     );
     println!("  An 8x fill range: a ratio near 8 is linear in history, near 1 is flat.");
 }
+
+/// Does a bigger read cache buy anything, and where does it stop paying?
+///
+/// The live deployment runs the default 16 MB memory cache against a 1.2 GB store where a single
+/// retrieval returns 9.35 MB -- one read is 58% of the whole cache. That LOOKS badly
+/// under-scaled, but "looks" is not a measurement: a cache only pays if the working set is
+/// re-read, and a store whose reads never repeat gains nothing from a larger one.
+///
+/// So this sweeps the cache size against a FIXED working set that is deliberately re-read, and
+/// reports bytes per read. Flat across the sweep means the cache size is not the lever.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_a_bigger_read_cache_buys() {
+    const RECORDS: usize = 4_000;
+    const READS: usize = 200;
+    let cost_at = |cache_bytes: usize| -> (u64, u64) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            cache_bytes,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..RECORDS {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: format!("k{:04}", i % 256),
+                    field: format!("f{i:06}"),
+                    value: vec![b'v'; 256],
+                },
+            });
+            assert!(out.status.ok, "fill refused: {:?}", out.status);
+        }
+        // Re-read a fixed working set: this is the case a cache exists for.
+        let probe = crate::alloc_probe::Probe::start();
+        let mut answered = 0u64;
+        for i in 0..READS {
+            let out = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashGetAll {
+                    key: format!("k{:04}", i % 64),
+                },
+            });
+            if let CommandResponse::HashEntries { entries } = out.response {
+                answered += entries.len() as u64;
+            }
+        }
+        let bytes = probe.stop().alloc_bytes / READS as u64;
+        (bytes, answered)
+    };
+
+    println!("  cache size     bytes/read   entries returned");
+    let mut first = 0u64;
+    let mut last = 0u64;
+    // The sizes must BRACKET the working set, not sit above it. A first run swept 1 MB to
+    // 256 MB against ~1 MB of data and every arm returned byte-identical cost -- not because
+    // cache size does not matter, but because every arm held the whole set and none evicted.
+    // 4,000 records x 256 B is about 1 MB, so these run from far below it to comfortably above.
+    for (label, size) in [
+        ("64 KB", 64 << 10),
+        ("256 KB", 256 << 10),
+        ("1 MB", 1 << 20),
+        ("4 MB", 4 << 20),
+        ("16 MB (default)", 16 << 20),
+    ] {
+        let (bytes, answered) = cost_at(size);
+        assert!(answered > 0, "{label}: the reads returned nothing, so the cost means nothing");
+        if first == 0 {
+            first = bytes;
+        }
+        last = bytes;
+        println!("  {label:14}  {bytes:10}   {answered}");
+    }
+    println!("  A falling curve means the cache size is a lever here.");
+    println!("  Flat means it is not, and the 16 MB default is not what makes a read slow.");
+    // Not asserted as a win or a loss -- this is a sweep, and either answer is informative.
+    let _ = (first, last);
+}
