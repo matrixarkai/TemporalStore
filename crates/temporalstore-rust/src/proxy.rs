@@ -311,6 +311,17 @@ pub struct ProxyStats {
     pub admission_rejections: u64,
     pub account_rejections: u64,
     pub inflight_rejections: u64,
+    /// The two halves of a policy refusal, which the total cannot tell apart.
+    ///
+    /// A DRAIN is an operator decision -- serving_mode took this proxy out, or took its writes
+    /// out. A SHED is the proxy protecting itself under `drop_percent`. An operator watching a
+    /// refusal rate climb needs to know which of the two it is looking at, and until these were
+    /// split the only policy signal was the difference between `admission_rejections` and the
+    /// two counters beside it.
+    #[serde(default)]
+    pub serving_rejections: u64,
+    #[serde(default)]
+    pub drop_rejections: u64,
     /// `/context/*` traffic, counted per route. These are the only routes the context
     /// gateway calls, so without them a proxy saturated by gateway traffic reports
     /// `execute` and `batch_execute` at zero and looks idle. They are counted separately
@@ -539,6 +550,12 @@ pub struct ProxyPolicyReport {
     pub account_rejections: u64,
     #[serde(default)]
     pub inflight_rejections: u64,
+    /// A drain (`serving_mode`) and a shed (`drop_percent`) both refuse under policy, and an
+    /// operator needs to tell them apart: one is a decision someone made, the other is load.
+    #[serde(default)]
+    pub serving_rejections: u64,
+    #[serde(default)]
+    pub drop_rejections: u64,
     #[serde(default)]
     pub enforce_ingestion_account: bool,
     #[serde(default)]
@@ -1552,7 +1569,12 @@ impl ProxyService {
         let mut stats = self.inner.stats.write().expect("proxy stats lock poisoned");
         stats.admission_rejections += 1;
         match kind {
-            ProxyRejectionKind::Policy => {}
+            // Split by the code the policy itself produced, so the two cannot drift apart from
+            // what the caller was actually told.
+            ProxyRejectionKind::Policy => match status.code.as_str() {
+                "proxy_traffic_dropped" => stats.drop_rejections += 1,
+                _ => stats.serving_rejections += 1,
+            },
             ProxyRejectionKind::Account => stats.account_rejections += 1,
             ProxyRejectionKind::Inflight => stats.inflight_rejections += 1,
         }
@@ -4466,6 +4488,61 @@ mod tests {
         assert_eq!(routed.stats.bad_requests, 1);
     }
 
+    /// A drain and a shed are both policy refusals, and an operator has to tell them apart.
+    ///
+    /// `serving_mode` taking a proxy out is a decision someone made. `drop_percent` shedding is
+    /// the proxy protecting itself under load. Both used to land only in `admission_rejections`,
+    /// with the policy arm of `reject` explicitly doing nothing -- so the only way to see a
+    /// policy refusal at all was to subtract the account and in-flight counters from the total,
+    /// and no amount of subtraction separates a drain from a shed.
+    ///
+    /// Asserted through `policy_report`, which is the surface an operator actually reads, so this
+    /// covers the counter and its exposure together.
+    #[test]
+    fn a_drain_and_a_shed_are_counted_apart() {
+        let drained = scoped_proxy(ProxyOptions {
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let refused = drained.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_eq!(refused.status.code, "proxy_not_serving", "{:?}", refused.status);
+        let report = drained.policy_report();
+        assert_eq!(report.serving_rejections, 1, "a drain must count as a drain");
+        assert_eq!(report.drop_rejections, 0, "a drain is not a shed");
+        assert_eq!(report.admission_rejections, 1, "and it is still one refusal in total");
+
+        let shedding = scoped_proxy(ProxyOptions {
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        let dropped = shedding.execute(ExecuteRequest {
+            shard_id: 1,
+            command: read_command(),
+        });
+        assert_eq!(
+            dropped.status.code, "proxy_traffic_dropped",
+            "{:?}",
+            dropped.status
+        );
+        let report = shedding.policy_report();
+        assert_eq!(report.drop_rejections, 1, "a shed must count as a shed");
+        assert_eq!(report.serving_rejections, 0, "a shed is not a drain");
+
+        // The total still accounts for exactly its parts. Without this the two new counters
+        // could double-count or miss a path and each assertion above would still pass.
+        assert_eq!(
+            report.admission_rejections,
+            report.account_rejections
+                + report.inflight_rejections
+                + report.serving_rejections
+                + report.drop_rejections,
+            "the refusal total stopped being the sum of the reasons for it: {report:?}"
+        );
+    }
+
     fn read_command() -> Command {
         Command::StringGet {
             key: "k".to_string(),
@@ -5121,6 +5198,8 @@ mod tests {
             admission_rejections,
             account_rejections,
             inflight_rejections,
+            serving_rejections,
+            drop_rejections,
             heartbeat_total,
             heartbeat_slow_total,
             auto_register_total,
@@ -5138,7 +5217,7 @@ mod tests {
 
         // Field -> the label it is published under. Values are only here so the destructured
         // bindings are used; what is asserted is that each label reaches the endpoint.
-        let published: [(&str, u64); 22] = [
+        let published: [(&str, u64); 24] = [
             ("kind=\"execute\"", execute_requests),
             ("kind=\"batch_execute\"", batch_execute_requests),
             ("kind=\"bad_request\"", bad_requests),
@@ -5148,6 +5227,8 @@ mod tests {
             ("kind=\"admission_rejection\"", admission_rejections),
             ("kind=\"account_rejection\"", account_rejections),
             ("kind=\"inflight_rejection\"", inflight_rejections),
+            ("kind=\"serving_rejection\"", serving_rejections),
+            ("kind=\"drop_rejection\"", drop_rejections),
             ("kind=\"heartbeat\"", heartbeat_total),
             ("kind=\"heartbeat_slow\"", heartbeat_slow_total),
             ("kind=\"auto_register\"", auto_register_total),

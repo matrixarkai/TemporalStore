@@ -160,6 +160,8 @@ impl ProxyService {
             admission_rejections: stats.admission_rejections,
             account_rejections: stats.account_rejections,
             inflight_rejections: stats.inflight_rejections,
+            serving_rejections: stats.serving_rejections,
+            drop_rejections: stats.drop_rejections,
             enforce_ingestion_account: options.enforce_ingestion_account,
             ingestion_account: options.ingestion_account.clone(),
             max_inflight_requests: options.max_inflight_requests,
