@@ -1668,6 +1668,27 @@ def _model_config_snapshot() -> Json:
                 "non-empty placeholder for a local endpoint."
             )
 
+    # Both key controls can name the SAME variable -- they both default to OPENAI_API_KEY -- and the
+    # portal reports each secret as configured because each is STORED, while the variable holds
+    # whichever was written last. Two providers on two endpoints then share one key, one of them is
+    # authenticating with the other's, and the 401 falls back silently to the deterministic path.
+    #
+    # Only when the endpoints differ. One provider serving both sides is the `openai` preset, where
+    # sharing the key is the point, and warning there would be noise on a correct configuration.
+    extraction_endpoint = str(extraction["base_url"] or "").rstrip("/")
+    embedding_endpoint = str(embedding["api_base"] or "").rstrip("/")
+    if (extraction_provider not in deterministic and embedding_provider not in deterministic
+            and extraction_key_env and extraction_key_env == embedding_key_env
+            and extraction_endpoint and embedding_endpoint
+            and extraction_endpoint != embedding_endpoint):
+        warnings.append(
+            "extraction and embedding both take their key from " + extraction_key_env + ", but they "
+            "call different endpoints (" + extraction_endpoint + " and " + embedding_endpoint
+            + "): whichever key was saved last is in that variable, so one of the two is "
+            "authenticating with the other's. Name a different variable in one of the key-variable "
+            "settings, then set that key again."
+        )
+
     return {
         "status": "ok",
         "extraction": extraction,
