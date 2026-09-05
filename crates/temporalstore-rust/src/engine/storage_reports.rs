@@ -473,7 +473,7 @@ impl TemporalEngine {
                 entry.address.length,
                 entry.address.routing_bucket(),
             );
-            if self.cache.get(&key).ok().flatten().is_some() {
+            if self.cache.peek_tier(&key).is_some() {
                 report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
                 report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
             } else if let Ok(bytes) = self.page_store.read(&entry.address) {

@@ -2856,12 +2856,19 @@ fn storage_cache_warmup_report_filters_buckets_and_counts_cache_hits() {
     assert_eq!(first.failed_page_refs, 0);
     assert!(first.warmed_bytes > 0);
 
+    let hits_before_second = engine.cache().stats().memory_hits
+        + engine.cache().stats().pmem_hits
+        + engine.cache().stats().disk_hits;
     let second = engine.storage_cache_warmup_report(1, [bucket]);
+    let hits_after_second = engine.cache().stats().memory_hits
+        + engine.cache().stats().pmem_hits
+        + engine.cache().stats().disk_hits;
     assert_eq!(second.considered_page_refs, 1);
     assert_eq!(second.skipped_page_refs, 1);
     assert_eq!(second.block_store_reads, 0);
     assert_eq!(second.already_cached_page_refs, 1);
     assert_eq!(second.warmed_page_refs, 1);
+    assert_eq!(hits_after_second, hits_before_second);
 }
 
 #[test]
