@@ -450,3 +450,55 @@ impl TemporalStoreClient {
             .unwrap_or(false)
     }
 }
+
+#[cfg(test)]
+mod batch_routing_tests {
+    use super::*;
+
+    /// A batch is always sent to the primary; a single command is not.
+    ///
+    /// `execute_routed_with_http_and_policy` threads the table's `ReplicaReadPolicy` and its
+    /// `preferred_location` through to route selection, so a table configured to read from a
+    /// nearby replica does. `batch_execute_with_options` calls plain `resolve_route`, which
+    /// hard-codes `PinPrimary` and no location -- so the same table's batch reads go to the
+    /// primary, and cross-zone if that is where it is.
+    ///
+    /// Pinned rather than changed. Sending a batch to the primary is SAFE: a batch may contain
+    /// writes and those must go there. What is not distinguished is a batch containing none,
+    /// which is the case that could follow the table's policy. Making that distinction moves
+    /// read traffic onto replicas, so it wants a deliberate decision and a check that a replica
+    /// serves `/batch_execute` at all -- neither of which belongs in a quiet change.
+    #[test]
+    fn a_batch_goes_to_the_primary_even_when_a_single_read_would_not() {
+        let client = TemporalStoreClient::new("127.0.0.1:1");
+        {
+            let mut routes = client
+                .inner
+                .routes
+                .write()
+                .expect("client route cache lock poisoned");
+            let mut route = CachedRoute::for_shard(1, "primary:1", "test_insert");
+            route.replica_addrs = vec!["replica:1".to_string()];
+            routes.insert(1, route);
+        }
+
+        let single = client
+            .resolve_route_with_policy(1, false, None, ReplicaReadPolicy::FirstReplica, None)
+            .expect("route");
+        assert_eq!(
+            single, "replica:1",
+            "a single read honours the table's replica policy"
+        );
+
+        let batch = client.resolve_route(1, false, None).expect("route");
+        assert_eq!(
+            batch, "primary:1",
+            "a batch takes the primary regardless of the policy"
+        );
+
+        assert_ne!(
+            single, batch,
+            "the two paths disagree by construction -- if they ever agree, one of them changed              and the comment above needs to change with it"
+        );
+    }
+}
