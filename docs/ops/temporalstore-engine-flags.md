@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 308 of them, read by 105 functions.
+There are 304 of them, read by 102 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 308 |
-| booleans whose default this could read off the source | 43 |
-| **defaulting on, and set by nothing** | 9 |
+| total | 304 |
+| booleans whose default this could read off the source | 39 |
+| **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 23 |
-| **that nothing in this repository sets** | 184 |
-| documented as keeping an older path alive | 6 |
+| **that nothing in this repository sets** | 180 |
+| documented as keeping an older path alive | 5 |
 | reaching more than two files | 16 |
 | whose doc comment is really about another flag | 43 |
 
@@ -292,7 +292,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_STORAGE_ZONE_SIZE` | — | config, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | — | config, portal | 1 | — |
 
-## context (27)
+## context (25)
 
 The memory pipeline: what gets extracted, embedded, drained and packed. The surface a deployment tunes for recall rather than for throughput.
 
@@ -310,13 +310,11 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_COMPRESSION_WINDOW` | — | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH` | — | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | — | nothing | 1 | — |
-| `MATRIXARK_CONTEXT_HYBRID_LEXICAL` | on | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES` | off | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_SECONDARY_INDEX` | off | test | 1 | — |
 | `MATRIXARK_EMBEDDING_MODEL` | — | config, script, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |
-| `MATRIXARK_EMBED_DEFER_ON_FAILURE` | on | nothing | 1 | yes |
 | `MATRIXARK_EMBED_DRAINER` | — | config, launch, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | — | launch | 1 | — |
@@ -367,7 +365,7 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING` | on | nothing | 1 | — |
 
-## behaviour (66)
+## behaviour (64)
 
 Everything else that changes what the engine does.
 
@@ -385,8 +383,6 @@ Everything else that changes what the engine does.
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
 | `TS_PHASE1_FLAT` | on | test | 2 | — |
-| `MATRIXARK_MONOTONIC_RECORD_COUNT` | on | nothing | 1 | — |
-| `MATRIXARK_RUST_PROXY_ASYNC_CACHE_WARM_ON_LOAD` | on | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED` | — | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL` | — | test | 1 | — |

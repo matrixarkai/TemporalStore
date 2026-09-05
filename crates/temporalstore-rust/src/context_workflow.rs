@@ -46,18 +46,6 @@ pub(crate) fn context_secondary_index_enabled() -> bool {
         .unwrap_or(false)
 }
 
-/// Hybrid lexical fallback for un-embedded nodes in `retrieve_context`
-/// (`MATRIXARK_CONTEXT_HYBRID_LEXICAL`, default ON). When enabled, a node with no
-/// stored summary embedding is scored by query/text lexical overlap instead of the
-/// flat 0 it used to get, so a freshly bulk-loaded store returns relevant results
-/// before the embed drainer catches up. Embedded-node scoring is unchanged.
-fn context_hybrid_lexical_enabled() -> bool {
-    std::env::var("MATRIXARK_CONTEXT_HYBRID_LEXICAL")
-        .ok()
-        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
-        .unwrap_or(true)
-}
-
 /// Map a raw lexical-relevance score into the same micros scale cosine similarity
 /// uses (`context_embedding_similarity_micros`), so lexical and cosine node scores
 /// merge into one ranking. 0 stays 0 (no overlap => not surfaced by lexical).
@@ -1732,14 +1720,10 @@ pub(crate) fn extract_context_gated(
     let (embedding_vectors, embedding_generation, embedding_deferred) = match embed_outcome {
         Ok((vectors, report)) => (vectors, report, false),
         Err(status) => {
-            if !context_embed_defer_on_failure() {
-                return empty_extract_report(
-                    status,
-                    provider,
-                    request.tenant_hash,
-                    request.timestamp_ms,
-                );
-            }
+            // `MATRIXARK_EMBED_DEFER_ON_FAILURE=0` used to abort the whole extract here and
+            // persist nothing. It defaulted on and nothing set it, so the extraction has always
+            // been kept: the node, event and summaries persist, the node is marked
+            // embedding-dirty for the drainer, and lexical scoring keeps it rankable meanwhile.
             (Vec::new(), ContextEmbeddingGenerationReport::default(), true)
         }
     };
@@ -2167,37 +2151,38 @@ pub fn retrieve_context(
     // embedded this pass does nothing and behavior is identical to before.
     let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
     let mut lexical_scores_by_node = BTreeMap::<u64, i64>::new();
-    if context_hybrid_lexical_enabled() {
-        let unembedded: Vec<u64> = node_hashes
-            .iter()
-            .copied()
-            .filter(|node_hash| {
-                summary_scores_by_node
-                    .get(node_hash)
-                    .map(|(_, found)| *found == 0)
-                    .unwrap_or(true)
-            })
-            .collect();
-        if !unembedded.is_empty() {
-            for chunk in unembedded.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
-                if chunk.is_empty() {
-                    continue;
-                }
-                let nodes_response = engine.execute(ExecuteRequest {
-                    shard_id: request.shard_id,
-                    command: Command::ContextGetNodes {
-                        tenant_hash: request.tenant_hash,
-                        node_hashes: chunk.to_vec(),
-                    },
-                });
-                if let CommandResponse::ContextNodes { nodes } = nodes_response.response {
-                    for node in nodes {
-                        let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
-                        let lexical = context_relevance_score_plan(&query_plan, &text);
-                        lexical_scores_by_node
-                            .insert(node.node_hash, lexical_score_to_micros(lexical));
-                        prefetched_nodes.insert(node.node_hash, node);
-                    }
+    // Every retrieve does this. `MATRIXARK_CONTEXT_HYBRID_LEXICAL` could skip it and
+    // defaulted on; nothing set it, so a node with no stored summary embedding has
+    // always been scored by lexical overlap rather than left at a flat 0.
+    let unembedded: Vec<u64> = node_hashes
+        .iter()
+        .copied()
+        .filter(|node_hash| {
+            summary_scores_by_node
+                .get(node_hash)
+                .map(|(_, found)| *found == 0)
+                .unwrap_or(true)
+        })
+        .collect();
+    if !unembedded.is_empty() {
+        for chunk in unembedded.chunks(CONTEXT_EMBEDDING_QUERY_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let nodes_response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command: Command::ContextGetNodes {
+                    tenant_hash: request.tenant_hash,
+                    node_hashes: chunk.to_vec(),
+                },
+            });
+            if let CommandResponse::ContextNodes { nodes } = nodes_response.response {
+                for node in nodes {
+                    let text = format!("{} {} {}", node.canonical_name, node.l0, node.l1_ref);
+                    let lexical = context_relevance_score_plan(&query_plan, &text);
+                    lexical_scores_by_node
+                        .insert(node.node_hash, lexical_score_to_micros(lexical));
+                    prefetched_nodes.insert(node.node_hash, node);
                 }
             }
         }
