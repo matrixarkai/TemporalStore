@@ -183,6 +183,18 @@ _DELTA_BLOCK_HEADER_BYTES = 5
 #: are 74.9% of the log and compress 11.91x.
 _SHARD_CONTAINER_MAGIC = b"MASHRD\x01"
 _SHARD_CODEC_ZLIB = b"\x01"
+#: A shard written as a STREAM of blocks rather than one compressed blob. This is the form the
+#: ACTIVE log can take: a sealed shard is finished and compresses whole, but a log is appended to,
+#: and a stream of self-describing blocks is appendable where a single deflate stream is not.
+_SHARD_CODEC_BLOCKS = b"\x02"
+#: Off by default. This is the only change in this family that alters the DURABLE SOURCE OF TRUTH
+#: rather than something derived from it, and the failure it guards against is a real one: a process
+#: appending plain JSON to a block-framed log corrupts it. The form is taken from the file on disk
+#: rather than from this flag (see _log_append_form), so turning it on affects only logs this build
+#: creates, and turning it off again leaves every existing log readable.
+LOCAL_JSONL_BLOCK_LOG = os.environ.get(
+    "MATRIXARK_LOCAL_JSONL_BLOCK_LOG", "0"
+).strip().lower() not in ("0", "false", "no", "off")
 #: On, and reversible: the reader takes either form, so a store written with this on still reads
 #: with it off, and a shard sealed once never needs unsealing.
 LOCAL_JSONL_COMPRESS_SEALED = os.environ.get(
@@ -239,6 +251,48 @@ def _encode_delta_block(records: list[Json]) -> bytes:
         LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL,
     )
     return _DELTA_BLOCK_CODEC_ZLIB_ARRAY + len(payload).to_bytes(4, "big") + payload
+
+
+def _encode_log_block(records: list[Json]) -> bytes:
+    """One append batch as one block, its payload one document per line.
+
+    Lines rather than the array the snapshot blocks use, and the reason is this file rather than
+    that one. The log is parsed line-by-line today, so a line payload is neutral where an array
+    would be a second change measured separately; and two of the five shard readers scan for a
+    single record type with a substring test, which a line payload keeps.
+    """
+    payload = zlib.compress(
+        b"\n".join(json.dumps(record, separators=(",", ":")).encode("utf-8")
+                     for record in records),
+        LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL,
+    )
+    return _DELTA_BLOCK_CODEC_ZLIB + len(payload).to_bytes(4, "big") + payload
+
+
+def _iter_block_stream_lines(handle):
+    """Every line of a block-stream shard, one block decompressed at a time."""
+    while True:
+        header = handle.read(_DELTA_BLOCK_HEADER_BYTES)
+        if len(header) < _DELTA_BLOCK_HEADER_BYTES:
+            return
+        codec = header[:1]
+        length = int.from_bytes(header[1:], "big")
+        body = handle.read(length)
+        if len(body) < length or codec not in (_DELTA_BLOCK_CODEC_ZLIB,
+                                               _DELTA_BLOCK_CODEC_ZLIB_ARRAY):
+            # A torn final block, or one this build does not know. Both mean the same thing here:
+            # stop, and let the caller work with what came before it -- a half-written append is
+            # exactly what a crash mid-write leaves, and dropping it is what the plain form does
+            # with a half-written line.
+            return
+        decoded = zlib.decompress(body)
+        if codec == _DELTA_BLOCK_CODEC_ZLIB_ARRAY:
+            for record in json.loads(decoded):
+                yield json.dumps(record, separators=(",", ":"))
+            continue
+        for line in decoded.split(b"\n"):
+            if line.strip():
+                yield line.decode("utf-8")
 
 
 def _iter_delta_blocks(raw: bytes):
@@ -351,6 +405,10 @@ def _iter_shard_lines(path: Path):
     with path.open("rb") as handle:
         handle.seek(len(_SHARD_CONTAINER_MAGIC))
         codec = handle.read(1)
+        if codec == _SHARD_CODEC_BLOCKS:
+            for line in _iter_block_stream_lines(handle):
+                yield line
+            return
         if codec != _SHARD_CODEC_ZLIB:
             raise ValueError("unknown sealed-shard codec %r" % codec)
         decompressor = zlib.decompressobj()
@@ -4960,6 +5018,69 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
     def _jsonl_rotated_path(self, index: int) -> Path:
         return self.event_log.with_name(f"{self.event_log.name}.{index}")
 
+    def _log_append_form(self) -> bytes:
+        """Which form to append in: whatever the log ALREADY is, else the configured one.
+
+        Taken from the FILE rather than from the flag. That is what keeps two forms out of one file:
+        a log written by hand -- which is how a good many fixtures are built -- stays plain and is
+        appended to as plain, and a store that crosses the flag changes form only when rotation
+        hands it a new file. Turning the flag off again leaves every existing log readable, because
+        nothing rewrites one.
+        """
+        try:
+            with self.event_log.open("rb") as handle:
+                head = handle.read(len(_SHARD_CONTAINER_MAGIC) + 1)
+        except (FileNotFoundError, OSError):
+            head = b""
+        if head[:len(_SHARD_CONTAINER_MAGIC)] == _SHARD_CONTAINER_MAGIC:
+            return head[len(_SHARD_CONTAINER_MAGIC):len(_SHARD_CONTAINER_MAGIC) + 1]
+        if head:
+            return b""
+        return _SHARD_CODEC_BLOCKS if LOCAL_JSONL_BLOCK_LOG else b""
+
+    def _append_records_to_log(self, jsonl_records: list[Json]) -> None:
+        """Append one batch to the log, in whichever form the log is written.
+
+        BOTH append paths come through here. They used to encode and write separately, which was
+        duplication while there was one form and is a correctness hazard with two -- the same shape
+        of defect the snapshot tail had when only one of its two writers knew about blocks.
+
+        The batch is the block, and that is why this costs no durability: the batch is already the
+        unit acked together, so a crash loses exactly what it loses today. Per-record blocks would
+        be durability-free too and are worth almost nothing -- 1.43x against 9.68x.
+
+        Rotation is decided on the bytes actually written, so a block log holds proportionally more
+        history before rotating. That is a behaviour change and a deliberate one: retention stays a
+        disk budget, and compressing the log spends it on more history rather than on less disk.
+
+        The form is re-read after rotation, because rotation hands back an EMPTY log -- which adopts
+        the configured form, and that need not be the form the old file had.
+        """
+        form = self._log_append_form()
+        block = _encode_log_block(jsonl_records) if form == _SHARD_CODEC_BLOCKS else None
+        lines = ([json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
+                 if block is None else [])
+        size = len(block) if block is not None else sum(len(line.encode("utf-8")) for line in lines)
+        self._rotate_jsonl_if_needed_locked(size)
+
+        after = self._log_append_form()
+        if after != form:
+            form = after
+            block = _encode_log_block(jsonl_records) if form == _SHARD_CODEC_BLOCKS else None
+            lines = ([json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
+                     if block is None else [])
+
+        if block is not None:
+            fresh = not self.event_log.exists() or self.event_log.stat().st_size == 0
+            with self.event_log.open("ab") as handle:
+                if fresh:
+                    handle.write(_SHARD_CONTAINER_MAGIC + _SHARD_CODEC_BLOCKS)
+                handle.write(block)
+            return
+        with self.event_log.open("a", encoding="utf-8") as handle:
+            for line in lines:
+                handle.write(line)
+
     def _seal_rotated_shard(self, path: Path) -> None:
         """Store a just-rotated shard compressed.
 
@@ -6158,12 +6279,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                 # cached view covers, another writer appended in between and the cached view is
                 # missing their records -- see _update_read_cache_after_append.
                 pre_size = int(self._jsonl_cache_signature_detail().get("total_size", -1))
-                jsonl_records = self._encode_records_for_log(sanitized)
-                jsonl_lines = [json.dumps(item, separators=(",", ":")) + "\n" for item in jsonl_records]
-                self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
-                with self.event_log.open("a", encoding="utf-8") as handle:
-                    for line in jsonl_lines:
-                        handle.write(line)
+                self._append_records_to_log(self._encode_records_for_log(sanitized))
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
         # The read caches hold the fully-expanded (interning-free) view, so serve the sanitized
@@ -6198,12 +6314,7 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             with self._event_log_lock:
                 # Same interloper capture as append() -- see _update_read_cache_after_append.
                 pre_size = int(self._jsonl_cache_signature_detail().get("total_size", -1))
-                jsonl_records = self._encode_records_for_log(sanitized)
-                jsonl_lines = [json.dumps(record, separators=(",", ":")) + "\n" for record in jsonl_records]
-                self._rotate_jsonl_if_needed_locked(sum(len(line.encode("utf-8")) for line in jsonl_lines))
-                with self.event_log.open("a", encoding="utf-8") as handle:
-                    for line in jsonl_lines:
-                        handle.write(line)
+                self._append_records_to_log(self._encode_records_for_log(sanitized))
                 self._prune_jsonl_retention_locked()
         self._update_latest_entity_cache(records)
         self._update_read_cache_after_append(sanitized, pre_size=pre_size)
