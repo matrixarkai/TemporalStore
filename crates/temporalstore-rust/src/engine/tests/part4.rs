@@ -15740,3 +15740,4 @@ fn what_a_bigger_read_cache_buys() {
     // Not asserted as a win or a loss -- this is a sweep, and either answer is informative.
     let _ = (first, last);
 }
+
