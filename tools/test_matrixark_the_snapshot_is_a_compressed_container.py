@@ -28,7 +28,15 @@ from pathlib import Path
 
 from tools import matrixark_mcp_local_adapter as adapter_module
 from tools.matrixark_mcp_local_adapter import (
+    _SNAPSHOT_CODEC_BLOCKS,
     _SNAPSHOT_CODEC_ZLIB,
+    _DELTA_BLOCK_CODEC_ZLIB,
+    _DELTA_BLOCK_CODEC_ZLIB_ARRAY,
+    _DELTA_BLOCK_HEADER_BYTES,
+    _decode_blocked_snapshot,
+    _encode_delta_block,
+    _encode_blocked_snapshot,
+    _iter_delta_blocks,
     _SNAPSHOT_CONTAINER_MAGIC,
     _decode_snapshot_bytes,
     MatrixArkLocalAdapter,
@@ -66,6 +74,8 @@ class SnapshotIsACompressedContainerTest(unittest.TestCase):
         self._previous = adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS
         self.addCleanup(
             setattr, adapter_module, "LOCAL_DURABLE_READ_CACHE_COMPRESS", self._previous)
+        self.addCleanup(setattr, adapter_module, "LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS",
+                        adapter_module.LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS)
 
     def _ingest(self, documents: int = 2) -> list:
         for index in range(documents):
@@ -116,10 +126,13 @@ class SnapshotIsACompressedContainerTest(unittest.TestCase):
         self.assertTrue(raw.startswith(_SNAPSHOT_CONTAINER_MAGIC),
                         "the container does not carry its magic, so a reader cannot recognise it")
         codec = raw[len(_SNAPSHOT_CONTAINER_MAGIC):len(_SNAPSHOT_CONTAINER_MAGIC) + 1]
-        self.assertEqual(_SNAPSHOT_CODEC_ZLIB, codec)
-        # And the payload really is the compressed document, not merely prefixed bytes.
+        self.assertEqual(_SNAPSHOT_CODEC_BLOCKS, codec,
+                         "the base is written in blocks, so it must say so")
+        # And the payload really is blocks, whose FIRST one carries the header.
         body = raw[len(_SNAPSHOT_CONTAINER_MAGIC) + 1:]
-        self.assertIn(b"schema_version", zlib.decompress(body))
+        blocks = list(_iter_delta_blocks(body))
+        self.assertTrue(blocks, "the container carries no blocks")
+        self.assertIn("schema_version", blocks[0][0])
 
     def test_a_cold_read_is_served_from_the_container(self):
         adapter_module.LOCAL_DURABLE_READ_CACHE_COMPRESS = True
@@ -159,6 +172,80 @@ class SnapshotIsACompressedContainerTest(unittest.TestCase):
         packed = _SNAPSHOT_CONTAINER_MAGIC + b"\x7f" + b"whatever"
         with self.assertRaises(ValueError):
             _decode_snapshot_bytes(packed)
+
+
+    def test_the_base_is_split_rather_than_written_as_one_document(self):
+        """This is what bounds the cold read's transient.
+
+        The whole-document container decodes with `zlib.decompress` into one bytes object, so the
+        peak tracks the UNCOMPRESSED payload almost 1:1 -- measured at 0.83x of it on 40 documents
+        and 0.98x on 80, which projects to a ~4.5 GB transient at a thousand 1 MB skills against a
+        0.26 GB file. One block at a time is the fix, and a snapshot written as a single block would
+        pass every other test here while paying the whole cost.
+
+        Asserted on the encoder rather than on a store, because how many records an ingest leaves in
+        the BASE (as opposed to the tail beside it) is not this format's business -- a test that
+        depended on it would be testing the fold schedule.
+        """
+        adapter_module.LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS = 4
+        records = [{"record_type": "context_event", "event_id_hash": index} for index in range(9)]
+        payload = {"schema_version": 3, "record_count": 9, "records": records}
+        body = _encode_blocked_snapshot(payload)[len(_SNAPSHOT_CONTAINER_MAGIC) + 1:]
+        blocks = list(_iter_delta_blocks(body))
+
+        self.assertIn("schema_version", blocks[0][0], "the first block is not the header")
+        self.assertEqual([4, 4, 1], [len(block) for block in blocks[1:]],
+                         "the records were not split into blocks of the size asked for")
+        self.assertEqual(payload, _decode_snapshot_bytes(_encode_blocked_snapshot(payload)))
+
+    def test_a_whole_document_container_still_loads(self):
+        """No migration: a store written before the blocks keeps loading."""
+        import json as _json
+
+        payload = {"schema_version": 2, "records": [{"record_type": "x"}]}
+        plain = _json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        whole = _SNAPSHOT_CONTAINER_MAGIC + _SNAPSHOT_CODEC_ZLIB + zlib.compress(plain, 6)
+        self.assertEqual(payload, _decode_snapshot_bytes(whole))
+
+    def test_a_blocked_snapshot_with_no_header_is_refused(self):
+        """The header block is the contract; without it there is nothing to check a count against."""
+        with self.assertRaises(ValueError):
+            _decode_blocked_snapshot(b"")
+
+
+    def test_a_block_holds_an_array_rather_than_a_document_per_line(self):
+        """The framing was never the cost -- the per-record parse was.
+
+        Newline-delimited records mean one json.loads call PER RECORD. On 60,000 records the line
+        form decodes in 621 ms, the array form in 318, and a single whole document in 442, at the
+        same size, because the compressor sees the same text either way. A block that reverted to
+        lines would pass every other test here and cost 40% of the decode.
+        """
+        import json as _json
+
+        block = _encode_delta_block([{"record_type": "a"}, {"record_type": "b"}])
+        self.assertEqual(_DELTA_BLOCK_CODEC_ZLIB_ARRAY, block[:1],
+                         "the block does not declare the array payload")
+        body = zlib.decompress(block[_DELTA_BLOCK_HEADER_BYTES:])
+        self.assertIsInstance(_json.loads(body), list,
+                              "the payload is not a single JSON array")
+        self.assertEqual([{"record_type": "a"}, {"record_type": "b"}],
+                         list(_iter_delta_blocks(block))[0])
+
+    def test_a_block_written_as_lines_still_reads(self):
+        """A tail written by the build that first shipped blocks carries the line codec.
+
+        Dropping it would make those tails undecodable rather than merely slower -- and a tail that
+        cannot be decoded is a store that re-derives from the log on every read.
+        """
+        import json as _json
+
+        payload = zlib.compress(
+            b"\n".join(_json.dumps(record, separators=(",", ":")).encode("utf-8")
+                         for record in ({"record_type": "a"}, {"record_type": "b"})), 6)
+        block = _DELTA_BLOCK_CODEC_ZLIB + len(payload).to_bytes(4, "big") + payload
+        self.assertEqual([{"record_type": "a"}, {"record_type": "b"}],
+                         list(_iter_delta_blocks(block))[0])
 
 
     # -- the incremental half ---------------------------------------------------------------
