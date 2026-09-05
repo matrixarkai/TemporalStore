@@ -1333,6 +1333,25 @@ impl LocalWriteAheadLogStore {
                 .copied()
                 .unwrap_or_default();
             let mut seq = cached_last_sequence.max(disk_last_sequence);
+            // ONE open for the whole batch. Each record used to open, write, stat and close the
+            // piece for itself -- 4N syscalls against the single barrier below, which is the one
+            // thing a batch exists to amortise. Safe to hold across the loop because the append
+            // lock and the `inner` lock are both held throughout and the roll happens AFTER the
+            // batch, so nothing can seal and rename the piece underneath this handle.
+            let batch_path = active_wal_path(&mut inner, shard_id);
+            let prealloc = wal_preallocate_enabled();
+            WAL_FILE_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut batch_file = if prealloc {
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .open(batch_path.as_path())?
+            } else {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(batch_path.as_path())?
+            };
             for (index, command) in commands.into_iter().enumerate() {
                 seq = seq.saturating_add(1);
                 let mut metadata = WriteAheadLogRecordMetadata::single_command(&command);
@@ -1351,11 +1370,19 @@ impl LocalWriteAheadLogStore {
                 // Buffer every record (sync=false); the single durability barrier below covers
                 // the whole batch. append_record_locked keeps last_flushed_sequence honest -- it
                 // only advances on an actual fsync, which happens once, after the loop.
-                let report = append_record_locked(&mut inner, &rec, false, None)?;
+                let report = append_record_locked_on(
+                    &mut inner,
+                    &rec,
+                    false,
+                    None,
+                    Some(&mut batch_file),
+                )?;
                 inner.stats.last_sequence = report.current_sequence;
                 batch_end = Some(report.persistent_bytes);
                 records.push(rec);
             }
+            // Closed before the roll below, which may seal and rename this very piece.
+            drop(batch_file);
             inner.last_sequence_by_shard.insert(shard_id, seq);
             last_sequence = seq;
             // Roll AFTER the batch, never inside it: rolling mid-batch would split one
@@ -2953,11 +2980,45 @@ fn shard_uses_blocks(
     Ok(uses_blocks)
 }
 
+/// How many times an append OPENS the active piece.
+///
+/// A batch is one crash-atomic group under one barrier, but it used to open, write, stat and close
+/// the piece once per record -- 4N syscalls against that single barrier. The batch now opens once
+/// and hands the handle down, so this counter reads 1 per batch instead of N, and a regression
+/// shows up as a count rather than as a timing that this machine cannot resolve.
+static WAL_FILE_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Opens of the active piece since the last reset.
+pub fn wal_file_opens() -> u64 {
+    WAL_FILE_OPENS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the open counter. For tests measuring one append path's syscall volume.
+pub fn reset_wal_file_opens() {
+    WAL_FILE_OPENS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn append_record_locked(
     inner: &mut WriteAheadLogInner,
     record: &WriteAheadLogRecord,
     sync: bool,
     known_offset: Option<u64>,
+) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
+    append_record_locked_on(inner, record, sync, known_offset, None)
+}
+
+/// The same append, optionally writing through a handle the caller already opened.
+///
+/// Only the atomic batch passes one. It holds the append lock and the `inner` lock across its
+/// whole loop and rolls the piece only AFTER the batch, so the path cannot be sealed and renamed
+/// underneath a handle held across records -- which is the one thing that would make reusing it
+/// unsafe.
+fn append_record_locked_on(
+    inner: &mut WriteAheadLogInner,
+    record: &WriteAheadLogRecord,
+    sync: bool,
+    known_offset: Option<u64>,
+    reuse: Option<&mut std::fs::File>,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = active_wal_path(inner, record.shard_id);
     // The caller has usually just measured this under the same append lock, so taking its answer
@@ -3078,12 +3139,20 @@ fn append_record_locked(
         }
     }
     let prealloc = wal_preallocate_enabled();
-    let mut file = if prealloc {
-        // Positioned write, not O_APPEND: with a reservation, the physical end of the file is
-        // zeros, and O_APPEND would put this record after them.
-        OpenOptions::new().create(true).write(true).open(path.as_path())?
-    } else {
-        OpenOptions::new().create(true).append(true).open(path.as_path())?
+    let mut opened;
+    let file: &mut std::fs::File = match reuse {
+        Some(handle) => handle,
+        None => {
+            WAL_FILE_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            opened = if prealloc {
+                // Positioned write, not O_APPEND: with a reservation, the physical end of the
+                // file is zeros, and O_APPEND would put this record after them.
+                OpenOptions::new().create(true).write(true).open(path.as_path())?
+            } else {
+                OpenOptions::new().create(true).append(true).open(path.as_path())?
+            };
+            &mut opened
+        }
     };
     if prealloc {
         let needed = offset.saturating_add(bytes.len() as u64);
@@ -5195,6 +5264,51 @@ mod tests {
     /// No `alloc-probe` feature here -- it counts calls, not allocations. An earlier version of
     /// this probe inherited that cfg from the test it was pasted above and vanished from the
     /// build entirely.
+    /// A batch opens the active piece ONCE, not once per record.
+    ///
+    /// A batch is one crash-atomic group under one durability barrier, and that barrier is the
+    /// thing it exists to amortise. Each record used to open, write, stat and close the piece for
+    /// itself, so a batch of N paid 4N syscalls against that one barrier.
+    ///
+    /// Counted rather than timed: the syscalls ARE the cost being removed, and this machine cannot
+    /// resolve the difference in wall clock under load. The single-append arm is the control --
+    /// without it, a counter that had simply stopped incrementing would read as a perfect result.
+    #[test]
+    fn a_batch_opens_the_piece_once_not_once_per_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        // Warm: the first append creates the piece and its header, which is not per-record work.
+        store
+            .append(1, Command::StringSet { key: "warm".to_string(), value: vec![1] })
+            .unwrap();
+
+        let commands: Vec<Command> = (0..64)
+            .map(|index| Command::StringSet {
+                key: format!("batched-{index:04}"),
+                value: vec![7; 32],
+            })
+            .collect();
+
+        super::reset_wal_file_opens();
+        store.append_batch_atomic(1, commands.clone(), true).unwrap();
+        let batched = super::wal_file_opens();
+
+        super::reset_wal_file_opens();
+        for command in commands {
+            store.append_with_sync(1, command, true).unwrap();
+        }
+        let one_at_a_time = super::wal_file_opens();
+
+        assert!(
+            one_at_a_time >= 64,
+            "the control opened {one_at_a_time} times for 64 single appends, so the counter is              not counting opens and the batch figure below means nothing"
+        );
+        assert_eq!(
+            batched, 1,
+            "a batch of 64 records opened the piece {batched} times; it holds the append lock and              the inner lock across the whole loop and rolls only afterwards, so one open covers it"
+        );
+    }
+
     #[test]
     #[ignore]
     fn how_often_an_append_asks_for_the_path() {
