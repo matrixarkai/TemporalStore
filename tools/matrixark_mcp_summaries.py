@@ -32,7 +32,13 @@ SUMMARY_LLM_PROVIDER = os.environ.get(
     "MATRIXARK_SUMMARY_PROVIDER",
     os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
 ).strip().lower().replace("-", "_")
-SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini")))
+# The same chain matrixark_mcp_core resolves for EXTRACTION_LLM_MODEL, ending in the same
+# literal. This module imports nothing from the project on purpose, so the chain is written
+# out rather than shared -- and the last step used to say "gpt-4o-mini" here while mcp_core
+# said "qwen2.5:1.5b". Both modules send `model=SUMMARY_LLM_MODEL` to the endpoint, so a
+# deployment that chose a provider and named no model asked for a different model depending
+# on which of them did the summarising.
+SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b")))
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
 
 
