@@ -115,8 +115,24 @@ LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").s
 LOCAL_DURABLE_READ_CACHE_ENABLED = os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 # Records the tail file may hold before the base is folded back in. Bounds both the
 # delta file and the work a load does stitching it onto the base.
+# 250 rather than 2000, because the tail is now on the COLD path: a load stitches the delta onto the
+# base and compacts the result, and the delta is parsed a line at a time where the base is a single
+# bulk decode. Medians over four interleaved rounds of 60 ingest-then-read cycles:
+#
+#     cap      cold      read     ingest     delta
+#     main    77 ms     87 ms    319 ms         0
+#      250   119 ms     28 ms     97 ms       152
+#     2000   228 ms     26 ms     82 ms     1,386
+#
+# Past a couple of hundred the cap buys nothing a read or an ingest can feel and charges the cold
+# start for it. Raising it trades cold start for base rewrites; lowering it does the reverse.
+#
+# The cold start IS slower than it was -- about 42 ms here, and it does not go away by shrinking the
+# cap further, because most of it is the load-time compaction rather than the delta parse (at a cap
+# of 50, where the delta empties, cold still measured ~86 ms against main's ~64). It is paid once
+# per process, and one read plus one ingest already returns ~281 ms of it.
 LOCAL_DURABLE_READ_CACHE_MAX_DELTA = max(
-    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "2000"))
+    1, int(os.environ.get("MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA", "250"))
 )
 # No floor by default. One was added because the fallback rewrote the WHOLE record set as JSON
 # whenever the append-only path could not apply, which was almost every append -- so a delay
@@ -4839,7 +4855,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         recorded = head.get("tail_fingerprint")
         if recorded and records and _snapshot_prefix_fingerprint(records[-1]) != recorded:
             return None
-        return expand_interned_records(records)
+        # Compact what was stitched. The base is a checkpoint and the delta is what has been
+        # appended since, so together they can hold rows the base recorded and a later append
+        # superseded. Compaction is what makes that correct, and it is what lets the writer stop
+        # caring whether the persisted prefix is still a prefix.
+        return compact_and_apply_tombstones(expand_interned_records(records))
 
     def _durable_read_cache_tail_fingerprint(self) -> str:
         """The fingerprint the head recorded, or "" when there is none to trust."""
@@ -4910,6 +4930,8 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         force: bool = False,
         epoch: int | None = None,
         tail_only: bool = False,
+        appended_records: list[Json] | None = None,
+        pre_size: int | None = None,
     ) -> None:
         """Persist the read snapshot.
 
@@ -4953,7 +4975,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             if recorded and recorded == _snapshot_prefix_fingerprint(records[persisted - 1]):
                 contiguous = True
 
-        def write_head(record_count: int, deltas: int) -> None:
+        def write_head(record_count: int, deltas: int, last_record: Json | None = None) -> None:
+            # The record this snapshot really ends on. It is records[-1] for a full rewrite, but
+            # the append path hands over what it wrote, which is not a slice of `records`.
+            persisted_last = last_record if last_record is not None else (
+                records[-1] if records else None)
             tmp = head_path.with_name(f"{head_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
             with tmp.open("w", encoding="utf-8") as handle:
                 json.dump({
@@ -4964,10 +4990,64 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     "delta_count": deltas,
                     # The last record this snapshot holds, so another adapter over the same log
                     # can prove the file is a prefix of its own list -- see the contiguity check.
-                    "tail_fingerprint": _snapshot_prefix_fingerprint(records[-1]) if records else "",
+                    "tail_fingerprint": (
+                        _snapshot_prefix_fingerprint(persisted_last)
+                        if persisted_last is not None else ""
+                    ),
                 }, handle, separators=(",", ":"))
                 handle.write("\n")
             tmp.replace(head_path)
+
+        # The append path writes exactly the records it was handed, and asks nothing about
+        # whether the persisted prefix is still a prefix.
+        #
+        # That question is what forced the rewrite: ingest compacts, compaction removes rows
+        # from the middle, so the live list is usually NOT an extension of what is on disk and
+        # the slice below cannot apply. The load path compacts what it stitches instead, so a
+        # base holding rows that have since been superseded is reconciled rather than wrong.
+        #
+        # Safe because the append path never writes a record twice: what base+delta can contain
+        # is SUPERSEDED rows, and those are keyed, so compaction removes them. Duplicates would
+        # not be -- 56% of records have no latest-value key -- which is why the delta must carry
+        # what was appended and never a slice.
+        #
+        # Writing the head with the current signature is also what stops the READ path
+        # rewriting: `_refresh_durable_read_cache_if_behind` returns early when the recorded
+        # signature already matches.
+        #
+        # The one thing it must still establish is that the snapshot on disk describes the log as
+        # it stood BEFORE this write. Another writer -- in this process or another -- can have
+        # appended records that never passed through this instance, and extending the delta over
+        # them would publish a view that silently drops them: 55 records where the log holds 75.
+        # The head records the log it was stamped for, so requiring that to equal `pre_size` is
+        # exactly the question 'was I already behind?', and a no sends this write down the
+        # rewrite path where the full record set is reconciled.
+        head_signature = self._durable_read_cache_signature() or {}
+        covers_log_before_this_write = (
+            pre_size is not None
+            and int(head_signature.get("total_size", -1)) == int(pre_size)
+        )
+        if (
+            appended_records
+            and base_count > 0
+            and path.exists()
+            and covers_log_before_this_write
+            and delta_count + len(appended_records) <= LOCAL_DURABLE_READ_CACHE_MAX_DELTA
+        ):
+            try:
+                with delta_path.open("a", encoding="utf-8") as handle:
+                    for record in appended_records:
+                        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+                write_head(base_count, delta_count + len(appended_records),
+                           appended_records[-1])
+                self._durable_read_cache_state = (
+                    self._cache_key_str(), base_count,
+                    delta_count + len(appended_records), epoch
+                )
+                self._durable_read_cache_last_write_ms = now
+                return
+            except (OSError, TypeError, ValueError):
+                pass   # fall through; a full rewrite also clears the partial tail
 
         # Append-only fast path. The base holds the whole record set, so rewriting it costs
         # O(corpus) JSON on every append -- and retrieval appends recall-reinforcement markers,
@@ -5395,9 +5475,10 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                     self._read_cache_size, self._read_cache_mtime_ns,
                     list(cached_records) + list(records))
                 _LOCAL_READ_CACHE_DIRTY.add(cache_key)
-                # No snapshot is taken from here while the entry is uncompacted: a cold reader
-                # is served the snapshot as-is, so writing this list would serve superseded and
-                # tombstoned records after a restart. The next read compacts and refreshes it.
+                # This entry is uncompacted, so no BASE may be written from it -- a cold reader
+                # would be served superseded and tombstoned records. The appended records are
+                # still handed to the snapshot below: they go to the delta, which is compacted
+                # at load, so they carry no such claim.
             elif self._read_cache_records is not None:
                 with self._read_cache_lock:
                     self._compact_read_cache_if_dirty_locked()
@@ -5407,20 +5488,29 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
                         list(self._read_cache_records),
                     )
                 _LOCAL_READ_CACHE_DIRTY.discard(cache_key)
-        if durable_records is not None:
-            # Only continue the tail here; never rewrite the whole base from a write.
-            #
-            # Ingest does not just append: compaction rewrites earlier records, so the list is
-            # usually not an extension of what is persisted and the tail cannot apply. Measured over
-            # 40 ingests, 173 snapshot writes, 146 of them full rewrites of the entire record set,
-            # which came to two thirds of the time an ingest took.
-            #
-            # The snapshot is derived state -- _load_durable_read_cache checks it against the log's
-            # signature and returns None on any mismatch, and the caller re-derives. Skipping a
-            # rewrite here costs a slower cold start until the next read, and the read path installs
-            # the records and writes the snapshot anyway.
-            self._write_durable_read_cache(
-                durable_records, signature, epoch=durable_epoch, tail_only=True)
+        # Only continue the tail here; never rewrite the whole base from a write.
+        #
+        # Ingest does not just append: compaction rewrites earlier records, so the list is
+        # usually not an extension of what is persisted and the tail cannot apply. Measured over
+        # 40 ingests, 173 snapshot writes, 146 of them full rewrites of the entire record set,
+        # which came to two thirds of the time an ingest took.
+        #
+        # The snapshot is derived state -- _load_durable_read_cache checks it against the log's
+        # signature and returns None on any mismatch, and the caller re-derives. Skipping a
+        # rewrite here costs a slower cold start until the next read, and the read path installs
+        # the records and writes the snapshot anyway.
+        #
+        # The appended records are handed over whether or not this instance holds a compact list.
+        # They were gated on one because the delta was replayed onto the base as-is; it is now
+        # compacted at load, so a delta carrying a since-superseded row is reconciled rather than
+        # wrong. That gate is what left the snapshot behind on every append made while the shared
+        # entry was dirty -- and a snapshot that is behind is rebuilt whole by the next read.
+        #
+        # `durable_records` remains the base-rewrite argument and stays empty when this instance
+        # cannot vouch for a compact list. With tail_only set, an empty list writes no base.
+        self._write_durable_read_cache(
+            list(durable_records or []), signature, epoch=durable_epoch, tail_only=True,
+            appended_records=list(records), pre_size=pre_size)
         if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
