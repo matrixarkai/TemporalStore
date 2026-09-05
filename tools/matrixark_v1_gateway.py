@@ -1561,6 +1561,29 @@ def encoder_catalog() -> list:
     return out
 
 
+def _model_picker_body(target: str) -> Json:
+    """The part of /v1/admin/models that needs no network: which setting a pick belongs in, what is
+    in that setting now, and the suggestions for the selected provider.
+
+    Which setting is decided HERE, not in the page. On Anthropic it is extraction.anthropic_model,
+    and the page used to write every pick into extraction.model -- a field the Anthropic path never
+    reads, so a pick filled in a form, said it was set, and changed nothing.
+
+    Split out so a test can call it. Rebuilding this in a test instead would leave the decision
+    tested twice and shipped once, which is exactly what a mutation of the route proved: the route
+    could report the wrong field with every assertion still green.
+    """
+    setting_key = ("embedding.model" if target == "embedding"
+                   else _gwconfig.extraction_model_setting())
+    return {
+        "target": target,
+        "key": setting_key,
+        "catalogue": (embedding_picker_catalogue() if target == "embedding"
+                      else _gwconfig.model_catalogue(target)),
+        "current": os.environ.get(_gwconfig.SETTINGS_BY_KEY[setting_key].env, "").strip(),
+    }
+
+
 def _model_config_snapshot() -> Json:
     """The effective extraction/embedding/skill-budget configuration, redacted for display.
 
@@ -4465,16 +4488,8 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             discovered = {"available": False, "reason": "not_probed"}
             if (params.get("probe") or ["1"])[0].strip().lower() in ("1", "true", "yes"):
                 discovered = await asyncio.to_thread(_gwconfig.discover_models, target)
-            body: Json = {
-                "status": "ok",
-                "target": target,
-                "catalogue": (embedding_picker_catalogue() if target == "embedding"
-                              else _gwconfig.model_catalogue(target)),
-                "discovered": discovered,
-                "current": (os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip()
-                            if target == "embedding"
-                            else os.environ.get("MATRIXARK_EXTRACTION_MODEL", "").strip()),
-            }
+            body: Json = {"status": "ok", **_model_picker_body(target),
+                          "discovered": discovered}
             if target == "embedding":
                 body["in_store"] = await _embedding_models_in_store(server, cfg, key, tenant,
                                                                    account)
