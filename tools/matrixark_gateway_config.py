@@ -263,9 +263,11 @@ SETTINGS: List[Setting] = [
             "Used when Extraction provider is anthropic, which does not read Extraction base URL. "
             "The Messages API path is added to this, so give the host without /v1."),
     Setting("extraction.api_key_env", "extraction", "MATRIXARK_EXTRACTION_API_KEY_ENV",
-            "Extraction key variable", "str", "OPENAI_API_KEY", "restart",
-            "Name of the environment variable holding the extraction key. The key you enter below "
-            "is written into this variable."),
+            "Extraction key variable", "str", "", "restart",
+            "Name of the environment variable holding the extraction key -- the key you enter below "
+            "is written into it. Leave it empty and it follows the provider: ANTHROPIC_API_KEY for "
+            "Anthropic, OPENAI_API_KEY otherwise. Set it only to point at a variable your own "
+            "launcher already fills, such as DEEPSEEK_API_KEY."),
     Setting("extraction.api_key", "extraction", "", "Extraction API key", "secret", "", "live",
             "Stored owner-only and never returned by any read. Written into the variable named "
             "above, which the extraction request reads on every call — so a new key is live "
@@ -348,8 +350,11 @@ SETTINGS: List[Setting] = [
             "Local path to a downloaded encoder; wins over the model name when set."
             + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
     Setting("embedding.api_key_env", "embedding", "MATRIXARK_EMBEDDING_API_KEY_ENV",
-            "Embedding key variable", "str", "OPENAI_API_KEY", "live",
-            "Name of the environment variable holding the encoder key."),
+            "Embedding key variable", "str", "", "live",
+            "Name of the environment variable holding the encoder key -- the key you enter below is "
+            "written into it. Leave it empty and it follows the provider: VOYAGE_API_KEY for Voyage, "
+            "OPENAI_API_KEY otherwise. Set it only to point at a variable your own launcher already "
+            "fills."),
     Setting("embedding.api_key", "embedding", "", "Embedding API key", "secret", "", "live",
             "Stored owner-only and never returned. A LOCAL encoder still needs a non-empty value "
             "here — the call is skipped before it is attempted when the variable is empty."),
@@ -903,6 +908,27 @@ PRESETS: Dict[str, Json] = {
             "embedding.require_model_embeddings": "1",
         },
     },
+    "voyage": {
+        "label": "Voyage (embedding)",
+        "note": "Voyage supplies embeddings only -- pair it with an extraction provider. The key "
+                "variable is left to follow the provider, so it lands in VOYAGE_API_KEY.",
+        "values": {
+            "embedding.provider": "voyage",
+            "embedding.api_base": "https://api.voyageai.com/v1",
+            "embedding.model": "voyage-3",
+            "embedding.require_model_embeddings": "1",
+        },
+    },
+    "anthropic": {
+        "label": "Anthropic (extraction)",
+        "note": "Anthropic has no embeddings API, so pair it with a local encoder or an "
+                "OpenAI-compatible embedding endpoint.",
+        "values": {
+            "extraction.provider": "anthropic",
+            "extraction.anthropic_base_url": "https://api.anthropic.com",
+            "extraction.anthropic_model": "claude-sonnet-5",
+        },
+    },
     "ollama": {
         "label": "Ollama (local extraction)",
         "note": "Ollama's OpenAI-compatible shim, on the default port.",
@@ -1053,19 +1079,47 @@ def _store(document: Json) -> None:
 # ================================================================================================
 # Applying stored values to the process environment
 # ================================================================================================
+# What each provider reads when nothing names the variable. These mirror the fallbacks written in
+# the provider code -- matrixark_mcp_embeddings._api_embedding_config and the ANTHROPIC_/EXTRACTION_
+# module constants in matrixark_mcp_core -- and a test parses those modules and fails if they drift.
+# Flattening them to one name is how the key ended up in a variable the provider never read: pick
+# Voyage or Anthropic, type the key, and it landed in OPENAI_API_KEY while the encoder looked in
+# VOYAGE_API_KEY and found nothing. Nothing reports that; embeddings just quietly go back to hash
+# vectors unless "Fail instead of falling back" is on.
+_PROVIDER_KEY_VARIABLE: Dict[str, Dict[str, str]] = {
+    "embedding.api_key": {"voyage": "VOYAGE_API_KEY"},
+    "extraction.api_key": {"anthropic": "ANTHROPIC_API_KEY"},
+}
+_KEY_VARIABLE_FALLBACK = "OPENAI_API_KEY"
+
+
+def _selected_provider(secret_key: str, values: Dict[str, str]) -> str:
+    """Which provider the deployment is on, by the same precedence the key itself uses: what the
+    portal stored, else what the launcher set, else the registry default."""
+    setting = SETTINGS_BY_KEY[secret_key.rsplit(".", 1)[0] + ".provider"]
+    return (values.get(setting.key)
+            or os.environ.get(setting.env, "").strip()
+            or setting.default).strip()
+
+
 def _env_name(setting: Setting, values: Dict[str, str]) -> str:
     """The environment variable a setting writes to. For the two secrets that is not fixed: the key
     lands in whatever variable ``*.api_key_env`` names, so a customer on DeepSeek gets their key in
-    DEEPSEEK_API_KEY rather than a MatrixArk-specific name the provider code never reads."""
-    if setting.key == "extraction.api_key":
-        return (values.get("extraction.api_key_env")
-                or os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "").strip()
-                or "OPENAI_API_KEY")
-    if setting.key == "embedding.api_key":
-        return (values.get("embedding.api_key_env")
-                or os.environ.get("MATRIXARK_EMBEDDING_API_KEY_ENV", "").strip()
-                or "OPENAI_API_KEY")
-    return setting.env
+    DEEPSEEK_API_KEY rather than a MatrixArk-specific name the provider code never reads.
+
+    Left empty -- the default -- the name follows the selected provider, so the common case needs no
+    decision at all. Every other provider-dependent field here already defaults to empty for the
+    same reason; these two used to pin one provider's name.
+    """
+    if setting.key not in _PROVIDER_KEY_VARIABLE:
+        return setting.env
+    group = setting.key.rsplit(".", 1)[0]
+    chosen = (values.get(group + ".api_key_env")
+              or os.environ.get(SETTINGS_BY_KEY[group + ".api_key_env"].env, "").strip())
+    if chosen:
+        return chosen
+    provider = _selected_provider(setting.key, values)
+    return _PROVIDER_KEY_VARIABLE[setting.key].get(provider, _KEY_VARIABLE_FALLBACK)
 
 
 def apply_boot(document: Optional[Json] = None) -> List[str]:
