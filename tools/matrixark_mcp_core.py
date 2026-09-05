@@ -161,10 +161,11 @@ SECONDARY_INDEX_PRIORITY_PREFIXES = (
 # semantic dimension used to recall facts (entity_type, entity_name, segment_topic, event_type,
 # classification, status, source_role, source_type, keyword, and skill/resource/topology dims).
 #
-# Gated behind MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS (default ON). Flag OFF reproduces today's
-# dimensions exactly. Recall is validated by test_prune_internal_index_dimensions (must stay 5/5); any
-# dimension whose removal drops recall must be taken OFF this list and kept.
-PRUNE_INTERNAL_INDEX_DIMENSIONS = os.environ.get("MATRIXARK_PRUNE_INTERNAL_INDEX_DIMENSIONS", "1").strip().lower() in {"1", "true", "yes", "on"}
+# On. `test_intern_record_metadata` sets this constant to False to isolate the other lever on a
+# metadata-heavy corpus, which is the only thing that ever selected the other position. Recall is
+# validated by test_prune_internal_index_dimensions (must stay 5/5); any dimension whose removal
+# drops recall must be taken OFF this list and kept.
+PRUNE_INTERNAL_INDEX_DIMENSIONS = True
 INTERNAL_INDEX_DIMENSIONS = frozenset({
     "memory_selection_policy",
     "memory_scope",

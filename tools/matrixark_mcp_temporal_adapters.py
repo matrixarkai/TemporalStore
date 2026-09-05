@@ -2912,14 +2912,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         self._append_engine_count = 0
         self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
         self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
-        self._disk_fallback_enabled = bool(self._disk_fallback_path) and os.environ.get(
-            "MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE",
-            "1",
-        ).strip().lower() not in {"0", "false", "no", "off"}
-        self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path) and os.environ.get(
-            "MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE",
-            "1",
-        ).strip().lower() not in {"0", "false", "no", "off"}
+        self._disk_fallback_enabled = bool(self._disk_fallback_path)
+        self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path)
         self._disk_fallback_recovery_attempted = False
         self._disk_fallback_recovery_in_progress = False
         self._disk_fallback_recovery_status: Json = {"status": "not_attempted"}
@@ -3061,15 +3055,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
         if not hasattr(self, "_disk_fallback_path"):
             self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
         if not hasattr(self, "_disk_fallback_enabled"):
-            self._disk_fallback_enabled = bool(self._disk_fallback_path) and os.environ.get(
-                "MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE",
-                "1",
-            ).strip().lower() not in {"0", "false", "no", "off"}
+            self._disk_fallback_enabled = bool(self._disk_fallback_path)
         if not hasattr(self, "_disk_fallback_recovery_enabled"):
-            self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path) and os.environ.get(
-                "MATRIXARK_TEMPORALSTORE_RECOVER_LOCAL_STORE",
-                "1",
-            ).strip().lower() not in {"0", "false", "no", "off"}
+            self._disk_fallback_recovery_enabled = bool(self._disk_fallback_path)
         if not hasattr(self, "_disk_fallback_recovery_attempted"):
             self._disk_fallback_recovery_attempted = False
         if not hasattr(self, "_disk_fallback_recovery_in_progress"):
@@ -4544,12 +4532,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._retrieval_candidate_cache_lock = threading.RLock()
         self._disk_fallback_adapter: MatrixArkLocalAdapter | None = None
         self._disk_fallback_path = os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "").strip()
-        self._disk_fallback_enabled = os.environ.get("MATRIXARK_TEMPORALSTORE_SHADOW_LOCAL_STORE", "1").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        self._disk_fallback_enabled = bool(self._disk_fallback_path)
         self._disk_fallback_write_failures = 0
         self._metaserver = metaserver
         self._namespace = namespace
