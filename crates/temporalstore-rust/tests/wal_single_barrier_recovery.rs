@@ -9,6 +9,52 @@
 //! power cut, replay rebuilds every key. A final phase exercises the TS_WAL_LEGACY_RECOVERY escape
 //! hatch (legacy multi-barrier write + delta-fold recovery) so the fallback stays covered. Each
 //! phase runs in its own subprocess so any mode env var never leaks into the rest of the suite.
+//!
+//! # The premise above no longer holds, and five of these fail because of it
+//!
+//! "The WAL is self-sufficient (it embeds the full command payload)" was true when this was
+//! written. It is not true now, and nothing here was changed to say so -- these tests have been
+//! failing on main ever since, and the CI step that runs them carries `continue-on-error: true`.
+//!
+//! Three defaults meet to produce it:
+//!
+//!   * single-barrier acks once the WAL is fsynced; the data-page fdatasync is deferred BY DESIGN,
+//!     which is the whole point of the mode and is what the power-loss step models by deleting the
+//!     pages;
+//!   * `TS_WAL_OUTCOME_ITEMS` (default ON) records what a write DID rather than what it was;
+//!   * `TS_WAL_DATA_ONLY` (default ON) then removes the command -- "stop writing the operation into
+//!     a record that already states its results ... the operation is consulted only when there are
+//!     none."
+//!
+//! An outcome states "this object's page is at this address". With the page write deferred and then
+//! lost, the address names nothing and the command that could have re-derived the value is gone.
+//! Staged pages (`TS_BLOCK_IN_WAL`) would carry the bytes, but staging happens on the ASYNC storage
+//! path; a synchronous write stages nothing.
+//!
+//! Measured on the store these tests leave behind, with `examples/wal_scan_probe.rs`:
+//!
+//! ```text
+//! scan returned 300 record(s)
+//!   carrying a COMMAND to re-run          0
+//!   carrying OUTCOMES                     300  (300 items)
+//!      of those items, carrying a VALUE   0
+//!   carrying STAGED PAGES                 0  (0 bytes)
+//!   undecodable                           0
+//! ```
+//!
+//! So the log is intact and complete -- 300 records, all decoding, `last_sequence` agreeing -- and
+//! holds nothing any replay could rebuild a value from. The failure is not the harness: its
+//! `abort()` models process loss faithfully, the WAL survives it, and the records are all there.
+//!
+//! `legacy_recovery_escape_hatch_delta_fold_recovers_every_ack` still passes, which is the shape of
+//! the thing: the hatch recovers where the default does not.
+//!
+//! Fixing it is a choice about what an ack means, not a tidy-up -- an outcome could carry the value
+//! when the page it names is not yet durable; the sync path could stage pages as the async path
+//! does; the command could stay while single-barrier is on; or the page fsync could stop being
+//! deferred in this mode. Each trades write cost against the promise. Whoever takes it should start
+//! from the probe output above rather than from the assertion message, which only says a key was
+//! missing.
 
 use std::process::Command;
 
