@@ -5,6 +5,192 @@
 #![allow(clippy::all)]
 use super::*;
 
+/// What one read allocates, on a cache HIT and on a MISS.
+///
+/// The append path has been measured and cut three times this week -- 31 allocations to 4. The
+/// read path has never been measured. It goes through `cached_response(cache,
+/// CacheKey::string(shard_id, &key), ..)`, so every read builds a cache key whether or not the
+/// answer is cached, and a hit still pays for whatever the key costs.
+///
+/// Separates the two because they have different fixes: a hit that allocates is the key and the
+/// response, a miss is the page read underneath.
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn what_one_read_allocates() {
+    for value_len in [64usize, 1024, 4096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let keys = 200usize;
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("tenant/7/object/{index:09}"),
+                    value: vec![118u8; value_len],
+                },
+            });
+        }
+
+        // WARM: read every key once so the cache holds them, then measure re-reads.
+        for index in 0..keys {
+            let _ = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("tenant/7/object/{index:09}") },
+            });
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..keys {
+            let answer = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("tenant/7/object/{index:09}") },
+            });
+            std::hint::black_box(&answer);
+        }
+        let hit = probe.stop();
+
+        println!(
+            "  READ value {value_len:>5}B | warm hit {:>6.1} allocs {:>8.0} B per read ({:>5.2}x the value)",
+            hit.allocs as f64 / keys as f64,
+            hit.alloc_bytes as f64 / keys as f64,
+            hit.alloc_bytes as f64 / keys as f64 / value_len as f64,
+        );
+
+        // A read that allocated nothing would make every figure above read as free.
+        assert!(hit.allocs > 0, "the probe must observe the reads at {value_len}B");
+    }
+}
+
+/// Does the read cache actually hit?
+///
+/// A warm re-read measured 15 allocations and 2,788 bytes at a 64 byte value, and 19 and 38,308
+/// at a kilobyte -- 37 times the value, to serve something already cached. That is not the shape
+/// of a hit, so the first question is whether it IS one.
+///
+/// Compares the FIRST read of a key against the SECOND. If the cache serves the second, the two
+/// differ sharply. If they do not, the cache is not answering and the "warm" figure above is
+/// really the cost of a miss.
+#[test]
+#[ignore]
+#[cfg(feature = "alloc-probe")]
+fn does_the_read_cache_actually_hit() {
+    for value_len in [64usize, 1024] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let keys = 200usize;
+        for index in 0..keys {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("tenant/7/object/{index:09}"),
+                    value: vec![118u8; value_len],
+                },
+            });
+        }
+
+        let read_once = |engine: &TemporalEngine, index: usize| {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("tenant/7/object/{index:09}") },
+            })
+        };
+
+        // FIRST touch of each key.
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..keys {
+            std::hint::black_box(read_once(&engine, index));
+        }
+        let first = probe.stop();
+
+        // SECOND touch of the same keys, in the same order.
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..keys {
+            std::hint::black_box(read_once(&engine, index));
+        }
+        let second = probe.stop();
+
+        // And a THIRD, to see whether it is still falling or has settled.
+        let probe = crate::alloc_probe::Probe::start();
+        for index in 0..keys {
+            std::hint::black_box(read_once(&engine, index));
+        }
+        let third = probe.stop();
+
+        println!(
+            "  HITMISS value {value_len:>5}B | 1st {:>5.1} allocs {:>8.0} B | 2nd {:>5.1} {:>8.0} B | 3rd {:>5.1} {:>8.0} B",
+            first.allocs as f64 / keys as f64, first.alloc_bytes as f64 / keys as f64,
+            second.allocs as f64 / keys as f64, second.alloc_bytes as f64 / keys as f64,
+            third.allocs as f64 / keys as f64, third.alloc_bytes as f64 / keys as f64,
+        );
+        let saved = 100.0 * (first.alloc_bytes as f64 - second.alloc_bytes as f64)
+            / first.alloc_bytes.max(1) as f64;
+        println!("      the second pass costs {saved:.1}% fewer bytes than the first");
+
+        assert!(first.allocs > 0, "the probe must observe the first pass");
+        assert!(second.allocs > 0, "the probe must observe the second pass");
+    }
+}
+
+/// What the read cache's codec costs, and whether a binary one can replace it.
+///
+/// `cached_response` stores each answer as JSON and re-parses it on every hit. `Vec<u8>` in JSON
+/// is an ARRAY OF DECIMAL NUMBERS -- about four characters a byte -- so a cached kilobyte becomes
+/// roughly four, and a hit pays to parse it back. That is the constant ~37x a warm read allocates:
+/// it does not scale with the value, it scales with the encoding.
+///
+/// The entries are `put_memory_only`, so nothing on disk depends on the choice. The question is
+/// whether msgpack can carry `CommandResponse` at all: it is an INTERNALLY TAGGED enum
+/// (`#[serde(tag = "kind")]`), and that representation needs a self-describing deserialiser.
+/// Answer it here rather than in a refactor.
+#[test]
+#[ignore]
+fn what_the_read_cache_codec_costs() {
+    for value_len in [64usize, 1024, 4096] {
+        let response = crate::types::CommandResponse::Bytes {
+            value: Some(vec![118u8; value_len]),
+        };
+
+        let as_json = serde_json::to_vec(&response).expect("json encode");
+        let json_round: crate::types::CommandResponse =
+            serde_json::from_slice(&as_json).expect("json decode");
+        assert!(matches!(json_round, crate::types::CommandResponse::Bytes { .. }));
+
+        let mut packed = Vec::new();
+        let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+        let packable = serde::Serialize::serialize(&response, &mut serializer).is_ok();
+
+        let decodes = if packable {
+            rmp_serde::from_slice::<crate::types::CommandResponse>(&packed).is_ok()
+        } else {
+            false
+        };
+
+        println!(
+            "  CODEC value {value_len:>5}B | json {:>8} B ({:>5.1}x the value) | msgpack {:>8} B ({:>5.1}x) | encodes {packable} decodes {decodes}",
+            as_json.len(),
+            as_json.len() as f64 / value_len as f64,
+            if packable { packed.len() } else { 0 },
+            if packable { packed.len() as f64 / value_len as f64 } else { 0.0 },
+        );
+
+        assert!(!as_json.is_empty(), "the probe must encode something at {value_len}B");
+    }
+}
+
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     let dir = tempfile::tempdir().unwrap();

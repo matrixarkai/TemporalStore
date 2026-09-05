@@ -931,19 +931,44 @@ pub(super) fn validate_command_preconditions(
     Ok(())
 }
 
+/// Encode a cached response.
+///
+/// msgpack, not JSON. `CommandResponse::Bytes` carries a `Vec<u8>`, and JSON writes that as an
+/// ARRAY OF DECIMAL NUMBERS -- about four characters a byte. Measured: a 4 KiB value cached as
+/// 16,410 bytes of text against 4,117 packed, and every HIT paid to parse those characters back.
+/// That was the bulk of what a warm read allocated: 15 allocations and 2,788 bytes to serve a
+/// 64-byte value, a cost that tracked the ENCODING rather than the value.
+///
+/// Nothing on disk depends on this: these entries are `put_memory_only`, so the choice is
+/// contained to the pair of functions here. A stored entry that does not decode is dropped and
+/// recomputed, which is what the JSON path already did -- so an entry written by an older build
+/// in the same process costs one recompute, not an error.
+fn encode_cached_response(response: &CommandResponse) -> Option<Vec<u8>> {
+    let mut packed = Vec::new();
+    let mut serializer = rmp_serde::Serializer::new(&mut packed).with_struct_map();
+    // struct-as-MAP: `CommandResponse` is internally tagged (`#[serde(tag = "kind")]`), which
+    // needs the field names present to read back. The array form would drop them.
+    serde::Serialize::serialize(response, &mut serializer).ok()?;
+    Some(packed)
+}
+
+fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
+    rmp_serde::from_slice::<CommandResponse>(bytes).ok()
+}
+
 pub(super) fn cached_response(
     cache: &MultiLayerCache,
     key: CacheKey,
     source: impl FnOnce() -> CommandResponse,
 ) -> CommandResponse {
     if let Ok(Some(bytes)) = cache.get(&key) {
-        if let Ok(response) = serde_json::from_slice::<CommandResponse>(&bytes) {
+        if let Some(response) = decode_cached_response(&bytes) {
             return response;
         }
         let _ = cache.invalidate(&key);
     }
     let response = source();
-    if let Ok(bytes) = serde_json::to_vec(&response) {
+    if let Some(bytes) = encode_cached_response(&response) {
         cache.put_memory_only(key, bytes);
     }
     response
