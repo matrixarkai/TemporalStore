@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -866,6 +867,10 @@ pub struct BlockStoreRollReport {
 #[derive(Debug, Clone)]
 pub struct LocalBlockStore {
     inner: Arc<Mutex<BlockStoreInner>>,
+    /// Whether a written page is staged into its log record. Shared by every clone of this
+    /// store, and read on the write and read paths, so it is an atomic beside the lock rather
+    /// than a field inside it.
+    block_in_wal: Arc<AtomicBool>,
 }
 
 impl LocalBlockStore {
@@ -877,6 +882,31 @@ impl LocalBlockStore {
     /// "user:1", so anything keyed per object has to include it.
     pub fn store_id(&self) -> usize {
         Arc::as_ptr(&self.inner) as *const u8 as usize
+    }
+
+    /// Whether a written page is staged into its log record and served back from it.
+    ///
+    /// On, and settable off only by a test. Off, an acked write reads back as MISSING once its
+    /// cache entry is dropped before a dump -- a correctness result, not a tuning one -- and the
+    /// cost that once justified it is gone: a staged page now costs about a third over its
+    /// contents rather than five times.
+    ///
+    /// This belongs to the store rather than to the process because the table that resolves a
+    /// staged page is already keyed by `store_id()`: an embedded process runs several engines,
+    /// and two of them serving shard 1 with a key called "user:1" are told apart by nothing else.
+    /// A setting that reached across all of them could not describe that arrangement.
+    pub fn block_in_wal(&self) -> bool {
+        self.block_in_wal.load(AtomicOrdering::Relaxed)
+    }
+
+    /// Serve pages only from the block store, as builds before the log-in-record path did.
+    ///
+    /// For the two tests whose subject IS that older behaviour: one asserting the resident-page
+    /// index does not grow for a store that puts nothing in the log, and one measuring which
+    /// served addresses only this process can resolve, under each setting that produces them.
+    #[cfg(test)]
+    pub(crate) fn stop_putting_pages_in_the_log_for_test(&self) {
+        self.block_in_wal.store(false, AtomicOrdering::Relaxed);
     }
 }
 
@@ -996,6 +1026,7 @@ impl LocalBlockStore {
                 shared_slab_source: None,
                 scratch: None,
             })),
+            block_in_wal: Arc::new(AtomicBool::new(true)),
         }
     }
 

@@ -695,7 +695,7 @@ impl TemporalEngine {
         }
         // Start this write with nothing staged, so a page put aside by a command that never
         // appended cannot ride along on the next command's record.
-        if block_in_wal::enabled() {
+        if self.page_store.block_in_wal() {
             block_in_wal::begin_write();
         }
         // What the touched keys held before this command, so the capture below can be
@@ -928,7 +928,7 @@ impl TemporalEngine {
                             command,
                             sync,
                             if carried_pages.is_empty() {
-                                if block_in_wal::enabled() {
+                                if self.page_store.block_in_wal() {
                                     block_in_wal::take_staged()
                                 } else {
                                     Vec::new()
@@ -937,7 +937,7 @@ impl TemporalEngine {
                                 // The caller handed us the pages the original write produced.
                                 // Drop whatever this execute re-derived rather than letting a
                                 // reconstruction win over the bytes that were acked.
-                                if block_in_wal::enabled() {
+                                if self.page_store.block_in_wal() {
                                     let _ = block_in_wal::take_staged();
                                 }
                                 std::mem::take(&mut carried_pages)
@@ -948,7 +948,7 @@ impl TemporalEngine {
                             // Point every page this record carries at the record, keyed on the
                             // object id the write derived -- which is what the stored address
                             // carries, so a read finds it by identity rather than by timing.
-                            if block_in_wal::enabled() {
+                            if self.page_store.block_in_wal() {
                                 block_in_wal::register_record(
                                     &self.page_store,
                                     request.shard_id,
@@ -3530,7 +3530,7 @@ fn append_value(
     let address = BlockAddress::from_parts(HOT_PAGE_SLAB_ID, HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed), bytes.len() as u64, None, object_id, routing_bucket, object_id, None);
     // Put the page aside for this write's record. It is often derived state rather than the
     // command's own bytes, so the record has to carry it for a read to serve it back.
-    if block_in_wal::enabled() {
+    if page_store.block_in_wal() {
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, bytes);
         }
@@ -3716,7 +3716,7 @@ fn read_page_bytes(
         // been all along. Read it back by the log id the write registered. Tried after the
         // spill redirect because a spilled copy is a direct block-store read, while this one
         // parses a log record.
-        if block_in_wal::enabled() {
+        if page_store.block_in_wal() {
             if let Some(bytes) =
                 address
                     .object_id()

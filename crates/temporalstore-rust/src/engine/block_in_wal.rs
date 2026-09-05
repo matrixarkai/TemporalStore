@@ -46,25 +46,6 @@ use std::sync::{Mutex, OnceLock};
 use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedPage};
 
-/// TS_BLOCK_IN_WAL: stage written pages into their log record and serve them back from it.
-///
-/// Default ON. Without it an acked write reads back as MISSING when its cache entry is dropped
-/// before a dump -- a correctness result, not a tuning one -- and the cost that kept it off is
-/// gone: a staged page now costs about a third over its contents rather than five times.
-///
-/// Set to a falsey value to restore the previous behaviour: records carry no pages, and an
-/// evicted write is served only if the spill path happened to catch it.
-pub(super) fn enabled() -> bool {
-    !matches!(
-        std::env::var("TS_BLOCK_IN_WAL")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "0" | "false" | "no" | "off"
-    )
-}
-
 thread_local! {
     /// Pages produced by the write currently executing on this thread.
     static STAGED: RefCell<Vec<StagedPage>> = const { RefCell::new(Vec::new()) };

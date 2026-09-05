@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 302 of them, read by 100 functions.
+There are 301 of them, read by 99 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 302 |
-| booleans whose default this could read off the source | 36 |
+| total | 301 |
+| booleans whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 178 |
-| documented as keeping an older path alive | 6 |
+| documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
 
@@ -158,7 +158,7 @@ Secrets. Never a form field, never in a launch artifact.
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |
 
-## durability (24)
+## durability (23)
 
 What is written, when it is flushed, and what is reclaimed. The escape hatches here trade throughput for a more conservative barrier.
 
@@ -168,7 +168,6 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 2 | — |
 | `MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_BARRIER_PROFILE_WRITES` | — | nothing | 1 | — |
-| `TS_BLOCK_IN_WAL` | on | test | 1 | yes |
 | `TS_CROSS_SHARD_RECLAIM_GUARD` | on | config | 1 | yes |
 | `TS_DATA_NODE_LIFECYCLE_SNAPSHOT` | — | nothing | 1 | — |
 | `TS_INDEX_DUMP_WAL_GAP_BYTES` | — | portal | 1 | — |
