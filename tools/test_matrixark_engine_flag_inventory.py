@@ -496,3 +496,71 @@ class NonTestCodeDoesNotWriteTheProcessEnvironmentTest(unittest.TestCase):
             "non-test code writes these into the process environment. A setting that belongs to "
             "one engine, store or cluster belongs on that object:\n  %s"
             % "\n  ".join("%s sets %s" % pair for pair in unexpected))
+
+
+class ADocDoesNotStateADefaultTheCodeContradictsTest(unittest.TestCase):
+    """A flag's doc must not claim a default its own code disagrees with.
+
+    A stale default in a comment is worse than no comment: it is read as fact by whoever is
+    deciding whether a neighbouring switch can be turned on, and nothing about reading it feels
+    like guessing. `TS_RAFT_WAL_BINARY_RECORDS` carried "Off unless asked for" while its code
+    defaulted ON, and a `//` line two lines below said "Default ON" -- so the file disagreed with
+    itself, and the half a reader trusts is the one rustdoc renders.
+
+    Only the accessor shape is checked, because that is the shape whose default can be read off
+    the source without guessing: one function, one flag, returning a bool. A doc that states BOTH
+    positions is skipped rather than judged -- describing a flip needs both words, and which one
+    is the claim cannot be settled by matching.
+    """
+
+    # Every way these docs state a default, including the ones that avoid the word.
+    SAYS_ON = re.compile(
+        r"default(?:s|ed)?\s*(?:\*\*)?on\b|\bon\s+by\s+default|\bon\s+unless\b|"
+        r"\bopt(?:s|ed)?[- ]out\b", re.I)
+    SAYS_OFF = re.compile(
+        r"default(?:s|ed)?\s*(?:\*\*)?off\b|\boff\s+by\s+default|\boff\s+unless\b|"
+        r"\bopt(?:s|ed)?[- ]in\b|\bunless\s+asked\s+for\b", re.I)
+    ACCESSOR = re.compile(
+        r"\s*(?:pub(?:\([a-z():]+\))?\s+)?fn\s+\w+\s*\([^)]*\)\s*->\s*bool\s*\{")
+
+    def test_no_doc_contradicts_its_own_default(self) -> None:
+        prelude = _builder_prelude()
+        function_end, default_of = prelude["function_end"], prelude["default_of"]
+        checked, wrong = [], []
+        for path, source in _engine_sources():
+            lines = source.split("\n")
+            for index, line in enumerate(lines):
+                if not self.ACCESSOR.match(line):
+                    continue
+                body = "\n".join(lines[index:function_end(lines, index)])
+                names = set(FLAG_LITERAL.findall(body))
+                if len(names) != 1:
+                    continue
+                actual = default_of(body, 1)
+                if actual not in ("on", "off"):
+                    continue
+                doc, cursor = [], index - 1
+                while cursor >= 0 and lines[cursor].strip().startswith("///"):
+                    doc.insert(0, lines[cursor].strip()[3:].strip())
+                    cursor -= 1
+                if not doc:
+                    continue
+                prose = " ".join(doc)
+                says_on = bool(self.SAYS_ON.search(prose))
+                says_off = bool(self.SAYS_OFF.search(prose))
+                checked.append(next(iter(names)))
+                if says_on and says_off:
+                    continue
+                if (actual == "on" and says_off) or (actual == "off" and says_on):
+                    wrong.append("%s (%s:%d) defaults %s, its doc says %s"
+                                 % (next(iter(names)), os.path.basename(path), index + 1,
+                                    actual, "off" if says_off else "on"))
+        self.assertGreater(
+            len(checked), 15,
+            "only %d documented flags had a readable default; the scan found nothing to check "
+            "and would pass however wrong the docs were" % len(checked))
+        self.assertEqual(
+            [], sorted(wrong),
+            "a flag's documentation states a default its code contradicts. Correct the prose, "
+            "not the code -- and say it once, so the two halves cannot drift:\n  %s"
+            % "\n  ".join(sorted(wrong)))
