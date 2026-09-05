@@ -643,6 +643,18 @@ pub struct ProxyMetaInfo {
     pub restart_count: u64,
 }
 
+/// Which node leads the metaserver's raft group, and the address it was
+/// configured with.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MetaRaftLeaderResponse {
+    pub status: Status,
+    pub leader_id: crate::raft::RaftNodeId,
+    /// Empty when there is no leader, or none with a configured address.
+    pub addr: String,
+    /// Whether this process is that node, so a caller can tell it has arrived.
+    pub is_local: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddNamespaceRequest {
     pub namespace: String,

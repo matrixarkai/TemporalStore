@@ -50,6 +50,12 @@ impl ProxyService {
                     })
                     .unwrap_or_else(|status| status)
             };
+        // Asked once per report, not per request: it is a control-plane question and this runs
+        // when someone is looking.
+        let meta_leader = self.fetch_meta_leader().ok();
+        let meta_addr_is_leader = meta_leader
+            .as_ref()
+            .is_some_and(|leader| !leader.addr.is_empty() && leader.addr == options.meta_addr);
         let authoritative_topology_version = topology_cache.authoritative_topology_version;
         let topology_cache_stale = topology_cache.cache_stale;
         let service_discovery = self.service_discovery_report_with_options(&options);
@@ -108,6 +114,8 @@ impl ProxyService {
             authoritative_topology_version,
             topology_cache_stale,
             topology_check_status: Some(topology_check_status),
+            meta_leader,
+            meta_addr_is_leader,
             stats,
             client: ProxyClientPreflightReport {
                 route_cache_size,

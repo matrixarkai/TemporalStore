@@ -11,6 +11,7 @@ use temporalstore_rust::http::{
     serve_with_stream_handler, HttpRequest, HttpRequestOptions, RequestHead, StreamAction,
     StreamTransfer,
 };
+use temporalstore_rust::meta::MetaRaftLeaderResponse;
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, AutoRebalanceOptions, ConvictionPolicy,
     DeleteTableRequest, FailureDetectorOptions, FreezeReason, FreezeStaleServersRequest,
@@ -2345,17 +2346,6 @@ fn unreplicated_meta_raft_warning(nodes: &[ProductionRaftNode]) -> Option<String
     ))
 }
 
-/// Which node leads the metaserver's raft group, and the address it was
-/// configured with.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-struct MetaRaftLeaderResponse {
-    status: Status,
-    leader_id: RaftNodeId,
-    /// Empty when there is no leader, or none with a configured address.
-    addr: String,
-    /// Whether this process is that node, so a caller can tell it has arrived.
-    is_local: bool,
-}
 
 fn parse_meta_raft_node(index: usize, value: &str) -> Option<ProductionRaftNode> {
     if let Some((id, addr)) = value.split_once('=') {

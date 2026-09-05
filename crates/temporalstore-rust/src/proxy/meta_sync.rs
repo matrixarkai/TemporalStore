@@ -25,6 +25,23 @@ impl ProxyService {
         }
     }
 
+    /// Ask the configured metaserver which node leads its raft group.
+    ///
+    /// This proxy holds ONE `meta_addr`. Pointed at a follower it gets `meta_not_ready` back for
+    /// control-plane work and nothing in its own diagnostics says why, because the answer lives
+    /// on the metaserver rather than here. Reported so an operator can see the address they
+    /// configured, the address that leads, and whether they are the same.
+    pub(super) fn fetch_meta_leader(&self) -> Result<crate::meta::MetaRaftLeaderResponse, Status> {
+        let options = self.options();
+        crate::http::get_json_with_options_and_headers::<crate::meta::MetaRaftLeaderResponse>(
+            &options.meta_addr,
+            "/meta/raft/leader",
+            &crate::meta::admin_auth_header(),
+            options.control_http_options(),
+        )
+        .map_err(|err| Status::error("meta_leader_unavailable", err.to_string()))
+    }
+
     pub(super) fn fetch_meta_topology_version(
         &self,
         old_topology_version: u64,

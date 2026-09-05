@@ -489,6 +489,16 @@ pub struct ProxyPreflightReport {
     pub topology_cache_stale: bool,
     #[serde(default)]
     pub topology_check_status: Option<Status>,
+    /// Which metaserver leads, and whether it is the one this proxy is configured with.
+    ///
+    /// `None` when the metaserver could not be asked. A raft-backed metaserver that is not the
+    /// leader answers control-plane work with `meta_not_ready`; without this the proxy reports
+    /// that as its own degradation and gives an operator nothing to act on.
+    #[serde(default)]
+    pub meta_leader: Option<crate::meta::MetaRaftLeaderResponse>,
+    /// Whether `meta_addr` is the address the metaserver named as leader.
+    #[serde(default)]
+    pub meta_addr_is_leader: bool,
     pub stats: ProxyStats,
     pub client: ProxyClientPreflightReport,
     #[serde(default)]
@@ -4755,6 +4765,26 @@ mod tests {
             proxy.snapshot_meta_addr().as_deref(),
             Some("127.0.0.1:2"),
             "the push must replace the client this thread already held -- the old address here              means requests keep going to the proxy's previous metaserver"
+        );
+    }
+
+    #[test]
+    fn a_preflight_says_whether_the_configured_metaserver_is_the_leader() {
+        // A proxy holds ONE meta_addr. Pointed at a follower it gets `meta_not_ready` for
+        // control-plane work, and before this the report showed that as its own degradation with
+        // nothing naming the cause. `scoped_proxy` points at a closed port, so this covers the
+        // case that matters most for the claim: when the metaserver cannot be asked, the report
+        // must say it does not know rather than assert a leader.
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let report = proxy.preflight_report();
+
+        assert!(
+            report.meta_leader.is_none(),
+            "an unreachable metaserver must leave the leader unknown, not invented"
+        );
+        assert!(
+            !report.meta_addr_is_leader,
+            "not knowing the leader is not the same as being it"
         );
     }
 
