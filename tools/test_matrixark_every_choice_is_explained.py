@@ -113,10 +113,21 @@ class TheClaimsAboutLocalAreTrueTest(unittest.TestCase):
 
     def test_the_deterministic_set_still_counts_local_as_one_of_its_own(self) -> None:
         """What makes `local` a synonym rather than an unknown value: the warning that fires for
-        deterministic fires for it too."""
-        with open(os.path.join(TOOLS, "matrixark_v1_gateway.py"), encoding="utf-8") as handle:
-            source = handle.read()
-        self.assertIn('deterministic = {"", "deterministic", "rules", "local"}', source)
+        deterministic fires for it too, and it is never reported as a name nothing recognises.
+
+        Asserted through the classifier rather than by matching a literal set in the gateway source.
+        That set existed in three copies and caught only the names written into it -- a misspelt
+        provider fell past all three -- so the classifier that replaced it is now the thing that has
+        to keep treating `local` as a deliberate choice.
+        """
+        try:
+            from tools import matrixark_gateway_config as gwcfg  # type: ignore
+        except ImportError:
+            import matrixark_gateway_config as gwcfg  # type: ignore
+        self.assertEqual("hash", gwcfg.embedding_provider_effect("local"))
+        for group in ("embedding", "extraction"):
+            with self.subTest(group=group):
+                self.assertFalse(gwcfg.provider_is_unrecognised(group, "local"))
 
 
 if __name__ == "__main__":

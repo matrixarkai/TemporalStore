@@ -1560,6 +1560,66 @@ _API_EMBEDDING_PROVIDERS = {"openai", "openai_compatible", "openai-compatible", 
                             "voyage", "api"}
 
 
+# The encoder also has an in-process branch that loads a model instead of calling one. It is not
+# an endpoint, so the probe skips it -- but it produces REAL embeddings, so it is not the hash
+# fallback either, and the two must not be reported as the same thing.
+_OSS_EMBEDDING_PROVIDERS = {"oss", "open_source", "sentence_transformers", "sentence-transformers"}
+
+# Names a customer sets on purpose to get the local rules. Everything else that ends up there ended
+# up there by accident.
+_DELIBERATE_FALLBACK_PROVIDERS = {"", "deterministic", "rules", "local", "hash"}
+
+
+def embedding_provider_effect(provider: str) -> str:
+    """What the ENCODER does with this name: "api", "local_model" or "hash".
+
+    Three places asked this separately and each answered with the same hand-written literal set,
+    which caught "local" and nothing else. A name the encoder does not recognise -- a typo, or a
+    provider that simply is not supported -- falls through to the hash fallback exactly as
+    "deterministic" does, and none of the three knew it.
+    """
+    name = (provider or "").strip().lower()
+    if name in _API_EMBEDDING_PROVIDERS:
+        return "api"
+    if name in _OSS_EMBEDDING_PROVIDERS:
+        return "local_model"
+    return "hash"
+
+
+def extraction_provider_effect(provider: str) -> str:
+    """What EXTRACTION does with this name: "openai", "anthropic" or "rules", matching the dispatch
+    in matrixark_mcp_core -- where an unrecognised name falls past both branches to the same
+    rule-based path a customer gets by asking for it."""
+    name = (provider or "").strip().lower()
+    if name in _OPENAI_EXTRACTION_PROVIDERS:
+        return "openai"
+    if name in _ANTHROPIC_EXTRACTION_PROVIDERS:
+        return "anthropic"
+    return "rules"
+
+
+def provider_is_unrecognised(group: str, provider: str) -> bool:
+    """True when this name yields the fallback WITHOUT anyone having asked for it.
+
+    The distinction is the whole point. "deterministic" is a choice, and the portal should explain
+    it. "openai_compatibl" is a mistake, and the portal should say so and name the value -- it used
+    to report that deployment as a working API encoder.
+    """
+    name = (provider or "").strip().lower()
+    if name in _DELIBERATE_FALLBACK_PROVIDERS:
+        return False
+    if group == "embedding":
+        return embedding_provider_effect(name) == "hash"
+    return extraction_provider_effect(name) == "rules"
+
+
+def recognised_providers(group: str) -> List[str]:
+    """What to offer someone whose value matched nothing, so the message can be acted on."""
+    if group == "embedding":
+        return sorted(_API_EMBEDDING_PROVIDERS | _OSS_EMBEDDING_PROVIDERS)
+    return sorted(_OPENAI_EXTRACTION_PROVIDERS | _ANTHROPIC_EXTRACTION_PROVIDERS)
+
+
 def _probe(kind: str, url: str, payload: Json, headers: Dict[str, str], timeout: float) -> Json:
     started = time.time()
     result: Json = {"target": kind, "url": url, "ok": False}
