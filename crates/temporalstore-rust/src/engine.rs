@@ -3102,7 +3102,7 @@ fn maybe_auto_compress_context_node(
     shard
         .context_compression_watermark
         .insert(event_object_key.to_string(), window.end_ms);
-    invalidate_record_all(cache, shard_id, &compression_key);
+    invalidate_context_record(cache, shard_id, &compression_key);
     mutated
 }
 
@@ -3668,6 +3668,27 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "context_summary",
         "context_compression",
     ]
+}
+
+/// The invalidation a page-backed context object actually needs.
+///
+/// `invalidate_record_all` also sweeps the `hash`, `set` and `feature` record namespaces, and each
+/// of those three is `MultiLayerCache::invalidate_record`, which walks EVERY key in all three
+/// cache tiers and filters. The cost therefore grows with the cache, and a context object is never
+/// cached in any of those namespaces -- so all three walked the whole cache, found nothing, and did
+/// it again on the next write.
+///
+/// That is what made message ingest degrade with the corpus rather than stay flat. Measured on the
+/// real four-command message, growing one store:
+///
+///     corpus  1,024      4.6 ms/message  ->  7.2 ms
+///     corpus 10,240     29.1 ms/message  ->  7.9 ms      and no longer rising
+///
+/// `a_context_write_leaves_the_record_namespaces_empty` holds the premise: if a context object ever
+/// does get cached under one of those namespaces, that test fails and this narrowing is no longer
+/// safe.
+fn invalidate_context_record(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
+    let _ = cache.invalidate(&CacheKey::string(shard_id, key));
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
