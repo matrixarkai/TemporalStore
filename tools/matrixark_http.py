@@ -336,6 +336,20 @@ def _hook_decode_value(value: Any) -> str | None:
     return str(value)
 
 
+def _namespace_and_table(args: Json) -> tuple[str, str]:
+    """Which namespace and table a backend addresses: the caller's, else the environment, else the
+    deployment defaults.
+
+    All three readers below resolved this themselves, in the same two lines, and carried their own
+    copy of both default names with them. Renaming a default would have had to be done in three
+    places and would have been right in whichever one the author happened to open.
+    """
+    return (
+        str(args.get("namespace") or os.environ.get("MATRIXARK_NAMESPACE") or "deploy_ns"),
+        str(args.get("table") or os.environ.get("MATRIXARK_TABLE") or "deploy_table"),
+    )
+
+
 class _HookStoreReader:
     name = "unknown"
 
@@ -362,8 +376,7 @@ class _HookStoreReader(_HookStoreReader):
             or repo_root / "output-ubuntu22/release/sdk/lib/libtemporalstore.so"
         )
         metaserver = str(args.get("native_metaserver") or os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER") or "127.0.0.1:18000")
-        namespace = str(args.get("namespace") or os.environ.get("MATRIXARK_NAMESPACE") or "deploy_ns")
-        table = str(args.get("table") or os.environ.get("MATRIXARK_TABLE") or "deploy_table")
+        namespace, table = _namespace_and_table(args)
         self.client = Client(
             Options(
                 metaserver_addr=metaserver,
@@ -393,8 +406,7 @@ class _RustServiceHookStoreReader(_HookStoreReader):
 
     def __init__(self, args: Json) -> None:
         self.addr = str(args.get("rust_service_addr") or os.environ.get("MATRIXARK_RUST_SERVICE_PROXY_ADDR") or "127.0.0.1:17100")
-        self.namespace = str(args.get("namespace") or os.environ.get("MATRIXARK_NAMESPACE") or "deploy_ns")
-        self.table = str(args.get("table") or os.environ.get("MATRIXARK_TABLE") or "deploy_table")
+        self.namespace, self.table = _namespace_and_table(args)
 
     def _post(self, path: str, payload: Json) -> Json | None:
         try:
@@ -426,8 +438,7 @@ class _RustLocalHookStoreReader(_HookStoreReader):
     def __init__(self, args: Json) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         self.proxy_bin = str(args.get("rust_proxy_bin") or os.environ.get("MATRIXARK_RUST_PROXY_BIN") or repo_root / "target/release/matrixark_rust_proxy")
-        self.namespace = str(args.get("namespace") or os.environ.get("MATRIXARK_NAMESPACE") or "deploy_ns")
-        self.table = str(args.get("table") or os.environ.get("MATRIXARK_TABLE") or "deploy_table")
+        self.namespace, self.table = _namespace_and_table(args)
         self.cwd = str(repo_root)
 
     def _call(self, op: str, **kwargs: Any) -> Json | None:
