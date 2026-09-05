@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 297 of them, read by 95 functions.
+There are 296 of them, read by 94 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 297 |
-| booleans whose default this could read off the source | 31 |
+| total | 296 |
+| booleans whose default this could read off the source | 30 |
 | **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 175 |
@@ -187,13 +187,12 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_RESIDENT_PAGES` | — | test | 1 | — |
 | `TS_WAL_SEGMENT_BYTES` | — | nothing | 1 | — |
 
-## format (7)
+## format (6)
 
 The shape of what is written. Readers generally accept both shapes, which is what makes these safe to flip and hard to retire.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TS_INDEX_BINARY` | on | launch, test | 1 | — |
 | `TS_INDEX_CATALOG_FOLD` | on | config | 1 | yes |
 | `TS_INDEX_CODEC` | — | test | 1 | — |
 | `TS_NODE_SUMMARY_VECTOR` | on | test, portal | 1 | — |

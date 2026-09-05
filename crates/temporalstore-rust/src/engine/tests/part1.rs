@@ -3133,7 +3133,7 @@ fn scratch_engine_index_dir_dies_with_the_last_engine_clone() {
 
 #[test]
 fn served_index_container_round_trips_and_still_reads_plain_json() {
-    use crate::engine::{decode_index_bytes, encode_index_bytes};
+    use crate::engine::{decode_index_bytes, encode_index_bytes, encode_index_bytes_as_plain_json};
 
     let mut shard = ShardState::default();
     shard.strings.insert(
@@ -3141,19 +3141,15 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
         BlockAddress::from_parts(7, 11, 13, None, None, None, None, None),
     );
 
-    // Container OFF: raw JSON, and JSON is what an older binary would have written.
-    // Say "0" rather than unsetting: unsetting selects the DEFAULT, which is the container,
-    // so an unset variable stopped meaning "off" the moment the default changed.
-    std::env::set_var("TS_INDEX_BINARY", "0");
-    let plain = encode_index_bytes(&shard);
+    // Raw JSON, which is what an older binary wrote. Nothing in production produces this any
+    // more, so the test names the shape it wants rather than setting a variable to select it.
+    let plain = encode_index_bytes_as_plain_json(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off must write JSON");
     let decoded = decode_index_bytes(&plain).expect("json index decodes");
     assert!(decoded.strings.contains_key("container-probe"));
 
-    // Container ON: a magic-prefixed payload that decodes back to the same state...
-    std::env::set_var("TS_INDEX_BINARY", "1");
+    // And what production writes: a magic-prefixed payload that decodes back to the same state.
     let wrapped = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_BINARY");
     assert!(wrapped.starts_with(b"TSIDX\x01"), "container on must write the container");
     assert_ne!(wrapped.first(), Some(&b'{'));
     let decoded = decode_index_bytes(&wrapped).expect("container index decodes");
@@ -3174,7 +3170,7 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
 
 #[test]
 fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
-    use crate::engine::{decode_index_bytes, encode_index_bytes};
+    use crate::engine::{decode_index_bytes, encode_index_bytes, encode_index_bytes_as_plain_json};
 
     let mut shard = ShardState::default();
     shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
@@ -3190,10 +3186,8 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     );
     shard.applied_wal_sequence = Some(4242);
 
-    std::env::set_var("TS_INDEX_BINARY", "1");
     std::env::set_var("TS_INDEX_CODEC", "msgpack");
     let binary = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_BINARY");
     std::env::remove_var("TS_INDEX_CODEC");
 
     assert!(binary.starts_with(b"TSIDX\x01"), "binary payload must ride the container");
@@ -3232,20 +3226,15 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     assert!(refused.contains("struct version"), "unhelpful refusal: {refused}");
 
     // And every older on-disk shape still loads: plain JSON, and the compressed-JSON payload.
-    // "0" rather than unset -- unset now selects the container, which is not what is under
-    // test here.
-    std::env::set_var("TS_INDEX_BINARY", "0");
-    let plain = encode_index_bytes(&shard);
+    let plain = encode_index_bytes_as_plain_json(&shard);
     assert_eq!(plain.first(), Some(&b'{'), "container off still writes JSON");
     assert_eq!(
         decode_index_bytes(&plain).expect("json decodes").strings.len(),
         shard.strings.len()
     );
 
-    std::env::set_var("TS_INDEX_BINARY", "1");
     std::env::set_var("TS_INDEX_CODEC", "zstd-json");
     let compressed_json = encode_index_bytes(&shard);
-    std::env::remove_var("TS_INDEX_BINARY");
     std::env::remove_var("TS_INDEX_CODEC");
     assert_eq!(compressed_json[6], 1, "zstd-json keeps codec id 1");
     assert_eq!(
@@ -6414,7 +6403,9 @@ fn which_piece_of_the_write_machinery_costs() {
         // the engine now, not of the environment, so the variable moves nothing -- and a row
         // reporting a delta of zero would read as "this piece is free" rather than "this row
         // stopped measuring". `commit_under_lock_for_test` is how an engine takes the other side.
-        ("TS_INDEX_BINARY=0           ", "TS_INDEX_BINARY", "0"),
+        //  was a row here, and left for the same reason: the served index
+        // is always written in the container now, so the variable moves nothing and the row
+        // would report a delta of zero -- which reads as a free piece rather than a dead row.
     ] {
         std::env::set_var(flag, value);
         let with_flag = one_write_costs(2);
