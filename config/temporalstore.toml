@@ -68,9 +68,17 @@ block_slab_target_bytes = 1073741824   # TS_BLOCK_SEGMENT_TARGET_BYTES  data-sla
 # page_index_cache_bytes = 0           # TS_PAGE_INDEX_CACHE_BYTES  page-index cache budget (bytes)
 # block_index_cache_bytes = 0          # TS_BLOCK_INDEX_CACHE_BYTES block-index cache budget (bytes)
 cold_scan_no_cache_fill = 0            # TS_COLD_SCAN_NO_CACHE_FILL  1 = cold scans bypass cache fill (avoid cache pollution)
-page_store_compression_enabled = 0     # TS_PAGE_STORE_COMPRESSION_ENABLED  1 = compress data pages at rest
+# The engine enables this itself (default_page_record_compression_enabled -> true), the deploy
+# profile exports it as 1, and a running box has it on. This file said 0, which made the
+# shipped config the only surface claiming the product ships without page compression.
+page_store_compression_enabled = 1     # TS_PAGE_STORE_COMPRESSION_ENABLED  1 = compress data pages at rest
 page_store_compression_level = 3       # TS_PAGE_STORE_COMPRESSION_LEVEL    compression level (algorithm-dependent)
-page_store_compression_min_bytes = 4096  # TS_PAGE_STORE_COMPRESSION_MIN_BYTES  skip compressing pages smaller than this
+# 4096 is the value the engine measured and rejected: over 120 adds it wrote 176.8 KB per add
+# at 4096 against 148.1 KB at 256, and the adds were no slower (152.5 -> 144.7 ms). The bytes
+# a 4 KB floor excluded are the index writes -- postings, placement rows, locator entries --
+# which are both the smallest and the most repetitive in the system. Compressing everything is
+# worse again: at a 1-byte floor the saving stops and the median add rises to 256.0 ms.
+page_store_compression_min_bytes = 256  # TS_PAGE_STORE_COMPRESSION_MIN_BYTES  skip compressing pages smaller than this
 cross_shard_reclaim_guard = 1          # TS_CROSS_SHARD_RECLAIM_GUARD  1 = retain slabs referenced by ANY loaded shard during GC (safe default; 0 = legacy per-shard, unsafe under multi-shard hosting)
 index_dump_oplog_gap_bytes = 1048576   # TS_INDEX_DUMP_OPLOG_GAP_BYTES  undumped index-log gap (bytes, 1 MiB) that triggers a background catalog/index dump under the manifest-parity catalog fold (TS_INDEX_CATALOG_FOLD); 0 disables the threshold cadence
 # index_catalog_fold = 1               # TS_INDEX_CATALOG_FOLD  1 = fold the band/zone catalog into the index-log MetaItem (reference conformance) and drive it via the threshold dump above, instead of the per-write band-manifest file. Ships OFF (byte-identical); uncomment to enable.
