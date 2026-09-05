@@ -32,8 +32,18 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import matrixark_gateway_config as gwconfig  # noqa: E402
 import matrixark_v1_gateway as gw  # noqa: E402
+
+# The gateway's own copy, not a fresh import of the same file.
+#
+# It binds `from tools import matrixark_gateway_config`, falling back to the top-level name when
+# there is no package. Under `unittest discover` some other test makes `tools` importable, so a
+# plain `import matrixark_gateway_config` here binds a SECOND module object -- with its own
+# `_BOOT_EFFECTIVE`, which is where the record of what this process started with lives. This test
+# then wrote settings to one copy and asserted against a frame built from the other, and the frame
+# correctly reported nothing waiting. It passed alone and failed in the suite, which is the whole
+# signature of this mistake.
+gwconfig = gw._gwconfig
 
 # Shared-frame keys that are deliberately not delivered. Empty, and an entry here needs a reason:
 # the whole point of the sweep is that a field built for nobody is invisible.
@@ -121,6 +131,10 @@ class TheStripCanLearnAboutAPendingRestartTest(unittest.TestCase):
         # imported has none. Skipping it here made this test read as "the frame says nothing"
         # when the frame was right and the test was not a real process.
         gwconfig.apply_boot()
+        # Booting the wrong copy of the module leaves this empty, and every assertion below then
+        # measures a configuration the frame has never heard of.
+        self.assertTrue(gw._gwconfig._BOOT_EFFECTIVE,
+                        "the module the frame reads has no record of what it started with")
 
     def _a_provider_other_than_the_one_we_booted_with(self) -> str:
         """Chosen against the boot record rather than written as a constant.
