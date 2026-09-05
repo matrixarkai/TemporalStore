@@ -57,6 +57,20 @@ AGENTS = {
 }
 
 
+def shared_hook_store_base() -> str:
+    """Where an agent's hook store lives when nothing names one for that agent specifically.
+
+    The path was written out at all three branches below. Three places to correct it in is two
+    places to miss, and a store root that disagrees with itself sends a backfill somewhere the
+    realtime hook is not writing -- which looks like missing data, not like a wrong constant.
+
+    Read per call rather than captured at import, for the same reason every other setting here is:
+    a value resolved once could not be changed by anything that sets it later.
+    """
+    return os.environ.get(
+        "MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared")
+
+
 def agent_root(agent: str) -> str:
     """Resolve the durable Rust hook root for a backfilled agent.
 
@@ -75,7 +89,7 @@ def agent_root(agent: str) -> str:
         return os.path.join(
             os.environ.get(
                 "MATRIXARK_CLAUDE_HOOK_STORE_BASE",
-                os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared"),
+                shared_hook_store_base(),
             ),
             "rust",
         )
@@ -89,12 +103,12 @@ def agent_root(agent: str) -> str:
         return os.path.join(
             os.environ.get(
                 "MATRIXARK_CODEX_HOOK_STORE_BASE",
-                os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared"),
+                shared_hook_store_base(),
             ),
             "rust",
         )
     return os.path.join(
-        os.environ.get("MATRIXARK_SHARED_HOOK_STORE_BASE", "/root/.matrixark/temporalstore-hooks/shared"),
+        shared_hook_store_base(),
         "rust",
     )
 
