@@ -8069,6 +8069,6 @@ fn emptied_buckets_are_dropped_without_walking_the_map() {
     // under 2x is not the walk coming back; timing on a shared machine is not tighter than this.
     assert!(
         growth < 2.0,
-        "per-write cost grew {growth:.2}x from a 2k to a 20k corpus -- the whole-map walk is back"
+        "per-write cost grew {growth:.2}x from a 2k to a 20k corpus. This asserts a RATIO and \n         cannot say what caused it: the by-name drop this test was written for is intact \n         (storage_bucket_internals.rs, `Drop buckets this call emptied -- BY NAME`), and \n         the growth reproduces at load 5 and at load 15 alike, so it is neither that walk \n         nor machine noise. Look for other per-write work that scales with the corpus."
     );
 }
