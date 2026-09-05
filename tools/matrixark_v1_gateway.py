@@ -2147,6 +2147,36 @@ def _reset_live_cache() -> None:
     _LIVE_SIGNATURE.clear()
 
 
+def _forget_idle_identities(now: float) -> None:
+    """Drop live-cache entries that their own readers would already ignore.
+
+    Both caches are keyed on the identity triple, and nothing removed an entry. A worker's resident
+    memory therefore grew with the number of distinct keys that had EVER opened a status stream
+    rather than the number watching one -- measured at 2,433 bytes per identity, held for the life
+    of the process, of which every byte was already too stale to be served.
+
+    The tests below are the readers' own staleness checks, called with the same arguments. An entry
+    is dropped exactly when it had stopped being an answer, so nothing that would have been served
+    to anyone is evicted, and a viewer that comes back simply misses the way it already did.
+
+    Run from the once-per-tick rebuild, so the cost is one pass over the identities seen in the
+    last tick rather than anything per connection. When the last viewer leaves, that tick's entries
+    stay behind until somebody watches again -- bounded by the viewers of one tick, which is the
+    thing that was unbounded before.
+    """
+    for identity, entry in list(_LIVE_SIGNATURE.items()):
+        if (now - entry[0]) >= EVENT_TICK_S:
+            _LIVE_SIGNATURE.pop(identity, None)
+    for identity, entry in list(_LIVE_EMBEDDING.items()):
+        if (now - entry[0]) >= _embedding_refresh_interval(entry[1]):
+            _LIVE_EMBEDDING.pop(identity, None)
+    for identity, entry in list(_LIVE_EMBEDDING_INFLIGHT.items()):
+        # A task belonging to a closed loop can never be awaited -- `_embedding_for` checks the loop
+        # before waiting on one -- so this entry is unreachable rather than merely stale.
+        if entry[0].is_closed():
+            _LIVE_EMBEDDING_INFLIGHT.pop(identity, None)
+
+
 def _shared_live_parts() -> Json:
     """Traffic, imports and the warning count: identical for every viewer, so built once.
 
@@ -2207,6 +2237,9 @@ def _shared_live_parts() -> Json:
         "config_changed_at": changed_at,
     }
     _LIVE_SHARED_AT = now
+    # Once per tick for the deployment, in the branch that already runs once per tick, so the
+    # per-identity caches are bounded by who is watching rather than by who ever watched.
+    _forget_idle_identities(now)
     return _LIVE_SHARED
 
 
@@ -2335,6 +2368,9 @@ async def _event_frame(server: Any, cfg: GatewayConfig, key: Optional[str],
         "traffic": shared["traffic"],
         "imports": shared["imports"],
         "warnings": shared["warnings"],
+        # Built once per tick beside the rest and, until now, left behind here -- so the strip's
+        # "awaiting restart" segment had nothing to render and never appeared, on any deployment.
+        "settings_waiting": shared.get("settings_waiting"),
         "config_changed_at": shared.get("config_changed_at"),
         "embedding": embedding,
         # Absent when nothing has looked yet. "not known" and "unreachable" are different answers
