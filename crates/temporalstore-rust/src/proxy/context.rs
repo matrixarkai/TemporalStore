@@ -140,7 +140,38 @@ fn scope_session(scope: &ProxyContextScope) -> String {
 
 /// Buffer key holding the per-scope `raw_event` records awaiting extraction.
 fn rawlog_key(tenant_hash: u64, session: &str) -> String {
-    format!("context:rawlog:{tenant_hash}:{session}")
+    // Sized up front rather than left to `format!`, which grows into its buffer. A u64 is at
+    // most 20 digits, and the two literals are 15 and 1.
+    let mut key = String::with_capacity(16 + 20 + 1 + session.len());
+    key.push_str("context:rawlog:");
+    push_fixed_width(&mut key, tenant_hash, 0);
+    key.push(':');
+    key.push_str(session);
+    key
+}
+
+/// Append `value` zero-padded to `width`, the way `{value:0width$}` would.
+///
+/// Fixed width is what makes lexicographic order equal arrival order for these keys, so the
+/// padding is part of the contract rather than cosmetic.
+fn push_fixed_width(out: &mut String, value: u64, width: usize) {
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    let mut rest = value;
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let digits = &buf[i..];
+    for _ in digits.len()..width {
+        out.push('0');
+    }
+    // ASCII digits by construction.
+    out.push_str(std::str::from_utf8(digits).unwrap_or("0"));
 }
 
 fn source_from_fields(
@@ -310,7 +341,14 @@ impl ProxyService {
             // fixed-width so lexicographic order is arrival order. The call component is
             // what stops two ingests in the same millisecond writing the same field and
             // one silently overwriting the other; `{idx}` alone restarts at zero per call.
-            let field = format!("{timestamp_ms:020}:{call:08}:{idx:06}");
+            // 20 + 1 + 8 + 1 + 6 -- every part is fixed width, so the length is known and the
+            // string is built in one allocation instead of grown into.
+            let mut field = String::with_capacity(36);
+            push_fixed_width(&mut field, timestamp_ms, 20);
+            field.push(':');
+            push_fixed_width(&mut field, call, 8);
+            field.push(':');
+            push_fixed_width(&mut field, idx as u64, 6);
             // Serialised straight from a borrowed view rather than through `json!`, which
             // builds a whole `Value` -- a map, a `String` for each of the five keys, and a
             // `Value::String` copy of role, title and body -- only to render it and drop it.
@@ -600,5 +638,53 @@ mod raw_event_record_tests {
   value:    {through_value}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ingest_key_tests {
+    use super::*;
+
+    /// The hand-built keys are byte-identical to the `format!` they replaced.
+    ///
+    /// Both are ordering contracts, not cosmetics: raw events are read back in lexicographic
+    /// order and that is only arrival order while every component stays fixed width. A key that
+    /// merely looks right would reorder history.
+    #[test]
+    fn the_ingest_keys_are_what_format_produced() {
+        for tenant_hash in [0u64, 1, 42, 9_999_999, u64::MAX] {
+            for session in ["default", "", "s1", "a-longer-session-id"] {
+                assert_eq!(
+                    rawlog_key(tenant_hash, session),
+                    format!("context:rawlog:{tenant_hash}:{session}"),
+                    "rawlog key changed for hash={tenant_hash} session={session:?}"
+                );
+            }
+        }
+
+        for timestamp_ms in [0u64, 1, 1_700_000_000_000, u64::MAX] {
+            for call in [0u64, 7, 99_999_999] {
+                for idx in [0usize, 5, 999_999] {
+                    let mut built = String::with_capacity(36);
+                    push_fixed_width(&mut built, timestamp_ms, 20);
+                    built.push(':');
+                    push_fixed_width(&mut built, call, 8);
+                    built.push(':');
+                    push_fixed_width(&mut built, idx as u64, 6);
+
+                    assert_eq!(
+                        built,
+                        format!("{timestamp_ms:020}:{call:08}:{idx:06}"),
+                        "ordering field changed for ts={timestamp_ms} call={call} idx={idx}"
+                    );
+                }
+            }
+        }
+
+        // A value wider than its field is NOT truncated -- `{:020}` does not truncate either,
+        // and silently dropping high digits would collapse distinct keys onto one.
+        let mut wide = String::new();
+        push_fixed_width(&mut wide, u64::MAX, 3);
+        assert_eq!(wide, u64::MAX.to_string(), "a wide value must keep every digit");
     }
 }
