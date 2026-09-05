@@ -90,6 +90,31 @@ def resolved(group: str, values: dict) -> str:
     return cfg._env_name(cfg.SETTINGS_BY_KEY[SECRETS[group]], values)
 
 
+class _NothingInherited(unittest.TestCase):
+    """Resolution reads the process environment on purpose: a variable the LAUNCHER set outranks the
+    provider default, and the provider code resolves the same way, so the two still agree. That
+    makes these assertions -- which compare a runtime resolution against the fallback written in the
+    source -- true only when nothing else has set one. Sibling suites in the same process do set
+    them, which is why this passed alone and failed in the full run.
+    """
+
+    PARTICIPATING = ("MATRIXARK_EXTRACTION_API_KEY_ENV", "MATRIXARK_EMBEDDING_API_KEY_ENV",
+                     "MATRIXARK_UNDERSTANDING_PROVIDER", "MATRIXARK_EXTRACTION_PROVIDER",
+                     "MATRIXARK_EMBEDDING_PROVIDER")
+
+    def setUp(self) -> None:
+        self._inherited = {n: os.environ.get(n) for n in self.PARTICIPATING}
+        for name in self.PARTICIPATING:
+            os.environ.pop(name, None)
+
+    def tearDown(self) -> None:
+        for name, value in self._inherited.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
 class TheSourceStillSaysWhatWeThinkItSaysTest(unittest.TestCase):
     """The rest of this file is only as good as the parse. If these stop finding branches, every
     other assertion here would pass vacuously."""
@@ -103,7 +128,7 @@ class TheSourceStillSaysWhatWeThinkItSaysTest(unittest.TestCase):
         self.assertEqual({"anthropic", None}, set(extraction_key_variables()))
 
 
-class TheKeyLandsWhereTheProviderLooksTest(unittest.TestCase):
+class TheKeyLandsWhereTheProviderLooksTest(_NothingInherited):
     """The defect, from the customer's side: pick a provider, type a key, and it must reach it."""
 
     def test_every_encoder_branch_agrees(self) -> None:
@@ -145,7 +170,7 @@ class TheKeyLandsWhereTheProviderLooksTest(unittest.TestCase):
                 os.environ[setting.env] = previous
 
 
-class AnExplicitVariableStillWinsTest(unittest.TestCase):
+class AnExplicitVariableStillWinsTest(_NothingInherited):
     """The field is an override, not a suggestion -- a deployment pointing at a variable its own
     launcher fills, DEEPSEEK_API_KEY being the shipped example, must keep working."""
 
@@ -168,7 +193,7 @@ class AnExplicitVariableStillWinsTest(unittest.TestCase):
                 os.environ[variable] = previous
 
 
-class TheDefaultNoLongerPinsOneProviderTest(unittest.TestCase):
+class TheDefaultNoLongerPinsOneProviderTest(_NothingInherited):
 
     def test_it_defaults_the_way_every_other_provider_dependent_field_does(self) -> None:
         """api_base, model and base_url all default to empty, meaning 'follow the provider'. These
@@ -191,7 +216,7 @@ class TheDefaultNoLongerPinsOneProviderTest(unittest.TestCase):
         self.assertIn(extraction_key_variables()[None], extraction)
 
 
-class EveryPresetLandsItsKeySomewhereTheProviderReadsTest(unittest.TestCase):
+class EveryPresetLandsItsKeySomewhereTheProviderReadsTest(_NothingInherited):
     """Presets were never wrong, because every one of them named a variable explicitly. The two
     providers that had no preset were the two that broke, so both now have one."""
 
@@ -232,7 +257,7 @@ class EveryPresetLandsItsKeySomewhereTheProviderReadsTest(unittest.TestCase):
                         self.assertIn(value, setting.choices)
 
 
-class TheStatusPageReportsTheSameVariableTest(unittest.TestCase):
+class TheStatusPageReportsTheSameVariableTest(_NothingInherited):
     """The portal's model-configuration panel names the variable a customer should put their key in.
     It used to work that name out for itself, flat across providers, so it could disagree with where
     the key was actually written -- and the customer would follow the wrong instruction."""
