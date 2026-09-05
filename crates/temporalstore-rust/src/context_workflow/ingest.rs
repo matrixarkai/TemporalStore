@@ -4,9 +4,25 @@
 //! Context ingest + resource/skill secondary-index verification, split from context_workflow.rs.
 use super::*;
 
+/// Ingest with the public API's historical full fanout: every source emits its L1 summary.
 pub fn ingest_extract_context(
     engine: &TemporalEngine,
     request: ContextIngestExtractRequest,
+) -> ContextIngestExtractReport {
+    ingest_extract_context_with_l1_gate(engine, request, false)
+}
+
+/// The same, with the frugal L1 gate live hook ingestion uses: only a source whose body warrants
+/// one gets an L1 summary.
+///
+/// `MATRIXARK_CONTEXT_INGEST_GATE_L1` used to carry this in, because `ingest_extract_context` had
+/// nowhere to put it -- so `context_batch_ingest` set it for its whole process and the gate was on
+/// for that binary and off for every other caller. `extract_context_gated` has taken the value as
+/// an argument all along; this just gives the caller a way to supply one.
+pub fn ingest_extract_context_with_l1_gate(
+    engine: &TemporalEngine,
+    request: ContextIngestExtractRequest,
+    gate_l1: bool,
 ) -> ContextIngestExtractReport {
     // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
     // Context* write would otherwise rebuild the first-index over every live page in the shard --
@@ -22,7 +38,6 @@ pub fn ingest_extract_context(
     let source_count = request.sources.len();
     let start_time_ms = request.start_time_ms;
     let end_time_ms = request.end_time_ms;
-    let gate_l1 = context_ingest_gate_l1();
 
     for mut source in request.sources {
         source.shard_id = request.shard_id;
@@ -131,17 +146,6 @@ pub fn ingest_extract_context(
         retrieve_request,
         parity: context_pipeline_parity_evidence(),
     }
-}
-
-fn context_ingest_gate_l1() -> bool {
-    std::env::var("MATRIXARK_CONTEXT_INGEST_GATE_L1")
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
 }
 
 pub fn ingest_resource_skill_context(

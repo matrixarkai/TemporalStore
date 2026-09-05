@@ -41,7 +41,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    ingest_extract_context, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
+    ingest_extract_context_with_l1_gate, BatchExecuteRequest, Command, ContextEvent, ContextExtractRequest,
     ContextIndexRef, ContextIngestExtractRequest, ContextModelProviderConfig, ContextNode,
     ContextSourceKind, ContextDirtyNode, TemporalEngine,
 };
@@ -69,9 +69,6 @@ fn main() {
     }
     if std::env::var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD").is_err() {
         std::env::set_var("MATRIXARK_EAGER_CACHE_WARM_ON_LOAD", "0");
-    }
-    if std::env::var("MATRIXARK_CONTEXT_INGEST_GATE_L1").is_err() {
-        std::env::set_var("MATRIXARK_CONTEXT_INGEST_GATE_L1", "1");
     }
     let raw_first = env_bool("MATRIXARK_BACKFILL_RAW_FIRST");
     let checkpoint_only = env_bool("MATRIXARK_BACKFILL_CHECKPOINT_ONLY")
@@ -320,7 +317,9 @@ fn main() {
             let (chunk_accepted, chunk_failed, chunk_node_hashes) = if raw_first {
                 write_raw_sources(&engine, tenant_hash, chunk)
             } else {
-                let report = ingest_extract_context(
+                // Backfill takes the frugal L1 gate that live hook ingestion takes. This used
+                // to be an environment variable this binary set on itself.
+                let report = ingest_extract_context_with_l1_gate(
                     &engine,
                     ContextIngestExtractRequest {
                         shard_id: 1,
@@ -332,6 +331,7 @@ fn main() {
                         max_events: 1,
                         provider: ContextModelProviderConfig::default(),
                     },
+                    true,
                 );
                 (
                     report.accepted as u64,
@@ -446,7 +446,7 @@ fn main() {
         "cache_stats": cache_stats_json(&engine),
         "flush_every_accepted": flush_every_accepted,
         "skip_covered_sessions": skip_covered_sessions,
-        "gate_l1": env_bool("MATRIXARK_CONTEXT_INGEST_GATE_L1"),
+        "gate_l1": true,
         "raw_first": raw_first,
         "sub_batch": sub_batch,
     });

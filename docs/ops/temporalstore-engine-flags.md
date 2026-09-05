@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 310 of them, read by 107 functions.
+There are 309 of them, read by 106 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 310 |
-| booleans whose default this could read off the source | 45 |
+| total | 309 |
+| booleans whose default this could read off the source | 44 |
 | **defaulting on, and set by nothing** | 9 |
 | offered on the portal | 23 |
 | **that nothing in this repository sets** | 184 |
@@ -292,13 +292,12 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_STORAGE_ZONE_SIZE` | — | config, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | — | config, portal | 1 | — |
 
-## context (29)
+## context (28)
 
 The memory pipeline: what gets extracted, embedded, drained and packed. The surface a deployment tunes for recall rather than for throughput.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `MATRIXARK_CONTEXT_INGEST_GATE_L1` | off | test | 2 | — |
 | `MATRIXARK_BACKFILL_CHECKPOINT_ONLY` | — | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED` | — | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_FLUSH_EVERY_SESSION` | — | nothing | 1 | — |
