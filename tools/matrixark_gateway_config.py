@@ -715,12 +715,11 @@ _KNOB_ENV_FROZEN_AT_IMPORT = {
 }
 
 
-def _build_default(name: str) -> Optional[str]:
-    """What retrieval uses for this knob when nobody has set anything.
+def _build_constant(constant: str) -> Optional[str]:
+    """The value a retrieval constant holds, read from the module that decides it.
 
-    Read from the module that decides it, never re-typed here. A table of numbers in this file
-    would be the second copy the section above refuses to keep, and it would drift the moment a
-    budget moved.
+    Never re-typed here. A table of numbers in this file would be the second copy the section above
+    refuses to keep, and it would drift the moment a budget moved.
     """
     try:
         try:
@@ -729,8 +728,13 @@ def _build_default(name: str) -> Optional[str]:
             import matrixark_mcp_runtime_config as runtime  # type: ignore
     except Exception:  # pragma: no cover - portal still works without the retrieval modules
         return None
-    value = getattr(runtime, "DEFAULT_" + name.upper(), None)
+    value = getattr(runtime, constant, None)
     return None if value is None else str(value)
+
+
+def _build_default(name: str) -> Optional[str]:
+    """What retrieval uses for this knob when nobody has set anything."""
+    return _build_constant("DEFAULT_" + name.upper())
 
 
 def _knob_settings() -> List[Setting]:
@@ -791,6 +795,40 @@ def _knob_settings() -> List[Setting]:
     return derived
 
 
+# Settings written by hand above whose declared default is not the one the build runs. Same
+# hazard as the frozen knobs, and it is not only a display problem: `export_settings` with
+# include_defaults writes a declared default to the target as an EXPLICIT value, so cloning a
+# deployment used to hand it a shared-resource budget of 0.10 where the build runs 0.25, and three
+# blanks where the build has numbers. Read them from the module that decides them, for the same
+# reason the knobs are read rather than re-typed.
+_EXPLICIT_BUILD_DEFAULT = {
+    "retrieval.cross_session_budget_ratio": "DEFAULT_CROSS_SESSION_BUDGET_RATIO",
+    "retrieval.cross_session_max_sessions": "DEFAULT_CROSS_SESSION_MAX_SESSIONS",
+    "skills.shared_resource_budget_ratio": "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO",
+    "ingestion.time_compression_window_events": "TIME_COMPRESSION_WINDOW_EVENTS",
+}
+
+
+def _apply_build_defaults(settings: List[Setting]) -> None:
+    """Point each of the above at what the build actually runs, and say so in the help.
+
+    A blank default is the worse of the two cases it fixes: the field reads as "nothing is in
+    force" on a deployment that is, in fact, running a number.
+    """
+    by_key = {s.key: s for s in settings}
+    for key, constant in _EXPLICIT_BUILD_DEFAULT.items():
+        setting = by_key.get(key)
+        if setting is None:  # pragma: no cover - a renamed setting fails its own test, not here
+            continue
+        build = _build_constant(constant)
+        if build is None or build == setting.default:
+            continue
+        setting.default = build
+        setting.help = setting.help.rstrip() + (
+            " With nothing set this deployment runs %s." % build)
+
+
+_apply_build_defaults(SETTINGS)
 SETTINGS.extend(_knob_settings())
 SETTINGS_BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
 
