@@ -15530,3 +15530,108 @@ fn does_a_narrow_read_pay_for_the_whole_collection() {
          see a read scale and no narrow row above means anything"
     );
 }
+
+/// What does writing a message cost in BYTES as its node's history grows?
+///
+/// `writing_a_message_does_not_cost_its_nodes_history` already bounds this path, in
+/// ALLOCATIONS, and says plainly that it is "not flat yet" with the residue in the WAL append.
+/// Bytes are a different axis: four defects this sweep moved megabytes while barely moving a
+/// count, because one big serialisation is one allocation. This asks the byte question.
+///
+/// Two-sided control, both asserted: SetAdd declares its component and must stay flat;
+/// FeatureAppend clones its whole series and must scale.
+#[test]
+#[cfg(feature = "alloc-probe")]
+fn what_a_message_write_costs_in_bytes_as_history_grows() {
+    const REPS: usize = 20;
+    let dims = 384usize;
+    let cost = |kind: &str, fill: usize| -> (u64, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let make = |i: usize| -> Command {
+            match kind {
+                "ContextWriteEvent" => Command::ContextWriteEvent {
+                    tenant_hash: 1,
+                    node_hash: 42,
+                    first_write_only: false,
+                    cold_storage: false,
+                    event: Box::new(ContextEvent {
+                        event_id_hash: 1_000 + i as u64,
+                        event_time_ms: 1_700_000_000_000 + i as u64,
+                        ingestion_time_ms: 1_700_000_000_000,
+                        kind: 1,
+                        event_type: 2,
+                        actor_hash: 7,
+                        status: 0,
+                        valid_until_ms: 0,
+                        confidence: 0.9,
+                        importance: 0.5,
+                        text: format!("message {i}: the quick brown fox jumps over the lazy dog"),
+                        source_ref: format!("src/{i}"),
+                        related_node_hashes: vec![42],
+                        compact_attrs: Vec::new(),
+                        vector: (0..dims).map(|d| (d as f32) * 0.001 + i as f32).collect(),
+                    }),
+                },
+                "SetAdd" => Command::SetAdd {
+                    key: "s".to_string(),
+                    member: format!("m{i:07}").into_bytes(),
+                },
+                "FeatureAppend" => Command::FeatureAppend {
+                    key: "f".to_string(),
+                    points: vec![FeaturePoint { timestamp_ms: 1_000 + i as u64, value: vec![b'v'; 8] }],
+                },
+                other => panic!("unknown kind {other}"),
+            }
+        };
+        for i in 0..fill {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(i) });
+            assert!(out.status.ok, "{kind} fill refused: {:?}", out.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in 0..REPS {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: make(fill + i) });
+            assert!(out.status.ok, "{kind} probe refused: {:?}", out.status);
+        }
+        let bytes = probe.stop().alloc_bytes / REPS as u64;
+        // The history really is this long, so a per-write figure is not divided by a fill that
+        // silently failed.
+        let held = if kind == "ContextWriteEvent" {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            shard.context_events.values().map(|m| m.len()).sum::<usize>()
+        } else {
+            fill + REPS
+        };
+        (bytes, held)
+    };
+
+    println!("  command               bytes @200    bytes @1600     ratio   held");
+    let mut flat = 0.0f64;
+    let mut scaling = 0.0f64;
+    for kind in ["SetAdd", "FeatureAppend", "ContextWriteEvent"] {
+        let (small, small_held) = cost(kind, 200);
+        let (large, large_held) = cost(kind, 1600);
+        assert!(small > 0, "{kind}: measured zero bytes");
+        assert!(large_held >= 1600, "{kind}: history is {large_held}, expected at least 1600");
+        let ratio = large as f64 / small as f64;
+        match kind {
+            "SetAdd" => flat = ratio,
+            "FeatureAppend" => scaling = ratio,
+            _ => {}
+        }
+        println!("  {kind:20}  {small:10}  {large:13}   {ratio:6.2}x   {small_held} -> {large_held}");
+    }
+    assert!(flat < 1.5, "the flat control reported {flat:.2}x");
+    assert!(
+        scaling > 3.0,
+        "the scaling control reported {scaling:.2}x, so this probe cannot see amplification"
+    );
+    println!("  An 8x fill range: a ratio near 8 is linear in history, near 1 is flat.");
+}
