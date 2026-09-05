@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""The per-identity live caches forget the identities that stopped watching.
+"""The per-identity live cache forgets the identities that stopped watching.
 
-Two caches behind the status stream are keyed on the identity triple ``(key, tenant, account)``:
-``_LIVE_SIGNATURE``, which holds what a viewer was last told so an unchanged frame can be skipped,
-and ``_LIVE_EMBEDDING``, which holds one identity's encoding backlog so its other tabs reuse the
-read. Nothing removed an entry. ``_reset_live_cache`` exists but is for tests.
+``_LIVE_EMBEDDING`` is keyed on the identity triple ``(key, tenant, account)`` and holds one
+identity's encoding backlog so its other tabs reuse the read. Nothing removed an entry.
+``_reset_live_cache`` exists but is for tests.
+
+There were two such caches when this was written. The other held a frame's signature, and it is
+gone: caching that answer per identity meant returning one computed from a DIFFERENT frame, which
+is a correctness question rather than a memory one -- see
+``test_matrixark_a_signature_describes_its_own_frame``.
 
 So a worker's resident memory grew with the number of distinct keys that had **ever** opened a
 status stream, not the number watching one. Measured at **2,433 bytes per identity**, kept for the
@@ -53,9 +57,7 @@ class _LiveCacheTest(unittest.TestCase):
             for n in range(count):
                 key, tenant, account = _identity(n + offset)
                 embedding = await gw._embedding_for(self.server, self.cfg, key, tenant, account)
-                frame = await gw._event_frame(self.server, self.cfg, key, tenant, account,
-                                              embedding, "ok")
-                gw._frame_signature((key, tenant, account), frame)
+                await gw._event_frame(self.server, self.cfg, key, tenant, account, embedding, "ok")
         asyncio.run(run())
 
     def tick(self) -> None:
@@ -66,8 +68,6 @@ class _LiveCacheTest(unittest.TestCase):
     def age_everything(self) -> None:
         """Put every entry past its own reader's staleness test, without waiting for a clock."""
         now = time.time()
-        for identity, (_at, signature) in list(gw._LIVE_SIGNATURE.items()):
-            gw._LIVE_SIGNATURE[identity] = (now - gw.EVENT_TICK_S - 1.0, signature)
         for identity, (_at, value) in list(gw._LIVE_EMBEDDING.items()):
             gw._LIVE_EMBEDDING[identity] = (now - gw._embedding_refresh_interval(value) - 1.0,
                                             value)
@@ -76,17 +76,9 @@ class _LiveCacheTest(unittest.TestCase):
 class TheCachesForgetWhoLeftTest(_LiveCacheTest):
 
     def test_the_sweep_has_something_to_sweep(self) -> None:
-        """A leak test over empty caches would pass while nothing was ever cached."""
+        """A leak test over an empty cache would pass while nothing was ever cached."""
         self.watch(20)
-        self.assertEqual(20, len(gw._LIVE_SIGNATURE))
         self.assertEqual(20, len(gw._LIVE_EMBEDDING))
-
-    def test_a_signature_does_not_outlive_its_own_staleness(self) -> None:
-        self.watch(20)
-        self.age_everything()
-        self.tick()
-        left = [i for i in gw._LIVE_SIGNATURE if i[0].startswith("k-0000")]
-        self.assertEqual([], left, "signatures too stale to be served were kept anyway")
 
     def test_an_embedding_does_not_outlive_its_own_interval(self) -> None:
         self.watch(20)
@@ -102,24 +94,16 @@ class TheCachesForgetWhoLeftTest(_LiveCacheTest):
         describe who is watching now, not everyone who ever did.
         """
         self.watch(2000)
-        self.assertEqual(2000, len(gw._LIVE_SIGNATURE))
+        self.assertEqual(2000, len(gw._LIVE_EMBEDDING))
         self.age_everything()
         self.tick()
-        self.assertLess(len(gw._LIVE_SIGNATURE), 10,
-                        "the worker still holds an entry for every key that ever watched")
         self.assertLess(len(gw._LIVE_EMBEDDING), 10,
                         "the worker still holds a backlog read for every key that ever watched")
 
 
 class NothingStillWorthServingIsDroppedTest(_LiveCacheTest):
-    """The floor. Clearing both dicts on every tick would pass every test above and destroy the
-    only reason either cache exists."""
-
-    def test_a_fresh_signature_survives_a_tick(self) -> None:
-        self.watch(3)
-        self.tick()
-        kept = [i for i in gw._LIVE_SIGNATURE if i[0].startswith("k-0000")]
-        self.assertEqual(3, len(kept), "a signature the reader would still have served was dropped")
+    """The floor. Clearing the dict on every tick would pass every test above and destroy the only
+    reason the cache exists."""
 
     def test_a_fresh_embedding_survives_a_tick(self) -> None:
         self.watch(3)

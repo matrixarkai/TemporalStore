@@ -2144,16 +2144,16 @@ def _reset_live_cache() -> None:
     _LIVE_DATANODE_INFLIGHT = None
     _LIVE_EMBEDDING.clear()
     _LIVE_EMBEDDING_INFLIGHT.clear()
-    _LIVE_SIGNATURE.clear()
 
 
 def _forget_idle_identities(now: float) -> None:
     """Drop live-cache entries that their own readers would already ignore.
 
-    Both caches are keyed on the identity triple, and nothing removed an entry. A worker's resident
+    The cache is keyed on the identity triple, and nothing removed an entry. A worker's resident
     memory therefore grew with the number of distinct keys that had EVER opened a status stream
-    rather than the number watching one -- measured at 2,433 bytes per identity, held for the life
-    of the process, of which every byte was already too stale to be served.
+    rather than the number watching one -- measured at 2,433 bytes per identity across the two
+    caches this once swept, held for the life of the process, of which every byte was already too
+    stale to be served.
 
     The tests below are the readers' own staleness checks, called with the same arguments. An entry
     is dropped exactly when it had stopped being an answer, so nothing that would have been served
@@ -2164,9 +2164,6 @@ def _forget_idle_identities(now: float) -> None:
     stay behind until somebody watches again -- bounded by the viewers of one tick, which is the
     thing that was unbounded before.
     """
-    for identity, entry in list(_LIVE_SIGNATURE.items()):
-        if (now - entry[0]) >= EVENT_TICK_S:
-            _LIVE_SIGNATURE.pop(identity, None)
     for identity, entry in list(_LIVE_EMBEDDING.items()):
         if (now - entry[0]) >= _embedding_refresh_interval(entry[1]):
             _LIVE_EMBEDDING.pop(identity, None)
@@ -2243,26 +2240,26 @@ def _shared_live_parts() -> Json:
     return _LIVE_SHARED
 
 
-# identity -> (built at, signature). The signature is what a frame SAYS, with the clock left out,
-# so two viewers on one key do not each serialise the same answer to find out it has not changed.
-_LIVE_SIGNATURE: dict = {}
-
-
-def _frame_signature(identity: tuple, frame: Json) -> bytes:
-    """What this frame says, ignoring when it said it.
+def _frame_signature(frame: Json) -> bytes:
+    """What THIS frame says, ignoring when it said it.
 
     The timestamp is excluded deliberately. It changes every tick by definition, so a comparison
     that included it would never find two frames equal -- the check would run, cost something, and
     never once skip a send.
+
+    Derived from the frame every time, and it takes no identity, because there is no answer here
+    that depends on who is asking. It used to be cached per identity for a tick so that two viewers
+    on one key did not each serialise the same answer. On a hit that returned the signature of a
+    frame built EARLIER and ignored the one passed in -- and the caller sends only when the
+    signature differs from the last it sent, so a viewer could be told nothing had changed while
+    holding a frame that had, and waited another tick for state it already had.
+
+    The cache saved 54 microseconds a call: 0.27 ms of CPU per second at ten viewers on one
+    identity, 2.7 ms at a hundred. A status stream arriving a tick late is the thing it exists not
+    to be.
     """
-    cached = _LIVE_SIGNATURE.get(identity)
-    now = time.time()
-    if cached is not None and (now - cached[0]) < EVENT_TICK_S:
-        return cached[1]
-    signature = json.dumps({field: value for field, value in frame.items() if field != "ts"},
-                           default=str, sort_keys=True).encode("utf-8")
-    _LIVE_SIGNATURE[identity] = (now, signature)
-    return signature
+    return json.dumps({field: value for field, value in frame.items() if field != "ts"},
+                      default=str, sort_keys=True).encode("utf-8")
 
 
 async def _datanode_for_frame(cfg: GatewayConfig) -> Optional[str]:
@@ -2456,7 +2453,7 @@ async def _event_stream(server: Any, cfg: GatewayConfig, scope: Json, receive: C
             datanode = await _datanode_for_frame(cfg)
             frame = await _event_frame(server, cfg, key, tenant, account, embedding,
                                        datanode=datanode)
-            signature = _frame_signature((key, tenant, account), frame)
+            signature = _frame_signature(frame)
             if signature == last_signature:
                 # Nothing has changed since the last frame, so there is nothing to say. The comment
                 # keeps the connection alive through an idle proxy; the browser's parser drops
