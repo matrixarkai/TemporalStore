@@ -178,10 +178,15 @@ pub struct TemporalEngine {
 }
 
 
+/// How many times a sweep has moved pages out, for tests that need to know the bound fired
+/// rather than that the count merely happened to stay low.
+pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// TS_WAL_RESIDENT_PAGES: how many log-resident pages one shard may hold before the oldest are
 /// written out to the block store. Zero disables the bound entirely.
 ///
-/// resident pages are bounded because an unbounded set costs twice. Each one is a registration,
+/// Resident pages are bounded because an unbounded set costs twice. Each one is a registration,
 /// which is memory; each one also pins `min_registered_sequence`, and reclaim may not truncate
 /// below the lowest registration — so a set that only grows is a log that can never be reclaimed
 /// whatever the retention policy says. Measured on an ingest of distinct keys, registrations
@@ -190,11 +195,6 @@ pub struct TemporalEngine {
 /// The default is deliberately generous. The recent ones are worth keeping where they are: a page
 /// written moments ago is the one a read is most likely to want, and its bytes are already in the
 /// record just written. This is a ceiling on how far behind the dump can fall, not a cache policy.
-/// How many times a sweep has moved pages out, for tests that need to know the bound fired
-/// rather than that the count merely happened to stay low.
-pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
 fn wal_resident_page_limit() -> usize {
     std::env::var("TS_WAL_RESIDENT_PAGES")
         .ok()
@@ -1990,9 +1990,6 @@ const INDEX_BINARY_VERSION_BYTES: usize = 4;
 /// path for a large cut in bytes written and bytes read at load.
 const INDEX_ZSTD_LEVEL: i32 = 3;
 
-/// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
-/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
-/// index written either way loads in either setting.
 /// Does this look like a served index, in either of the two formats a reader may be handed?
 ///
 /// A JSON index starts with `{`; a container starts with its magic. Callers that only need to
@@ -2001,6 +1998,11 @@ pub(crate) fn bytes_look_like_served_index(bytes: &[u8]) -> bool {
     bytes.first() == Some(&b'{') || bytes.starts_with(INDEX_CONTAINER_MAGIC)
 }
 
+/// TS_INDEX_BINARY: write the served index in the binary container instead of raw JSON.
+///
+/// Reading is unconditional and sniffed, so this flag only ever controls what is WRITTEN, and an
+/// index written either way loads in either setting.
+///
 /// ON by default; `TS_INDEX_BINARY=0` is the escape hatch.
 ///
 /// The container was built, measured and then left switched off, so every store written since has
