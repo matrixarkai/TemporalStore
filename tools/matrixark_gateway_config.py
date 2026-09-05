@@ -357,6 +357,14 @@ SETTINGS: List[Setting] = [
             "Embedding text window (tokens)", "int", "128", "restart",
             "Must match what the encoder can actually take; a larger window means fewer chunks per "
             "document."),
+    # The encoder call's counterpart to extraction.timeout_sec. Read inside the request function
+    # rather than captured at import, so a change takes effect on the next call -- which is why this
+    # one is live where the extraction timeout is not.
+    Setting("embedding.timeout_sec", "embedding", "MATRIXARK_EMBEDDING_API_TIMEOUT_S",
+            "Embedding timeout (s)", "float", "30", "live",
+            "How long one encoder call may take before it is abandoned. A local encoder on a cold "
+            "start, or a large batch, can need more than the default 30. Exceeding it is treated "
+            "as an unreachable encoder: hash vectors unless Fail instead of falling back is on."),
     Setting("embedding.require_model_embeddings", "embedding", "MATRIXARK_REQUIRE_MODEL_EMBEDDINGS",
             "Fail instead of falling back", "bool", "0", "live",
             "On, an unreachable encoder fails the request. Off, it silently degrades to hash "
