@@ -17,10 +17,45 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import time
 from pathlib import Path
 
 DEFAULT_MAX_AGE_S = 86400.0
+
+
+def workspace_identity(workspace_root: str) -> str:
+    """The repository a workspace belongs to, so sibling worktrees share one pack.
+
+    Keying on the checkout directory fragments the cache the moment an agent works across git
+    worktrees -- every new worktree starts with nothing to fall back to, which is precisely the
+    turn the fallback exists for. The distinction worth keeping is between PROJECTS, and a git
+    common dir draws exactly that line: sibling worktrees share one, a different project has its
+    own.
+
+    Any failure returns the path unchanged, so a workspace that is not a repository, or a box
+    without git, behaves as before rather than losing its cache.
+    """
+    if not workspace_root:
+        return "-"
+    try:
+        finished = subprocess.run(
+            ["git", "-C", workspace_root, "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:  # noqa: BLE001 - identity is an optimisation; never fail a turn for it.
+        return workspace_root
+    if finished.returncode != 0:
+        return workspace_root
+    common = finished.stdout.strip()
+    if not common:
+        return workspace_root
+    # `--git-common-dir` may answer relatively (".git") depending on git version and cwd.
+    if not os.path.isabs(common):
+        common = os.path.join(workspace_root, common)
+    return os.path.realpath(common)
 
 
 def context_pack_cache_path(agent: str, workspace_root: str) -> Path:
@@ -32,7 +67,8 @@ def context_pack_cache_path(agent: str, workspace_root: str) -> Path:
     root = os.environ.get("MATRIXARK_HOOK_PACK_CACHE_DIR") or str(
         Path.home() / ".matrixark" / "hook-pack-cache"
     )
-    stamp = hashlib.sha256((workspace_root or "-").encode("utf-8")).hexdigest()[:16]
+    # Sibling worktrees of one repository share a pack; different projects never do.
+    stamp = hashlib.sha256(workspace_identity(workspace_root).encode("utf-8")).hexdigest()[:16]
     return Path(root) / f"{agent}-{stamp}.txt"
 
 
