@@ -389,6 +389,33 @@ SETTINGS: List[Setting] = [
             "vectors and the deployment looks healthy."),
 
     # ---- skill/resource retrieval budgets ------------------------------------------------------
+    # The four caps below are the backstop on each section of a pack. They are NOT the way to size
+    # a section -- the ratio beside each one is -- and they were doing that job by accident: at the
+    # 500,000-token default they cut skills from 10% to 1.6% and shared resources from 25% to 3.3%,
+    # so a customer who set a percentage got a sixth of it and nothing said so. Raised to sit above
+    # what each ratio yields at the default total, which is asserted rather than eyeballed, and
+    # offered here so the backstop is a decision rather than a surprise.
+    Setting("skills.shared_skill_max_budget_tokens", "skills",
+            "MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS",
+            "Skill budget ceiling (tokens)", "int", "65536", "restart",
+            "A hard ceiling on the skill section, whatever the percentage works out to. It exists "
+            "for an unusually large request, not to size the section: leave it above what your "
+            "percentage yields, or the percentage stops meaning anything."),
+    Setting("skills.shared_resource_max_budget_tokens", "skills",
+            "MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS",
+            "Resource budget ceiling (tokens)", "int", "131072", "restart",
+            "The same backstop for shared resource chunks. Above what the resource percentage "
+            "yields at your context size, so the percentage is what decides."),
+    Setting("retrieval.cross_session_max_budget_tokens", "retrieval",
+            "MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS",
+            "Cross-session ceiling (tokens)", "int", "65536", "restart",
+            "A hard ceiling on what other sessions may contribute, whatever the cross-session "
+            "percentage works out to."),
+    Setting("retrieval.cross_session_profile_max_budget_tokens", "retrieval",
+            "MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
+            "Profile ceiling (tokens)", "int", "196608", "restart",
+            "The same backstop for the durable profile -- the aggregation that carries memory into "
+            "a fresh session, and the section most likely to want room."),
     Setting("skills.shared_skill_budget_ratio", "skills", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
             "Skill share of the context budget", "float", "0.10", "restart",
             "Fraction of a context pack reserved for skill sections."),

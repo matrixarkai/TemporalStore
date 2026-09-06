@@ -1647,6 +1647,51 @@ def _model_picker_body(target: str) -> Json:
     return body
 
 
+def _shared_budget_summary() -> Json:
+    """What each section of a pack is allowed, asked of the packer rather than worked out here.
+
+    The field this replaces reported `MATRIXARK_MAX_BUDGET_TOKENS`, a variable NOTHING reads -- not
+    the packer, not the engine, not the config file. It said 8192 while the section it named was
+    deciding its size from a percentage of a 500,000-token budget, so the one number a customer
+    could see about their pack was invented.
+
+    `bound_by` is the point of the whole panel: a percentage that a ceiling is overriding is a
+    control that does not control anything, and that is exactly the state this deployment shipped in.
+    """
+    try:
+        try:
+            from tools import matrixark_mcp_budget_policies as policies  # type: ignore
+            from tools import matrixark_mcp_runtime_config as runtime  # type: ignore
+        except ImportError:
+            import matrixark_mcp_budget_policies as policies  # type: ignore
+            import matrixark_mcp_runtime_config as runtime  # type: ignore
+    except Exception:  # pragma: no cover - portal still works without the retrieval modules
+        return {"available": False}
+    total = runtime.DEFAULT_MAX_CONTEXT_TOKENS
+    policy = policies.build_shared_context_policy({}, {}, remote_budget_tokens=total)
+
+    def section(ratio_key: str, tokens_key: str, ceiling_key: str) -> Json:
+        ratio = float(policy.get(ratio_key) or 0.0)
+        ceiling = int(policy.get(ceiling_key) or 0)
+        by_percentage = int(total * ratio)
+        allowed = int(policy.get(tokens_key) or 0)
+        return {
+            "percent": round(ratio * 100, 2),
+            "tokens": allowed,
+            "ceiling_tokens": ceiling,
+            "by_percentage_tokens": by_percentage,
+            "bound_by": "ceiling" if ceiling and by_percentage > ceiling else "percentage",
+        }
+
+    return {
+        "available": True,
+        "context_budget_tokens": total,
+        "skills": section("skill_budget_ratio", "skill_budget_tokens", "skill_max_budget_tokens"),
+        "resources": section("resource_budget_ratio", "resource_budget_tokens",
+                             "resource_max_budget_tokens"),
+    }
+
+
 def _model_config_snapshot() -> Json:
     """The effective extraction/embedding/skill-budget configuration, redacted for display.
 
@@ -1704,9 +1749,13 @@ def _model_config_snapshot() -> Json:
         "require_model_embeddings": require_model_embeddings,
         **_key_state(embedding_key_env),
     }
+    # `max_budget_tokens` used to sit here, reporting a variable nothing reads. What a customer
+    # needs is what each section is actually allowed, which is a percentage of the context budget
+    # until a ceiling says otherwise -- so the packer is asked, and both numbers are shown.
+    budgets = _shared_budget_summary()
     skills: Json = {
         "shared_skill_budget_ratio": _env("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"),
-        "max_budget_tokens": _env("MATRIXARK_MAX_BUDGET_TOKENS", "8192"),
+        "budgets": budgets,
         "skill_chunks_per_skill": _env("MATRIXARK_SKILL_CHUNKS_PER_SKILL", "3"),
         "skill_reserved_refs": _env("MATRIXARK_SKILL_RESERVED_REFS", "3"),
     }
@@ -1758,6 +1807,15 @@ def _model_config_snapshot() -> Json:
             "deterministic path. The key goes into " + extraction_key_env + ", which is what "
             "Extraction key variable names."
         )
+    for _name in ("skills", "resources"):
+        _section = (budgets.get(_name) or {}) if budgets.get("available") else {}
+        if _section.get("bound_by") == "ceiling":
+            warnings.append(
+                "The " + _name + " share of a pack is set to " + str(_section["percent"]) + "% of "
+                + str(budgets["context_budget_tokens"]) + " tokens, which is "
+                + str(_section["by_percentage_tokens"]) + ", but the ceiling beside it allows "
+                + str(_section["ceiling_tokens"]) + ". The percentage is not what decides here: "
+                "raise the ceiling, or set the percentage to what you actually want.")
     if _gwconfig.embedding_provider_effect(embedding_provider) == "hash" \
             and not unrecognised_embedding:
         warnings.append(
