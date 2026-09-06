@@ -283,21 +283,84 @@ def _encode_log_block(records: list[Json]) -> bytes:
     return _DELTA_BLOCK_CODEC_ZLIB + len(payload).to_bytes(4, "big") + payload
 
 
+def _plain_run_lines(head: bytes, handle):
+    """JSON lines at a block boundary, stopping where they stop.
+
+    A process that is not this module appends plain JSON to a log, and that has to stay readable --
+    fixtures are built that way and out-of-process writers exist. At a block boundary the framing is
+    exact, so a reader can tell them apart: a plain line starts with `{`, a block starts with a
+    codec byte.
+
+    The run is NOT assumed to reach the end of the file. `_log_append_form` reads the magic at the
+    head, so this module keeps appending blocks after someone else's plain lines, and a real log
+    interleaves:
+
+        [block][block][plain][plain][block]
+
+    Reading the remainder as one string fails to decode at that trailing block and loses everything
+    after the plain run -- which is what "75 != 50" looked like. So this consumes complete lines
+    while they decode and look like JSON, then leaves the handle positioned at the first byte that
+    does not, for the caller to parse as a block.
+
+    A line at a time, because a shard runs to MATRIXARK_LOCAL_JSONL_MAX_BYTES and reading it whole
+    would undo the bound the streaming reader exists for.
+
+    Yields nothing and restores the position when the first bytes are not text at all: that is the
+    TORN-BLOCK case, and it must keep being dropped rather than read as garbage.
+    """
+    start = handle.tell() - len(head)
+    handle.seek(start)
+    lines: list[str] = []
+    while True:
+        at = handle.tell()
+        raw = handle.readline()
+        if not raw:
+            break
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            handle.seek(at)
+            break
+        if not line.strip():
+            continue
+        if not line.lstrip().startswith("{"):
+            handle.seek(at)
+            break
+        lines.append(line)
+    if not lines:
+        handle.seek(start)
+    return lines
+
+
 def _iter_block_stream_lines(handle):
     """Every line of a block-stream shard, one block decompressed at a time."""
     while True:
         header = handle.read(_DELTA_BLOCK_HEADER_BYTES)
         if len(header) < _DELTA_BLOCK_HEADER_BYTES:
+            if header:
+                # Fewer bytes than a header, at a boundary: plain text is the only thing this can
+                # be other than a torn write, and _plain_run_lines tells them apart.
+                for line in _plain_run_lines(header, handle):
+                    yield line
             return
         codec = header[:1]
         length = int.from_bytes(header[1:], "big")
+        if codec not in (_DELTA_BLOCK_CODEC_ZLIB, _DELTA_BLOCK_CODEC_ZLIB_ARRAY):
+            # Not a block. Either something appended plain JSON here -- which another process is
+            # allowed to do and must keep reading -- or the file is damaged. `_plain_run_lines`
+            # tells them apart and leaves the handle where the text stops, so a block written
+            # AFTER that append is read by the next turn of this loop rather than lost.
+            plain = _plain_run_lines(header, handle)
+            for line in plain:
+                yield line
+            if plain:
+                continue
+            return
         body = handle.read(length)
-        if len(body) < length or codec not in (_DELTA_BLOCK_CODEC_ZLIB,
-                                               _DELTA_BLOCK_CODEC_ZLIB_ARRAY):
-            # A torn final block, or one this build does not know. Both mean the same thing here:
-            # stop, and let the caller work with what came before it -- a half-written append is
-            # exactly what a crash mid-write leaves, and dropping it is what the plain form does
-            # with a half-written line.
+        if len(body) < length:
+            # A torn final block: stop, and let the caller work with what came before it. A
+            # half-written append is what a crash mid-write leaves, and dropping it is what the
+            # plain form does with a half-written line.
             return
         decoded = zlib.decompress(body)
         if codec == _DELTA_BLOCK_CODEC_ZLIB_ARRAY:

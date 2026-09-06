@@ -230,5 +230,118 @@ class LogIsWrittenInBlocksTest(unittest.TestCase):
         self.assertLessEqual(len(rotated) + 1, retained)
 
 
+    def test_a_plain_append_onto_a_block_log_still_reads(self):
+        """The reason this format shipped off by default.
+
+        Something that is not this module appends plain JSON lines to the log -- fixtures are built
+        that way and out-of-process writers exist -- and that used to make everything past the
+        append unreadable. At a block boundary the framing is exact, so a reader can tell a plain
+        line (starts with `{`) from a block (starts with a codec byte).
+        """
+        import json as _json
+
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = True
+        adapter = MatrixArkLocalAdapter(self.log)
+        adapter.append_many(_records(0, 5))
+        before = self._appended(self.log)
+        self.assertEqual(5, len(before))
+
+        with self.log.open("a", encoding="utf-8") as handle:
+            for record in _records(100, 3):
+                print(_json.dumps(record, separators=(",", ":")), file=handle)
+
+        after = self._appended(self.log)
+        self.assertEqual(before, after[:len(before)],
+                         "the block records stopped reading after a plain append")
+        self.assertEqual(8, len(after), "the plain append was not read")
+
+    def test_a_block_written_after_a_plain_append_is_not_lost(self):
+        """A plain run does NOT mean the rest of the file is text.
+
+        `_log_append_form` reads the magic at the head, so this module keeps appending blocks after
+        someone else's plain lines and a real log interleaves. Reading the remainder as one string
+        fails to decode at the trailing block and silently drops everything after the plain run --
+        which is what a "75 != 50" looked like while this was being written.
+        """
+        import json as _json
+
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = True
+        adapter = MatrixArkLocalAdapter(self.log)
+        adapter.append_many(_records(0, 4))
+        with self.log.open("a", encoding="utf-8") as handle:
+            for record in _records(100, 2):
+                print(_json.dumps(record, separators=(",", ":")), file=handle)
+        MatrixArkLocalAdapter(self.log).append_many(_records(200, 4))
+
+        ids = [record["event_id_hash"] for record in self._appended(self.log)]
+        self.assertEqual(10, len(ids), "records were lost across the block/plain/block seam")
+        for expected in (0, 100, 200):
+            self.assertIn(expected, ids, "the run starting at %d is missing" % expected)
+        self.assertEqual(sorted(ids), ids, "records came back out of order across the seam")
+
+    def test_a_torn_block_is_still_dropped_not_read_as_text(self):
+        """The tolerance must not swallow the crash-safety property.
+
+        A torn block's remainder is compressed bytes. It must keep being dropped rather than read
+        as lines -- otherwise a half-written append turns into garbage records instead of an
+        absence, which is the one outcome worse than losing the append.
+        """
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = True
+        adapter = MatrixArkLocalAdapter(self.log)
+        adapter.append_many(_records(0, 5))
+        adapter.append_many(_records(5, 5))
+        whole = self._appended(self.log)
+        self.assertEqual(10, len(whole))
+
+        raw = self.log.read_bytes()
+        self.log.write_bytes(raw[: len(raw) - 25])
+        kept = self._appended(self.log)
+        self.assertLess(len(kept), len(whole), "the torn block was read rather than dropped")
+        self.assertEqual(whole[:len(kept)], kept, "the survivors are not a clean prefix")
+
+
+    def test_the_plain_run_stops_at_text_that_is_not_json(self):
+        """The shape guard, exercised directly.
+
+        End-to-end it never decides anything: a compressed block fails the UTF-8 decode first, so
+        the two guards overlap and a mutation removing this one survives every scenario test. It
+        matters for input that IS valid UTF-8 and is NOT JSON -- which is what a block's payload is
+        whenever it happens to be ASCII-safe.
+
+        Asserts the handle is left AT the offending byte, because the caller resumes block parsing
+        from there: stopping without rewinding loses a block, and not stopping at all reads one as
+        text.
+        """
+        from tools.matrixark_mcp_local_adapter import _plain_run_lines
+
+        blob = (b'{"record_type":"context_event","event_id_hash":1}\n'
+                b'{"record_type":"context_event","event_id_hash":2}\n'
+                b'NOT-JSON-BUT-VALID-UTF8\n'
+                b'{"record_type":"context_event","event_id_hash":3}\n')
+        path = self.store / "crafted.bin"
+        path.write_bytes(blob)
+        with path.open("rb") as handle:
+            head = handle.read(5)
+            lines = _plain_run_lines(head, handle)
+            stopped_at = handle.tell()
+
+        self.assertEqual(2, len(lines), "the run did not stop at the non-JSON line")
+        self.assertEqual(blob.index(b"NOT-JSON"), stopped_at,
+                         "the handle is not positioned at the byte that stopped the run")
+
+    def test_the_plain_run_refuses_bytes_that_are_not_text(self):
+        """The torn-block case, exercised directly for the same reason."""
+        from tools.matrixark_mcp_local_adapter import _plain_run_lines
+
+        path = self.store / "torn.bin"
+        path.write_bytes(b"\x02\x00\x00\x10\xff\xfe\x00\x9c\x81\x02\xab")
+        with path.open("rb") as handle:
+            head = handle.read(5)
+            lines = _plain_run_lines(head, handle)
+            self.assertEqual([], lines, "compressed bytes were read as lines")
+            self.assertEqual(0, handle.tell(),
+                             "the handle was not rewound, so the caller cannot retry the block")
+
+
 if __name__ == "__main__":
     unittest.main()
