@@ -3632,11 +3632,27 @@ mod tests {
         // request costs: parsing, routing to a handler, admission, and building the reply. There
         // is no backend at 127.0.0.1:1, so the execute arm pays the failure path too -- that is
         // the point of showing the config read beside it, which answers without leaving the proxy.
-        let execute_body = serde_json::to_vec(&serde_json::json!({
-            "shard_id": 1,
-            "command": {"StringGet": {"key": "k"}},
-        }))
+        // Serialised from the REQUEST TYPE, not hand-written. The literal that used to sit here
+        // spelled the command `{"StringGet": {...}}`, and `Command` is internally tagged, so it
+        // never parsed: every number this row has ever reported was the cost of REJECTING a
+        // malformed body with a 400, not the cost of a request. A body built from the type cannot
+        // drift out of the format again.
+        let execute_body = serde_json::to_vec(&ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: "k".to_string() },
+        })
         .expect("body");
+        assert_ne!(
+            proxy
+                .handle(crate::proxy::HttpRequest {
+                    method: "POST".to_string(),
+                    path: "/execute".to_string(),
+                    body: execute_body.clone(),
+                })
+                .0,
+            400,
+            "the execute rows measure a request, not a parse rejection"
+        );
         let _ = proxy.handle(crate::proxy::HttpRequest {
             method: "POST".to_string(),
             path: "/execute".to_string(),
@@ -3759,6 +3775,53 @@ mod tests {
         }
         let counts = probe.stop();
         rows.push(("POST /context/ingest, backend ANSWERS", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        // The command forward, which nothing else here measures: the /execute row above has no
+        // backend and returns before it ever forwards, so the whole client send path -- headers,
+        // body, connection, response parse -- was invisible to this benchmark.
+        serving
+            .client()
+            .insert_cached_route_for_test(1, backend.clone());
+        let (code, _) = serving.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/execute".to_string(),
+            body: execute_body.clone(),
+        });
+        assert_eq!(code, 200, "the stub backend must answer /execute, or this measures the error tail");
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = serving.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/execute".to_string(),
+                body: execute_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("POST /execute, backend ANSWERS", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        // What the forward above is made of, so the next person optimising it knows which part to
+        // look at rather than guessing from the total.
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let parsed = crate::http::parse_json::<ExecuteRequest>(&execute_body);
+            std::hint::black_box(&parsed);
+        }
+        let counts = probe.stop();
+        rows.push(("  of which: parse the body", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let typed = ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: "k".to_string() },
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let encoded = serde_json::to_vec(&typed);
+            std::hint::black_box(&encoded);
+        }
+        let counts = probe.stop();
+        rows.push(("  of which: re-encode to forward", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
         println!();
         println!("  path                    allocs/call   bytes/call");
