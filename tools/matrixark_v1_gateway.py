@@ -2870,15 +2870,27 @@ def _encoder_summary() -> Json:
     zero pending would otherwise read as "all done".
     """
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip()
-    deterministic = provider.lower() in ("", "deterministic")
+    # Asked of the classifier, not decided here. The pair this replaced -- ("", "deterministic") --
+    # was the last hand-written copy of that question in this file, and it was the incomplete kind:
+    # "local" is a synonym for the hash fallback and a misspelt provider name falls through to it,
+    # and both were reported as a working semantic encoder with nothing waiting to be said.
+    effect = _gwconfig.embedding_provider_effect(provider)
+    if effect == "hash" and _gwconfig.provider_is_unrecognised("embedding", provider):
+        note = ("The embedding provider is set to " + repr(provider) + ", which nothing "
+                "recognises, so every vector is a hash fallback and nothing is waiting to be "
+                "encoded.")
+    elif effect == "hash":
+        note = ("No encoder is configured, so nothing is waiting to be encoded and nothing ever "
+                "will be: every vector is a hash fallback.")
+    else:
+        note = ""
     return {
         "provider": provider,
         "model": os.environ.get("MATRIXARK_EMBEDDING_MODEL", "").strip(),
-        "semantic": not deterministic,
+        "semantic": effect != "hash",
         "drainer_enabled": os.environ.get("MATRIXARK_EMBED_DRAINER", "").strip().lower()
         in ("1", "true", "yes", "on"),
-        "note": ("No encoder is configured, so nothing is waiting to be encoded and nothing ever "
-                 "will be: every vector is a hash fallback.") if deterministic else "",
+        "note": note,
     }
 
 

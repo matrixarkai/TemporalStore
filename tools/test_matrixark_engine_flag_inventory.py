@@ -105,6 +105,19 @@ def _regenerate_into(directory: str) -> str:
 
 ROOT_PATH = pathlib.Path(ROOT)
 
+def _rows() -> dict:
+    """{flag: its row} from the generated inventory table."""
+    with open(DOC, encoding="utf-8") as handle:
+        text = handle.read()
+    found = {}
+    for line in text.splitlines():
+        if not line.startswith("| `"):
+            continue
+        name = line.split("`")[1]
+        found[name] = line
+    return found
+
+
 class TheInventoryMatchesTheEngineTest(unittest.TestCase):
 
     def test_the_document_exists(self) -> None:
@@ -335,6 +348,30 @@ class TheInventoryKnowsWhatTheCustomerCanSeeTest(unittest.TestCase):
     Checked against `matrixark_gateway_config.SETTINGS`, which is what the portal renders, rather
     than against the built HTML -- the page is generated from that list, so the list is the claim.
     """
+
+    def test_a_flag_only_a_test_sets_is_not_credited_to_a_script(self) -> None:
+        """The "set by" column exists to answer whether anyone throws the switch. A Python test's
+        `os.environ["X"] = ...` matches the script pattern exactly, so a flag no deployment
+        configures was reported as one a script sets -- and TS_WAL_LEGACY_RECOVERY, a flag whose
+        whole question is whether anything still needs it, read as script-configured.
+
+        The consequence beyond the wrong answer: adding any test that names a flag rewrote this
+        generated document with a claim about deployments.
+        """
+        rows = _rows()
+        row = rows.get("TS_WAL_LEGACY_RECOVERY")
+        self.assertIsNotNone(row, "the flag this is about is no longer listed")
+        surfaces = {s.strip() for s in row.split("|")[3].split(",") if s.strip()}
+        self.assertIn("test", surfaces)
+        self.assertNotIn("script", surfaces)
+
+    def test_a_flag_a_real_script_sets_is_still_credited(self) -> None:
+        """The floor. If nothing were ever labelled "script" any more, the assertion above would
+        pass on a document that had lost the distinction entirely."""
+        rows = _rows()
+        scripted = [name for name, row in rows.items()
+                    if "script" in {s.strip() for s in row.split("|")[3].split(",")}]
+        self.assertTrue(scripted, "no flag is credited to a script at all")
 
     def test_every_offered_engine_flag_is_marked_portal(self) -> None:
         sys.path.insert(0, TOOLS)

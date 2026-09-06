@@ -596,7 +596,13 @@ def _setters_by_name():
                 for name in CONFIG_NAME.findall(body):
                     found.setdefault(name, set()).add("config")
                 continue
+            # A test that sets a flag is a TEST, not a launcher configuring a deployment. The
+            # script pattern matches a Python test's os.environ assignment identically, so without
+            # this every flag a unit test touches was reported as one a script sets -- and adding a
+            # test that names a flag rewrote this document with a claim about deployments.
+            is_test = path.name.startswith("test_") or "tests" in path.parts
             for label, pattern in SETTERS:
+                label = "test" if is_test else label
                 for name in pattern.findall(body):
                     found.setdefault(name, set()).add(label)
     return found
