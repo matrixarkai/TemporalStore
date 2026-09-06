@@ -1734,7 +1734,8 @@ class BenchmarkReader:
             candidate_first=self.config.candidate_first,
             candidate_only=self.config.candidate_only,
         )
-        max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "160"))
+        # The number the contract publishes for this run, not a literal beside it.
+        max_tokens = reader_max_tokens_from_env()
         payload = {
             "model": self.config.model,
             "temperature": 0,
@@ -1832,7 +1833,11 @@ class BenchmarkReader:
         candidate_hint = ""
         if self.config.include_extractive_hint and (self.config.candidate_only or self.config.candidate_hybrid):
             candidate_hint = extractive_reader_hint(question, blocks).strip()
-        max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "64"))
+        # The same resolver as the HTTP reader above. This defaulted to 64 where that one
+        # defaulted to 160, so with the variable unset the two backends of ONE reader wrote
+        # answers of different lengths -- and the shared-model contract, which requires both
+        # sides to use 'the same reader output-token budget', reported 160 for both.
+        max_tokens = reader_max_tokens_from_env()
         messages = [
             {"role": "system", "content": OSS_READER_SYSTEM_PROMPT},
             {
