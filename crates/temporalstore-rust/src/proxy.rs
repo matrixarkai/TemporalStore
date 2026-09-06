@@ -4788,6 +4788,145 @@ mod tests {
         assert_eq!(policy.max_inflight_requests, 1);
     }
 
+    /// A body shaped the way the published spec describes is one the proxy can parse.
+    ///
+    /// The key fields are READ OUT OF THE SPEC, not written here. The spec used to name the field
+    /// `table` while every proxy request type names it `table_name`, with no serde alias, so a
+    /// reader following the document got `400 missing field table_name` on their first call. A
+    /// hand-written body in this test would only ever have restated whichever name I typed.
+    ///
+    /// Driven through `handle` rather than reasoned about: a struct field is not proof of what a
+    /// route accepts.
+    #[test]
+    fn a_body_shaped_like_the_published_spec_parses() {
+        let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sdk/proxy/openapi.yaml");
+        let spec = std::fs::read_to_string(&spec_path).expect("the published proxy spec");
+
+        // `KeyRequest` is the shape nearly every documented command builds on.
+        let anchor = spec.find("    KeyRequest:").expect("the spec defines KeyRequest");
+        let mut fields: Vec<String> = Vec::new();
+        let mut in_props = false;
+        for line in spec[anchor..].lines().skip(1) {
+            if line.starts_with("    ") && !line.starts_with("     ") {
+                break;
+            }
+            if line.trim() == "properties:" {
+                in_props = true;
+                continue;
+            }
+            if in_props {
+                if let Some(name) = line.trim().strip_suffix(':') {
+                    if !name.is_empty() && line.starts_with("        ") {
+                        fields.push(name.to_string());
+                    }
+                }
+            }
+        }
+        assert!(
+            fields.len() >= 3,
+            "read {fields:?} out of the spec's KeyRequest; with fewer than three this test would              be posting an empty body and proving nothing"
+        );
+
+        let body = format!(
+            "{{{}}}",
+            fields
+                .iter()
+                .map(|f| format!("\"{f}\":\"x\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let (code, answered) = proxy.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/ProxyService/Get".to_string(),
+            body: body.clone().into_bytes(),
+        });
+        let text = String::from_utf8_lossy(&answered).to_string();
+        assert!(
+            !text.contains("bad_request"),
+            "a body built from the spec's own KeyRequest fields ({body}) is rejected by the route              the spec documents: {code} {text}"
+        );
+    }
+
+    /// Every route the published proxy API documents is one the proxy actually answers.
+    ///
+    /// `sdk/proxy/openapi.yaml` is the contract an outside user builds against -- it ships in the
+    /// open-source repo and is the only description of this surface they have. A path in it that
+    /// the dispatcher does not know answers 404, and nothing in the tree noticed, because the spec
+    /// is a document and the routes are code.
+    ///
+    /// This drives the REAL dispatcher rather than comparing two lists: a route is "served" if
+    /// `handle` gives it anything other than 404. A 400 for an empty body counts -- the question
+    /// is whether the route exists, not whether `{}` satisfies it.
+    #[test]
+    fn every_documented_proxy_route_is_served() {
+        let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sdk/proxy/openapi.yaml");
+        let spec = std::fs::read_to_string(&spec_path)
+            .unwrap_or_else(|err| panic!("the published proxy spec must be readable at {spec_path:?}: {err}"));
+
+        // The `paths:` block, whose two-space keys are the routes and four-space keys the methods.
+        let mut documented: Vec<(String, String)> = Vec::new();
+        let mut in_paths = false;
+        let mut route = String::new();
+        for line in spec.lines() {
+            if line.starts_with("paths:") {
+                in_paths = true;
+                continue;
+            }
+            if !in_paths {
+                continue;
+            }
+            if !line.is_empty() && !line.starts_with(' ') {
+                break;
+            }
+            let trimmed = line.trim_end();
+            if let Some(rest) = trimmed.strip_prefix("  /") {
+                if !trimmed.starts_with("    ") {
+                    if let Some(name) = rest.strip_suffix(':') {
+                        route = format!("/{name}");
+                    }
+                    continue;
+                }
+            }
+            if let Some(rest) = trimmed.strip_prefix("    ") {
+                if let Some(method) = rest.strip_suffix(':') {
+                    let upper = method.to_ascii_uppercase();
+                    if matches!(upper.as_str(), "GET" | "POST" | "PUT" | "DELETE") && !route.is_empty() {
+                        documented.push((upper, route.clone()));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            documented.len() >= 15,
+            "the spec parse found only {} routes, so this test would pass by finding nothing",
+            documented.len()
+        );
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let mut missing: Vec<String> = Vec::new();
+        for (method, path) in &documented {
+            let (code, _) = proxy.handle(crate::proxy::HttpRequest {
+                method: method.clone(),
+                path: path.clone(),
+                body: b"{}".to_vec(),
+            });
+            if code == 404 {
+                missing.push(format!("{method} {path}"));
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "the published proxy spec documents {} route(s) the proxy answers 404 for, so anyone              building against it gets a 404: {missing:?}",
+            missing.len()
+        );
+    }
+
     #[test]
     fn proxy_write_quota_leaves_read_capacity_free() {
         let proxy = scoped_proxy(ProxyOptions {

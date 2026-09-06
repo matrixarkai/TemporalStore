@@ -115,43 +115,19 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskIncrement:
+  /ProxyService/ControlStateIncrement:
     post:
-      summary: Increment a risk counter.
+      summary: Increment a control-state counter.
       requestBody:
-        $ref: '#/components/requestBodies/RiskIncrement'
+        $ref: '#/components/requestBodies/ControlStateIncrement'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskCount:
+  /ProxyService/ControlStateCount:
     post:
-      summary: Query a risk counter window.
+      summary: Query a control-state counter window.
       requestBody:
-        $ref: '#/components/requestBodies/RiskCount'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /matrixark/append_records:
-    post:
-      summary: Append MatrixArk record bundles natively through the proxy.
-      requestBody:
-        $ref: '#/components/requestBodies/MatrixArkAppendRecords'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /matrixark/scan_candidates:
-    post:
-      summary: Scan MatrixArk candidates with scope and secondary-index prefiltering in the proxy.
-      requestBody:
-        $ref: '#/components/requestBodies/MatrixArkScanCandidates'
-      responses:
-        '200':
-          $ref: '#/components/responses/Envelope'
-  /matrixark/retrieve_context_pack:
-    post:
-      summary: Return a fully assembled MatrixArk ContextPack from the proxy.
-      requestBody:
-        $ref: '#/components/requestBodies/MatrixArkRetrieveContextPack'
+        $ref: '#/components/requestBodies/ControlStateCount'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -218,36 +194,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/FeatureQueryRequest'
-    RiskIncrement:
+    ControlStateIncrement:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskIncrementRequest'
-    RiskCount:
+            $ref: '#/components/schemas/ControlStateIncrementRequest'
+    ControlStateCount:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskCountRequest'
-    MatrixArkAppendRecords:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/MatrixArkAppendRecordsRequest'
-    MatrixArkScanCandidates:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/MatrixArkScanCandidatesRequest'
-    MatrixArkRetrieveContextPack:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/MatrixArkRetrieveContextPackRequest'
+            $ref: '#/components/schemas/ControlStateCountRequest'
   schemas:
     Envelope:
       type: object
@@ -263,11 +221,11 @@ components:
           type: object
     KeyRequest:
       type: object
-      required: [namespace, table, key]
+      required: [namespace, table_name, key]
       properties:
         namespace:
           type: string
-        table:
+        table_name:
           type: string
         key:
           type: string
@@ -380,10 +338,10 @@ components:
         - type: object
           required: [start_ts, end_ts, count]
           properties:
-            start_ts:
+            start_ms:
               type: integer
               format: int64
-            end_ts:
+            end_ms:
               type: integer
               format: int64
             count:
@@ -393,113 +351,33 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/FeatureFilter'
-    RiskIncrementRequest:
+    ControlStateIncrementRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [amount, ttl_seconds, precision]
+          required: [timestamp_ms, amount]
           properties:
+            timestamp_ms:
+              type: integer
+              format: int64
             amount:
               type: integer
               format: int64
-            ttl_seconds:
+            precision_ms:
               type: integer
               format: int64
-            precision:
-              type: integer
-            uuid:
-              type: string
-            occur_time_seconds:
+            ttl_ms:
               type: integer
               format: int64
-    RiskCountRequest:
+    ControlStateCountRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [precision, window_start, window_end, window_unit]
+          required: [start_ms, end_ms]
           properties:
-            precision:
-              type: integer
-            window_start:
+            start_ms:
               type: integer
               format: int64
-            window_end:
+            end_ms:
               type: integer
               format: int64
-            window_unit:
-              type: integer
-    MatrixArkHashEntry:
-      type: object
-      required: [key, field, value]
-      properties:
-        key:
-          type: string
-        field:
-          type: string
-        value:
-          type: string
-    MatrixArkAppendRecordsRequest:
-      type: object
-      required: [namespace, table, entries]
-      properties:
-        namespace:
-          type: string
-        table:
-          type: string
-        entries:
-          type: array
-          items:
-            $ref: '#/components/schemas/MatrixArkHashEntry'
-        count_key:
-          type: string
-        count_value:
-          type: string
-    MatrixArkScanCandidatesRequest:
-      type: object
-      required: [namespace, table, count_key, record_hash_key, shard_size]
-      properties:
-        namespace:
-          type: string
-        table:
-          type: string
-        count_key:
-          type: string
-        record_hash_key:
-          type: string
-        shard_size:
-          type: integer
-          format: int64
-        scope:
-          type: object
-        record_types:
-          type: array
-          items:
-            type: string
-        secondary_index_groups:
-          type: array
-          items:
-            type: array
-            items:
-              type: string
-        selected_node_hashes:
-          type: array
-          items:
-            type: integer
-            format: int64
-    MatrixArkRetrieveContextPackRequest:
-      type: object
-      required: [namespace, table, count_key, record_hash_key, shard_size, request]
-      properties:
-        namespace:
-          type: string
-        table:
-          type: string
-        count_key:
-          type: string
-        record_hash_key:
-          type: string
-        shard_size:
-          type: integer
-          format: int64
-        request:
-          type: object
