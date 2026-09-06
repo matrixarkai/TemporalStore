@@ -6269,6 +6269,34 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         return
 
     def find_idempotency_record(self, key_hash: int) -> Json | None:
+        """Answer from an index, not a scan.
+
+        Proving a key ABSENT is the common case -- every first-time write takes it -- and absence
+        was established by walking `read_all()`, which re-materialises the serving view (fold,
+        tombstones, live filter) on every call. Measured at 0.269 ms over 721 records and 4.720 ms
+        over 3,177: 17.5x the cost for 4.4x the records, because the walk is not the expensive part,
+        the materialisation is.
+
+        The index is built once from the same records the scan read, and maintained by
+        `append_idempotency_record`, the only writer of this record type. The temporal adapter
+        reached the same conclusion and keeps its scanning version addressable as
+        `find_idempotency_record_in_log`; the scan stays reachable here as
+        `find_idempotency_record_by_scan`.
+        """
+        index = getattr(self, "_idempotency_index", None)
+        if index is None:
+            index = {}
+            for record in self.read_all():
+                if record.get("record_type") == "matrixark_idempotency":
+                    key = record.get("key_hash")
+                    if key is not None:
+                        # Later rows win, which is the row `reversed()` returned first.
+                        index[key] = record
+            self._idempotency_index = index
+        return index.get(key_hash)
+
+    def find_idempotency_record_by_scan(self, key_hash: int) -> Json | None:
+        """The scanning lookup this replaced, kept addressable as a fallback and for tests."""
         for record in reversed(self.read_all()):
             if record.get("record_type") == "matrixark_idempotency" and record.get("key_hash") == key_hash:
                 return record
@@ -6279,15 +6307,19 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         # hash) when MATRIXARK_SLIM_IDEMPOTENCY_RESPONSE is ON; flag OFF stores the full response
         # (byte-identical to prior behaviour). Dedup is unaffected -- it keys on key_hash. See
         # matrixark_mcp_local_idempotency.build_idempotency_record.
-        self.append(
-            _build_idempotency_record(
-                key_hash=key_hash,
-                tool_name=tool_name,
-                raw_key=raw_key,
-                identity=identity,
-                response=response,
-            )
+        record = _build_idempotency_record(
+            key_hash=key_hash,
+            tool_name=tool_name,
+            raw_key=raw_key,
+            identity=identity,
+            response=response,
         )
+        self.append(record)
+        # Keep the index current instead of dropping it: rebuilding costs exactly the scan the
+        # index replaced, so invalidating here would hand the cost back on the next lookup.
+        index = getattr(self, "_idempotency_index", None)
+        if index is not None:
+            index[key_hash] = record
 
     def recent_records(self, limit: int = 128) -> list[Json]:
         limit = max(1, int(limit or 1))
