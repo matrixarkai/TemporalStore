@@ -3107,7 +3107,18 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
     oplog_mode = str(options.get("oplog_mode") or "default")
     raft_mode = bool(options.get("raft_mode", False))
     requested_family = str(options.get("storage_family") or options.get("family") or "default")
+    # `durability` is the shorthand for `write_mode`, and this resolver used to ignore it while
+    # matrixark_mcp_storage_options.canonical_storage_route honoured it. Both are live -- this one
+    # serves the request path (matrixark_mcp_requests, matrixark_mcp_retrieve_request,
+    # matrixark_mcp_session_runtime all import it from here), the other serves
+    # matrixark_mcp_serving_records and matrixark_mcp_temporal_append -- so `durability: "sync"`
+    # was routed sync through one and async through the other, with the opposite write_ack_policy
+    # and durability_result. Nothing sets it today, which is why nothing had failed; the schema has
+    # advertised it since the storage options were completed, so a caller may start any time.
+    requested_durability = str(options.get("durability") or "default")
     requested_write_mode = str(options.get("write_mode") or "default")
+    if requested_write_mode == "default" and requested_durability in {"async", "sync"}:
+        requested_write_mode = requested_durability
     write_mode = requested_write_mode if requested_write_mode in {"async", "sync"} else oplog_mode
     if write_mode not in {"async", "sync"}:
         write_mode = "async"

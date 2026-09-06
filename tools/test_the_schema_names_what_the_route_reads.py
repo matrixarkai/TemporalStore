@@ -23,6 +23,22 @@ Read from the AST rather than by pattern, and scoped to the resolver FUNCTION, b
 `storage_options_for_record` further down reads `record_options.get("resource")` from a different
 dict entirely -- a per-record-kind mapping, not a storage option. A module-wide scan reports that as
 a missing property and is wrong.
+
+There are TWO live resolvers of this name, which is the other half of what this file now guards.
+`matrixark_mcp_core.canonical_storage_route` serves the request path -- matrixark_mcp_requests,
+matrixark_mcp_retrieve_request and matrixark_mcp_session_runtime all import it from there -- while
+`matrixark_mcp_storage_options.canonical_storage_route` serves matrixark_mcp_serving_records and
+matrixark_mcp_temporal_append. They were not the same function and they disagreed about the option
+this file was written for: `durability: "sync"` produced write_mode sync through one and async
+through the other, with the opposite write_ack_policy and durability_result. Nothing sets that
+option today, so nothing had failed -- but the schema advertises it, so a caller may start at any
+time, and a request asking to be durable before ack would have been acknowledged from memory.
+
+So the check below is behavioural, not textual: over every combination of the options that decide a
+route, both resolvers must return the same value for every field they share. A field one returns and
+the other does not is allowed -- `matrixark_mcp_storage_options` also reports `durability`,
+`read_preference` and `replica_read`, and adding those to the other would grow the storage_route
+recorded on every envelope for fields nothing reads yet.
 """
 from __future__ import annotations
 
@@ -126,6 +142,68 @@ class TheSchemaNamesWhatTheRouteReadsTest(unittest.TestCase):
     def test_every_alias_gives_a_reason(self) -> None:
         thin = sorted(name for name, why in ACCEPTED_ALIASES.items() if len(why.strip()) < 30)
         self.assertEqual([], thin, "listed without a reason worth reading: %s" % thin)
+
+
+#: The options that decide a route, and the values each can take. The product is what the two
+#: resolvers are compared over.
+ROUTE_OPTIONS = {
+    "storage_mode": (None, "shared_store", "raft", "local"),
+    "replication_mode": (None, "raft", "shared_store"),
+    "oplog_mode": (None, "async", "sync"),
+    "write_mode": (None, "async", "sync"),
+    "durability": (None, "async", "sync"),
+    "storage_family": (None, "raft", "shared_store"),
+}
+
+#: 972 when this was written. A floor, so a shrunken product fails rather than passing on few cases.
+EXPECTED_COMBINATION_FLOOR = 500
+
+
+def _resolvers():
+    import importlib
+
+    core = importlib.import_module("matrixark_mcp_core")
+    options = importlib.import_module("matrixark_mcp_storage_options")
+    return core.canonical_storage_route, options.canonical_storage_route
+
+
+class TheTwoRouteResolversAgreeTest(unittest.TestCase):
+
+    def _combinations(self):
+        import itertools
+
+        keys = list(ROUTE_OPTIONS)
+        for combo in itertools.product(*[ROUTE_OPTIONS[k] for k in keys]):
+            yield {k: v for k, v in zip(keys, combo) if v is not None}
+
+    def test_there_really_are_two_and_they_are_not_the_same_object(self) -> None:
+        """Assert the extent: if one ever delegates to the other, this file can be simplified."""
+        core_fn, options_fn = _resolvers()
+        self.assertIsNot(
+            core_fn, options_fn,
+            "the two resolvers are now the same object, so this comparison proves nothing -- "
+            "delete this class and say in the other module that there is one implementation")
+        self.assertGreaterEqual(
+            len(list(self._combinations())), EXPECTED_COMBINATION_FLOOR,
+            "the option product shrank, so the comparison below runs on too few cases")
+
+    def test_both_resolvers_answer_the_same_for_every_shared_field(self) -> None:
+        core_fn, options_fn = _resolvers()
+        mismatches = []
+        for options in self._combinations():
+            a, b = core_fn(dict(options)), options_fn(dict(options))
+            for field in sorted(set(a) & set(b)):
+                if a[field] != b[field]:
+                    mismatches.append((options, field, a[field], b[field]))
+        # Asserted on the TRUNCATED list: comparing the full one made unittest print a 173,000
+        # character diff, which is a failure nobody reads.
+        detail = ["%s -> %s: core=%r storage_options=%r" % row for row in mismatches[:6]]
+        self.assertEqual(
+            [], detail,
+            "the two live route resolvers disagree on %d option/field pairs. A record routed "
+            "through the request path would be acknowledged differently from one routed through "
+            "serving records, for the same request. First few: %s"
+            % (len(mismatches), detail))
 
 
 if __name__ == "__main__":
