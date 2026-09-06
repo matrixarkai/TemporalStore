@@ -712,6 +712,13 @@ fn connect_fresh(addr: &str, options: HttpRequestOptions) -> Result<TcpStream, H
 
 /// Perform one request/response exchange on `stream` (which must be freshly
 /// readable). Returns the response body on success.
+/// Socket exchanges performed, so a benchmark can assert it actually reached the network.
+///
+/// The proxy answers HTTP 200 with any failure in the BODY, so a status code cannot tell a
+/// forward from the client's continuous-failure skip. One relaxed increment per exchange is
+/// nothing beside the syscalls it sits between, and it is what makes that distinction checkable.
+pub static EXCHANGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn exchange_once(
     stream: &mut TcpStream,
     addr: &str,
@@ -721,6 +728,7 @@ fn exchange_once(
     extra_headers: &str,
     options: HttpRequestOptions,
 ) -> Result<Vec<u8>, HttpError> {
+    EXCHANGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // Coalesce header + body into a single buffer so the request leaves in one TCP segment
     // where possible, and format the header STRAIGHT INTO it. Building the header as its own
     // `String` first cost two allocations on every request the proxy and the client make, for

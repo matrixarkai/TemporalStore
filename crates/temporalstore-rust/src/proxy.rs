@@ -3813,14 +3813,36 @@ mod tests {
         // A/B numbers taken across these rows are still sound, since both arms pay the same
         // backend. The ABSOLUTE figure is what needs this row: it is the one an optimisation
         // budget gets set from.
-        let quiet = test_addr(18_640);
-        let quiet_thread = quiet.clone();
+        // A backend that allocates nothing per request: it writes one pre-built response and
+        // parses nothing. Bound on 127.0.0.1:0 inside the thread and reported back, because
+        // `test_addr` RESERVES a listener that only the http module's `claim` can take -- binding
+        // it directly fails, the thread exits, and every request then answers
+        // "Connection refused" while the proxy still returns HTTP 200 with the error in the body.
+        let canned_body = serde_json::to_vec(&ExecuteResponse {
+            status: Status::ok(),
+            response: CommandResponse::Empty,
+        })
+        .expect("canned response");
+        let mut canned = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            canned_body.len()
+        )
+        .into_bytes();
+        canned.extend_from_slice(&canned_body);
+
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel::<String>();
         std::thread::spawn(move || {
-            let listener = match std::net::TcpListener::bind(&quiet_thread) {
+            let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
                 Ok(listener) => listener,
                 Err(_) => return,
             };
-            let canned = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\n{}";
+            let bound = match listener.local_addr() {
+                Ok(addr) => addr.to_string(),
+                Err(_) => return,
+            };
+            if addr_tx.send(bound).is_err() {
+                return;
+            }
             for stream in listener.incoming().flatten() {
                 let mut stream = stream;
                 let mut scratch = [0u8; 4096];
@@ -3829,7 +3851,7 @@ mod tests {
                     match stream.read(&mut scratch) {
                         Ok(0) | Err(_) => break,
                         Ok(_) => {
-                            if stream.write_all(canned).is_err() {
+                            if stream.write_all(&canned).is_err() {
                                 break;
                             }
                             let _ = stream.flush();
@@ -3838,6 +3860,9 @@ mod tests {
                 }
             }
         });
+        let quiet = addr_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the quiet backend must report its address");
         wait_for_http(&quiet);
         let quiet_serving = scoped_proxy(ProxyOptions::default());
         quiet_serving
@@ -3852,6 +3877,9 @@ mod tests {
             code, 200,
             "the quiet listener must answer, or this row measures the error tail"
         );
+        let mut non_200 = 0usize;
+        let mut sample = String::new();
+        let exchanges_before = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed);
         let probe = crate::alloc_probe::Probe::start();
         for _ in 0..ITERS {
             let out = quiet_serving.handle(crate::proxy::HttpRequest {
@@ -3859,14 +3887,123 @@ mod tests {
                 path: "/execute".to_string(),
                 body: execute_body.clone(),
             });
+            if out.0 != 200 {
+                non_200 += 1;
+            }
+            if sample.is_empty() {
+                sample = String::from_utf8_lossy(&out.1).chars().take(120).collect();
+            }
             std::hint::black_box(&out);
         }
         let counts = probe.stop();
+        // The row is worthless unless every call actually forwarded. The proxy answers HTTP 200
+        // with any failure in the BODY, so the status code cannot tell us -- and when this backend
+        // failed to bind, 196 of 200 calls were served by the client's continuous-failure skip
+        // without touching a socket, and the row silently reported that instead.
+        let exchanges = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed) - exchanges_before;
+        assert_eq!(
+            exchanges, ITERS as u64,
+            "only {exchanges} of {} calls reached the socket, so this row is not measuring a              forward. First answer: {sample}",
+            ITERS
+        );
+        assert_eq!(non_200, 0, "a call did not answer 200: {sample}");
+        assert!(
+            sample.contains("\"ok\":true"),
+            "the backend must answer a SUCCESS the client can parse, or this measures the failure              path: {sample}"
+        );
         rows.push((
             "POST /execute, backend allocates NOTHING",
             counts.allocs / ITERS as u64,
             counts.alloc_bytes / ITERS as u64,
         ));
+
+
+        // SCRATCH: the layers, against the quiet backend so the numbers are this process only.
+        let typed_req = ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: "k".to_string() },
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = quiet_serving.client().execute_with_options(
+                typed_req.clone(),
+                crate::client::RequestOptions::default(),
+            );
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: client execute", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = crate::http::post_json_with_options::<ExecuteRequest, ExecuteResponse>(
+                &quiet, "/execute", &typed_req, crate::http::HttpRequestOptions::default(),
+            );
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: post_json", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let raw_body = serde_json::to_vec(&typed_req).expect("body");
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = crate::http::request_bytes_with_options(
+                &quiet, "POST", "/execute", &raw_body, "application/json",
+                crate::http::HttpRequestOptions::default(),
+            );
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: raw round trip", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        // The proxy's own work: parse the incoming body, and build the reply.
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let parsed = crate::http::parse_json::<ExecuteRequest>(&execute_body);
+            std::hint::black_box(&parsed);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: parse the request", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let reply = ExecuteResponse {
+            status: Status::ok(),
+            response: CommandResponse::Empty,
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = crate::http::json_response(200, &reply);
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: build the reply", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let guard = quiet_serving.admit(None, std::slice::from_ref(&Command::StringGet { key: "k".to_string() }));
+            std::hint::black_box(&guard);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: admit (incl. the key)", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let typed_for_exec = ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: "k".to_string() },
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = quiet_serving.execute(typed_for_exec.clone());
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: proxy.execute (incl. clone)", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let c = typed_for_exec.clone();
+            std::hint::black_box(&c);
+        }
+        let counts = probe.stop();
+        rows.push(("  quiet: the clone alone", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
         // What the forward above is made of, so the next person optimising it knows which part to
         // look at rather than guessing from the total.
