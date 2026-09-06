@@ -89,7 +89,7 @@ class TheWrittenMapMatchesTheCodeTest(unittest.TestCase):
 
     @staticmethod
     def _written() -> set:
-        return {entry[0] for entry in cfg._UNOFFERED_OVERRIDES.values()}
+        return {entry["env"] for entry in cfg._UNOFFERED_OVERRIDES.values()}
 
     def test_the_deriver_found_something_to_compare(self) -> None:
         # The floor: both assertions below are set equality, and two empty sets are equal.
@@ -106,9 +106,9 @@ class TheWrittenMapMatchesTheCodeTest(unittest.TestCase):
         self.assertEqual([], stale, "%s no longer overrides anything" % stale)
 
     def test_each_entry_names_a_real_setting(self) -> None:
-        for key, (_env, depends_on, _when) in cfg._UNOFFERED_OVERRIDES.items():
+        for key, entry in cfg._UNOFFERED_OVERRIDES.items():
             self.assertIn(key, cfg.SETTINGS_BY_KEY)
-            self.assertIn(depends_on, cfg.SETTINGS_BY_KEY)
+            self.assertIn(entry["depends_on"], cfg.SETTINGS_BY_KEY)
 
 
 class TheExclusionsAreRealTest(unittest.TestCase):
@@ -150,6 +150,24 @@ class ItFiresOnlyWhenItAppliesTest(unittest.TestCase):
         self.assertIsNotNone(found)
         self.assertEqual("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", found["env"])
         self.assertEqual("5", found["value"])
+
+    def test_it_fires_for_every_name_that_reaches_that_path(self) -> None:
+        """The bug the no-classifying-by-hand guard caught in this very change.
+
+        The condition was written as the literal ("anthropic",). `extraction_provider_effect`
+        maps anthropic, anthropic_messages and claude onto the same path, so two deployments
+        whose extraction really is Anthropic would have taken the override and seen no badge --
+        the defect this file exists to end, reintroduced by its own fix.
+
+        Derived from the classifier's own set, so a new alias needs no change here.
+        """
+        os.environ["MATRIXARK_ANTHROPIC_TIMEOUT_SEC"] = "5"
+        names = sorted(cfg._ANTHROPIC_EXTRACTION_PROVIDERS)
+        self.assertGreater(len(names), 1, "one name only; this test proves nothing")
+        for name in names:
+            os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = name
+            self.assertIsNotNone(self._override("extraction.timeout_sec"),
+                                 "%s reaches the Anthropic path and got no badge" % name)
 
     def test_it_does_not_fire_on_a_provider_the_override_never_reaches(self) -> None:
         os.environ["MATRIXARK_ANTHROPIC_TIMEOUT_SEC"] = "5"

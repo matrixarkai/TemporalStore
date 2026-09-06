@@ -1457,12 +1457,24 @@ def config_path() -> str:
 #: `test_matrixark_a_variable_the_portal_does_not_offer` derives the same set from the source and
 #: fails in either direction, so this cannot drift from what the code does.
 #:
-#: key -> (overriding variable, the setting whose value decides, values that make it apply)
-_UNOFFERED_OVERRIDES: Dict[str, Tuple[str, str, Tuple[str, ...]]] = {
-    "extraction.timeout_sec": ("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", "extraction.provider",
-                               ("anthropic",)),
-    "extraction.max_tokens": ("MATRIXARK_ANTHROPIC_MAX_TOKENS", "extraction.provider",
-                              ("anthropic",)),
+#: key -> (overriding variable, the setting whose value decides, the EFFECT that makes it apply)
+#:
+#: An effect, not a list of provider names. `extraction_provider_effect` maps anthropic,
+#: anthropic_messages and claude onto the same path, so a literal ("anthropic",) here would have
+#: missed two names whose deployments take that path -- the badge would not fire on exactly the
+#: deployments it exists for. That is this file's own defect, reintroduced by its fix, and the
+#: no-classifying-by-hand guard caught it before it shipped.
+#: Named fields rather than a bare tuple. A tuple of strings holding a provider name reads to
+#: `test_matrixark_the_encoder_summary_asks_the_classifier` as a surface classifying a provider by
+#: hand, which is what its whole guard exists to stop -- and it was right to look twice. `effect`
+#: is the answer `extraction_provider_effect` gives, not a name to match against.
+_UNOFFERED_OVERRIDES: Dict[str, Json] = {
+    "extraction.timeout_sec": {"env": "MATRIXARK_ANTHROPIC_TIMEOUT_SEC",
+                               "depends_on": "extraction.provider",
+                               "effect": "anthropic"},
+    "extraction.max_tokens": {"env": "MATRIXARK_ANTHROPIC_MAX_TOKENS",
+                              "depends_on": "extraction.provider",
+                              "effect": "anthropic"},
 }
 
 
@@ -1477,7 +1489,7 @@ def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
     entry = _UNOFFERED_OVERRIDES.get(key)
     if entry is None:
         return None
-    variable, depends_on, applies_when = entry
+    variable, depends_on, effect = entry["env"], entry["depends_on"], entry["effect"]
     raw = os.environ.get(variable)
     if raw is None or not str(raw).strip():
         return None
@@ -1485,10 +1497,12 @@ def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
     if setting is None:
         return None
     current, _source = _effective(setting, values)
-    if str(current).strip().lower() not in applies_when:
+    # Through the classifier, so every name that reaches this path is covered and a new alias
+    # needs no change here.
+    if extraction_provider_effect(current) != effect:
         return None
     return {"env": variable, "value": str(raw).strip(), "depends_on": depends_on,
-            "when": "%s is %s" % (depends_on, " or ".join(applies_when))}
+            "when": "%s reaches the %s path" % (depends_on, effect)}
 
 
 def config_file_status() -> Json:
