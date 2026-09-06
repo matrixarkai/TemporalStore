@@ -400,16 +400,14 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin):
                 _mcp_debug_log(f"matrixark stream materialize loop failed: {exc}")
 
     def close(self, *, timeout_s: float = 5.0) -> None:
-        self._summary_stop.set()
-        self._stream_materialize_stop.set()
-        if self._summary_thread is not None:
-            self._summary_thread.join(timeout=max(0.0, timeout_s))
-        if self._stream_materialize_thread is not None:
-            self._stream_materialize_thread.join(timeout=max(0.0, timeout_s))
-        adapter_close = getattr(self.adapter, "close", None)
-        if callable(adapter_close):
-            adapter_close(timeout_s=timeout_s)
-        self._audit_queue.drain(timeout_s)
+        """Stop background work and flush, in `timeout_s` TOTAL rather than per step.
+
+        See `matrixark_mcp_shutdown`: each stage used to receive the caller's whole budget, so the
+        first wait could spend it all and the flushes were reached only after the caller gave up.
+        """
+        from matrixark_mcp_shutdown import close_server_within_budget  # sibling; keeps this small
+
+        close_server_within_budget(self, timeout_s)
 
     def append_audit_policy(self, action: str, identity: Json, *, status: str, details: Json | None = None, args: Json | None = None, hot_path: bool = False) -> None:
         mode = str((args or {}).get("audit_mode") or self._audit_mode_default).strip().lower()
