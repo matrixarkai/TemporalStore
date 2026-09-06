@@ -3801,6 +3801,73 @@ mod tests {
         let counts = probe.stop();
         rows.push(("POST /execute, backend ANSWERS", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
+        // The SAME forward against a backend that allocates nothing, because the rows above do not
+        // measure only this process's work.
+        //
+        // `alloc_probe` counts GLOBAL atomics, and the stub backend runs on its own thread. While
+        // the client blocks in `read()`, that thread is parsing the request and serialising a
+        // reply, and every allocation it makes lands inside the probe's window. Measured: a round
+        // trip costs 11 allocations against the JSON stub and 2 against a listener that writes a
+        // constant response -- so NINE of the eleven were the backend's.
+        //
+        // A/B numbers taken across these rows are still sound, since both arms pay the same
+        // backend. The ABSOLUTE figure is what needs this row: it is the one an optimisation
+        // budget gets set from.
+        let quiet = test_addr(18_640);
+        let quiet_thread = quiet.clone();
+        std::thread::spawn(move || {
+            let listener = match std::net::TcpListener::bind(&quiet_thread) {
+                Ok(listener) => listener,
+                Err(_) => return,
+            };
+            let canned = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\n{}";
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut scratch = [0u8; 4096];
+                loop {
+                    use std::io::{Read as _, Write as _};
+                    match stream.read(&mut scratch) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            if stream.write_all(canned).is_err() {
+                                break;
+                            }
+                            let _ = stream.flush();
+                        }
+                    }
+                }
+            }
+        });
+        wait_for_http(&quiet);
+        let quiet_serving = scoped_proxy(ProxyOptions::default());
+        quiet_serving
+            .client()
+            .insert_cached_route_for_test(1, quiet.clone());
+        let (code, _) = quiet_serving.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/execute".to_string(),
+            body: execute_body.clone(),
+        });
+        assert_eq!(
+            code, 200,
+            "the quiet listener must answer, or this row measures the error tail"
+        );
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = quiet_serving.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/execute".to_string(),
+                body: execute_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        rows.push((
+            "POST /execute, backend allocates NOTHING",
+            counts.allocs / ITERS as u64,
+            counts.alloc_bytes / ITERS as u64,
+        ));
+
         // What the forward above is made of, so the next person optimising it knows which part to
         // look at rather than guessing from the total.
         let probe = crate::alloc_probe::Probe::start();
