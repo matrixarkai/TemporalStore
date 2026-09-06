@@ -49,14 +49,36 @@ def _payload_assignments(tree):
             and n.func.id == "slim_persisted_record"
             for n in ast.walk(fn))
         for node in ast.walk(fn):
-            if not isinstance(node, ast.Assign):
+            if isinstance(node, ast.Assign) \
+               and any(isinstance(t, ast.Name) and t.id == "payload" for t in node.targets):
+                call = node.value
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) \
+                   and call.func.attr == "dumps":
+                    yield fn, node, call, slims
                 continue
-            if not any(isinstance(t, ast.Name) and t.id == "payload" for t in node.targets):
-                continue
-            call = node.value
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) \
-               and call.func.attr == "dumps":
-                yield fn, node, call, slims
+            # An entry can spell its value inline, with no intermediate variable at all:
+            #     {"key": ..., "field": ..., "value": json.dumps(record_copy, ...)}
+            # The latest-context-state writers do exactly that, and went unseen by the first
+            # version of this guard for that reason alone. A guard that knows one spelling of the
+            # idiom is not a guard.
+            if isinstance(node, ast.Dict):
+                names = {k.value for k in node.keys
+                         if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if "value" not in names or not ({"key", "field"} & names):
+                    continue
+                for key, value in zip(node.keys, node.values):
+                    if not (isinstance(key, ast.Constant) and key.value == "value"):
+                        continue
+                    if not (isinstance(value, ast.Call)
+                            and isinstance(value.func, ast.Attribute)
+                            and value.func.attr == "dumps"):
+                        continue
+                    # Only a RECORD needs slimming. The same entry shape also carries index
+                    # postings -- {"ref_hashes": ...}, {"locations": ...} -- which have none of
+                    # the fields a slimmer looks for, so flagging those would be noise that
+                    # trains the next reader to wave this test through.
+                    if value.args and "record" in ast.unparse(value.args[0]):
+                        yield fn, node, value, slims
 
 
 class EveryPersistSiteSlimsTests(unittest.TestCase):
