@@ -136,18 +136,35 @@ class TheCallersDeclareWhatTheyTakeTest(unittest.TestCase):
         source = self._source("matrixark_mcp_retrieve_request.py")
         self.assertIn("retrieval_audit_policy(args)", source)
 
+    #: Where the variable is DECLARED rather than resolved. The settings registry names every
+    #: variable the portal can write, so it mentions this one without deciding anything with it --
+    #: and a scan that counts declarations as readers grows by one the first time the setting is
+    #: offered on a screen, which is what happened.
+    DECLARING = ("matrixark_gateway_config.py",)
+
     def test_only_one_module_reads_the_variable_for_this_decision(self) -> None:
         """The direct-read path has its own resolution with its own fallback-on-invalid, so it is
         not folded in here; this pins the count so a fourth copy cannot appear unnoticed."""
         readers = []
         for name in sorted(os.listdir(TOOLS)):
-            if not name.endswith(".py") or name.startswith("test_"):
+            if not name.endswith(".py") or name.startswith("test_") or name in self.DECLARING:
                 continue
             with open(os.path.join(TOOLS, name), encoding="utf-8") as handle:
                 if "MATRIXARK_CONTEXT_AUDIT_MODE" in handle.read():
                     readers.append(name)
         self.assertEqual(["matrixark_mcp_retrieve_planning.py",
                           "matrixark_temporal_direct_read.py"], readers, readers)
+
+    def test_the_declaring_module_really_does_declare_it(self) -> None:
+        """The exclusion above is only safe while it names a module that DECLARES the variable.
+        If the registry ever stopped mentioning it, the exclusion would be hiding nothing and
+        should go -- and if it started resolving it, this file would be excusing a third copy."""
+        source = self._source("matrixark_gateway_config.py")
+        self.assertIn("MATRIXARK_CONTEXT_AUDIT_MODE", source)
+        self.assertIn("Setting(\"retrieval.context_audit_mode\"", source)
+        # Declaring is naming it in the registry. Resolving is reading it back out of the
+        # environment to decide something, which is what the two real readers do.
+        self.assertNotIn("os.environ.get(\"MATRIXARK_CONTEXT_AUDIT_MODE\"", source)
 
 
 if __name__ == "__main__":
