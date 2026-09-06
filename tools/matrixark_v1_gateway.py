@@ -1991,6 +1991,8 @@ def _model_config_snapshot() -> Json:
     _extraction_choice = (_env("MATRIXARK_UNDERSTANDING_PROVIDER")
                           or _env("MATRIXARK_EXTRACTION_PROVIDER"))
     _summary_writes = _gwconfig.summary_provider_effect(_summary_raw, _extraction_choice)
+    _require_model_summaries = _env("MATRIXARK_REQUIRE_MODEL_SUMMARIES") in {"1", "true", "yes",
+                                                                            "on"}
     summary = {
         "provider": _summary_choice,
         # Only when the variable is absent. Set-to-empty is a choice of rules, not a deferral.
@@ -1999,6 +2001,14 @@ def _model_config_snapshot() -> Json:
         # The summary call uses the EXTRACTION endpoint and its model: a separate summary model
         # was removed because it was a second name for the same call.
         "model": extraction.get("model", "") if _summary_writes == "model" else "",
+        # The encoder's block carries the matching switch, so this one carries its own -- but they
+        # are not the same kind of promise, which is why `enforced_by` is here and not there.
+        # MATRIXARK_REQUIRE_MODEL_EMBEDDINGS is read by this gateway AND by the engine; nothing in
+        # Python reads MATRIXARK_REQUIRE_MODEL_SUMMARIES at all. It is checked where the ENGINE
+        # writes the summaries, and the Python summariser that writes them on the local-adapter
+        # path never asks.
+        "require_model": _require_model_summaries,
+        "require_model_enforced_by": "engine",
     }
     # Rules where extraction reaches a model is the surprising half. Rules everywhere is already
     # said by the extraction warning above, and repeating it here would be noise.
@@ -2010,6 +2020,18 @@ def _model_config_snapshot() -> Json:
             "most. Only the openai-compatible family writes them with a model -- an Anthropic "
             "extraction provider returns rule-written summaries and no error. Set Summary "
             "provider to openai_compatible to use a model for them."
+        )
+    # The switch was set to make exactly this state fail. On the engine's summary path it does:
+    # extraction is refused with model_required_but_provider_is_mock. On the local-adapter path the
+    # Python summariser writes rule summaries and never reads the variable, so the state it was set
+    # to prevent is the state the deployment is in, quietly.
+    if _require_model_summaries and _summary_writes == "rules":
+        warnings.append(
+            "Fail instead of writing rule summaries is on, and summaries here are written by "
+            "rules. Where the engine writes them it refuses the extraction outright; where the "
+            "local adapter writes them nothing reads this switch, so the fallback it was set to "
+            "prevent happens silently. Set Summary provider to openai_compatible, or turn the "
+            "switch off so the configuration says what the deployment does."
         )
 
     return {
