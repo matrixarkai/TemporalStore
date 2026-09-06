@@ -4,6 +4,50 @@
 // native serving / memory-inventory / layer-budget helpers, split from matrixark_rust_proxy_impl.rs (textually include!d;
 // shares parent use-imports + flat scope; no use-statements or mod wrapper).
 
+/// What a served ref carries only when lineage is asked for.
+///
+/// A constant rather than an inline list because the test that proves a default ref does
+/// not leak these had its own hand-written copy, and the copies had already drifted: it
+/// checked 25 of the 26 fields, missing `source_ref`. A field added to production and not
+/// to that list would have leaked with the test still green, because the assertion only
+/// ever looked for the names written into it.
+pub(crate) const LINEAGE_ONLY_FIELDS: [&str; 22] = [
+    "ref_hash",
+    "node_hash",
+    "node_path",
+    "continuity_reason",
+    "selection_reason",
+    "source_session_ids",
+    "source_entity_hashes",
+    "source_entity_types",
+    "source_roles",
+    "source_role_counts",
+    "budget_source_roles",
+    "budget_source_role_counts",
+    "source_hook_types",
+    "source_hook_type_counts",
+    "source_codex_events",
+    "source_codex_event_counts",
+    "source_memory_scopes",
+    "source_session_continuities",
+    "source_extraction_phases",
+    "source_profile_promotion_policies",
+    "source_profile_promotion_blockers",
+    "source_ref",
+];
+
+/// What a served ref carries only when scores are asked for.
+///
+/// Separate from the lineage list, and it has to stay separate: the two answer different
+/// questions, and folding them together would make someone debugging a score take 22
+/// provenance fields they did not ask for.
+pub(crate) const SCORE_ONLY_FIELDS: [&str; 4] = [
+    "token_estimate",
+    "score",
+    "continuity_boost",
+    "cross_session_rerank_boost",
+];
+
 fn context_pack_debug_lineage_enabled() -> bool {
     env::var("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE")
         .ok()
@@ -23,40 +67,12 @@ fn native_serving_ref(mut item: Value) -> Value {
     let include_scores = context_pack_include_scores_enabled();
     if let Some(object) = item.as_object_mut() {
         if !include_lineage {
-            for field in [
-                "ref_hash",
-                "node_hash",
-                "node_path",
-                "continuity_reason",
-                "selection_reason",
-                "source_session_ids",
-                "source_entity_hashes",
-                "source_entity_types",
-                "source_roles",
-                "source_role_counts",
-                "budget_source_roles",
-                "budget_source_role_counts",
-                "source_hook_types",
-                "source_hook_type_counts",
-                "source_codex_events",
-                "source_codex_event_counts",
-                "source_memory_scopes",
-                "source_session_continuities",
-                "source_extraction_phases",
-                "source_profile_promotion_policies",
-                "source_profile_promotion_blockers",
-                "source_ref",
-            ] {
+            for field in LINEAGE_ONLY_FIELDS {
                 object.remove(field);
             }
         }
         if !include_scores {
-            for field in [
-                "token_estimate",
-                "score",
-                "continuity_boost",
-                "cross_session_rerank_boost",
-            ] {
+            for field in SCORE_ONLY_FIELDS {
                 object.remove(field);
             }
         }
