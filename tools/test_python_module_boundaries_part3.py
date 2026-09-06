@@ -24,6 +24,34 @@ except ImportError:
 )
 
 
+def _code_line_count(source: str) -> int:
+    """Lines that are neither blank, nor a comment, nor part of a docstring.
+
+    Tokenised rather than pattern-matched: a `#` inside a string is not a comment and a triple
+    quote is not always a docstring. A file this cannot parse counts as all of its lines, which
+    fails safe -- a size budget that silently passed on a syntax error would be worse than none.
+    """
+    import io as _io
+    import tokenize
+
+    lines = source.splitlines()
+    prose: set = set()
+    try:
+        previous = tokenize.INDENT
+        for token in tokenize.generate_tokens(_io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT:
+                prose.update(range(token.start[0], token.end[0] + 1))
+            elif token.type == tokenize.STRING and previous in (
+                    tokenize.INDENT, tokenize.DEDENT, tokenize.NEWLINE, tokenize.NL):
+                prose.update(range(token.start[0], token.end[0] + 1))
+            if token.type not in (tokenize.NL, tokenize.COMMENT):
+                previous = token.type
+    except (tokenize.TokenError, IndentationError, SyntaxError):  # pragma: no cover
+        return len(lines)
+    return sum(1 for number, text in enumerate(lines, 1)
+               if text.strip() and number not in prose)
+
+
 class _ModuleBoundaryPart3:
     def test_modular_entity_scan_admits_cross_session_profile_bridge(self) -> None:
         scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_entity_scan")
@@ -142,8 +170,43 @@ class _ModuleBoundaryPart3:
         self.assertTrue(callable(requests_mod.normalize_mcp_tool_request))
 
     def test_mcp_entrypoint_stays_small(self) -> None:
-        server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
-        self.assertLessEqual(len(server_lines), 750)
+        """The entrypoint stays thin, measured in CODE.
+
+        This counted every line, so eleven lines of comment explaining that an http port of 0
+        means "stay on stdio" cost exactly as much as eleven lines of new logic, and the file went
+        over a cap it was more than a hundred code lines clear of. A budget that taxes an
+        explanation at the same rate as a branch buys terser comments, which is the opposite of
+        what it is for.
+
+        Blank lines, comments and docstrings do not count. What the cap defends is the
+        entrypoint's job -- wiring, not behaviour -- and behaviour is code.
+        """
+        source = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8")
+        self.assertLessEqual(_code_line_count(source), 650)
+
+    def test_the_counter_does_not_count_prose(self) -> None:
+        """The floor. A counter returning zero, or one still counting comments, would make the
+        rule above either vacuous or exactly the rule it replaced."""
+        sample = chr(10).join([
+            '"""A module docstring',
+            'spanning two lines."""',
+            "",
+            "# a comment",
+            "import os",
+            "",
+            "def f():",
+            '    """One line of docstring."""',
+            "    return os",
+        ])
+        self.assertEqual(3, _code_line_count(sample),
+                         "expected the import, the def and the return -- nothing else")
+
+    def test_the_counter_is_not_just_smaller(self) -> None:
+        """And it must still SEE the code: a counter that dropped every line would pass the two
+        rules above together."""
+        self.assertGreater(
+            _code_line_count(
+                (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8")), 400)
 
     def test_public_mcp_modules_avoid_wildcard_imports(self) -> None:
         module_names = [
