@@ -157,7 +157,16 @@ def _unselected() -> List[str]:
     assigned = _assigned_values()
     out = []
     for name, _default, set_by in _rows():
-        if name in assigned and _reaches_the_other_arm(assigned[name], _default):
+        if name in assigned:
+            # The sweep above knows what VALUE is assigned; the inventory's `set by` column knows
+            # only that somewhere assigns one. Where they disagree the sweep wins, because the
+            # question here is whether anything reaches the OTHER arm and pinning a flag to the
+            # value it already has reaches nothing. The column started reporting the harness that
+            # sets TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING to "0" -- its own default
+            # -- and without this that decision read as settled.
+            if _reaches_the_other_arm(assigned[name], _default):
+                continue
+            out.append(name)
             continue
         if set_by == "nothing" or set(part.strip() for part in set_by.split(",")) <= {
                 "test", "harness"}:

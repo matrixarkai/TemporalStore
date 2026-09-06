@@ -51,7 +51,7 @@ Anything else is blank, and a blank means go and look.
 | numbers whose default this could read off the source | 34 |
 | **defaulting on, and set by nothing** | 0 |
 | offered on the portal | 27 |
-| **that nothing in this repository sets** | 168 |
+| **that nothing in this repository sets** | 156 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -62,13 +62,13 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TS_META_ADDR` | — | config, launch | 3 | — |
+| `TS_META_ADDR` | — | config, launch, script | 3 | — |
 | `TS_PROXY_ADDR` | — | launch, script | 3 | — |
 | `TS_RAFT_NODES` | — | harness, script | 3 | — |
 | `TS_RAFT_NODE_ID` | — | harness, script | 3 | — |
 | `TS_RAFT_SHARD_ID` | — | harness, script | 3 | — |
 | `TS_RAFT_WAL_DIR` | — | config, harness, script | 3 | — |
-| `TS_SHARD_ID` | 1 | config, launch | 3 | — |
+| `TS_SHARD_ID` | 1 | config, launch, script | 3 | — |
 | `TS_META_RAFT_NODES` | — | config | 2 | — |
 | `TS_RAFT_BIND_ADDR` | — | harness, script | 2 | — |
 | `MATRIXARK_CONTEXT_EVENT_FANOUT_NODES` | 4 | nothing | 1 | — |
@@ -81,21 +81,21 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_MATRIXOBJECT_BUCKET` | — | config, launch | 1 | — |
 | `TS_MATRIXOBJECT_ENDPOINT` | — | config | 1 | — |
 | `TS_MATRIXOBJECT_STORE_DIR` | — | config | 1 | — |
-| `TS_META_BIND_ADDR` | — | config | 1 | — |
+| `TS_META_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_META_RAFT_NODE_ID` | — | nothing | 1 | — |
 | `TS_PAGE_STORE_DIR` | — | config, launch, script | 1 | — |
-| `TS_PROXY_ADVERTISED_ADDR` | — | config | 1 | — |
-| `TS_PROXY_BIND_ADDR` | — | config | 1 | — |
+| `TS_PROXY_ADVERTISED_ADDR` | — | config, launch | 1 | — |
+| `TS_PROXY_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_LOCATION` | — | nothing | 1 | — |
 | `TS_REDIS_ADDR` | — | launch | 1 | — |
 | `TS_REDIS_BIND_ADDR` | — | config | 1 | — |
 | `TS_SERVER_ADDR` | — | launch | 1 | — |
-| `TS_SERVER_ADVERTISE_ADDR` | — | config, launch | 1 | — |
-| `TS_SERVER_BIND_ADDR` | — | config | 1 | — |
+| `TS_SERVER_ADVERTISE_ADDR` | — | config, launch, script | 1 | — |
+| `TS_SERVER_BIND_ADDR` | — | config, launch, script | 1 | — |
 | `TS_SERVER_LOCATION` | — | config | 1 | — |
 | `TS_SERVER_NODE_ID` | — | config, launch | 1 | — |
 | `TS_SHARD_URI` | — | test | 1 | — |
-| `TS_SHARED_STORE_CLUSTER_ID` | — | launch | 1 | — |
+| `TS_SHARED_STORE_CLUSTER_ID` | — | launch, script | 1 | — |
 | `TS_SHARED_STORE_DIR` | — | config, script | 1 | — |
 | `TS_SHARED_STORE_URI` | — | nothing | 1 | — |
 | `TS_STANDALONE` | — | config, launch, script | 1 | — |
@@ -109,7 +109,7 @@ What the metaserver does about nodes it cannot reach -- conviction, freezing, re
 |---|---|---|---|---|
 | `TS_META_FORBID_SELF_CLEARING_CONVICTION` | — | nothing | 2 | — |
 | `MATRIXARK_TEMPORALSTORE_META_SYNC_DEADLINE_MS` | — | nothing | 1 | — |
-| `TS_AUTO_REBALANCE_DATA_MOVE` | — | nothing | 1 | — |
+| `TS_AUTO_REBALANCE_DATA_MOVE` | — | script | 1 | — |
 | `TS_META_ADAPTIVE_FAILURE_DETECTOR` | — | nothing | 1 | — |
 | `TS_META_AUTO_REBALANCE` | — | config | 1 | — |
 | `TS_META_AUTO_REBALANCE_BALANCE` | — | nothing | 1 | — |
@@ -121,7 +121,7 @@ What the metaserver does about nodes it cannot reach -- conviction, freezing, re
 | `TS_META_FD_SAMPLE_CAPACITY` | — | nothing | 1 | — |
 | `TS_META_FORBID_ORPHANING_SHARDS` | — | nothing | 1 | — |
 | `TS_META_FREEZE_AGING` | — | nothing | 1 | — |
-| `TS_META_MUTATION_LOG` | — | nothing | 1 | — |
+| `TS_META_MUTATION_LOG` | — | launch | 1 | — |
 | `TS_META_PLACEMENT_AWARE_REBALANCE` | — | nothing | 1 | — |
 | `TS_META_PROXY_CALIBRATION` | — | nothing | 1 | — |
 | `TS_META_PROXY_FREEZE_COOLDOWN_MS` | — | nothing | 1 | — |
@@ -224,15 +224,15 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES` | 256 | test | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS` | 30000 | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | nothing | 1 | — |
+| `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | script | 1 | — |
 | `TS_BLOB_CHUNK_BYTES` | — | config | 1 | — |
 | `TS_BLOB_PEER_FETCH_TIMEOUT_MS` | — | nothing | 1 | — |
-| `TS_BLOCK_INDEX_CACHE_BYTES` | 67108864 | config, portal | 1 | — |
+| `TS_BLOCK_INDEX_CACHE_BYTES` | 67108864 | config, test, portal | 1 | — |
 | `TS_BLOCK_SEGMENT_TARGET_BYTES` | — | nothing | 1 | — |
-| `TS_BLOCK_SLAB_TARGET_BYTES` | 1073741824 | config, portal | 1 | — |
+| `TS_BLOCK_SLAB_TARGET_BYTES` | 1073741824 | config, test, portal | 1 | — |
 | `TS_CACHE_MEMORY_BYTES` | — | config, launch | 1 | — |
-| `TS_COMPACTION_WATERMARK_BYTES` | 268435456 | config, portal | 1 | — |
-| `TS_CONTEXT_PAGE_TARGET_BYTES` | 65536 | config, portal | 1 | — |
+| `TS_COMPACTION_WATERMARK_BYTES` | 268435456 | config, test, portal | 1 | — |
+| `TS_CONTEXT_PAGE_TARGET_BYTES` | 65536 | config, test, portal | 1 | — |
 | `TS_DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG` | — | nothing | 1 | — |
 | `TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_DISTRIBUTED_RAFT_CATCHUP_TIMEOUT_SECS` | 30 | nothing | 1 | — |
@@ -266,11 +266,11 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_META_TASK_SCHEDULER_MAX_POSTPONE_MS` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_RETRY_TIMES` | — | nothing | 1 | — |
 | `TS_METRICS_MAX_SLOT_SERIES` | 1024 | portal | 1 | — |
-| `TS_PAGE_INDEX_CACHE_BYTES` | 67108864 | config, portal | 1 | — |
+| `TS_PAGE_INDEX_CACHE_BYTES` | 67108864 | config, test, portal | 1 | — |
 | `TS_PROXY_AUTO_REGISTER_MIN_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_PROXY_CONNECT_TIMEOUT_MS` | — | config | 1 | — |
 | `TS_PROXY_DROP_PERCENT` | — | nothing | 1 | — |
-| `TS_PROXY_HEARTBEAT_INTERVAL_MS` | — | nothing | 1 | — |
+| `TS_PROXY_HEARTBEAT_INTERVAL_MS` | — | launch | 1 | — |
 | `TS_PROXY_HEARTBEAT_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_PROXY_IO_TIMEOUT_MS` | — | config | 1 | — |
 | `TS_PROXY_MAX_INFLIGHT_REQUESTS` | — | nothing | 1 | — |
@@ -282,12 +282,12 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_RAFT_AUTO_FAILOVER_IO_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_RAFT_MAX_APPLIED_LOG_BYTES` | — | nothing | 1 | — |
 | `TS_RAFT_MAX_INFLIGHTS_REPLICATE` | — | test | 1 | — |
-| `TS_SERVER_HEARTBEAT_INTERVAL_MS` | 3000 | config | 1 | — |
+| `TS_SERVER_HEARTBEAT_INTERVAL_MS` | 3000 | config, script | 1 | — |
 | `TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH` | — | config | 1 | — |
 | `TS_SERVER_MAX_QUEUE_DEPTH` | — | config | 1 | — |
 | `TS_SHARED_STORE_MAX_PENDING` | 50000 | nothing | 1 | yes |
-| `TS_STORAGE_ZONE_SIZE` | 1073741824 | config, portal | 1 | — |
-| `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, portal | 1 | — |
+| `TS_STORAGE_ZONE_SIZE` | 1073741824 | config, test, portal | 1 | — |
+| `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, test, portal | 1 | — |
 
 ## context (23)
 
@@ -299,7 +299,7 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_BACKFILL_FLUSH_EVERY_ACCEPTED` | 10000 | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_FLUSH_EVERY_SESSION` | — | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_GLOBAL_SESSION` | — | nothing | 1 | — |
-| `MATRIXARK_BACKFILL_RAW_FIRST` | — | nothing | 1 | — |
+| `MATRIXARK_BACKFILL_RAW_FIRST` | — | launch | 1 | — |
 | `MATRIXARK_BACKFILL_SKIP_COVERED_SESSIONS` | — | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_SUB_BATCH` | 250 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_COMPRESSION_ENABLED` | — | nothing | 1 | — |
@@ -307,13 +307,13 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_COMPRESSION_WINDOW` | — | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH` | 2 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | 64 | nothing | 1 | — |
-| `MATRIXARK_EMBEDDING_MODEL` | — | config, script, test, portal | 1 | — |
+| `MATRIXARK_EMBEDDING_MODEL` | — | config, launch, script, test, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |
 | `MATRIXARK_EMBED_DRAINER` | off | config, launch, test, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch | 1 | — |
-| `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, portal | 1 | — |
+| `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, test, portal | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_SUMMARIES` | off | config, portal | 1 | — |
 | `MATRIXARK_RETRIEVAL_TRAVERSAL_TOP_K` | — | nothing | 1 | — |
 | `TS_PROXY_CONTEXT_FIRST_SHARD` | — | nothing | 1 | — |
@@ -329,7 +329,7 @@ Who the caller is, not what the engine does. Supplied per request or per process
 | `MATRIXARK_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_TENANT_ID` | — | launch | 2 | — |
 | `MATRIXARK_USER_ID` | — | launch, test | 2 | — |
-| `TEMPORALSTORE_AGENT_NAME` | — | launch | 2 | — |
+| `TEMPORALSTORE_AGENT_NAME` | — | launch, test | 2 | — |
 | `MATRIXARK_SESSION_ID` | — | nothing | 1 | — |
 
 ## diagnostic (2)
@@ -347,12 +347,12 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY` | off | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING` | off | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY` | off | nothing | 1 | — |
+| `TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY` | off | script | 1 | — |
+| `TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING` | off | script | 1 | — |
+| `TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY` | off | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL` | — | script | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
+| `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | script | 1 | — |
+| `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | script | 1 | — |
 
 ## behaviour (61)
 
@@ -371,7 +371,7 @@ Everything else that changes what the engine does.
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_LEVEL` | — | config, test | 2 | — |
-| `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, test | 1 | — |
+| `MATRIXARK_RUST_PROXY_ASYNC_STORAGE` | off | launch, script, test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED` | — | test | 1 | — |
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL` | — | test | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_RUST_ROOT` | — | launch, script, test | 1 | — |
@@ -380,7 +380,7 @@ Everything else that changes what the engine does.
 | `TS_BLOB_PEER_FETCH` | — | nothing | 1 | — |
 | `TS_BLOB_RUNTIME_THREADS` | — | nothing | 1 | — |
 | `TS_CACHE_DISK_TIER` | — | test | 1 | — |
-| `TS_COLD_SCAN_NO_CACHE_FILL` | on | config, portal | 1 | — |
+| `TS_COLD_SCAN_NO_CACHE_FILL` | on | config, test, portal | 1 | — |
 | `TS_DATA_RAFT_READ_MODE` | — | config | 1 | — |
 | `TS_EVICT_SAMPLES` | — | nothing | 1 | — |
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
@@ -393,7 +393,7 @@ Everything else that changes what the engine does.
 | `TS_PROXY_CONFIG_VERSION` | — | nothing | 1 | — |
 | `TS_PROXY_ENFORCE_INGESTION_ACCOUNT` | — | nothing | 1 | — |
 | `TS_PROXY_INGESTION_ACCOUNT` | — | nothing | 1 | — |
-| `TS_PROXY_NAMESPACE` | — | nothing | 1 | — |
+| `TS_PROXY_NAMESPACE` | — | launch | 1 | — |
 | `TS_PROXY_PIN_PRIMARY_READS` | — | nothing | 1 | — |
 | `TS_PROXY_REFRESH_ROUTE_ON_BACKEND_ERROR` | — | nothing | 1 | — |
 | `TS_PROXY_ROUTE_CACHE_TTL_MS` | — | nothing | 1 | — |
@@ -407,7 +407,7 @@ Everything else that changes what the engine does.
 | `TS_RAFT_SECURITY_MODE` | — | nothing | 1 | — |
 | `TS_RAFT_TRANSPORT_SECURITY` | — | nothing | 1 | — |
 | `TS_SCRATCH_SWEEP` | on | portal | 1 | — |
-| `TS_SERVER_JOIN_EMPTY` | — | nothing | 1 | — |
+| `TS_SERVER_JOIN_EMPTY` | — | script | 1 | — |
 | `TS_SERVER_RAFT` | — | nothing | 1 | — |
 | `TS_SERVER_RAFT_READ_MODE` | — | nothing | 1 | — |
 | `TS_SERVER_READONLY` | — | nothing | 1 | — |
