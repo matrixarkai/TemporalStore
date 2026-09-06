@@ -3408,16 +3408,23 @@ def _socket_budget_seconds(request_timeout_ms: int, caller_deadline_ms: int = 0)
 def _caller_deadline_ms(kwargs: Json) -> int:
     """The deadline the CALLER set for this call, in milliseconds, or 0 for none.
 
-    Looked for at the top level, inside `request`, and inside `ranking`, because callers build the
-    call differently: the retrieve path puts it in the request body (matrixark_local_adapter_retrieve
-    builds it there, which is the one that mattered here) while others pass it directly. The first
-    of those that carries a usable value wins.
+    Callers build the call differently, so this looks at the top level and inside each dict that
+    carries a request body. `record` is the one that matters in production:
+    `matrixark_retrieve_context_pack` passes the retrieve request as `record=request`, and that is
+    the call the 62s timeouts came from. `request` and `ranking` are the other two spellings in
+    this module; `ranking` is a real carrier because `retrieval_deadline_ms` reads the request's
+    deadline from there when the arguments do not name one.
 
-    0 is the documented "no deadline" value and is returned unchanged, so a call that asked for no
-    deadline keeps the transport budget. Anything unparseable is treated the same way: a deadline
-    nobody can read must not silently shorten a call.
+    The first of those carrying a usable value wins. 0 is the documented "no deadline" value and is
+    returned unchanged, so a call that asked for no deadline keeps the transport budget. Anything
+    unparseable is treated the same way: a deadline nobody can read must not silently shorten a
+    call.
+
+    This list is a hazard -- a fourth spelling would be missed silently, and one already was. The
+    guard that protects it drives the real `matrixark_retrieve_context_pack` entry point against a
+    socket rather than asserting on these names, so renaming the carrier fails the test.
     """
-    for source in (kwargs, kwargs.get("request"), kwargs.get("ranking")):
+    for source in (kwargs, kwargs.get("record"), kwargs.get("request"), kwargs.get("ranking")):
         if not isinstance(source, dict):
             continue
         raw = source.get("deadline_ms")

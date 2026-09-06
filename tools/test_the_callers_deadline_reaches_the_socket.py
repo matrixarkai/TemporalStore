@@ -29,6 +29,11 @@ stop early, not permission to wait longer.
 from __future__ import annotations
 
 import importlib
+import os
+import socket
+import tempfile
+import threading
+import time
 import unittest
 
 
@@ -90,11 +95,17 @@ class TheCallersDeadlineReachesTheSocketTest(unittest.TestCase):
                 "a %dms transport timeout produced a budget below the minimum" % request_timeout_ms)
 
     def test_the_deadline_is_found_where_callers_put_it(self) -> None:
-        """Three shapes, because three callers build the call differently."""
+        """Four spellings, because callers build the call differently.
+
+        `record` is the production one: `matrixark_retrieve_context_pack` passes the retrieve
+        request as `record=request`. These assertions are documentation -- the test that actually
+        protects the behaviour is the end-to-end one below, which does not name any of them.
+        """
         self.assertEqual(5000, self.deadline_of({"deadline_ms": 5000}))
         self.assertEqual(
-            5000, self.deadline_of({"request": {"deadline_ms": 5000}}),
-            "the retrieve path puts it in the request body, which is the one that mattered")
+            5000, self.deadline_of({"record": {"deadline_ms": 5000}}),
+            "the live retrieve carries its request under `record`")
+        self.assertEqual(5000, self.deadline_of({"request": {"deadline_ms": 5000}}))
         self.assertEqual(250, self.deadline_of({"ranking": {"deadline_ms": 250}}))
 
     def test_no_deadline_reads_as_no_deadline(self) -> None:
@@ -131,6 +142,110 @@ class TheCallersDeadlineReachesTheSocketTest(unittest.TestCase):
                 "0", ast.unparse(keywords["caller_deadline_ms"]),
                 "the deadline is passed as a literal 0, which is the pre-fix behaviour spelled "
                 "with an extra argument")
+
+
+class TheLiveRetrieveDeadlineReachesTheSocketTest(unittest.TestCase):
+    """Drive the real entry point, not a dict I invented.
+
+    This is the test that was missing. The first version of this fix read the deadline from
+    `kwargs`, `kwargs["request"]` and `kwargs["ranking"]` -- all three plausible, none of them the
+    one `matrixark_retrieve_context_pack` actually uses, which is `record=request`. Every
+    shape-based assertion passed and the fix was a no-op on the only path it was written for.
+
+    So this test never names a carrier. It calls the retrieve entry point the hook calls, against a
+    socket that never answers, and times how long it waits. If the deadline stops reaching the
+    socket -- renamed key, changed call site, reverted arithmetic -- this fails.
+    """
+
+    def _hang(self, socket_path: str) -> None:
+        """A daemon that accepts and then never answers."""
+        ready = threading.Event()
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def run() -> None:
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(socket_path)
+            server.listen(1)
+            server.settimeout(1.0)
+            ready.set()
+            conn = None
+            try:
+                while not stop.is_set():
+                    try:
+                        conn, _ = server.accept()
+                        break
+                    except socket.timeout:
+                        continue
+                if conn is not None:
+                    with conn:
+                        conn.recv(65536)
+                        stop.wait(120.0)
+            except OSError:
+                pass
+            finally:
+                server.close()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.assertTrue(ready.wait(10.0), "socket server did not come up")
+        self.addCleanup(thread.join, 5.0)
+
+    def _client(self, socket_path: str, request_timeout_ms: int):
+        module = _adapters()
+        previous = os.environ.get("MATRIXARK_RUST_PROXY_SOCKET")
+        os.environ["MATRIXARK_RUST_PROXY_SOCKET"] = socket_path
+
+        def restore() -> None:
+            if previous is None:
+                os.environ.pop("MATRIXARK_RUST_PROXY_SOCKET", None)
+            else:
+                os.environ["MATRIXARK_RUST_PROXY_SOCKET"] = previous
+
+        self.addCleanup(restore)
+        client = module.MatrixArkRustProxyClient(
+            proxy_path="matrixark_rust_proxy",
+            metaserver="local",
+            namespace="ns",
+            table="table",
+            request_timeout_ms=request_timeout_ms,
+            io_timeout_ms=request_timeout_ms,
+        )
+        self.assertEqual(client._proxy_socket, socket_path)
+        return client
+
+    def test_a_retrieve_gives_up_at_its_own_deadline_not_the_transport_ceiling(self) -> None:
+        """The measured failure, end to end.
+
+        The live box runs `--request-timeout-ms 300000`, so the transport ceiling there is 302s.
+        A retrieve carrying a 3s deadline must not wait anywhere near it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            socket_path = os.path.join(tmp, "hung.sock")
+            self._hang(socket_path)
+            client = self._client(socket_path, request_timeout_ms=300000)
+
+            started = time.monotonic()
+            with self.assertRaises(Exception):
+                client.matrixark_retrieve_context_pack(
+                    count_key="c",
+                    record_hash_key="h",
+                    shard_size=1,
+                    request={"deadline_ms": 3000, "scope": {}, "secondary_index_groups": []},
+                )
+            elapsed_s = time.monotonic() - started
+
+        # Below: the 3s deadline plus the connect-and-framing allowance, with room for a slow
+        # machine. Above: it really did wait for the deadline rather than failing to connect,
+        # so this cannot pass because the socket was broken.
+        self.assertGreaterEqual(
+            elapsed_s, 2.5,
+            "gave up before the deadline -- this passed for the wrong reason")
+        self.assertLess(
+            elapsed_s, 30.0,
+            "a retrieve with a 3s deadline waited %.1fs; the caller's deadline is not reaching "
+            "the socket, and on the live box that means 302s" % elapsed_s)
+
 
 
 if __name__ == "__main__":
