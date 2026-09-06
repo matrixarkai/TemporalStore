@@ -16990,3 +16990,61 @@ fn what_a_summary_write_costs_as_its_own_node_fills() {
     // the ratio meaningless.
     assert!(shallow > 1_000, "the shallow arm measured {shallow} B -- too small to be a real write");
 }
+
+#[test]
+fn which_children_a_limited_query_returns() {
+    // ContextQueryChildren sorts ascending on updated_at_ms and truncates to the limit, so a
+    // limited query answers with a parent's OLDEST children and the most recently added are
+    // invisible. Same shape as the traversal age-cut and the mem0 get_all limit.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for i in 0..5u64 {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertChildRef {
+                tenant_hash: 1,
+                child_ref: crate::types::ContextChildRef {
+                    parent_hash: 9,
+                    child_hash: 100 + i,
+                    updated_at_ms: 1_700_000_000_000 + i * 10_000,
+                },
+            },
+        });
+        assert!(out.status.ok, "seed refused: {:?}", out.status);
+    }
+    let ask = |limit: Option<usize>| -> Vec<u64> {
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryChildren { tenant_hash: 1, parent_hash: 9, limit },
+        });
+        assert!(out.status.ok, "query refused: {:?}", out.status);
+        match out.response {
+            CommandResponse::ContextChildRefs { refs, .. } => {
+                refs.iter().map(|r| r.child_hash).collect()
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+    };
+    let all = ask(None);
+    let limited = ask(Some(2));
+    println!("  all children:      {all:?}");
+    println!("  limit=2 returned:  {limited:?}");
+    let newest = *all.iter().max().expect("children exist");
+    println!("  newest child {newest}, present in the limited answer: {}", limited.contains(&newest));
+
+    assert_eq!(5, all.len(), "the fill must produce five children, or the limit proves nothing");
+    assert_eq!(2, limited.len(), "the limit must bind");
+    assert!(
+        limited.contains(&newest),
+        "a limited child query hid the newest child: asked for 2 of {all:?} and got {limited:?}"
+    );
+    assert_eq!(vec![103, 104], limited, "the two newest, in chronological order");
+    // The unlimited answer is untouched, and still oldest-first.
+    assert_eq!(vec![100, 101, 102, 103, 104], all, "an unlimited query is unchanged");
+}
