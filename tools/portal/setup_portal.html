@@ -1976,21 +1976,36 @@ function liveStream(options) {
 
   /* ---------- probe ---------- */
   function probeHtml(r) {
-    var cls = r.ok ? "ok" : (r.skipped ? "" : "bad");
+    /* A call that succeeded with the WRONG model is the failure this panel is least able to
+       show: it answered, it was fast, and the vectors are unusable. Candidate encoders are
+       routinely the same width -- all-MiniLM-L6-v2 and BGE-M3 truncated to 384 both emit 384
+       values -- so nothing downstream can notice by length, and retrieval degrades to noise
+       with nothing in the logs. It is reported here because this is the one moment the
+       question was actually asked of the endpoint. */
+    var response = r.response || {};
+    var mismatch = r.ok && response.model_matches_request === false;
+    var cls = mismatch ? "bad" : (r.ok ? "ok" : (r.skipped ? "" : "bad"));
     var title = r.target === "extraction" ? "Extraction" : "Embedding";
     var detail;
     if (r.ok) {
-      var extra = r.response && r.response.dimensions ? " · " + r.response.dimensions + " dimensions" : "";
-      var model = r.response && r.response.model ? " · " + r.response.model : "";
+      var extra = response.dimensions ? " · " + response.dimensions + " dimensions" : "";
+      var model = response.model ? " · " + response.model : "";
       detail = "answered in " + r.latency_ms + " ms" + model + extra;
+      if (mismatch) {
+        detail = "asked for " + response.requested_model + ", answered as " + response.model
+          + extra + ". Vectors from a different model cannot be compared with the ones already "
+          + "stored, and both may be the same width, so nothing else will notice.";
+      }
     } else if (r.skipped) {
       detail = r.detail || r.error;
     } else {
       detail = (r.error || "failed") + (r.detail ? " — " + r.detail : "");
     }
+    var pill = mismatch ? "failed" : (r.ok ? "completed" : (r.skipped ? "queued" : "failed"));
+    var word = mismatch ? "different model"
+      : (r.ok ? "ok" : (r.skipped ? "not configured" : "failed"));
     return '<div class="probe ' + cls + '"><h3>' + esc(title) +
-      '<span class="pill ' + (r.ok ? "completed" : (r.skipped ? "queued" : "failed")) + '">' +
-      (r.ok ? "ok" : (r.skipped ? "not configured" : "failed")) + "</span></h3>" +
+      '<span class="pill ' + pill + '">' + word + "</span></h3>" +
       "<p>" + esc(detail) + (r.url ? ' <span class="mono">' + esc(r.url) + "</span>" : "") + "</p></div>";
   }
 

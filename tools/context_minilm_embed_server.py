@@ -97,7 +97,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._send(400, {"error": str(exc)})
             return
-        model = payload.get("model", MODEL_NAME)
+        # What the caller asked for. It does NOT choose the encoder: this server loads one model
+        # at startup and encodes everything with it, so honouring the request would be a lie in
+        # the other direction. It is kept only to be compared against below.
+        asked = payload.get("model", MODEL_NAME)
         inp = payload.get("input", [])
         if isinstance(inp, str):
             inp = [inp]
@@ -116,7 +119,15 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "object": "list",
                 "data": data,
-                "model": model,
+                # The model that ENCODED this text, not the one that was requested. Echoing the
+                # request back made a mismatch invisible: ask a server running all-MiniLM-L6-v2
+                # for text-embedding-3-small and it returned MiniLM vectors labelled
+                # text-embedding-3-small. Both are 384 wide, so nothing downstream could notice
+                # by length, and the portal's connection test read the echo as confirmation that
+                # the endpoint served the model. It is also what the OpenAI response contract
+                # says this field is.
+                "model": MODEL_NAME,
+                "requested_model": asked,
                 "usage": {"prompt_tokens": 0, "total_tokens": 0},
             },
         )
