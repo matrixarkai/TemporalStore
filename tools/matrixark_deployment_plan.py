@@ -344,6 +344,13 @@ def plan(shape: str, storage: str = "", nodes: int = 0, root: str = "",
         "key_envs": planned_keys,
         "resolved_backend": resolved["backend"],
         "backend_reason": resolved["reason"],
+        # Whether the STORAGE REQUEST was honoured, which `resolve_backend` already decides and
+        # this function used to consume and drop. Without it the caller has to infer a
+        # substitution by comparing `storage` with `resolved_backend`, and those are different
+        # vocabularies: a perfectly ordinary raft/ebs deployment has storage "ebs" and backend
+        # "raft", so that comparison warns about every healthy plan. The fall-through cases are
+        # the only ones that matter and this is the flag that names them.
+        "backend_honoured": bool(resolved.get("honoured", True)),
         "blocking": blocking,
         "warnings": warnings,
         "notes": notes,

@@ -2608,6 +2608,16 @@ SETUP_JS = r"""
            silently: a shared request with no directory, or MatrixObject on a build without it,
            both fall through to auto-detection and start a deployment nobody chose. */
         var rows = [];
+        /* Only when the request was NOT honoured. `backend_honoured` comes from the resolver
+           that made the decision; comparing the request with the resolved backend here would
+           warn about every healthy plan, because a raft deployment on EBS has storage "ebs" and
+           backend "raft" and nothing is wrong with it. */
+        if (plan.backend_honoured === false) {
+          rows.push("<tr><td>You asked for</td><td><span class='mono'>" + esc(plan.storage) +
+            "</span><div class='hint' style='margin:2px 0 0'>The engine does not refuse this. " +
+            "It falls through to auto-detection, so the deployment starts and serves as " +
+            "something nobody chose.</div></td></tr>");
+        }
         rows.push("<tr><td>Resolves to</td><td><span class='mono'>" +
           esc(plan.resolved_backend) + "</span><div class='hint' style='margin:2px 0 0'>" +
           esc(plan.backend_reason) + "</div></td></tr>");
@@ -2626,10 +2636,17 @@ SETUP_JS = r"""
         $("depCommands").textContent = plan.commands
           ? (plan.commands.launch + "\n\n" + plan.commands.teardown)
           : "";
+        /* Launchable and launchable-as-asked are different answers. A plan that resolves to
+           something else still starts, so "err" would be wrong -- but a bare "launchable" is
+           read as agreement, which is the one thing it is not. */
+        var honoured = plan.backend_honoured !== false;
         say($("depMsg"), plan.ok
-          ? "This plan is launchable."
+          ? (honoured
+             ? "This plan is launchable."
+             : "This plan is launchable, but not as the storage you chose \u2014 see You asked "
+               + "for above.")
           : "This plan cannot produce the deployment described. See Blocked above.",
-          plan.ok ? "ok" : "err");
+          plan.ok ? (honoured ? "ok" : "info") : "err");
       })
       .catch(function (e) {
         say($("depMsg"), typeof e === "number" ? failure(e) : "Could not reach the gateway.",
