@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 295 of them, read by 92 functions.
+There are 293 of them, read by 91 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 295 |
-| booleans whose default this could read off the source | 31 |
+| total | 293 |
+| booleans whose default this could read off the source | 29 |
 | numbers whose default this could read off the source | 35 |
-| **defaulting on, and set by nothing** | 2 |
+| **defaulting on, and set by nothing** | 1 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 174 |
+| **that nothing in this repository sets** | 172 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -334,7 +334,7 @@ Who the caller is, not what the engine does. Supplied per request or per process
 | `TEMPORALSTORE_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_SESSION_ID` | — | nothing | 1 | — |
 
-## diagnostic (4)
+## diagnostic (3)
 
 Extra evidence for someone investigating. Off by default.
 
@@ -342,10 +342,9 @@ Extra evidence for someone investigating. Off by default.
 |---|---|---|---|---|
 | `MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG` | off | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY` | off | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_TRACE` | off | nothing | 1 | — |
 | `TS_SCALE_STORAGE_ROOT` | — | nothing | 1 | — |
 
-## benchmark (8)
+## benchmark (7)
 
 Read only by the benchmark harnesses. Never consulted on a serving path.
 
@@ -358,7 +357,6 @@ Read only by the benchmark harnesses. Never consulted on a serving path.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL` | — | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT` | 128 | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING` | off | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING` | on | nothing | 1 | — |
 
 ## behaviour (61)
 

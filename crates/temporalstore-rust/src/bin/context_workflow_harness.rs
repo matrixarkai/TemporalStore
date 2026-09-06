@@ -1225,10 +1225,6 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
-    let stored_record_scoring =
-        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(true);
     let compact_source_replay =
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -1240,14 +1236,6 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         if case.unsupported_reason.is_some() {
             unsupported_benchmark_case_ids.push(case.query_id.clone());
             continue;
-        }
-        let trace_enabled = external_benchmark_trace_enabled();
-        if trace_enabled {
-            eprintln!(
-                "external_context_benchmark case={} sources={}",
-                case.query_id,
-                case.sources.len()
-            );
         }
         *dataset_counts.entry(case.dataset.clone()).or_insert(0usize) += 1;
         *category_counts
@@ -1311,13 +1299,6 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                             Some(hashes) => node_hashes = hashes,
                             None => ingest_ok = false,
                         }
-                        if trace_enabled {
-                            eprintln!(
-                                "external_context_benchmark case={} ingest_all_sources_ms={}",
-                                case.query_id,
-                                started.elapsed().as_millis()
-                            );
-                        }
                     } else {
                         for chunk in sources.chunks(ingest_chunk_size) {
                             let started = Instant::now();
@@ -1339,14 +1320,6 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                                 break;
                             }
                             node_hashes.extend(ingest.node_hashes);
-                            if trace_enabled {
-                                eprintln!(
-                                    "external_context_benchmark case={} ingest_chunk_sources={} ingest_ms={}",
-                                    case.query_id,
-                                    chunk.len(),
-                                    started.elapsed().as_millis()
-                                );
-                            }
                         }
                     }
                     if !ingest_ok {
@@ -1357,46 +1330,14 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                     }
                 };
                 let retrieve_started = Instant::now();
-                let blocks = if stored_record_scoring {
-                    external_stored_source_blocks(
+                let blocks = external_stored_source_blocks(
                         engine,
                         tenant_hash,
                         &node_hashes,
                         case,
                         case_max_events,
-                    )
-                } else {
-                    let retrieve = retrieve_context(
-                        engine,
-                        ContextRetrieveRequest {
-                            shard_id: 1,
-                            tenant_hash,
-                            node_hashes,
-                            query: case.query.clone(),
-                            start_time_ms: 0,
-                            end_time_ms: 10_000,
-                            max_events: case_max_events,
-                            min_confidence: 0.0,
-                            min_importance: 0.0,
-                            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
-                            max_summary_nodes: case_max_events,
-                            max_event_nodes: case_max_events,
-                            prefer_current_agent: false,
-                            current_agent_scope_key: "agent:codex".to_string(),
-                            provider: ContextModelProviderConfig::default(),
-                        },
                     );
-                    retrieve.blocks
-                };
                 let elapsed_ms = retrieve_started.elapsed().as_millis();
-                if trace_enabled {
-                    eprintln!(
-                        "external_context_benchmark case={} retrieve_ms={} blocks={}",
-                        case.query_id,
-                        elapsed_ms,
-                        blocks.len()
-                    );
-                }
                 retrieval_ms_override = Some(elapsed_ms);
                 retrieved_source_sets.insert(source_digest, blocks.clone());
                 blocks
@@ -1600,12 +1541,6 @@ fn normalize_selected_source_id(value: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn external_benchmark_trace_enabled() -> bool {
-    std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_TRACE")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
 }
 
 fn external_case_source_digest(case: &ExternalContextBenchmarkCase) -> u64 {

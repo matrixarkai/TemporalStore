@@ -41,8 +41,6 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
         "retrieval does not read the ctxidx refs, so ON is write-only cost on the live path -- but "
         "ON is what the harness query-back validation reads, and the accessor calls it the escape "
         "hatch for anything still on that surface, held until a redesign gives the refs a reader",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING": "benchmark harness mode",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_TRACE": "benchmark harness mode",
 }
 
 # The eight benchmark modes are one decision, not eight, and it is worth saying so once: they live
