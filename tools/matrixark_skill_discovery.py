@@ -4,8 +4,8 @@
 """Skill discovery / extraction — mine reusable procedures from agent interactions.
 
 The skill *storage + retrieval + budget* lane already exists in TemporalStore:
-`skill_manifest` / `skill_section` records, `scan_resource_skill_candidates`, and
-the shared-skill budget slice. What was missing is the *discovery* layer that turns
+`skill_manifest` / `skill_section` records, the resource-and-skill scan the retrieve path runs
+over the folders it selects, and the shared-skill budget slice. What was missing is the *discovery* layer that turns
 the agent's own repeated tool-use procedures into skills. This module implements the
 discover -> capture -> learn loop, in pure Python (MatrixArk front), emitting records
 that drop straight into the existing retrieval lane.
@@ -336,7 +336,7 @@ def skill_records_for_spec(
 ) -> list[Json]:
     """Build skill_manifest + skill_registry + skill_section records for one skill.
 
-    These are exactly the record types `scan_resource_skill_candidates` retrieves and
+    These are exactly the record types the retrieve path's resource-and-skill scan reads and
     the shared-skill budget slice funds, so a discovered skill becomes retrievable with
     no changes to the retrieval path. Requires the store's record builders; raises if
     they are unavailable (standalone/naming-only mode).
