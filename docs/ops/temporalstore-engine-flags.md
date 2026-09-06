@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 296 of them, read by 93 functions.
+There are 295 of them, read by 92 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 296 |
-| booleans whose default this could read off the source | 32 |
+| total | 295 |
+| booleans whose default this could read off the source | 31 |
 | numbers whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 175 |
+| **that nothing in this repository sets** | 174 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -334,13 +334,12 @@ Who the caller is, not what the engine does. Supplied per request or per process
 | `TEMPORALSTORE_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_SESSION_ID` | — | nothing | 1 | — |
 
-## diagnostic (5)
+## diagnostic (4)
 
 Extra evidence for someone investigating. Off by default.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `MATRIXARK_CONTEXT_RETRIEVE_TRACE` | off | nothing | 1 | — |
 | `MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG` | off | script | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_TRACE` | off | nothing | 1 | — |

@@ -40,9 +40,6 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
         "retrieval does not read the ctxidx refs, so ON is write-only cost on the live path -- but "
         "ON is what the harness query-back validation reads, and the accessor calls it the escape "
         "hatch for anything still on that surface, held until a redesign gives the refs a reader",
-    "MATRIXARK_CONTEXT_RETRIEVE_TRACE":
-        "ON emits per-stage timings from retrieve_context; OFF emits none. The only way to see "
-        "where a slow retrieval spent its time",
     "TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY": "benchmark harness mode",
     "TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY": "benchmark harness mode",
     "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "benchmark harness mode",

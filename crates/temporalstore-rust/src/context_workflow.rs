@@ -1893,24 +1893,6 @@ pub fn retrieve_context(
     engine: &TemporalEngine,
     request: ContextRetrieveRequest,
 ) -> ContextRetrieveReport {
-    let trace_retrieve = matches!(
-        std::env::var("MATRIXARK_CONTEXT_RETRIEVE_TRACE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    );
-    let trace_started = Instant::now();
-    let trace_stage = |stage: &str| {
-        if trace_retrieve {
-            eprintln!(
-                "context_retrieve_stage={stage} elapsed_seconds={:.6}",
-                trace_started.elapsed().as_secs_f64()
-            );
-        }
-    };
-    trace_stage("start");
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
     let mut event_count = 0usize;
@@ -1972,7 +1954,6 @@ pub fn retrieve_context(
             };
         }
     };
-    trace_stage("query_embedding");
     // The encoder that produced the query vector, read from the RAW request rather than the
     // normalized provider: normalisation substitutes a mock sentinel for an absent
     // embedding_model, and hashing that would conflict with everything a real ingest wrote,
@@ -2141,7 +2122,6 @@ pub fn retrieve_context(
     // node pass alone would under-report.
     fanout_plan.embedding_width_conflict_nodes = width_conflict_nodes;
     fanout_plan.embedding_model_conflict_nodes = model_conflict_nodes;
-    trace_stage("summary_embedding_lookup");
     // Hybrid lexical fallback: nodes with NO stored summary embedding used to score
     // a flat 0 here (missing-embedding -> unwrap_or_default), so a freshly
     // bulk-loaded (un-embedded) store collapsed to recency order and lost focused
@@ -2187,7 +2167,6 @@ pub fn retrieve_context(
             }
         }
     }
-    trace_stage("lexical_fallback");
     let mut summary_scores = node_hashes
         .iter()
         .map(|node_hash| {
@@ -2218,7 +2197,6 @@ pub fn retrieve_context(
             *node_hash,
         )
     });
-    trace_stage("summary_score_sort");
     let summary_node_limit = request
         .max_summary_nodes
         .max(1)
@@ -2250,7 +2228,6 @@ pub fn retrieve_context(
             _ => Vec::new(),
         }
     };
-    trace_stage("rerank_node_load");
     for node in rerank_nodes {
         let node_hash = node.node_hash;
         if let Some(score) = summary_scores
@@ -2287,7 +2264,6 @@ pub fn retrieve_context(
             *node_hash,
         )
     });
-    trace_stage("rerank_sort");
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
@@ -2485,7 +2461,6 @@ pub fn retrieve_context(
         }
     }
     fanout_plan.event_query_returned_count = event_query_returned_count;
-    trace_stage("event_expansion");
 
     blocks.sort_by_cached_key(|block| {
         (
@@ -2495,9 +2470,7 @@ pub fn retrieve_context(
             block.uri.clone(),
         )
     });
-    trace_stage("block_sort");
     dedupe_context_blocks_by_source_ref(&mut blocks);
-    trace_stage("block_dedupe");
     context_query_debug_finalize(
         &mut query_understanding_debug,
         &query_plan,
@@ -2505,7 +2478,6 @@ pub fn retrieve_context(
         node_count,
         tiers.as_slice(),
     );
-    trace_stage("debug_finalize");
     ContextRetrieveReport {
         status: Status::ok(),
         blocks,
