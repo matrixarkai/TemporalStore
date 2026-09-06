@@ -100,6 +100,7 @@ ENV_MAP: Dict[str, str] = {
     "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_WAL_GAP_BYTES",
     # ---- [wal] --------------------------------------------------------------
     "wal.wal_legacy_recovery": "TS_WAL_LEGACY_RECOVERY",
+    "wal.wal_compress_records": "TS_WAL_COMPRESS_RECORDS",
     "wal.raft_wal_dir": "TS_RAFT_WAL_DIR",
     # ---- [replication] ------------------------------------------------------
     "replication.meta_addr": "TS_META_ADDR",

@@ -78,14 +78,22 @@ const COMPRESSION_MIN_BYTES: usize = 256;
 /// Reading never consults this. A payload says what encoding it is in, so a log written across a
 /// change reads end to end and turning it off again is not a one-way door -- the same contract
 /// `TS_WAL_BINARY_RECORDS` keeps.
+/// **Default ON.** It was built off, which meant every deployment paid to store a log it had the
+/// code to shrink. Compression is applied only where it pays twice over: a payload under
+/// `COMPRESSION_MIN_BYTES` is left alone, and a payload whose compressed form is not actually
+/// smaller is written raw under its own marker.
+///
+/// The variable now opts OUT, like `TS_WAL_BINARY_RECORDS` and `TS_WAL_BINARY_FRAME` beside it --
+/// and for the same reason it is safe to flip either way: which encoding a payload is in is a
+/// property of the payload, not of this flag.
 pub(crate) fn compress_records_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("TS_WAL_COMPRESS_RECORDS")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "1" | "true" | "yes" | "on"
+        "0" | "false" | "no" | "off"
     )
 }
 
@@ -800,7 +808,9 @@ mod tests {
 
         std::env::set_var("TS_WAL_COMPRESS_RECORDS", "1");
         let compressed = encode(&record).expect("encodes with compression on");
-        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
+        // "0", not unset. Unset is ON now, and this line said "off" while meaning "default" -- the
+        // kind of test that keeps passing through exactly the change it should have caught.
+        std::env::set_var("TS_WAL_COMPRESS_RECORDS", "0");
         let plain = encode(&record).expect("encodes with compression off");
 
         assert!(
@@ -825,6 +835,40 @@ mod tests {
         // deployment that turns this off does not lose the log it already wrote.
         assert_eq!(record, decode(&compressed).expect("still decodes with the flag off"));
         assert_eq!(record, decode(&plain).expect("uncompressed decodes"));
+    }
+
+    #[test]
+    fn compression_is_on_when_nothing_says_otherwise() {
+        // The default is the whole point: a log nobody configured is the log almost every
+        // deployment writes. Asserted through `encode`, not by reading the flag, because what
+        // matters is which marker reaches the file.
+        let record = compressible_record();
+        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
+        let written = encode(&record).expect("encodes with nothing set");
+        assert!(
+            matches!(
+                written.first(),
+                Some(&COMPRESSED_RAW_PAYLOAD_MARKER) | Some(&COMPRESSED_ESCAPED_PAYLOAD_MARKER)
+            ),
+            "an unconfigured deployment should compress, got marker {:?}",
+            written.first()
+        );
+        assert_eq!(record, decode(&written).expect("and it reads back"));
+
+        // Every spelling its neighbours accept turns it off, which is what the old read did not do.
+        for spelling in ["0", "false", "no", "off", "OFF"] {
+            std::env::set_var("TS_WAL_COMPRESS_RECORDS", spelling);
+            let plain = encode(&record).expect("encodes with compression off");
+            assert!(
+                matches!(
+                    plain.first(),
+                    Some(&RAW_PAYLOAD_MARKER) | Some(&BINARY_PAYLOAD_MARKER)
+                ),
+                "{spelling:?} should turn compression off, got marker {:?}",
+                plain.first()
+            );
+        }
+        std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
     }
 
     fn record_with(command: Option<Command>) -> WriteAheadLogRecord {

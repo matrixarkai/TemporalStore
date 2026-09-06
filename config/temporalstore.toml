@@ -96,6 +96,7 @@ index_dump_oplog_gap_bytes = 1048576   # TS_INDEX_DUMP_WAL_GAP_BYTES  undumped i
 [wal]
 commit_delay_us = 0                     # TS_WAL_COMMIT_DELAY_US  group-commit batch-widening delay in microseconds. 0 = pure timer-less (batch = whatever accrues during one barrier's in-flight duration); >0 deliberately widens batches under extreme load.
 wal_legacy_recovery = 0                # TS_WAL_LEGACY_RECOVERY  1 = emergency fallback to the legacy multi-barrier write path + delta-fold recovery.
+wal_compress_records = 1               # TS_WAL_COMPRESS_RECORDS  compress each record before writing it; 0 writes them uncompressed. Which encoding a record is in is recorded in the record, so this is safe to change either way on an existing log.
 # raft_wal_dir = ""                    # TS_RAFT_WAL_DIR        raft WAL directory (raft/replicated modes)
 
 
