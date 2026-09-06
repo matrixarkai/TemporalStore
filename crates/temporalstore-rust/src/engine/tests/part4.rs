@@ -16931,3 +16931,62 @@ fn a_requested_bucket_list_reaches_the_lifecycle_planner() {
          otherwise a bucket that went clean undumped can never be covered and the log stays blocked"
     );
 }
+
+#[cfg(feature = "alloc-probe")]
+#[test]
+fn what_a_summary_write_costs_as_its_own_node_fills() {
+    // A summary write spends ~8.3 KB in `maintained_bucket_index`, which calls
+    // sync_context_pages_for_object -- and for a summary that walks the NODE's timestamped series.
+    // So the question is not whether the write carries the STORE (it does not) but whether it
+    // carries the node's own history. Same node, same summary, only the depth of its series varies.
+    const REPS: usize = 20;
+    let cost = |fill: usize| -> u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            32 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let write = |i: usize| Command::ContextUpsertSummary {
+            tenant_hash: 1,
+            summary: crate::types::ContextSummary {
+                node_hash: 42,
+                level: 1,
+                text: "a summary of the thing that happened".to_string(),
+                valid_from_ms: 1_700_000_000_000 + i as u64,
+                vector: Vec::new(),
+                embedding_model_hash: 0,
+            },
+        };
+        for i in 0..fill {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: write(i) });
+            assert!(out.status.ok, "fill refused: {:?}", out.status);
+        }
+        let probe = crate::alloc_probe::Probe::start();
+        for i in fill..(fill + REPS) {
+            let out = engine.execute(ExecuteRequest { shard_id: 1, command: write(i) });
+            assert!(out.status.ok, "write refused: {:?}", out.status);
+        }
+        probe.stop().alloc_bytes / REPS as u64
+    };
+    let shallow = cost(20);
+    let deep = cost(320);
+    println!("  summary write, node holds  20 summaries: {shallow:>9} B");
+    println!("  summary write, node holds 320 summaries: {deep:>9} B");
+    let ratio = deep as f64 / shallow.max(1) as f64;
+    println!("  ratio {ratio:.2}x for 16x the node's own history");
+    println!("  A ratio near 1 means a write does not carry the node's history.");
+    // Maintenance collected every address the series held and then filed only the newest, so a
+    // write cost the node's whole history: 17,453 B at 20 summaries against 86,649 at 320, a
+    // 4.96x climb that does not stop. Finding the maximum instead of building the list makes it
+    // flat -- 12,221 and 11,113, 0.91x.
+    assert!(
+        ratio < 1.5,
+        "a summary write carries its node's history: {shallow} B at 20 summaries, {deep} B at 320 ({ratio:.2}x)"
+    );
+    // The floor is real work, not an empty measurement: a write that allocated nothing would make
+    // the ratio meaningless.
+    assert!(shallow > 1_000, "the shallow arm measured {shallow} B -- too small to be a real write");
+}
