@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 32 modules that were already here, triaged by
+The entries below are NOT an endorsement. They are 30 modules that were already here, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -22,11 +22,17 @@ anything.
   * The rest have DIVERGED from the live definition of the same name, which is the more misleading
     kind: `matrixark_mcp_registry.list_skills` and the live `matrixark_local_adapter_dashboard` one
     no longer agree, and nothing says which is current.
-  * A caveat on that triage, learned removing the two: it compares bodies with each line's
+  * A caveat on that triage, learned removing the first two: it compared bodies with each line's
     whitespace normalised, which does not normalise LINE BREAKS.
     `matrixark_mcp_backend_readiness.adapter_ensure_backend_ready` was reported as diverged and was
-    identical -- the copy wrapped its signature across four lines where the live one uses one. Read
-    the pair before believing "diverged".
+    identical -- the copy wrapped its signature across four lines where the live one uses one. Redone
+    through `ast.unparse`, which renders both from the tree and is blind to formatting, no entry
+    below is a pure copy any more: the two that were are gone.
+  * Two others went for a different reason. `matrixark_mcp_server_metrics` and
+    `matrixark_mcp_temporal_audit` each held one MIXIN CLASS, and the class name appeared nowhere
+    but its own file -- so nothing inherited them even before the module stopped being imported --
+    while every method they defined exists live in `matrixark_mcp_server`, `matrixark_access`,
+    `matrixark_mcp_local_adapter` or `matrixark_temporal_direct_write`. Dead twice over.
 
 Removing them is follow-up work and wants reading each one first. What this file does is stop the
 set growing while that happens.
@@ -84,8 +90,6 @@ KNOWN_ORPHANS: Dict[str, str] = {
     "matrixark_mcp_retrieve_tree_filter": "seven functions, five unique here",
     "matrixark_mcp_rust_direct_client": "25 definitions, all also defined live",
     "matrixark_mcp_rust_proxy_client": "29 KB, 48 definitions, fourteen unique here",
-    "matrixark_mcp_server_metrics": "four functions, one unique here",
-    "matrixark_mcp_temporal_audit": "five functions, one unique here",
     "matrixark_mcp_temporal_proxy_readiness": "one function, also defined live",
     "matrixark_mcp_temporal_readiness": "two functions, both unique here",
     "matrixark_mcp_time_compression_runtime": "21 KB, six functions, one unique here",
