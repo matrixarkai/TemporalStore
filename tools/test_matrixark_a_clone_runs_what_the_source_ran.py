@@ -201,10 +201,46 @@ class TheSuitePutsTheEnvironmentBackTest(Case):
         self._restore()
         self.assertEqual(before, os.environ.get(variable))
 
-    def test_the_snapshot_covers_more_than_one_variable(self) -> None:
+    def test_the_snapshot_covers_every_variable_that_was_there(self) -> None:
         """The floor: restoring a single name would pass the test above and still leak the other
-        hundred a preset writes."""
-        self.assertGreater(len(self._environ), 5)
+        hundred a preset writes.
+
+        Counting what the machine happens to export is not that floor. The first version asserted
+        `len(self._environ) > 5`, which passes on any developer box and fails under `env -i`,
+        where there are three variables -- it measured the environment rather than the snapshot,
+        so it was strongest exactly where the environment was richest and the leak least likely
+        to matter. Plant the names and the count is of the mechanism.
+        """
+        planted = {"MATRIXARK_SNAPSHOT_PROBE_%d" % index: str(index) for index in range(6)}
+        saved = dict(os.environ)
+        try:
+            os.environ.update(planted)
+            # A second instance, set up while the planted names are present: the snapshot under
+            # test is the one `setUp` takes, and this test's own was taken before they existed.
+            probe = type(self)(self._testMethodName)
+            probe.setUp()
+            try:
+                missing = sorted(name for name in planted if name not in probe._environ)
+                self.assertEqual([], missing,
+                                 "the snapshot missed %d of the names that were set" % len(missing))
+                self.assertEqual(planted, {name: probe._environ[name] for name in planted})
+                # And it is a copy. A snapshot that aliased os.environ would satisfy everything
+                # above and restore nothing, because it would change with the thing it records.
+                os.environ["MATRIXARK_SNAPSHOT_PROBE_0"] = "changed-after-the-snapshot"
+                self.assertEqual("0", probe._environ["MATRIXARK_SNAPSHOT_PROBE_0"])
+                # A name that did not exist when the snapshot was taken. Putting the snapshot
+                # back is only half of restoring: without clearing first, everything the test
+                # ADDED survives, and a preset write adds about a hundred.
+                os.environ["MATRIXARK_SNAPSHOT_PROBE_ADDED"] = "added-during-the-test"
+            finally:
+                probe.doCleanups()
+            # doCleanups ran _restore, which is what puts the changed name back.
+            self.assertEqual("0", os.environ.get("MATRIXARK_SNAPSHOT_PROBE_0"))
+            self.assertIsNone(os.environ.get("MATRIXARK_SNAPSHOT_PROBE_ADDED"),
+                              "the snapshot went back but what the test added stayed")
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
 
 
 if __name__ == "__main__":
