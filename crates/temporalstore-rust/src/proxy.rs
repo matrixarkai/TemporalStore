@@ -1124,6 +1124,8 @@ impl ProxyService {
             }
         };
         self.invalidate_cached_routes_if_meta_changed();
+        // How many answers this batch is owed. Taken before the request moves into the client.
+        let expected = request.commands.len();
         let response = self
             .client()
             .batch_execute_with_options(request, RequestOptions::default())
@@ -1131,6 +1133,27 @@ impl ProxyService {
                 status: Status::error(proxy_client_error_code(&err), err.to_string()),
                 responses: Vec::new(),
             });
+        // One answer per command, or the caller cannot tell which command each answer belongs to.
+        // A backend that returns fewer used to come back as `ok` with a SHORT array: a caller
+        // indexing its own commands then reads someone else's result, or none, and nothing says
+        // so. The multi-shard path in the client has always refused this
+        // ("batch response length mismatch"); the single-shard forward the proxy uses did not.
+        //
+        // Only checked on an OK response: a failed batch legitimately carries no responses, and
+        // its status already says what went wrong.
+        if response.status.ok && response.responses.len() != expected {
+            return BatchExecuteResponse {
+                status: Status::error(
+                    "bad_response",
+                    format!(
+                        "batch response length mismatch: {} command(s) sent, {} answer(s) returned",
+                        expected,
+                        response.responses.len()
+                    ),
+                ),
+                responses: Vec::new(),
+            };
+        }
         response
     }
 
@@ -5543,6 +5566,107 @@ mod tests {
                 "message".to_string()
             ],
             "the title fallback moved: its own title, then the role, then the constant"
+        );
+    }
+
+    /// A batch gets one answer per command, or it is refused.
+    ///
+    /// A backend that returns fewer used to come back as `ok` with a SHORT array. A caller indexing
+    /// its own commands then reads someone else's answer, or none, and nothing tells it: the
+    /// status says ok and the array is simply shorter than what it sent.
+    ///
+    /// The client's multi-shard path has always refused this ("batch response length mismatch").
+    /// The single-shard forward the proxy uses did not, so the guard existed on one path only.
+    #[test]
+    fn a_batch_answer_must_cover_every_command() {
+        // A backend answering exactly `answers` responses, whatever it is asked.
+        fn backend_answering(answers: usize) -> String {
+            let body = serde_json::to_vec(&BatchExecuteResponse {
+                status: Status::ok(),
+                responses: (0..answers)
+                    .map(|_| ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::Empty,
+                    })
+                    .collect(),
+            })
+            .expect("canned batch response");
+            let mut canned = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            canned.extend_from_slice(&body);
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+                    Ok(listener) => listener,
+                    Err(_) => return,
+                };
+                let bound = match listener.local_addr() {
+                    Ok(addr) => addr.to_string(),
+                    Err(_) => return,
+                };
+                if tx.send(bound).is_err() {
+                    return;
+                }
+                for stream in listener.incoming().flatten() {
+                    let mut stream = stream;
+                    let mut scratch = [0u8; 16384];
+                    loop {
+                        use std::io::{Read as _, Write as _};
+                        match stream.read(&mut scratch) {
+                            Ok(0) | Err(_) => break,
+                            Ok(_) => {
+                                if stream.write_all(&canned).is_err() {
+                                    break;
+                                }
+                                let _ = stream.flush();
+                            }
+                        }
+                    }
+                }
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("the backend must report its address")
+        }
+
+        let send_five = |addr: &str| -> BatchExecuteResponse {
+            let proxy = scoped_proxy(ProxyOptions::default());
+            proxy.client().insert_cached_route_for_test(1, addr.to_string());
+            let body = serde_json::to_vec(&BatchExecuteRequest {
+                shard_id: 1,
+                commands: (0..5)
+                    .map(|i| Command::StringGet { key: format!("k{i}") })
+                    .collect(),
+            })
+            .expect("batch body");
+            let (code, answered) = proxy.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/batch_execute".to_string(),
+                body,
+            });
+            assert_eq!(code, 200, "{}", String::from_utf8_lossy(&answered));
+            parse_json::<BatchExecuteResponse>(&answered).expect("the reply parses")
+        };
+
+        // The positive control, and it is not optional: a backend that answers every command must
+        // still succeed, or the check below would pass by refusing everything.
+        let complete = send_five(&backend_answering(5));
+        assert!(complete.status.ok, "{:?}", complete.status);
+        assert_eq!(complete.responses.len(), 5);
+
+        let short = send_five(&backend_answering(2));
+        assert!(
+            !short.status.ok,
+            "a batch answered 2 of 5 came back ok with {} responses; a caller indexing its own              commands reads the wrong answers and is told nothing",
+            short.responses.len()
+        );
+        assert_eq!(short.status.code, "bad_response");
+        assert!(
+            short.status.message.contains('5') && short.status.message.contains('2'),
+            "the refusal should say how many were sent and how many came back: {}",
+            short.status.message
         );
     }
 
