@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 30 modules that were already here, triaged by
+The entries below are NOT an endorsement. They are 20 modules that were already here, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -28,6 +28,12 @@ anything.
     identical -- the copy wrapped its signature across four lines where the live one uses one. Redone
     through `ast.unparse`, which renders both from the tree and is blind to formatting, no entry
     below is a pure copy any more: the two that were are gone.
+  * The `matrixark_mcp_retrieve_*` modules went together: one family, 47 KB, left behind by a split
+    of the retrieve path. Seven had every name confined to themselves -- abandoned rather than moved
+    -- and three had their code taken into a live module under the same name (`record_identity` and
+    `selected_by_tree` into `matrixark_local_adapter_retrieve`). Removing those ten made TWO MORE
+    orphans, `matrixark_mcp_retrieve_embeddings` and `matrixark_mcp_retrieve_node_scores`, which
+    only the dead ones had been naming. Orphans come in chains, and this file is what noticed.
   * Two others went for a different reason. `matrixark_mcp_server_metrics` and
     `matrixark_mcp_temporal_audit` each held one MIXIN CLASS, and the class name appeared nowhere
     but its own file -- so nothing inherited them even before the module stopped being imported --
@@ -78,16 +84,6 @@ KNOWN_ORPHANS: Dict[str, str] = {
     "matrixark_mcp_hook_validation": "three functions, one unique here",
     "matrixark_mcp_native_retrieve": "one function no live module defines",
     "matrixark_mcp_resource_import_runtime": "seven functions, all unique here",
-    "matrixark_mcp_retrieve_audit": "one function unique here",
-    "matrixark_mcp_retrieve_event_scan": "one function unique here",
-    "matrixark_mcp_retrieve_identity": "two functions, one unique here",
-    "matrixark_mcp_retrieve_pack_policy": "two functions, both unique here",
-    "matrixark_mcp_retrieve_resource_skill_scan": "one function unique here",
-    "matrixark_mcp_retrieve_resources": "one function unique here",
-    "matrixark_mcp_retrieve_scan_state": "five functions, all unique here",
-    "matrixark_mcp_retrieve_segment_scan": "one function unique here",
-    "matrixark_mcp_retrieve_temporal_window": "one function unique here",
-    "matrixark_mcp_retrieve_tree_filter": "seven functions, five unique here",
     "matrixark_mcp_rust_direct_client": "25 definitions, all also defined live",
     "matrixark_mcp_rust_proxy_client": "29 KB, 48 definitions, fourteen unique here",
     "matrixark_mcp_temporal_proxy_readiness": "one function, also defined live",

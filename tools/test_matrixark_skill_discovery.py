@@ -100,7 +100,7 @@ class CaptureTest(unittest.TestCase):
         types = [r["record_type"] for r in recs]
         self.assertIn("skill_manifest", types)
         self.assertIn("skill_registry", types)
-        self.assertIn("skill_section", types)          # <- what scan_resource_skill_candidates retrieves
+        self.assertIn("skill_section", types)          # <- what the retrieve path's skill scan reads
         section = next(r for r in recs if r["record_type"] == "skill_section")
         self.assertEqual("active", next(r for r in recs if r["record_type"] == "skill_manifest")["status"])
         self.assertTrue(section["skill_hash"] == section["resource_hash"])  # section points at its skill
