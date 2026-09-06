@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import unittest
 from typing import Dict, List, Tuple
 
@@ -40,12 +41,6 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
         "retrieval does not read the ctxidx refs, so ON is write-only cost on the live path -- but "
         "ON is what the harness query-back validation reads, and the accessor calls it the escape "
         "hatch for anything still on that surface, held until a redesign gives the refs a reader",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY": "benchmark harness mode",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY": "benchmark harness mode",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "benchmark harness mode",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY": "benchmark harness mode",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY": "benchmark harness mode",
-    "TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING": "benchmark harness mode",
     "TEMPORALSTORE_CONTEXT_BENCHMARK_STORED_RECORD_SCORING": "benchmark harness mode",
     "TEMPORALSTORE_CONTEXT_BENCHMARK_TRACE": "benchmark harness mode",
 }
@@ -84,10 +79,54 @@ def _rows() -> List[Tuple[str, str, str]]:
     return rows
 
 
+def _selected_anywhere() -> set:
+    """Every flag name a tracked file ASSIGNS, anywhere in the repository.
+
+    The inventory's own `set by` column cannot answer this: it is built from engine sources, so a
+    flag a Python harness or a shell script sets reads there as selected by nothing. Six of the
+    eight benchmark flags were listed that way, and `tools/run_locomo_rust_harness.py` sets them --
+    four to their non-default arm. A list that says "nothing selects this" about a flag something
+    selects is worse than no list, because it licenses a removal.
+    """
+    listed = subprocess.run(["git", "ls-files"], cwd=REPO,
+                            capture_output=True, text=True).stdout.split()
+    assign = re.compile(
+        r'"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"\s*:'                 # a dict entry
+        r'|export\s+((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)='            # a shell export
+        r'|environ\[\s*"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"\s*\]\s*='  # a python set
+        r'|set_var\(\s*"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"')      # a rust set
+    found = set()
+    for path in listed:
+        if os.path.splitext(path)[1] not in (".py", ".sh", ".rs", ".toml", ".json", ".yaml"):
+            continue
+        base = os.path.basename(path)
+        # This file lists the flag names it has decided about, in a dict. Reading itself would
+        # make every decision look like a selector and empty the list -- the same self-reference
+        # that made an earlier guard feed on its own output.
+        if base == os.path.basename(__file__):
+            continue
+        # A test exercising the other arm is not a SHIPPED selector; that is the distinction the
+        # list is about, and the inventory column already reports it separately.
+        if (base.startswith("test_") or base in ("tests.rs", "tests.py")
+                or "/tests/" in path or "/tests." in path):
+            continue
+        try:
+            with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
+                source = handle.read()
+        except OSError:
+            continue
+        for match in assign.finditer(source):
+            found.add(next(group for group in match.groups() if group))
+    return found
+
+
 def _unselected() -> List[str]:
-    """Booleans whose other arm nothing ships a selector for."""
+    """Booleans whose other arm nothing ships a selector for, asked of the whole tree."""
+    selected = _selected_anywhere()
     out = []
     for name, _default, set_by in _rows():
+        if name in selected:
+            continue
         if set_by == "nothing" or set(part.strip() for part in set_by.split(",")) <= {
                 "test", "harness"}:
             out.append(name)
