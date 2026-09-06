@@ -37,12 +37,15 @@ INVENTORY = os.path.join(REPO, "docs", "ops", "temporalstore-engine-flags.md")
 
 # Every boolean whose other arm no shipped selector reaches, and why it keeps one.
 KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
-    # Empty, and that is the finding rather than an oversight: no boolean flag in the
-    # engine now carries a second arm that nothing ships a selector for. The entries that
-    # were here were resolved two ways -- five collapsed to the arm every deployment took,
-    # and six struck once the sweep was corrected to ask the whole tree, which showed a
-    # harness script selecting them. A new entry means somebody added a branch nothing can
-    # choose; decide about it here rather than leaving it to be rediscovered.
+    # The arm that produces a benchmark result the project refuses to publish. Turning it on
+    # scores the source text directly instead of retrieving it, and marks the run
+    # rust_context_event_ingest=false; validate_benchmark_claims.py and
+    # archive_context_benchmark_report.py both reject a report whose
+    # rust_temporalstore_direct_source_scoring is true. The harness pins it to "0", its own
+    # default, so the published field is always false. The branch is what gives those refusals
+    # something to refuse, and it is the only way to measure the ceiling a real retrieval is
+    # scored against, so it stays.
+    "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "benchmark ceiling, refused when published",
 }
 
 # The eight benchmark modes are one decision, not eight, and it is worth saying so once: they live
@@ -79,14 +82,21 @@ def _rows() -> List[Tuple[str, str, str]]:
     return rows
 
 
-def _selected_anywhere() -> set:
+def _assigned_values() -> Dict[str, set]:
     """Every flag name a tracked file ASSIGNS, anywhere in the repository.
 
     The inventory's own `set by` column cannot answer this: it is built from engine sources, so a
-    flag a Python harness or a shell script sets reads there as selected by nothing. Six of the
-    eight benchmark flags were listed that way, and `tools/run_locomo_rust_harness.py` sets them --
-    four to their non-default arm. A list that says "nothing selects this" about a flag something
-    selects is worse than no list, because it licenses a removal.
+    flag a Python harness or a shell script sets reads there as selected by nothing. Most of the
+    benchmark flags were listed that way while `tools/run_locomo_rust_harness.py` sets them,
+    several to their non-default arm. A list that says "nothing selects this" about a flag
+    something selects is worse than no list, because it licenses a removal.
+
+    An assignment is only a selector when it writes something OTHER than the flag's own default:
+    pinning a flag to the value it already has reaches no second arm. So each name is mapped to
+    the literal values assigned to it, and a name assigned by a form not readable as a literal --
+    a conditional, an f-string, a variable -- keeps counting as a selector. That is the safe
+    direction to be wrong in: it leaves a flag on the list to look at again, where the other
+    direction would license removing a branch something reaches.
     """
     listed = subprocess.run(["git", "ls-files"], cwd=REPO,
                             capture_output=True, text=True).stdout.split()
@@ -95,7 +105,10 @@ def _selected_anywhere() -> set:
         r'|export\s+((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)='            # a shell export
         r'|environ\[\s*"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"\s*\]\s*='  # a python set
         r'|set_var\(\s*"((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"')      # a rust set
-    found = set()
+    literal = re.compile(
+        r""""((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)"\s*:\s*"([^"]*)"\s*,?\s*$"""
+        r"""|export\s+((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)=["']?([A-Za-z01]*)["']?\s*$""")
+    found: Dict[str, set] = {}
     for path in listed:
         if os.path.splitext(path)[1] not in (".py", ".sh", ".rs", ".toml", ".json", ".yaml"):
             continue
@@ -116,16 +129,35 @@ def _selected_anywhere() -> set:
         except OSError:
             continue
         for match in assign.finditer(source):
-            found.add(next(group for group in match.groups() if group))
+            found.setdefault(next(group for group in match.groups() if group), set()).add(None)
+        for line in source.splitlines():
+            hit = literal.search(line)
+            if hit:
+                name = hit.group(1) or hit.group(3)
+                value = hit.group(2) if hit.group(1) else hit.group(4)
+                found.setdefault(name, set()).discard(None)
+                found[name].add(value)
     return found
+
+
+_ON_LITERALS = {"1", "true", "TRUE", "yes", "YES", "True"}
+_OFF_LITERALS = {"0", "false", "FALSE", "no", "NO", "False", ""}
+
+
+def _reaches_the_other_arm(values: set, default: str) -> bool:
+    """True when some assignment writes a value the default does not already have."""
+    if None in values or not values:
+        return True
+    already = _ON_LITERALS if default == "on" else _OFF_LITERALS
+    return any(value not in already for value in values)
 
 
 def _unselected() -> List[str]:
     """Booleans whose other arm nothing ships a selector for, asked of the whole tree."""
-    selected = _selected_anywhere()
+    assigned = _assigned_values()
     out = []
     for name, _default, set_by in _rows():
-        if name in selected:
+        if name in assigned and _reaches_the_other_arm(assigned[name], _default):
             continue
         if set_by == "nothing" or set(part.strip() for part in set_by.split(",")) <= {
                 "test", "harness"}:
