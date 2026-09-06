@@ -2540,6 +2540,19 @@ fn roll_wal_segment_if_due(
         .base_by_shard
         .insert(shard_id, (next_base, new_header_len));
     inner.verified_len_by_shard.insert(shard_id, new_header_len);
+    // Whether a log is written in blocks is a property of the PIECE, and this just replaced it.
+    // The decision is cached per shard because it is answered once per piece, not once per
+    // append -- but nothing invalidated it here, so a shard that latched "no blocks" over a
+    // piece that was already occupied when this process first appended to it kept that answer
+    // for every piece it rolled into afterwards, however empty they started. Measured on the
+    // serving store: the binary carries the footer writer, the log rolls steadily, and not one
+    // piece across the whole store carries a footer.
+    //
+    // Dropping the entry rather than setting it: the next append re-reads the new piece, which is
+    // the same question this asks, and there is only one place that answers it.
+    inner.block_mode_by_shard.remove(&shard_id);
+    // The offset and sequence a footer would record belong to the piece that just sealed.
+    inner.block_last_record_by_shard.remove(&shard_id);
     Ok(true)
 }
 
@@ -4501,6 +4514,106 @@ mod tests {
         for (_, line) in &after {
             decode_wal_line(line).expect("every record must still decode");
         }
+    }
+
+    /// A piece rolled into gets blocks, even when the piece before it had none.
+    ///
+    /// Whether a log is written in blocks is decided per PIECE and cached per SHARD. Nothing
+    /// invalidated that cache when the log rolled, so a shard that latched "no blocks" -- which is
+    /// what happens whenever a process first appends to a piece that already has records in it,
+    /// i.e. after any restart -- kept the answer for every piece it rolled into afterwards.
+    ///
+    /// This is not hypothetical. On the serving store the deployed binary carries the footer
+    /// writer and the log rolls steadily, and the footer magic appears zero times in every piece
+    /// of the whole store. Without a footer a reader cannot find the tail from one block and walks
+    /// the log instead.
+    #[test]
+    fn a_rolled_piece_is_written_in_blocks_even_when_the_one_before_it_was_not() {
+        // Big enough that a piece holds more than one 128 KiB block before it rolls, so a block
+        // can actually close and write its footer.
+        let segment = 6 * WAL_BLOCK_BYTES;
+        set_wal_segment_bytes_for_test(Some(segment));
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_ahead_log_path(dir.path(), 1);
+
+        let append = |store: &LocalWriteAheadLogStore, index: usize| {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    false,
+                )
+                .unwrap();
+        };
+
+        // Phase one leaves the piece with records in it, and then goes away. This is the state a
+        // restart finds: an active piece that is not empty.
+        {
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            for index in 0..40 {
+                append(&store, index);
+            }
+        }
+        assert!(
+            path.metadata().unwrap().len() > 0,
+            "the piece must be non-empty for this to be the case that matters"
+        );
+
+        // Phase two is a fresh process over that piece: it decides "no blocks", correctly, for
+        // THIS piece -- and then rolls into new ones.
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let mut index = 40usize;
+        let mut rolled = 0usize;
+        let sealed_now = || {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    name.contains("wal.") && name != "shard-1.wal.jsonl"
+                })
+                .count()
+        };
+        let before = sealed_now();
+        // Enough to roll at least twice and then fill more than a block of the newest piece.
+        while rolled < 2 || index < 40 + (segment / 1024) as usize * 3 {
+            append(&store, index);
+            index += 1;
+            rolled = sealed_now().saturating_sub(before);
+            assert!(index < 40_000, "the log must roll within a bounded number of appends");
+        }
+
+        let active_len = path.metadata().unwrap().len();
+        assert!(
+            active_len > WAL_BLOCK_BYTES,
+            "the piece rolled into must hold more than one block for a footer to be due: \
+             {active_len}"
+        );
+
+        let file = File::open(&path).unwrap();
+        let (_, header_len) = read_wal_base(&path).unwrap();
+        let footer = last_written_footer(&file, header_len, active_len).unwrap();
+        assert!(
+            footer.is_some(),
+            "a piece the log rolled into starts empty, so it is written in blocks and its first \
+             closed block carries a footer -- found none in {active_len} bytes"
+        );
+
+        // And the records are all still there, which is what the footer is in service of.
+        let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(
+            scanned.len() >= index - 40,
+            "every record written to the rolled pieces must still read back: {} of {}",
+            scanned.len(),
+            index - 40
+        );
+        for (_, line) in &scanned {
+            decode_wal_line(line).expect("every record must still decode");
+        }
+        set_wal_segment_bytes_for_test(None);
     }
 
     /// A record that ENDS inside a block's footer slot, in a log written without footers.
