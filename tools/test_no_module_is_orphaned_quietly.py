@@ -97,17 +97,68 @@ _WORD = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 
 
 #: This file, relative to the repository. It lists the module names it decides about, which is
-#: exactly the shape its own scan counts as a reference -- so once it was committed and became a
+#: exactly the shape its own scan counts as a mention -- so once it was committed and became a
 #: tracked file, it credited every one of them with being imported and reported a clean tree. The
 #: same self-reference that made an earlier guard feed on its own output (mx#910), and the reason
 #: for the control below.
 _SELF = os.path.join("tools", os.path.basename(__file__))
 
+#: How many module stems a literal collection must hold before the file counts as an INVENTORY of
+#: module names rather than a file that happens to mention a few. Three is above anything that
+#: occurs by accident in this tree and below the smallest real inventory.
+_INVENTORY_THRESHOLD = 3
 
-def _tracked() -> List[str]:
+
+def _is_a_module_inventory(path: str, stems: Set[str]) -> bool:
+    """Does this file EXIST to enumerate module names?
+
+    Excluding only `_SELF` was too narrow, and the way that showed up is worth keeping: a second
+    guard was written that lists modules unreachable from production, for the same kind of reason
+    this one lists orphans. Listing them made this scan count each as mentioned, the recorded set
+    below went stale, and the check failed on a change that altered nothing about the tree. The
+    third instance of a guard feeding on a list -- after mx#910 and this file's own `_SELF`.
+
+    So the exclusion is derived: a file qualifies when it assigns a literal collection, to an
+    ALL-CAPS name, holding at least `_INVENTORY_THRESHOLD` module stems. It keeps fitting when a
+    fourth is written, which a hand-written list of filenames would not.
+
+    Measured, because "fits both guards and nothing else" was the guess and it was wrong: it
+    matches THREE files -- the reachability guard this was written for, plus
+    `test_latest_state_key_agreement` and
+    `test_matrixark_every_admin_operation_is_fenced_by_tenant`, which both tabulate module names
+    the same way. Excluding them is the safe direction and that is why it is left alone: dropping
+    a file from the mention scan can only make this check report MORE orphans, never hide one. The
+    recorded set below did not change when they were excluded, which is the evidence that they
+    were not the only thing keeping a module off the list.
+    """
+    if not path.endswith(".py"):
+        return False
+    try:
+        with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
+            tree = ast.parse(handle.read())
+    except (OSError, SyntaxError):
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(t, ast.Name) and t.id.isupper() for t in targets):
+            continue
+        found = {inner.value for inner in ast.walk(node)
+                 if isinstance(inner, ast.Constant) and isinstance(inner.value, str)
+                 and inner.value in stems}
+        if len(found) >= _INVENTORY_THRESHOLD:
+            return True
+    return False
+
+
+def _tracked(stems: Set[str] | None = None) -> List[str]:
     listed = subprocess.run(["git", "ls-files"], cwd=REPO,
                             capture_output=True, text=True).stdout.split()
-    return [path for path in listed if path != _SELF]
+    paths = [path for path in listed if path != _SELF]
+    if stems is None:
+        return paths
+    return [path for path in paths if not _is_a_module_inventory(path, stems)]
 
 
 def _modules() -> Dict[str, str]:
@@ -133,7 +184,7 @@ def _named_anywhere(modules: Dict[str, str]) -> Set[str]:
     stems = {os.path.basename(stem) for stem in modules}
     own = {os.path.basename(stem): path for stem, path in modules.items()}
     seen: Set[str] = set()
-    for path in _tracked():
+    for path in _tracked(stems):
         try:
             with open(os.path.join(REPO, path), encoding="utf-8", errors="replace") as handle:
                 text = handle.read()
@@ -174,6 +225,38 @@ def _orphans() -> Set[str]:
 
 
 class NoModuleIsOrphanedQuietlyTest(unittest.TestCase):
+
+    def test_the_inventory_exclusion_matches_inventories_and_not_ordinary_files(self) -> None:
+        """Control on the exclusion itself, in both directions.
+
+        Too narrow and this check goes stale the next time somebody writes a guard that lists
+        module names -- which is exactly what happened. Too wide and it stops counting real
+        mentions, so it reports orphans that are used; that direction is safe here (it can only
+        add), but it should still be visible rather than silent.
+        """
+        modules = _modules()
+        stems = {os.path.basename(stem) for stem in modules}
+        classified = sorted(path for path in _tracked()
+                            if path.endswith(".py") and _is_a_module_inventory(path, stems))
+
+        self.assertIn(
+            "tools/test_a_module_only_tests_reach_is_not_live.py", classified,
+            "the guard that lists modules unreachable from production is no longer recognised as "
+            "an inventory, so its list is being counted as evidence that those modules are used "
+            "and the set below will go stale again")
+
+        for ordinary in ("tools/matrixark_mcp_core.py", "tools/matrixark_mcp_local_adapter.py",
+                         "tools/matrixark_mcp_server.py"):
+            self.assertNotIn(
+                ordinary, classified,
+                "%s was classed as an inventory of module names. It is live code, and excluding "
+                "it from the mention scan hides every module it imports" % ordinary)
+
+        self.assertLess(
+            len(classified), len(list(_tracked())) // 20,
+            "a twentieth of the tree is now classed as a module inventory, which means the rule "
+            "matches something ordinary rather than the two or three files it was derived for")
+
 
     def test_the_scan_still_sees_the_tree(self) -> None:
         modules = _modules()
