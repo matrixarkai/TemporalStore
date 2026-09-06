@@ -3026,6 +3026,13 @@ fn commit_dirty_buckets_before_truncation_default() -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleRequest {
     pub shard_id: ShardId,
+    /// Dump exactly these buckets instead of the dirty ones.
+    ///
+    /// Reclaim wants a dump manifest matching each bucket's current generation; a bucket that
+    /// went clean without ever being dumped at that generation has none, and the dirty-only
+    /// cadence will never dump it again. Naming buckets here is the only way to clear that.
+    #[serde(default)]
+    pub selected_dump_buckets: Vec<u32>,
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
@@ -3111,6 +3118,7 @@ impl Default for StorageManagerCycleRequest {
     fn default() -> Self {
         Self {
             shard_id: 0,
+            selected_dump_buckets: Vec::new(),
             dry_run: false,
             enable_prepare: true,
             enable_wal_reclaim: true,

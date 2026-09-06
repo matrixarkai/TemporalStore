@@ -3620,11 +3620,40 @@ fn execute_record_log_request(
             // `shard_size` carries the dump budget: the request shape has no field for it, and
             // adding one would change a wire format for a maintenance call.
             let budget = request.shard_size.unwrap_or(4).clamp(1, 1024) as usize;
+            // `field == "unblock_reclaim"` dumps the buckets that BLOCK reclaim rather than the
+            // dirty ones. Reclaim wants a manifest matching each bucket's current generation; a
+            // bucket that went clean without ever being dumped at that generation has none, and
+            // the ordinary cadence only selects DIRTY buckets -- so it will never be dumped again
+            // and the log can never be reclaimed past it. Observed on one box as 3,085 such
+            // buckets, unchanged across cycles, with the log growing ~15 MB/hour and cold start
+            // growing with it at ~0.13 s per MB.
+            let selected_dump_buckets = if request.field == "unblock_reclaim" {
+                // EVERY bucket, not just the ones reclaim currently reports as missing.
+                //
+                // Coverage is exactly the last round's dump: the cycle keeps one bucket-dump
+                // manifest, so dumping the missing buckets covers those and un-covers everything
+                // dumped before. Measured on a real store, chasing the missing list oscillated --
+                // 2085 dumped left 1008 missing, then 1032 dumped left 2061 missing -- and would
+                // never converge. If only the last round is covered, the last round has to hold
+                // every bucket.
+                local
+                    .bucket_storage_summaries(DEFAULT_SHARD_ID)
+                    .into_iter()
+                    .map(|summary| summary.routing_bucket)
+                    .collect::<Vec<u32>>()
+            } else {
+                Vec::new()
+            };
+            let requested_unblock_buckets = selected_dump_buckets.len();
+            // The ordinary budget paces the dirty-bucket cadence; it must not silently truncate an
+            // unblock round, which would leave the log blocked and look like it had been tried.
+            let dump_cap = budget.max(requested_unblock_buckets);
             let report = local.run_storage_manager_cycle(
                 temporalstore_rust::engine::reports::StorageManagerCycleRequest {
                     shard_id: DEFAULT_SHARD_ID,
-                    max_dump_buckets_per_round: budget,
+                    max_dump_buckets_per_round: dump_cap,
                     warm_cache: false,
+                    selected_dump_buckets,
                     ..Default::default()
                 },
             );
@@ -3639,7 +3668,10 @@ fn execute_record_log_request(
                 serde_json::json!({
                     "completed": report.completed,
                     "shard_id": DEFAULT_SHARD_ID,
-                    "max_dump_buckets_per_round": budget,
+                    "max_dump_buckets_per_round": dump_cap,
+                    // Say how many blocking buckets this round took on, so a caller can tell
+                    // "nothing was blocking" from "the budget only reached part of the backlog".
+                    "requested_unblock_buckets": requested_unblock_buckets,
                     "duration_ms": report.duration_ms,
                     "stages": report.native_stage_order,
                     "wal_reclaim_report": reclaim,

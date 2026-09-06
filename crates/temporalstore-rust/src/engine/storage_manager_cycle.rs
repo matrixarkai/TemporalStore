@@ -83,7 +83,7 @@ impl TemporalEngine {
         .collect::<Vec<_>>();
         let plan_request = StorageLifecycleRequest {
             shard_id: request.shard_id,
-            selected_dump_buckets: Vec::new(),
+            selected_dump_buckets: request.selected_dump_buckets.clone(),
             max_dump_buckets_per_round: request.max_dump_buckets_per_round,
             min_undumped_wal_records: if request.enable_wal_reclaim {
                 request.min_undumped_wal_records
