@@ -3801,6 +3801,28 @@ mod tests {
         let counts = probe.stop();
         rows.push(("POST /execute, backend ANSWERS", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
 
+        // What the forward above is made of, so the next person optimising it knows which part to
+        // look at rather than guessing from the total.
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let parsed = crate::http::parse_json::<ExecuteRequest>(&execute_body);
+            std::hint::black_box(&parsed);
+        }
+        let counts = probe.stop();
+        rows.push(("  of which: parse the body", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
+        let typed = ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: "k".to_string() },
+        };
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let encoded = serde_json::to_vec(&typed);
+            std::hint::black_box(&encoded);
+        }
+        let counts = probe.stop();
+        rows.push(("  of which: re-encode to forward", counts.allocs / ITERS as u64, counts.alloc_bytes / ITERS as u64));
+
         println!();
         println!("  path                    allocs/call   bytes/call");
         for (name, allocs, bytes) in &rows {
