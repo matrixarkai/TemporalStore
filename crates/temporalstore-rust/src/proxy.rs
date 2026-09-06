@@ -1142,6 +1142,15 @@ impl ProxyService {
         // Only checked on an OK response: a failed batch legitimately carries no responses, and
         // its status already says what went wrong.
         if response.status.ok && response.responses.len() != expected {
+            // Counted as a backend error, not just refused. A datanode answering short is
+            // misbehaving, and without this the refusal is invisible: the caller sees one failed
+            // batch and an operator sees nothing at all. The context forward already accounts for
+            // its own backend failures by hand for the same reason.
+            self.inner
+                .stats
+                .write()
+                .expect("proxy stats lock poisoned")
+                .backend_errors += 1;
             return BatchExecuteResponse {
                 status: Status::error(
                     "bad_response",
@@ -5631,9 +5640,12 @@ mod tests {
                 .expect("the backend must report its address")
         }
 
-        let send_five = |addr: &str| -> BatchExecuteResponse {
+        // Returns the answer AND how far the backend-error counter moved, because a refusal the
+        // caller sees but no operator can is only half a fix.
+        let send_five = |addr: &str| -> (BatchExecuteResponse, u64) {
             let proxy = scoped_proxy(ProxyOptions::default());
             proxy.client().insert_cached_route_for_test(1, addr.to_string());
+            let before = proxy.info().stats.backend_errors;
             let body = serde_json::to_vec(&BatchExecuteRequest {
                 shard_id: 1,
                 commands: (0..5)
@@ -5647,16 +5659,24 @@ mod tests {
                 body,
             });
             assert_eq!(code, 200, "{}", String::from_utf8_lossy(&answered));
-            parse_json::<BatchExecuteResponse>(&answered).expect("the reply parses")
+            let moved = proxy.info().stats.backend_errors - before;
+            (
+                parse_json::<BatchExecuteResponse>(&answered).expect("the reply parses"),
+                moved,
+            )
         };
 
         // The positive control, and it is not optional: a backend that answers every command must
         // still succeed, or the check below would pass by refusing everything.
-        let complete = send_five(&backend_answering(5));
+        let (complete, complete_errors) = send_five(&backend_answering(5));
         assert!(complete.status.ok, "{:?}", complete.status);
         assert_eq!(complete.responses.len(), 5);
+        assert_eq!(
+            complete_errors, 0,
+            "a backend that answered every command is not a backend error"
+        );
 
-        let short = send_five(&backend_answering(2));
+        let (short, short_errors) = send_five(&backend_answering(2));
         assert!(
             !short.status.ok,
             "a batch answered 2 of 5 came back ok with {} responses; a caller indexing its own              commands reads the wrong answers and is told nothing",
@@ -5667,6 +5687,10 @@ mod tests {
             short.status.message.contains('5') && short.status.message.contains('2'),
             "the refusal should say how many were sent and how many came back: {}",
             short.status.message
+        );
+        assert_eq!(
+            short_errors, 1,
+            "a datanode answering short is misbehaving, and an operator sees nothing unless it              lands on the backend-error counter"
         );
     }
 
