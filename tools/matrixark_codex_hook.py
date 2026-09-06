@@ -2151,9 +2151,20 @@ def codex_hook_output(
             _cache_path = _pack_cache.context_pack_cache_path(
                 "codex", str(agent_context.get("workspace_root") or "")
             )
+            # A pack that arrived and rendered to nothing is not a pack that never arrived.
+            # A heartbeat-only pack is exactly that: the store answered, and every line it sent
+            # was filtered out as hook noise. Serving the previous pack there injects another
+            # query's context into a turn that correctly carries none -- which is the thing the
+            # heartbeat invariant exists to prevent, and it reached the agent labelled as
+            # "prior context" from a query it never asked.
+            _answered_then_filtered = bool(
+                isinstance(retrieve, dict)
+                and str(retrieve.get("context") or "").strip()
+                and not rendered_context
+            )
             if additional_context.strip():
                 _pack_cache.remember_context_pack(_cache_path, additional_context)
-            elif not error:
+            elif not error and not _answered_then_filtered:
                 _previous, _age_s = _pack_cache.recover_context_pack(
                     _cache_path, max_age_s=_pack_cache.pack_cache_max_age_s()
                 )
