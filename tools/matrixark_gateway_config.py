@@ -1353,6 +1353,60 @@ def model_catalogue(target: str, provider: Optional[str] = None) -> List[Json]:
 # ================================================================================================
 # Persistence
 # ================================================================================================
+# Knobs the portal offers, the policy resolves, and nothing reads. Setting one writes a value
+# that comes back when you ask for it and changes nothing about how the deployment behaves.
+#
+# This is a static list against a fact about the code, which is exactly the kind of note that goes
+# stale. It cannot here: test_matrixark_a_knob_the_portal_offers_is_read_by_something DERIVES the
+# same set -- accessor reachable from a production caller, variable read directly, or knob asked
+# for by name -- and fails if this disagrees with it in EITHER direction. Wiring one up forces its
+# removal from here; a knob that quietly stops being read forces its addition.
+#
+# Not a reason to hide the control. A deployment may already have one of these set, and a field
+# that vanishes takes its value out of view while leaving it in the file.
+KNOBS_READ_BY_NOTHING = frozenset({
+    "embed_node_path_prefix",
+    "generate_l1_summaries",
+    "max_event_text_chars",
+    "max_summary_text_chars",
+    "recall_reinforcement",
+    "return_all_candidate_threshold",
+    "return_all_candidates",
+    "skill_description_always",
+    "summarize_aggregation_only_nodes",
+    "summary_levels",
+    "write_secondary_index",
+})
+
+
+_UNREAD_ENVS: Optional[frozenset] = None
+
+
+def _unread_envs() -> frozenset:
+    """The environment variables behind the knobs nothing reads.
+
+    Matched by VARIABLE, not by key prefix. Ten of the eleven surface as `behaviour.<knob>` and
+    `skill_description_always` surfaces as `skills.description_always`, so a prefix rule marked
+    ten of them and left the eleventh looking like a working control -- which is the exact defect
+    this badge exists to end, reintroduced by the code drawing it.
+    """
+    global _UNREAD_ENVS
+    if _UNREAD_ENVS is None:
+        try:
+            import matrixark_tenant_policy as _tp
+            _UNREAD_ENVS = frozenset(
+                _tp.KNOBS[name].env for name in KNOBS_READ_BY_NOTHING
+                if name in _tp.KNOBS and _tp.KNOBS[name].env)
+        except Exception:  # pragma: no cover - the policy module is optional at import time
+            _UNREAD_ENVS = frozenset()
+    return _UNREAD_ENVS
+
+
+def setting_is_read(env: str) -> bool:
+    """Whether anything in this build reads the setting whose variable is `env`."""
+    return (env or "") not in _unread_envs()
+
+
 def config_path() -> str:
     """Where the runtime config lives. ``MATRIXARK_RUNTIME_CONFIG_FILE`` wins; else ~/.matrixark/."""
     explicit = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE", "").strip()
@@ -1610,6 +1664,9 @@ def snapshot(include_catalog: bool = True) -> Json:
             # running the old value. Distinct from the `applies` badge, which says what KIND of
             # setting this is and says it before anybody touches anything.
             "pending_restart": _is_pending_restart(setting, value),
+            # Offered here, resolved by the policy, and read by nothing in this build. A control
+            # that accepts a value and confirms it is indistinguishable from one that works.
+            "read_by_nothing": not setting_is_read(_env_name(setting, values)),
         }
         if setting.secret:
             entry["configured"] = bool(value)
