@@ -16,11 +16,11 @@ schema used to quote the wrong one of those two numbers at callers, which is wha
 one layer up. Both readers now agree, so the entry goes: the rule below is that a list of known
 differences which is allowed to go stale is read as a description of the tree.
 
-The remaining three are NOT endorsed here. One looks like a deliberate difference between a client
-and the server it calls, and one is two reader paths in a benchmark. Neither has been examined, and
-this file does not pretend otherwise: it exists so the next one has to be looked at rather than
-joining them quietly. Strike an entry when its difference is either justified in the code or
-removed.
+Nothing is now listed unexamined. All five entries this file was written with have been looked at:
+three were made to agree and struck, and two are differences that are real and must stay, each with
+its reason recorded here and at the code that reads it. A new entry may be parked here unexamined --
+that is what the list is for, and better than a quiet disagreement -- but it should not stay that
+way, and the two kinds are told apart by whether the note begins JUSTIFIED.
 
 An entry is struck when the numbers are made to AGREE. One that has been examined and found
 justified stays listed -- the literals still differ, and this scan cannot tell a sentinel from a
@@ -31,6 +31,11 @@ answers "what deadline was THIS request given", 0 means none was, and `default_s
 it that way and computes no budgets. The MCP server's 30000 is a different layer -- how long it
 waits for the tool call before abandoning it. Resolving the sentinel to 30000 would silently turn
 stage budgeting on for every unbudgeted request, so these must not be made to agree.
+
+`MATRIXARK_HTTP_PORT` is the second JUSTIFIED entry, and its note had guessed wrong: the 0 is not an
+ephemeral port. `if args.http_port` is what reads it, so 0 means "stay on stdio" and any non-zero
+value means "serve the portal instead". The gateway's 8080 is a bind port. Reading a note rather
+than the code is how a difference stays unexamined while looking examined.
 
 `MATRIXARK_READER_MAX_TOKENS` is struck. It was not two reader paths that happened to differ:
 they are the HTTP and local-transformers backends of ONE reader, built from the same evidence
@@ -67,7 +72,9 @@ _READ = re.compile(
 # unset. The note says what the difference looks like, not that it is right.
 KNOWN_DISAGREEMENTS: Dict[str, str] = {
     "MATRIXARK_HTTP_PORT":
-        "servers bind 8080, the CLI paths use 0 (an ephemeral port)",
+        "JUSTIFIED: the 0 in the two MCP entry points is a MODE -- stay on stdio -- and not an "
+        "ephemeral port as this note first guessed. The 8080 is a bind port for the gateway, "
+        "which exists to bind one. Said in the code at both --http-port arguments.",
     "MATRIXARK_RETRIEVAL_TIMEOUT_MS":
         "JUSTIFIED: the 0 is a sentinel, not a default -- no deadline was supplied for this "
         "request -- and the MCP server's 30000 is a different layer, how long it waits for the "

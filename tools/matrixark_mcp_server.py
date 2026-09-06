@@ -713,6 +713,17 @@ def main() -> int:
     parser.add_argument(
         "--http-port",
         type=int,
+        # 0 is a MODE, not a port: it means "stay on stdio", and `if args.http_port` below is what
+        # reads it. So this is not a second opinion about the 8080 that the gateway, the shipped
+        # config, the container and the deployment unit all use -- that is a bind port for a
+        # process whose whole job is to bind one. The two must not be made to agree.
+        #
+        # They do share a NAME, which is the sharp edge worth knowing about: a deployment that
+        # exports MATRIXARK_HTTP_PORT globally, rather than per service, turns this server from an
+        # stdio MCP endpoint into a web portal, and the agent that expected to speak MCP to it
+        # simply finds nothing. Nothing ships that way -- the port is set in the cloud-api image,
+        # the compose file and the gateway config, none of which launch this -- but a hand-rolled
+        # environment can, and the failure looks like the MCP server never started.
         default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
         help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP.",
     )
