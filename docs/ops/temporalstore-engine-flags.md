@@ -47,9 +47,9 @@ Anything else is blank, and a blank means go and look.
 | flags | count |
 |---|---|
 | total | 289 |
-| booleans whose default this could read off the source | 26 |
+| booleans whose default this could read off the source | 49 |
 | numbers whose default this could read off the source | 34 |
-| **defaulting on, and set by nothing** | 0 |
+| **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 27 |
 | **that nothing in this repository sets** | 156 |
 | documented as keeping an older path alive | 5 |
@@ -69,7 +69,7 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_RAFT_SHARD_ID` | — | harness, script | 3 | — |
 | `TS_RAFT_WAL_DIR` | — | config, harness, script | 3 | — |
 | `TS_SHARD_ID` | 1 | config, launch, script | 3 | — |
-| `TS_META_RAFT_NODES` | — | config | 2 | — |
+| `TS_META_RAFT_NODES` | off | config | 2 | — |
 | `TS_RAFT_BIND_ADDR` | — | harness, script | 2 | — |
 | `MATRIXARK_CONTEXT_EVENT_FANOUT_NODES` | 4 | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_ADDR` | — | nothing | 1 | — |
@@ -107,12 +107,12 @@ What the metaserver does about nodes it cannot reach -- conviction, freezing, re
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TS_META_FORBID_SELF_CLEARING_CONVICTION` | — | nothing | 2 | — |
+| `TS_META_FORBID_SELF_CLEARING_CONVICTION` | off | nothing | 2 | — |
 | `MATRIXARK_TEMPORALSTORE_META_SYNC_DEADLINE_MS` | — | nothing | 1 | — |
-| `TS_AUTO_REBALANCE_DATA_MOVE` | — | script | 1 | — |
-| `TS_META_ADAPTIVE_FAILURE_DETECTOR` | — | nothing | 1 | — |
-| `TS_META_AUTO_REBALANCE` | — | config | 1 | — |
-| `TS_META_AUTO_REBALANCE_BALANCE` | — | nothing | 1 | — |
+| `TS_AUTO_REBALANCE_DATA_MOVE` | off | script | 1 | — |
+| `TS_META_ADAPTIVE_FAILURE_DETECTOR` | off | nothing | 1 | — |
+| `TS_META_AUTO_REBALANCE` | off | config | 1 | — |
+| `TS_META_AUTO_REBALANCE_BALANCE` | on | nothing | 1 | — |
 | `TS_META_CONVICT_ENABLED` | — | nothing | 1 | — |
 | `TS_META_CONVICT_ON_REBOOT` | — | nothing | 1 | — |
 | `TS_META_CONVICT_PROXIES` | — | nothing | 1 | — |
@@ -120,24 +120,24 @@ What the metaserver does about nodes it cannot reach -- conviction, freezing, re
 | `TS_META_FD_PHI_THRESHOLD` | — | nothing | 1 | — |
 | `TS_META_FD_SAMPLE_CAPACITY` | — | nothing | 1 | — |
 | `TS_META_FORBID_ORPHANING_SHARDS` | — | nothing | 1 | — |
-| `TS_META_FREEZE_AGING` | — | nothing | 1 | — |
+| `TS_META_FREEZE_AGING` | off | nothing | 1 | — |
 | `TS_META_MUTATION_LOG` | — | launch | 1 | — |
-| `TS_META_PLACEMENT_AWARE_REBALANCE` | — | nothing | 1 | — |
-| `TS_META_PROXY_CALIBRATION` | — | nothing | 1 | — |
+| `TS_META_PLACEMENT_AWARE_REBALANCE` | off | nothing | 1 | — |
+| `TS_META_PROXY_CALIBRATION` | off | nothing | 1 | — |
 | `TS_META_PROXY_FREEZE_COOLDOWN_MS` | — | nothing | 1 | — |
 | `TS_META_PROXY_FREEZE_MS` | — | nothing | 1 | — |
 | `TS_META_PROXY_RETENTION_MS` | — | nothing | 1 | — |
-| `TS_META_RAFT` | — | config, script | 1 | — |
+| `TS_META_RAFT` | off | config, script | 1 | — |
 | `TS_META_RAFT_ELECTION_TICK_MS` | — | nothing | 1 | — |
-| `TS_META_REBALANCE_LOCATION_SCOPED` | — | nothing | 1 | — |
-| `TS_META_REBALANCE_PER_TABLE` | — | nothing | 1 | — |
+| `TS_META_REBALANCE_LOCATION_SCOPED` | on | nothing | 1 | — |
+| `TS_META_REBALANCE_PER_TABLE` | on | nothing | 1 | — |
 | `TS_META_REBALANCE_SAFE_GAP` | — | nothing | 1 | — |
-| `TS_META_RETENTION_GC` | — | nothing | 1 | — |
+| `TS_META_RETENTION_GC` | off | nothing | 1 | — |
 | `TS_META_RETENTION_MS` | — | nothing | 1 | — |
 | `TS_META_SERVER_FREEZE_COOLDOWN_MS` | — | nothing | 1 | — |
 | `TS_META_SERVER_FREEZE_MS` | — | nothing | 1 | — |
 | `TS_META_SERVER_RETENTION_MS` | — | nothing | 1 | — |
-| `TS_META_SHARD_DIVERGENCE_CHECK` | — | nothing | 1 | — |
+| `TS_META_SHARD_DIVERGENCE_CHECK` | off | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_REBOOT_GRACE_MS` | — | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_SETTLE_GRACE_MS` | — | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_WINDOW_MS` | — | nothing | 1 | — |
@@ -145,7 +145,7 @@ What the metaserver does about nodes it cannot reach -- conviction, freezing, re
 | `TS_META_TABLE_FREEZE_MS` | — | nothing | 1 | — |
 | `TS_META_TABLE_RETENTION_MS` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_BASE_POSTPONE_MS` | — | nothing | 1 | — |
-| `TS_RAFT_AUTO_FAILOVER` | — | config, script | 1 | — |
+| `TS_RAFT_AUTO_FAILOVER` | off | config, script | 1 | — |
 
 ## credential (5)
 
@@ -361,10 +361,10 @@ Everything else that changes what the engine does.
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | config | 5 | — |
-| `TS_RAFT_ALLOW_PLAINTEXT` | — | harness, script | 4 | — |
+| `TS_RAFT_ALLOW_PLAINTEXT` | on | harness, script | 4 | — |
 | `MATRIXARK_BULK_INGEST` | off | config, test, portal | 3 | — |
 | `TS_RAFT_ELECTION_TICK_MS` | — | harness, script | 3 | — |
-| `TS_RAFT_ENABLE_LOCAL_ADMIN` | — | harness, script | 3 | — |
+| `TS_RAFT_ENABLE_LOCAL_ADMIN` | off | harness, script | 3 | — |
 | `TS_RAFT_RPC_DEADLINE_MS` | — | harness, script | 3 | — |
 | `TS_RAFT_RPC_RETRIES` | — | harness, script | 3 | — |
 | `MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE` | — | config, test | 2 | — |
@@ -377,7 +377,7 @@ Everything else that changes what the engine does.
 | `MATRIXARK_TEMPORALSTORE_RUST_ROOT` | — | launch, script, test | 1 | — |
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG` | — | launch | 1 | — |
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG_ENABLE` | — | nothing | 1 | — |
-| `TS_BLOB_PEER_FETCH` | — | nothing | 1 | — |
+| `TS_BLOB_PEER_FETCH` | off | nothing | 1 | — |
 | `TS_BLOB_RUNTIME_THREADS` | — | nothing | 1 | — |
 | `TS_CACHE_DISK_TIER` | — | test | 1 | — |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | on | config, test, portal | 1 | — |
@@ -385,10 +385,10 @@ Everything else that changes what the engine does.
 | `TS_EVICT_SAMPLES` | — | nothing | 1 | — |
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
 | `TS_MALLOC_TRIM` | on | test, portal | 1 | — |
-| `TS_MATRIXOBJECT_CHECKPOINT_ON_START` | — | nothing | 1 | — |
+| `TS_MATRIXOBJECT_CHECKPOINT_ON_START` | on | nothing | 1 | — |
 | `TS_MATRIXOBJECT_FLUSH_BATCH` | — | nothing | 1 | — |
-| `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` | — | nothing | 1 | — |
-| `TS_MATRIXOBJECT_SYNC_FLUSH` | — | nothing | 1 | — |
+| `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` | on | nothing | 1 | — |
+| `TS_MATRIXOBJECT_SYNC_FLUSH` | off | nothing | 1 | — |
 | `TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS` | — | nothing | 1 | — |
 | `TS_PROXY_CONFIG_VERSION` | — | nothing | 1 | — |
 | `TS_PROXY_ENFORCE_INGESTION_ACCOUNT` | — | nothing | 1 | — |
@@ -407,8 +407,8 @@ Everything else that changes what the engine does.
 | `TS_RAFT_SECURITY_MODE` | — | nothing | 1 | — |
 | `TS_RAFT_TRANSPORT_SECURITY` | — | nothing | 1 | — |
 | `TS_SCRATCH_SWEEP` | on | portal | 1 | — |
-| `TS_SERVER_JOIN_EMPTY` | — | script | 1 | — |
-| `TS_SERVER_RAFT` | — | nothing | 1 | — |
+| `TS_SERVER_JOIN_EMPTY` | off | script | 1 | — |
+| `TS_SERVER_RAFT` | off | nothing | 1 | — |
 | `TS_SERVER_RAFT_READ_MODE` | — | nothing | 1 | — |
 | `TS_SERVER_READONLY` | — | nothing | 1 | — |
 | `TS_SERVER_WORKER_THREADS` | — | config | 1 | — |
