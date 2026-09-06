@@ -22,6 +22,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import matrixark_mcp_local_adapter as adapter_module
 
 
+def _log_lines(path):
+    """Every non-blank line of the durable log, whichever form it is written in.
+
+    `read_text` asserts the log is text. It is, until MATRIXARK_LOCAL_JSONL_BLOCK_LOG is on, and
+    then it is a stream of compressed blocks. The module's own reader takes either form, and a test
+    about durable RECORDS should not depend on the encoding they arrive in.
+    """
+    try:
+        from tools.matrixark_mcp_local_adapter import _iter_shard_lines
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _iter_shard_lines
+    return [line for line in _iter_shard_lines(path) if line.strip()]
+
+
 class InterningCoversTheRepeatedFields(unittest.TestCase):
     # Read at import by matrixark_mcp_temporal_append, and another file in this suite sets it and
     # re-imports that module without putting it back. Left on, the warm view and a cold read
@@ -145,7 +159,7 @@ class InterningCoversTheRepeatedFields(unittest.TestCase):
                                   "content": "a sentence with enough words to be extracted %d" % i}],
                 })
             sidecars = data = 0
-            for line in log.read_text(encoding="utf-8").splitlines():
+            for line in _log_lines(log):
                 if not line.strip():
                     continue
                 record = json.loads(line)

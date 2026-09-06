@@ -48,6 +48,20 @@ def _serialized_bytes(records: list[dict]) -> int:
     return sum(len(json.dumps(r, separators=(",", ":")).encode()) + 1 for r in records)
 
 
+def _log_lines(path):
+    """Every non-blank line of the durable log, whichever form it is written in.
+
+    `read_text` asserts the log is text. It is, until MATRIXARK_LOCAL_JSONL_BLOCK_LOG is on, and
+    then it is a stream of compressed blocks. The module's own reader takes either form, and a test
+    about durable RECORDS should not depend on the encoding they arrive in.
+    """
+    try:
+        from tools.matrixark_mcp_local_adapter import _iter_shard_lines
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_mcp_local_adapter import _iter_shard_lines
+    return [line for line in _iter_shard_lines(path) if line.strip()]
+
+
 class _FlagGuard(unittest.TestCase):
     """Save/restore the two module-global flags so each test controls them in isolation."""
 
@@ -99,7 +113,7 @@ class _FlagGuard(unittest.TestCase):
         for shard in sorted(path.parent.glob(path.name + "*")):
             if shard.name.endswith((".read-cache.json", ".read-cache.bin")):
                 continue
-            for line in shard.read_text(encoding="utf-8").splitlines():
+            for line in _log_lines(shard):
                 line = line.strip()
                 if line:
                     records.append(json.loads(line))
@@ -205,7 +219,7 @@ class InterningCase(_FlagGuard):
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 20)
             server.close(timeout_s=2.0)
-            raw_lines = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            raw_lines = [json.loads(ln) for ln in _log_lines(path) if ln.strip()]
         self.assertTrue(any(r.get("record_type") == A.INTERN_DICT_RECORD_TYPE for r in raw_lines),
                         "expected durable intern-dict records on disk")
         # The data line carries a single bundle token (_imb) and every bundled field is elided
@@ -235,7 +249,7 @@ class InterningCase(_FlagGuard):
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 20)
             server.close(timeout_s=2.0)
-            text = path.read_text(encoding="utf-8")
+            text = "\n".join(_log_lines(path))
         self.assertNotIn(A.INTERN_DICT_RECORD_TYPE, text)
         self.assertNotIn(f'"{A.INTERN_TOKEN_KEY}"', text)
 
