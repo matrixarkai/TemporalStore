@@ -554,6 +554,35 @@ SETTINGS: List[Setting] = [
             "MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE",
             "Raw events kept per node", "int", "256", "restart",
             "The ceiling on raw events one node keeps before compression is forced."),
+    # ---- three audit modes, three vocabularies ---------------------------------------------------
+    # `audit.mode` above governs the ACCESS layer. These two govern different layers and take
+    # different words, which is the sharp edge: `sync` and `full` appear in more than one of them
+    # meaning different things, and a value borrowed from the wrong one is rejected outright.
+    Setting("retrieval.context_audit_mode", "retrieval",
+            "MATRIXARK_CONTEXT_AUDIT_MODE",
+            "Retrieval audit mode", "str", "telemetry_only", "live",
+            "Whether a retrieve records what it did. off keeps nothing; telemetry_only keeps the "
+            "shape of the answer; full keeps the evidence, which is what makes a pack "
+            "reconstructable afterwards and what makes the record log grow. "
+            "This is NOT the access-layer audit above and does not take its words: async and "
+            "sync are refused here. "
+            "With nothing set the answer depends on which path served the retrieve -- the request "
+            "path and the direct read use telemetry_only, the local adapter uses off -- so "
+            "setting this is how a deployment makes them agree.",
+            ("off", "telemetry_only", "full")),
+    Setting("retrieval.context_audit_sample_rate", "retrieval",
+            "MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE",
+            "Retrieval audit sample rate", "float", "0.01", "live",
+            "What fraction of retrieves the mode above applies to. Selecting full raises this to "
+            "1.0 for the retrieves it keeps evidence for, so a deployment that wants full "
+            "auditing on a sample sets both."),
+    Setting("limits.direct_audit_mode", "limits",
+            "MATRIXARK_DIRECT_AUDIT_MODE",
+            "Store audit write mode", "str", "buffered", "restart",
+            "How audit records reach the store. buffered writes them off the request path; sync "
+            "makes each durable before the call returns; drop discards them and logs that it did. "
+            "A third vocabulary: off and full are not words this one knows.",
+            ("buffered", "sync", "drop")),
     Setting("retrieval.hook_max_context_tokens", "retrieval",
             "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS",
             "Agent hook context budget (tokens)", "int", "128000", "live",
