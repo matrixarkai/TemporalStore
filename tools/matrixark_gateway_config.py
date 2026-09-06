@@ -1903,6 +1903,11 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
 
     document = load()
     values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
+    # What the FILE held before this write. Not the same as the effective values below: storing a
+    # value identical to the build default changes the file and not the effective value, and that
+    # is a real change -- it pins the setting against a later build. So "did anything change" is
+    # asked of this, and "changed from what" is answered by `previous`.
+    stored_before: Dict[str, str] = dict(values)
     # The effective values BEFORE this write, so the log can say what each setting changed from --
     # including a value that came from the launcher environment rather than a previous write.
     previous: Dict[str, str] = {}
@@ -1967,6 +1972,22 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
     changes: List[Json] = []
     for key in sorted(coerced):
         setting = SETTINGS_BY_KEY[key]
+        # Nothing moved in the file, so nothing is recorded. A caller re-POSTing the values it
+        # already holds is common -- a periodic reconciler, a page saving a form nobody edited --
+        # and each such write used to append a full entry with `from` equal to `to`. On the
+        # deployment this was found on, 45 of the 50 retained entries recorded no change at all,
+        # 254 of 269 individual changes had from == to, and the window they had pushed out was
+        # down to eleven hours. The log exists to answer "who changed the embedding model, and
+        # when"; it had evicted the answer with writes that changed nothing.
+        #
+        # A SECRET is exempt: its value is never compared, so re-setting one is indistinguishable
+        # from rotating it, and the fact of the write is the useful half.
+        if not setting.secret:
+            if key in reset:
+                if key not in stored_before:
+                    continue
+            elif stored_before.get(key) == coerced[key]:
+                continue
         entry: Json = {"key": key, "env": _env_name(setting, values)}
         if key in reset:
             entry["action"] = "reset"
@@ -1981,12 +2002,14 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
 
     history = document.get("history")
     history = history if isinstance(history, list) else []
-    history.append({
-        "at": time.time(),
-        "by": actor or "portal",
-        "changes": changes,
-        "restart_required": sorted({e["key"] for e in applied if not e["in_effect"]}),
-    })
+    # An entry with no changes in it is the same noise one level up.
+    if changes:
+        history.append({
+            "at": time.time(),
+            "by": actor or "portal",
+            "changes": changes,
+            "restart_required": sorted({e["key"] for e in applied if not e["in_effect"]}),
+        })
     document["history"] = history[-HISTORY_LIMIT:]
 
     document["values"] = values
