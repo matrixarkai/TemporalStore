@@ -8,14 +8,15 @@ half-applies. A NUMBER drifts the same way and shows less: two readers with diff
 agree on every value anyone sets, and part company only for the deployment that leaves the variable
 alone -- which is most of them, and the one nobody tests.
 
-`MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS` is the worked example. The backend resolves an omitted budget
-to 500000 and the two agent hooks pass 128000, so an operator who sets nothing gets a quarter of the
-documented window through one path and all of it through another. The schema used to quote the wrong
-one of those two numbers at callers, which is what
+`MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS` was the worked example, and is now struck off. The backend
+resolved an omitted budget to 500000 while the two agent hooks passed 128000, so an operator who set
+nothing got a quarter of the documented window through one path and all of it through another. The
+schema used to quote the wrong one of those two numbers at callers, which is what
 `test_matrixark_the_schema_quotes_the_budget_it_applies` was written for -- the same pair of numbers,
-one layer up.
+one layer up. Both readers now agree, so the entry goes: the rule below is that a list of known
+differences which is allowed to go stale is read as a description of the tree.
 
-The six below were present when this was written and are NOT endorsed here. Several look like a
+The five below were present when this was written and are NOT endorsed here. Several look like a
 deliberate difference between a client and the server it calls, and one is two reader paths in a
 benchmark. None has been examined, and this file does not pretend otherwise: it exists so a SEVENTH
 has to be looked at rather than joining them quietly. Strike an entry when its difference is either
@@ -40,8 +41,6 @@ _READ = re.compile(
 # Known, unexamined. Each is a variable whose readers do not agree on the number to use when it is
 # unset. The note says what the difference looks like, not that it is right.
 KNOWN_DISAGREEMENTS: Dict[str, str] = {
-    "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS":
-        "hooks pass 128000, the backend resolves an omitted budget to 500000",
     "MATRIXARK_HTTP_PORT":
         "servers bind 8080, the CLI paths use 0 (an ephemeral port)",
     "MATRIXARK_READER_MAX_TOKENS":

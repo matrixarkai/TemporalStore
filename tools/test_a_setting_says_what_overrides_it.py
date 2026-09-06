@@ -39,9 +39,12 @@ _PAIR = re.compile(
     r'environ\.get\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']\s*,\s*'
     r'(?:os\.)?(?:environ\.get|getenv)\(\s*["\']((?:TS|MATRIXARK|TEMPORALSTORE)_[A-Z0-9_]+)["\']')
 
-# 10 pairs and 3 shadowed settings when this was written.
+# 10 pairs and 3 shadowed settings when this was written. The context-token budget was one of the
+# three: the panel field is no longer read as a fallback behind the value the agent is given, so the
+# population is 2 and the floor follows it down. Lowering a floor is only honest when an instance
+# was FIXED -- if this drops again, check that the scan still matches before moving it.
 EXPECTED_PAIR_FLOOR = 6
-EXPECTED_SHADOWED_FLOOR = 3
+EXPECTED_SHADOWED_FLOOR = 2
 
 
 def _pairs() -> Dict[str, str]:
