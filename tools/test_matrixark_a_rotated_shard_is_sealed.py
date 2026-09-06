@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 MatrixArkAI
-"""A rotated shard is stored compressed; the active shard stays plain text.
+"""A rotated shard is stored compressed, and sealing never reaches the active one.
+
+The active shard is plain text in the arm this suite pins. Whether it is plain or a stream of
+blocks is a separate decision -- see LOCAL_JSONL_BLOCK_LOG, which now defaults to blocks --
+and what matters here is that the sealer is handed rotated shards only, in whichever form the
+active log is written.
 
 Once the read snapshot became a container the event log was 94.3% of everything this module writes,
 and at the default retention the ROTATED shards are 74.9% of the log -- 11.91x compressible. That is
@@ -55,9 +60,18 @@ class SealedShardTest(unittest.TestCase):
         self.addCleanup(_clear_process_read_cache)
         # Module globals read at call time, so they are set here and RESTORED -- a test that leaves
         # process-global state behind changes the tests after it.
-        for name in ("LOCAL_JSONL_COMPRESS_SEALED", "LOCAL_JSONL_MAX_BYTES"):
+        for name in ("LOCAL_JSONL_COMPRESS_SEALED", "LOCAL_JSONL_MAX_BYTES",
+                     "LOCAL_JSONL_BLOCK_LOG"):
             self.addCleanup(setattr, adapter_module, name, getattr(adapter_module, name))
         adapter_module.LOCAL_JSONL_MAX_BYTES = 40_000
+        # Rotation is reached here by writing more PLAIN text than the cap above. A block log
+        # holds the same records in about a twentieth of the bytes, so under the default
+        # nothing would reach the cap and every assertion below would be made about an empty
+        # rotated set -- which is why each one first asserts that something rotated. Pinned
+        # rather than left to the default because the subject is the SEALER, not the framing
+        # of the active log; the block log's own suite covers that seam in
+        # test_a_block_log_rotates_into_a_sealed_shard_and_starts_a_fresh_one.
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = False
 
     def _fill(self, batches: int = 6, per_batch: int = 20) -> list[dict]:
         adapter = MatrixArkLocalAdapter(self.log)

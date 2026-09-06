@@ -195,19 +195,29 @@ _SHARD_CODEC_ZLIB = b"\x01"
 #: ACTIVE log can take: a sealed shard is finished and compresses whole, but a log is appended to,
 #: and a stream of self-describing blocks is appendable where a single deflate stream is not.
 _SHARD_CODEC_BLOCKS = b"\x02"
-#: Off, and it stays off -- the hazard is demonstrated rather than argued. Turning it on breaks
-#: `test_a_writer_in_another_process_does_not_corrupt_the_view` and
-#: `test_both_append_paths_write_the_same_tail`: both append raw JSON lines to a log this module
-#: created, which is what a writer that is NOT this module does, and a plain append onto a
-#: block-framed log corrupts it. A store this build creates has to remain appendable by something
-#: that writes plain JSONL, and defaulting this on takes that away.
+#: ON. One block per append batch, which costs NO durability: the batch is already the unit acked
+#: together, so a crash loses exactly what it loses today. Measured over the batch sizes this code
+#: really appends (3 x60, 5 x60, 284 x29, 292 x1), 9,008 records, log bytes against plain JSONL:
 #:
-#: Everything else about it is safe and measured -- an existing plain log stays plain because the
-#: form is read from the FILE, and a store written with this on reads byte-identically with it off
-#: (144 records, 82 vectors, same digest). It is a per-deployment choice for anyone who knows their
-#: log has a single writer, not a default.
+#:     random words -- the least compressible text a record plausibly holds      3.23x
+#:     the 76 KB documents this was first priced against                         9.68x
+#:     repetitive text                                                          20.23x
+#:
+#: It shipped off for a reason that was demonstrated rather than argued, and that reason is now
+#: fixed rather than accepted. The hazard was that a process which is NOT this module appends plain
+#: JSON to the log, and a plain append onto a block-framed log corrupted it. `_plain_run_lines`
+#: reads a plain run at a block boundary and leaves the handle on the first byte that is not a
+#: line, so a log genuinely interleaves [block][plain][block] and reads back whole and in order.
+#: Pinned by `test_a_plain_append_onto_a_block_log_still_reads`,
+#: `test_a_block_written_after_a_plain_append_is_not_lost`, and -- the property that the tolerance
+#: must not swallow -- `test_a_torn_block_is_still_dropped_not_read_as_text`.
+#:
+#: Reversible, which is what makes it a default rather than a migration. The form is read from the
+#: FILE: an existing plain log stays plain and is appended to as plain, only a fresh log adopts
+#: blocks, and turning this off again leaves every block log readable, because the reader takes
+#: either form whatever the flag says.
 LOCAL_JSONL_BLOCK_LOG = os.environ.get(
-    "MATRIXARK_LOCAL_JSONL_BLOCK_LOG", "0"
+    "MATRIXARK_LOCAL_JSONL_BLOCK_LOG", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
 #: On, and reversible: the reader takes either form, so a store written with this on still reads
 #: with it off, and a shard sealed once never needs unsealing.
@@ -265,6 +275,13 @@ def _encode_delta_block(records: list[Json]) -> bytes:
         LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL,
     )
     return _DELTA_BLOCK_CODEC_ZLIB_ARRAY + len(payload).to_bytes(4, "big") + payload
+
+
+#: Records to a block when a whole log file is written at once. The append path has a natural unit
+#: -- the batch -- and a rewrite has none, so it takes this. A block is the unit of DECODE, so one
+#: block for the whole file would make a cold read materialise every surviving record at once,
+#: which is the cost the same 256-record geometry bounds for the read cache.
+_LOG_REWRITE_BLOCK_RECORDS = 256
 
 
 def _encode_log_block(records: list[Json]) -> bytes:
@@ -8217,10 +8234,25 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             survivors = apply_memory_tombstones(raw)
             bytes_before = sum(path.stat().st_size for path in paths if path.exists())
             tmp_path = self.event_log.with_name(f"{self.event_log.name}.purge.{os.getpid()}.{threading.get_ident()}.tmp")
-            lines = [json.dumps(self._sanitize_jsonl_record(record), separators=(",", ":")) + "\n" for record in survivors]
-            with tmp_path.open("w", encoding="utf-8") as handle:
-                for line in lines:
-                    handle.write(line)
+            sanitized = [self._sanitize_jsonl_record(record) for record in survivors]
+            # A purge REPLACES the log, so it writes the form a FRESH log takes -- the same
+            # rule `_log_append_form` applies to an empty file -- rather than the form of the
+            # file it replaces. Writing plain regardless was not a corruption: the log came
+            # back readable, several times larger. It was worse than that, because the form is
+            # read from the FILE, so every later append inherited plain from it and one purge
+            # undid the compression for good. This reads through `_iter_shard_lines` above and
+            # now writes through the encoder the append path uses, so both ends of the rewrite
+            # know about the form.
+            with tmp_path.open("wb") as handle:
+                if LOCAL_JSONL_BLOCK_LOG:
+                    handle.write(_SHARD_CONTAINER_MAGIC + _SHARD_CODEC_BLOCKS)
+                    for start in range(0, len(sanitized), _LOG_REWRITE_BLOCK_RECORDS):
+                        handle.write(_encode_log_block(
+                            sanitized[start:start + _LOG_REWRITE_BLOCK_RECORDS]))
+                else:
+                    for record in sanitized:
+                        handle.write(
+                            (json.dumps(record, separators=(",", ":")) + "\n").encode("utf-8"))
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp_path, self.event_log)  # atomic commit point

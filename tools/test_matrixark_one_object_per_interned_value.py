@@ -106,7 +106,9 @@ class OneObjectPerInternedValue(unittest.TestCase):
                     "scope": {"tenant_id": "acme", "user_id": "u", "session_id": "s%d" % (i // 4)},
                     "messages": [{"role": "user", "content": "a sentence to extract %d" % i}],
                 })
-            raw = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+            # Through the module's own shard iterator: the durable log takes more than one
+            # form and only this knows which one is on disk.
+            raw = [json.loads(line) for line in adapter_module._iter_shard_lines(log)
                    if line.strip()]
             self.assertTrue(
                 any(adapter_module.INTERN_BUNDLE_TOKEN_KEY in r for r in raw if isinstance(r, dict)),

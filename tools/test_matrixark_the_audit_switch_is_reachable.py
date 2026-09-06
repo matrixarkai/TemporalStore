@@ -31,6 +31,7 @@ import unittest
 from pathlib import Path
 
 import matrixark_gateway_config as cfg
+import matrixark_mcp_local_adapter as adapter_module
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkError
 
 ADMIN_SCOPES = ["admin:account", "admin:user", "admin:api_key", "admin:audit", "portal:read"]
@@ -129,7 +130,10 @@ class WritingItThroughThePortalTakesEffectTest(unittest.TestCase):
         finally:
             server.close(timeout_s=10.0)
         rows = []
-        for line in self.log.read_text(encoding="utf-8").splitlines():
+        # A substring scan over the durable log, so it has to be handed decoded LINES: the
+        # log is a stream of compressed blocks by default, and scanning the raw file would
+        # match nothing and report an empty audit trail as a pass.
+        for line in adapter_module._iter_shard_lines(self.log):
             if '"matrixark_audit_log"' in line:
                 rows.append(line)
         return rows

@@ -87,8 +87,10 @@ class TheTwoLargestConstantsAreInterned(unittest.TestCase):
                         "metadata": {"raw_uri": "file:///s/r.md", "title": "r"}})
         adapter.close(timeout_s=120)
 
+        # Through the module's own shard iterator: the durable log takes more than one form
+        # and only this knows which one is on disk.
         raw = [json.loads(line) for line in
-               (store / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+               adapter_module._iter_shard_lines(store / "events.jsonl") if line.strip()]
         data = [r for r in raw
                 if str(r.get("record_type") or "") != adapter_module.INTERN_DICT_RECORD_TYPE]
         self.assertTrue(data, "nothing was written, so the assertions below would pass emptily")

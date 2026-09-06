@@ -94,12 +94,19 @@ class _FlagGuard(unittest.TestCase):
     @staticmethod
     def _raw_disk_records(path: Path) -> list[dict]:
         """Every JSONL record currently on disk (all retained shards), in append order -- the exact
-        durable bytes, decoded but NOT expanded."""
+        durable bytes, decoded but NOT expanded.
+
+        Through `_iter_shard_lines`, which takes a shard in whichever form it is stored in.
+        Reading the file as text was already wrong for a SEALED shard -- those have been
+        compressed containers by default for a while -- and passed only because this corpus
+        never rotates far enough to seal one. It broke outright when the active log defaulted
+        to blocks, which is the same defect arriving somewhere it could not be missed.
+        """
         records: list[dict] = []
         for shard in sorted(path.parent.glob(path.name + "*")):
             if shard.name.endswith((".read-cache.json", ".read-cache.bin")):
                 continue
-            for line in shard.read_text(encoding="utf-8").splitlines():
+            for line in A._iter_shard_lines(shard):
                 line = line.strip()
                 if line:
                     records.append(json.loads(line))
@@ -205,7 +212,7 @@ class InterningCase(_FlagGuard):
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 20)
             server.close(timeout_s=2.0)
-            raw_lines = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            raw_lines = [json.loads(ln) for ln in A._iter_shard_lines(path) if ln.strip()]
         self.assertTrue(any(r.get("record_type") == A.INTERN_DICT_RECORD_TYPE for r in raw_lines),
                         "expected durable intern-dict records on disk")
         # The data line carries a single bundle token (_imb) and every bundled field is elided
@@ -235,7 +242,11 @@ class InterningCase(_FlagGuard):
             server = mcp.MatrixArkMcpServer(adapter, access_mode="dev")
             self._ingest_turns(server, 20)
             server.close(timeout_s=2.0)
-            text = path.read_text(encoding="utf-8")
+            # The DECODED lines joined, not the file. Asserting a token is absent from a
+            # file that is a stream of compressed blocks would pass without reading a
+            # single record -- the way an absence assertion passes hardest when there is
+            # nothing to read.
+            text = "\n".join(A._iter_shard_lines(path))
         self.assertNotIn(A.INTERN_DICT_RECORD_TYPE, text)
         self.assertNotIn(f'"{A.INTERN_TOKEN_KEY}"', text)
 

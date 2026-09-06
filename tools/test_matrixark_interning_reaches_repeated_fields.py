@@ -145,7 +145,9 @@ class InterningCoversTheRepeatedFields(unittest.TestCase):
                                   "content": "a sentence with enough words to be extracted %d" % i}],
                 })
             sidecars = data = 0
-            for line in log.read_text(encoding="utf-8").splitlines():
+            # The durable log takes more than one form; only the module's iterator knows
+            # which one this is.
+            for line in adapter_module._iter_shard_lines(log):
                 if not line.strip():
                     continue
                 record = json.loads(line)

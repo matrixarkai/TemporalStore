@@ -230,6 +230,50 @@ class LogIsWrittenInBlocksTest(unittest.TestCase):
         self.assertLessEqual(len(rotated) + 1, retained)
 
 
+    def test_a_purge_rewrites_the_log_in_the_configured_form(self):
+        """A purge REPLACES the log, and a rewrite that forgets the form undoes this.
+
+        It read through `_iter_shard_lines`, which knows every form, and then wrote plain
+        lines regardless -- the log came back readable and roughly sixteen times larger. The
+        lasting half is worse than the size: the form is read from the FILE, so every append
+        after a purge inherited plain from the rewritten file and one purge turned the
+        compression off for good.
+        """
+        adapter_module.LOCAL_JSONL_BLOCK_LOG = True
+        adapter = MatrixArkLocalAdapter(self.log)
+        for batch in range(6):
+            adapter.append_many(_records(batch * 20, 20))
+        adapter.append_many([
+            {
+                "record_type": adapter_module.MEMORY_TOMBSTONE_RECORD_TYPE,
+                "event_id_hash": 900 + index,
+                "target_event_id_hash": index,
+                "updated_at_ms": 1780000009000 + index,
+            }
+            for index in range(20)
+        ])
+        before_bytes = self.log.stat().st_size
+        self.assertTrue(self.log.read_bytes().startswith(_SHARD_CONTAINER_MAGIC),
+                        "the log was not a block stream, so the purge has nothing to keep")
+
+        result = adapter.purge_tombstones(force=True)
+        self.assertTrue(result.get("purged"),
+                        "nothing was purged, so this asserts nothing about a rewrite")
+        self.assertTrue(self.log.read_bytes().startswith(_SHARD_CONTAINER_MAGIC),
+                        "the purge rewrote the block log as plain text, and every later append would inherit that")
+        self.assertLess(self.log.stat().st_size, before_bytes,
+                        "the purged log is no smaller, so the rewrite lost the compression")
+
+        # The markers are gone and every surviving record still reads back. Asserted on the
+        # purge's own count and the served view rather than on which records a tombstone matches:
+        # what changed here is the rewrite, and the matching rules are another test's subject.
+        self.assertEqual(20, result.get("removed_tombstones"),
+                         "the purge did not remove the markers it reported on")
+        _clear_process_read_cache()
+        kept = self._appended(self.log)
+        self.assertEqual(120, len(kept),
+                         "the rewrite lost records that no tombstone removes")
+
     def test_a_plain_append_onto_a_block_log_still_reads(self):
         """The reason this format shipped off by default.
 
