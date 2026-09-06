@@ -102,7 +102,7 @@ class TheSuggestionsAreOnesTheProviderServesTest(Case):
         disagrees with the field beside it."""
         self.on("anthropic")
         models = [entry["model"] for entry in cfg.model_catalogue("extraction")]
-        self.assertIn(cfg.SETTINGS_BY_KEY["extraction.anthropic_model"].default, models)
+        self.assertIn(cfg.extraction_model_default("anthropic"), models)
 
     def test_embeddings_are_still_refused_here(self) -> None:
         """Encoders come from the measured catalogue in the gateway. A second hand-written list is
@@ -113,25 +113,27 @@ class TheSuggestionsAreOnesTheProviderServesTest(Case):
 
 class ThePickGoesIntoTheFieldTheProviderReadsTest(Case):
 
-    def test_anthropic_writes_its_own_model_setting(self) -> None:
-        self.on("anthropic")
-        self.assertEqual("extraction.anthropic_model", cfg.extraction_model_setting())
+    def variable(self, provider: str) -> str:
+        return cfg._env_name(cfg.SETTINGS_BY_KEY["extraction.model"],
+                             {"extraction.provider": provider})
+
+    def test_anthropic_writes_its_own_variable(self) -> None:
+        """There is one model field now, so there is no key to choose between -- the field itself
+        lands in the variable the provider reads."""
+        self.assertEqual("MATRIXARK_ANTHROPIC_MODEL", self.variable("anthropic"))
 
     def test_everything_else_writes_the_general_one(self) -> None:
         for provider in ("openai_compatible", "deterministic", "", "typo_provider"):
             with self.subTest(provider=provider):
-                self.on(provider)
-                self.assertEqual("extraction.model", cfg.extraction_model_setting())
+                self.assertEqual("MATRIXARK_EXTRACTION_MODEL", self.variable(provider))
 
-    def test_the_setting_it_names_exists_and_is_the_one_the_code_reads(self) -> None:
+    def test_the_key_it_names_is_on_the_form(self) -> None:
         """A key that is not in the registry would reach the page and query a field that is not on
         the form, which the page reports as 'not loaded' -- a dead end rather than an error."""
-        for provider, variable in (("anthropic", "MATRIXARK_ANTHROPIC_MODEL"),
-                                   ("openai_compatible", "MATRIXARK_EXTRACTION_MODEL")):
+        for provider in ("anthropic", "openai_compatible"):
             with self.subTest(provider=provider):
                 self.on(provider)
-                setting = cfg.SETTINGS_BY_KEY[cfg.extraction_model_setting()]
-                self.assertEqual(variable, setting.env)
+                self.assertIn(gw._model_picker_body("extraction")["key"], cfg.SETTINGS_BY_KEY)
 
 
 class TheRouteAnswersWithBothTest(Case):
@@ -142,14 +144,14 @@ class TheRouteAnswersWithBothTest(Case):
         assertion below while the route reported the wrong field -- a mutation proved it."""
         return gw._model_picker_body(target)
 
-    def test_current_is_read_from_the_field_that_is_in_use(self) -> None:
+    def test_current_is_read_from_the_variable_that_is_in_use(self) -> None:
         self.on("anthropic")
         os.environ["MATRIXARK_ANTHROPIC_MODEL"] = "claude-opus-5"
         os.environ["MATRIXARK_EXTRACTION_MODEL"] = "gpt-4o"
         body = self.body()
-        self.assertEqual("extraction.anthropic_model", body["key"])
+        self.assertEqual("extraction.model", body["key"])
         self.assertEqual("claude-opus-5", body["current"],
-                         "the panel showed the field this provider does not read")
+                         "the panel showed the variable this provider does not read")
 
     def test_the_other_field_is_not_what_is_reported(self) -> None:
         self.on("openai_compatible")

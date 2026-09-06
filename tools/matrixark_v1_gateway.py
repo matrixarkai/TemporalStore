@@ -1622,14 +1622,18 @@ def _model_picker_body(target: str) -> Json:
     tested twice and shipped once, which is exactly what a mutation of the route proved: the route
     could report the wrong field with every assertion still green.
     """
-    setting_key = ("embedding.model" if target == "embedding"
-                   else _gwconfig.extraction_model_setting())
+    # One extraction field now, and it routes itself: `_env_name` sends it to the variable the
+    # selected provider reads. There is nothing left for this to choose between.
+    setting_key = "embedding.model" if target == "embedding" else "extraction.model"
     body: Json = {
         "target": target,
         "key": setting_key,
         "catalogue": (embedding_picker_catalogue() if target == "embedding"
                       else _gwconfig.model_catalogue(target)),
-        "current": os.environ.get(_gwconfig.SETTINGS_BY_KEY[setting_key].env, "").strip(),
+        # Resolved, not read off `.env`: the extraction model has no fixed variable any more, so
+        # `.env` is empty for it and this read would answer "" for every deployment.
+        "current": os.environ.get(
+            _gwconfig._env_name(_gwconfig.SETTINGS_BY_KEY[setting_key], {}), "").strip(),
     }
     if target == "embedding":
         # `applicable` narrows what is OFFERED without narrowing what is SHOWN. The measured table
@@ -1683,7 +1687,10 @@ def _model_config_snapshot() -> Json:
     extraction: Json = {
         "provider": extraction_provider,
         "base_url": _env("MATRIXARK_EXTRACTION_BASE_URL"),
-        "model": _env("MATRIXARK_EXTRACTION_MODEL"),
+        # The model the SELECTED provider reads, not one variable's value: Anthropic reads its
+        # own, so a panel hardcoding the OpenAI one showed a field the deployment never sends.
+        "model": _env(_gwconfig._env_name(
+            _gwconfig.SETTINGS_BY_KEY["extraction.model"], {})),
         "timeout_sec": _env("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"),
         "max_tokens": _env("MATRIXARK_EXTRACTION_MAX_TOKENS"),
         **_key_state(extraction_key_env),
@@ -1715,6 +1722,13 @@ def _model_config_snapshot() -> Json:
             "out-of-the-box default so the API works with no configuration. Set "
             "MATRIXARK_REQUIRE_AUTH=1 and MATRIXARK_ACCESS_MODE=enforced, then restart."
         )
+    _retired_summary_model = _env("MATRIXARK_SUMMARY_MODEL")
+    if _retired_summary_model:
+        warnings.append(
+            "MATRIXARK_SUMMARY_MODEL is set to " + _retired_summary_model + " and is no longer "
+            "read: node summaries are made by the extraction endpoint with the extraction key, so "
+            "they use Extraction model. Clear the variable, or set Extraction model to the one you "
+            "want.")
     def _unrecognised(group: str, provider: str) -> str:
         """The warning for a value nothing matches. It names the value, because the whole failure is
         that the value looks configured -- and lists what would have worked."""

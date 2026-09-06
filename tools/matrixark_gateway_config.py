@@ -246,18 +246,22 @@ SETTINGS: List[Setting] = [
             "Extraction base URL", "str", "", "restart",
             "OpenAI-compatible base, including /v1. DeepSeek: https://api.deepseek.com/v1. "
             "anthropic ignores this and uses Anthropic base URL below."),
-    Setting("extraction.model", "extraction", "MATRIXARK_EXTRACTION_MODEL",
+    # No fixed variable: `_env_name` sends this to whichever one the selected provider reads,
+    # the same way the API key is routed. An empty `env` is how the registry says "dynamic", and it
+    # is what keeps the declared-default sweep from comparing one blank against two fallbacks.
+    Setting("extraction.model", "extraction", "",
             "Extraction model", "str", "", "restart",
-            "Model name sent to the endpoint, e.g. deepseek-chat. anthropic ignores this and "
-            "uses Anthropic model below."),
-    # anthropic does not read the two fields above. Its model and endpoint have their own
-    # variables and no fallback, so without these a customer who chose anthropic could type a model
-    # and watch a different one be called. Max tokens and timeout are not repeated here because
+            "The model extraction calls, sent to whichever provider is selected above -- Anthropic "
+            "reads its own variable and this field follows, so there is nothing to keep in step by "
+            "hand. Blank means the provider's own default: claude-sonnet-5 on Anthropic, "
+            "qwen2.5:1.5b on an OpenAI-compatible endpoint."),
+    # anthropic does not read the BASE URL above: its endpoint has its own variable and no
+    # fallback, so without this a customer who chose anthropic could fill in a base URL and watch a
+    # different endpoint be called. The MODEL is no longer repeated here -- Extraction model above
+    # writes to whichever variable the selected provider reads -- because two fields for one value
+    # meant one of them was always inert, and which one depended on a dropdown three rows up.
+    # Max tokens and timeout are not repeated here because
     # those DO fall back to the extraction controls.
-    Setting("extraction.anthropic_model", "extraction", "MATRIXARK_ANTHROPIC_MODEL",
-            "Anthropic model", "str", "claude-sonnet-5", "restart",
-            "Used when Extraction provider is anthropic, which does not read Extraction model. "
-            "Leave it alone on any other provider."),
     Setting("extraction.anthropic_base_url", "extraction", "MATRIXARK_ANTHROPIC_API_BASE",
             "Anthropic base URL", "str", "https://api.anthropic.com", "restart",
             "Used when Extraction provider is anthropic, which does not read Extraction base URL. "
@@ -304,12 +308,12 @@ SETTINGS: List[Setting] = [
             "here. The choice itself takes effect on the next summary; the model below waits for a "
             "restart.",
             ["", "deterministic", "openai_compatible"]),
-    Setting("summary.model", "extraction", "MATRIXARK_SUMMARY_MODEL",
-            "Summary model", "str", "", "restart",
-            "Model for node summaries, sent to the extraction endpoint above with the same key. "
-            "Blank uses the extraction model. Naming a smaller one here is the point of the "
-            "setting: every node gets a summary, so this call is made far more often than an "
-            "extraction."),
+    # summary.model was here. Node summaries are made by the extraction endpoint with the
+    # extraction key, so a separate model was a second name for the same call -- and the two could
+    # be set to models the same endpoint does not both serve. The summary uses the extraction model,
+    # and MATRIXARK_SUMMARY_MODEL is no longer read; `_model_config_snapshot` says so if a launcher
+    # has one set, because a variable that silently stopped mattering is worse than one that never
+    # existed.
     Setting("summary.max_tokens", "extraction", "MATRIXARK_SUMMARY_MAX_TOKENS",
             "Summary max tokens", "int", "900", "restart",
             "Completion cap per summary call, separate from the extraction cap because a summary is "
@@ -841,7 +845,6 @@ _EXPLICIT_BUILD_DEFAULT = {
     # to be misconfigured -- a cloud provider selected, endpoint never filled in -- was described
     # as having no endpoint at all rather than as pointed at a local port.
     "extraction.base_url": ("EXTRACTION_LLM_BASE_URL", "matrixark_mcp_extraction_provider"),
-    "extraction.model": ("EXTRACTION_LLM_MODEL", "matrixark_mcp_extraction_provider"),
 }
 
 
@@ -1001,7 +1004,7 @@ PRESETS: Dict[str, Json] = {
         "values": {
             "extraction.provider": "anthropic",
             "extraction.anthropic_base_url": "https://api.anthropic.com",
-            "extraction.anthropic_model": "claude-sonnet-5",
+            "extraction.model": "claude-sonnet-5",
         },
     },
     "ollama": {
@@ -1134,16 +1137,24 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
             "count": len(set(models))}
 
 
-def extraction_model_setting(provider: Optional[str] = None) -> str:
-    """Which setting holds the model the selected extraction provider actually READS.
+# What each provider's own code falls back to when no model is named. Read from that code, for
+# the reason the budgets are: a number re-typed here is the second copy this file refuses to keep.
+_EXTRACTION_MODEL_DEFAULT = {
+    "anthropic": ("ANTHROPIC_LLM_MODEL", "matrixark_mcp_core"),
+    "openai": ("EXTRACTION_LLM_MODEL", "matrixark_mcp_extraction_provider"),
+}
 
-    The Anthropic path reads MATRIXARK_ANTHROPIC_MODEL and ignores MATRIXARK_EXTRACTION_MODEL
-    entirely, so writing a pick into `extraction.model` on that deployment changed nothing at all.
+
+def extraction_model_default(provider: Optional[str] = None) -> str:
+    """The model the selected provider calls when the field is blank.
+
+    One field is offered, so the portal has to be able to say what blank means on the provider in
+    use -- and the two providers do not agree, which is why the field declares no default of its own.
     """
     resolved = provider if provider is not None else _configured_extraction_provider()
-    if extraction_provider_effect(resolved) == "anthropic":
-        return "extraction.anthropic_model"
-    return "extraction.model"
+    effect = extraction_provider_effect(resolved)
+    named = _EXTRACTION_MODEL_DEFAULT.get(effect if effect == "anthropic" else "openai")
+    return _build_constant(*named) or ""
 
 
 def model_catalogue(target: str, provider: Optional[str] = None) -> List[Json]:
@@ -1254,6 +1265,16 @@ def _env_name(setting: Setting, values: Dict[str, str]) -> str:
     decision at all. Every other provider-dependent field here already defaults to empty for the
     same reason; these two used to pin one provider's name.
     """
+    if setting.key == "extraction.model":
+        # The same reason the key below is routed: the value a customer types has to reach the code
+        # that reads it, and which variable that is is not the customer's problem. Anthropic reads
+        # MATRIXARK_ANTHROPIC_MODEL and ignores MATRIXARK_EXTRACTION_MODEL entirely, so a model
+        # typed into one field on that deployment configured nothing and said nothing.
+        provider = (values.get("extraction.provider")
+                    or _configured_extraction_provider())
+        if extraction_provider_effect(provider) == "anthropic":
+            return "MATRIXARK_ANTHROPIC_MODEL"
+        return "MATRIXARK_EXTRACTION_MODEL"
     if setting.key not in _PROVIDER_KEY_VARIABLE:
         return setting.env
     group = setting.key.rsplit(".", 1)[0]
@@ -1845,7 +1866,7 @@ def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
             else:
                 results.append(_probe(
                     "extraction_anthropic", f"{anthropic_base}/v1/messages",
-                    {"model": anthropic_model or SETTINGS_BY_KEY["extraction.anthropic_model"].default,
+                    {"model": anthropic_model or extraction_model_default("anthropic"),
                      "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]},
                     {"x-api-key": key, "anthropic-version": version}, timeout))
         elif provider not in _OPENAI_EXTRACTION_PROVIDERS:

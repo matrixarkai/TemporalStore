@@ -10,6 +10,11 @@ and it used to end in a different literal::
     core       MATRIXARK_SUMMARY_MODEL -> MATRIXARK_EXTRACTION_MODEL -> OPENAI_MODEL -> qwen2.5:1.5b
     summaries  MATRIXARK_SUMMARY_MODEL -> MATRIXARK_EXTRACTION_MODEL -> OPENAI_MODEL -> gpt-4o-mini
 
+The first link is gone now. A node summary is made by the extraction endpoint with the extraction
+key, so a separate summary model was a second name for the same call -- two names that could be set
+to models one endpoint does not both serve. The summary IS the extraction model, and that is
+asserted below rather than left to the two chains happening to agree.
+
 Both modules **use** it: each sends ``model=SUMMARY_LLM_MODEL`` to the configured endpoint. So a
 deployment that chose a summary provider and named no model asked for a different model depending on
 which of them happened to summarise, and nothing anywhere said so. On an OpenAI endpoint one of
@@ -50,7 +55,9 @@ CASES = {
     "a provider chosen, no model named": {"MATRIXARK_SUMMARY_PROVIDER": "openai_compatible"},
     "only OPENAI_MODEL": {"OPENAI_MODEL": "gpt-4o"},
     "an extraction model named": {"MATRIXARK_EXTRACTION_MODEL": "deepseek-chat"},
-    "a summary model named": {"MATRIXARK_SUMMARY_MODEL": "something-cheap"},
+    # Retired: nothing reads it. Kept as a case because the two modules must ignore it the SAME
+    # way -- one of them still honouring it would be the old divergence with a new cause.
+    "the retired summary model still set": {"MATRIXARK_SUMMARY_MODEL": "something-cheap"},
     "extraction named and OPENAI_MODEL set": {"MATRIXARK_EXTRACTION_MODEL": "deepseek-chat",
                                               "OPENAI_MODEL": "gpt-4o"},
 }
@@ -110,6 +117,31 @@ class TheValueIsActuallySentTest(unittest.TestCase):
             with self.subTest(module=name):
                 self.assertIn("model=SUMMARY_LLM_MODEL", self._source(name),
                               "%s resolves a summary model and never sends it" % name)
+
+
+class TheSummaryModelIsTheExtractionModelTest(unittest.TestCase):
+    """The rule the first link's removal is FOR. Both chains agreeing is not enough: they could
+    agree on a third thing."""
+
+    def test_it_follows_the_extraction_model(self) -> None:
+        resolved = _resolve({"MATRIXARK_EXTRACTION_MODEL": "deepseek-chat"})
+        self.assertEqual("deepseek-chat", resolved["core"])
+        self.assertEqual("deepseek-chat", resolved["summaries"])
+
+    def test_the_retired_variable_no_longer_wins(self) -> None:
+        """What this change is: a deployment with both set gets the extraction model, in both
+        modules, rather than a summary model neither the portal nor the endpoint agreed to."""
+        resolved = _resolve({"MATRIXARK_EXTRACTION_MODEL": "deepseek-chat",
+                             "MATRIXARK_SUMMARY_MODEL": "something-cheap"})
+        self.assertEqual("deepseek-chat", resolved["core"])
+        self.assertEqual("deepseek-chat", resolved["summaries"])
+
+    def test_it_tracks_a_change_to_the_extraction_model(self) -> None:
+        """The floor: if both constants had been frozen to a literal, the two above would pass on a
+        build where the summary followed nothing at all."""
+        first = _resolve({"MATRIXARK_EXTRACTION_MODEL": "deepseek-chat"})["core"]
+        second = _resolve({"MATRIXARK_EXTRACTION_MODEL": "gpt-4o-mini"})["core"]
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

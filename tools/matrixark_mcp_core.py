@@ -290,7 +290,10 @@ SUMMARY_LLM_PROVIDER = os.environ.get(
     "MATRIXARK_SUMMARY_PROVIDER",
     os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
 ).strip().lower().replace("-", "_")
-SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", EXTRACTION_LLM_MODEL)
+# The summary IS the extraction model. It used to be `get(MATRIXARK_SUMMARY_MODEL, ...)`, a
+# second name for a call made against the extraction endpoint with the extraction key -- so the two
+# could name models that endpoint does not both serve, and the portal offered no way to see that.
+SUMMARY_LLM_MODEL = EXTRACTION_LLM_MODEL
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
 ENABLE_LLM_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", "").strip().lower() in {"1", "true", "yes"}
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"

@@ -148,10 +148,16 @@ class TheParseFoundSomethingTest(unittest.TestCase):
 
     def test_it_finds_the_chain_that_makes_a_summary_follow_extraction(self) -> None:
         """The shape the first exemption rests on, named once, so a parser change that stops seeing
-        it fails here rather than turning into a false disagreement."""
+        it fails here rather than turning into a false disagreement.
+
+        It used to be the summary MODEL following the extraction model. There is no summary model
+        any more -- a node summary is made by the extraction endpoint, so it uses the extraction
+        model and nothing else -- and the summary PROVIDER follows the extraction provider the same
+        way, which is the shape this rule is about.
+        """
         _literals, follows = read_shapes()
-        self.assertIn("MATRIXARK_EXTRACTION_MODEL",
-                      follows.get("MATRIXARK_SUMMARY_MODEL", set()))
+        self.assertIn("MATRIXARK_UNDERSTANDING_PROVIDER",
+                      follows.get("MATRIXARK_SUMMARY_PROVIDER", set()))
 
     def test_it_finds_a_variable_read_differently_per_provider(self) -> None:
         """The shape the second exemption rests on."""

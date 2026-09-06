@@ -35,7 +35,12 @@ sys.path.insert(0, TOOLS)
 
 import matrixark_gateway_config as cfg  # noqa: E402
 
-ANTHROPIC_CONTROLS = ("extraction.anthropic_model", "extraction.anthropic_base_url")
+# The model is no longer among these. Extraction model writes to whichever variable the selected
+# provider reads, so Anthropic's model is selectable through the one field rather than a second one
+# beside it -- which is the same guarantee this file was written to protect, with the failure mode
+# removed instead of documented. The ENDPOINT still needs its own control: it has no fallback, and
+# nothing routes it.
+ANTHROPIC_CONTROLS = ("extraction.anthropic_base_url",)
 
 PROBE = """
 import json, sys
@@ -70,7 +75,7 @@ def started_with(**overrides):
 
 class TheControlsExistTest(unittest.TestCase):
 
-    def test_both_are_offered(self) -> None:
+    def test_the_endpoint_control_is_offered(self) -> None:
         for key in ANTHROPIC_CONTROLS:
             with self.subTest(setting=key):
                 self.assertIn(key, cfg.SETTINGS_BY_KEY)
@@ -90,8 +95,9 @@ class TheDeclaredDefaultsAreTheRealOnesTest(unittest.TestCase):
     what the deployment is doing."""
 
     def test_the_model_default_is_what_the_code_uses(self) -> None:
-        self.assertEqual(started_with()["model"],
-                         cfg.SETTINGS_BY_KEY["extraction.anthropic_model"].default)
+        """The field declares no default of its own -- the two providers disagree about it -- so the
+        portal asks the provider's code instead, and that answer has to be the real one."""
+        self.assertEqual(started_with()["model"], cfg.extraction_model_default("anthropic"))
 
     def test_the_base_default_is_what_the_code_uses(self) -> None:
         self.assertEqual(started_with()["base"],
@@ -109,8 +115,21 @@ class TheControlsActuallySelectTheModelTest(unittest.TestCase):
         return cfg._env_name(cfg.SETTINGS_BY_KEY[key], {})
 
     def test_naming_a_model_changes_what_is_called(self) -> None:
-        got = started_with(**{self.variable("extraction.anthropic_model"): "claude-opus-4"})
+        """Driven through the variable the ONE model field resolves to on this provider. Writing
+        MATRIXARK_ANTHROPIC_MODEL out here would pass even if the field routed somewhere else --
+        which is exactly the failure this change removes."""
+        variable = cfg._env_name(cfg.SETTINGS_BY_KEY["extraction.model"],
+                                 {"extraction.provider": "anthropic"})
+        got = started_with(**{variable: "claude-opus-4"})
         self.assertEqual("claude-opus-4", got["model"])
+
+    def test_the_same_field_on_another_provider_does_not_reach_anthropic(self) -> None:
+        """The floor for the test above: if the field wrote one variable whatever the provider, both
+        would pass and the routing would be untested."""
+        variable = cfg._env_name(cfg.SETTINGS_BY_KEY["extraction.model"],
+                                 {"extraction.provider": "openai_compatible"})
+        got = started_with(**{variable: "gpt-4o-mini"})
+        self.assertNotEqual("gpt-4o-mini", got["model"])
 
     def test_naming_an_endpoint_changes_where_it_is_called(self) -> None:
         got = started_with(**{self.variable("extraction.anthropic_base_url"): "https://proxy.example"})
@@ -141,16 +160,18 @@ class TheAsymmetryThatExplainsTheScopeTest(unittest.TestCase):
 class TheOtherTwoControlsSayTheyAreIgnoredTest(unittest.TestCase):
     """A customer on anthropic reads Extraction model first; it has to say it is not the one."""
 
-    def test_the_model_control_says_so(self) -> None:
-        self.assertIn("anthropic ignores this",
-                      cfg.SETTINGS_BY_KEY["extraction.model"].help)
+    def test_the_model_control_says_it_follows_the_provider(self) -> None:
+        """It used to have to say "anthropic ignores this". It does not ignore it any more."""
+        help_text = cfg.SETTINGS_BY_KEY["extraction.model"].help
+        self.assertIn("whichever provider is selected", help_text)
+        self.assertNotIn("anthropic ignores this", help_text)
 
     def test_the_base_url_control_says_so(self) -> None:
         self.assertIn("anthropic ignores this",
                       cfg.SETTINGS_BY_KEY["extraction.base_url"].help)
 
-    def test_each_points_at_the_one_that_is_used(self) -> None:
-        self.assertIn("Anthropic model", cfg.SETTINGS_BY_KEY["extraction.model"].help)
+    def test_the_base_url_still_points_at_the_one_that_is_used(self) -> None:
+        """Only the endpoint is left to point at: the model field IS the one that is used."""
         self.assertIn("Anthropic base URL", cfg.SETTINGS_BY_KEY["extraction.base_url"].help)
 
 
