@@ -4715,8 +4715,22 @@ mod tests {
     ///
     /// A test that measures how bytes are LAID OUT needs bytes the compressor cannot remove.
     fn incompressible(len: usize) -> Vec<u8> {
-        // xorshift64*, seeded by length so each size gets its own stream and runs are repeatable.
-        let mut state = 0x2545_F491_4F6C_DD1D_u64 ^ (len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        incompressible_seeded(len, 0)
+    }
+
+    /// The same, but a caller that builds MANY payloads must vary the seed.
+    ///
+    /// Seeding from the length alone gives every payload of a given size the SAME bytes. That is
+    /// harmless when each one lands in its own record -- records compress independently -- and
+    /// badly wrong for a batch, where they all land in ONE record and sixteen identical payloads
+    /// compress to almost nothing. Measured: sixteen 256-byte payloads accounted for 4,160 bytes
+    /// of an uncompressed record and 279 of a compressed one, which is not a compression ratio any
+    /// real payload would reach.
+    fn incompressible_seeded(len: usize, seed: u64) -> Vec<u8> {
+        // xorshift64*, seeded by length and caller seed so runs stay repeatable.
+        let mut state = 0x2545_F491_4F6C_DD1D_u64
+            ^ (len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
         (0..len)
             .map(|_| {
                 state ^= state >> 12;
@@ -5951,18 +5965,21 @@ mod tests {
     ///
     /// Two different savings live in this number, and they are worth keeping apart.
     ///
-    /// Batching amortises the ENVELOPE: one shard id, one sequence and one frame instead of N. On
-    /// this tree, with compression off, that is 16.9% at eight items and 19.0% at sixty-four.
+    /// Batching amortises the ENVELOPE: one shard id, one sequence and one frame instead of N.
+    /// With compression off, so that is all that is left, this is 16.9% at eight items and 19.0%
+    /// at sixty-four. That figure bounds what a record-format change could win on its own.
     ///
-    /// With compression on, a batch also lets the compressor work ACROSS records -- the keys and
-    /// the repeated record structure are near-identical from one to the next -- and the same probe
-    /// reports 80.0% and 93.8%. That saving is real, but it is compression finding redundancy that
-    /// batching exposed, not the envelope being amortised, and only the first figure bounds what a
-    /// record-format change could win on its own.
+    /// With compression on -- how it ships -- a batch also lets the compressor work ACROSS the
+    /// records' keys and structure, which are near-identical from one to the next, and the saving
+    /// is 32.1% and 38.5%. Both are real; they answer different questions.
     ///
-    /// The payload is incompressible so that at least the VALUE is not part of either figure. With
-    /// a repeated byte it was, and the probe reported 86.6% and 94.8% for what was mostly the
-    /// compressor eating the payload.
+    /// Getting there took two corrections, and both are the same mistake in different clothes.
+    /// A payload of one byte repeated made this read 86.6% and 94.8% -- the compressor eating the
+    /// value. Giving every item the SAME incompressible payload made it read 80.0% and 93.8%,
+    /// because sixteen identical payloads in ONE record compress just as well: measured, sixteen
+    /// 256-byte payloads accounted for 4,160 bytes of an uncompressed record and 279 of a
+    /// compressed one, which is not a ratio any real payload reaches. Each payload has to be its
+    /// own, which is what `incompressible_seeded` is for.
     /// This measures both, so the amortisation is a number rather than an argument.
     #[test]
     #[ignore]
@@ -5977,7 +5994,7 @@ mod tests {
                 let commands = (0..items)
                     .map(|index| Command::StringSet {
                         key: format!("batch-key-{index:09}"),
-                        value: incompressible(value_len),
+                        value: incompressible_seeded(value_len, index as u64),
                     })
                     .collect::<Vec<_>>();
                 let (_, before) = last_wal_sequence_in(&path).unwrap_or((0, 0));
@@ -5998,7 +6015,7 @@ mod tests {
                         object_id: index as u64,
                         routing_bucket: index as u32,
                         address: None,
-                        value: Some(incompressible(value_len)),
+                        value: Some(incompressible_seeded(value_len, index as u64)),
                         ttl: None,
                         deleted: false,
                         meta: false,
