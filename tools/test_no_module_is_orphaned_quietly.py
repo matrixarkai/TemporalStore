@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 8 modules that were already here, triaged by
+The entries below are NOT an endorsement. They are 6 modules that were already here, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -70,15 +70,12 @@ REPO = os.path.dirname(TOOLS)
 
 #: module stem -> what it is, so removing it is a reading task and not a guess.
 KNOWN_ORPHANS: Dict[str, str] = {
-    "matrixark_mcp_local_cache":
-        "11 KB, eight read-cache and latest-entity helpers; named by nothing at all",
     "matrixark_mcp_native_pack":
         "10 KB, build_native_context_pack_request and its verbose contract. Easy to "
         "believe this one is live: matrixark_mcp_server_request_policy imports "
         "matrixark_mcp_native_pack_POLICY, and a substring search credits this module "
         "with that import. The word boundary is what tells them apart",
     "matrixark_document_assembly": "six functions no live module defines",
-    "matrixark_mcp_backend_metrics": "sixteen functions, eight of them unique here",
     "matrixark_mcp_native_retrieve": "one function no live module defines",
     "matrixark_mcp_resource_import_runtime": "seven functions, all unique here",
     "matrixark_mcp_rust_proxy_client": "29 KB, 48 definitions, fourteen unique here",
