@@ -2,7 +2,8 @@
 // Copyright 2026 MatrixArkAI
 
 use std::collections::BTreeSet;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{BufReader, Cursor, Read, Seek};
 
 use sha2::{Digest, Sha256};
 
@@ -738,6 +739,88 @@ pub(super) fn summarize_slab(
         physical_offset = physical_offset.saturating_add(record_len);
     }
     Ok(summary)
+}
+
+/// The widest header any supported version writes.
+///
+/// v7 and v8 are the same width (v8 reclaimed the checksum's spare bytes but placed fields the
+/// interior padding used to align), so this covers every version. Taking the larger of the two
+/// keeps it correct if either constant moves.
+const PAGE_RECORD_WIDEST_HEADER_LEN: usize = if PAGE_RECORD_HEADER_LEN > PAGE_RECORD_V7_HEADER_LEN
+{
+    PAGE_RECORD_HEADER_LEN
+} else {
+    PAGE_RECORD_V7_HEADER_LEN
+};
+
+/// Read buffer for the page-id scan.
+///
+/// Sized so a bufferful spans many records rather than one: at the ~300-byte records the live
+/// store holds, this is ~800 per fill, which is the difference between thousands of reads for a
+/// segment and millions.
+const PAGE_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
+
+/// The largest page id recorded in one slab, read from record headers alone.
+///
+/// `next_page_id_at` wants a single number per slab. It used to get it from `inspect_slab`, which
+/// decodes every record to build a whole block-index report -- a zstd decompression, a checksum
+/// verify, a second SHA-256 hex-encoded into a `String`, and one report struct per page -- and
+/// then keeps only `last_page_id`. On a store whose pages are large and compressed that is tens
+/// of gigabytes of decompress-and-hash to produce one integer, and it is paid on every open.
+///
+/// The page id and the record length both live in the header, so the walk never needs a payload.
+/// Stepping the file by `header_len + stored_len` touches only headers, which is why this takes a
+/// `File` rather than a `&[u8]`: the slab never has to be read into memory at all.
+///
+/// It reads through a `BufReader` rather than seeking per record. Records here are small -- the
+/// live store holds ~3.4M of them averaging ~300 bytes -- so a seek and a read for each is
+/// millions of syscalls, and measured SLOWER than reading the whole segment. `seek_relative`
+/// drops buffered bytes in place when the destination is already in the buffer, so a run of
+/// small records costs one read per bufferful while a large record still seeks.
+///
+/// Halting is deliberately `inspect_slab`'s: a record that does not parse ends the walk, and the
+/// ids found before it stand. `LocalBlockStore::with_options` fences a torn tail on the active
+/// slab precisely because this scan halts early. Returning an error instead would reach the
+/// caller's `unwrap_or_default()` and reset the counter to 0 -- page-id reuse, and stale reads.
+pub(super) fn max_page_id_in_slab_file(
+    file: File,
+    slab_len: u64,
+    page_slab_id: u64,
+) -> Result<Option<u64>, BlockStoreError> {
+    let mut reader = BufReader::with_capacity(PAGE_RECORD_SCAN_BUFFER_BYTES, file);
+    let mut max_page_id: Option<u64> = None;
+    let mut offset: u64 = 0;
+    let mut header = [0_u8; PAGE_RECORD_WIDEST_HEADER_LEN];
+    while offset < slab_len {
+        let remaining = slab_len - offset;
+        let want = (PAGE_RECORD_WIDEST_HEADER_LEN as u64).min(remaining) as usize;
+        if reader.read_exact(&mut header[..want]).is_err() {
+            break;
+        }
+        let head = &header[..want];
+        if !head.starts_with(PAGE_RECORD_MAGIC) {
+            break;
+        }
+        let address =
+            BlockAddress::from_parts(page_slab_id, offset, 0, None, None, None, None, None);
+        let parsed = match parse_page_record_header(head, &address) {
+            Ok(parsed) => parsed,
+            Err(_) => break,
+        };
+        if let Some(page_id) = parsed.page_id {
+            max_page_id = Some(max_page_id.map_or(page_id, |current: u64| current.max(page_id)));
+        }
+        let record_len = parsed.header_len.saturating_add(parsed.stored_len) as u64;
+        if record_len == 0 || remaining < record_len {
+            break;
+        }
+        // Step over the payload without reading it. The header read above may have run past
+        // this record's end (a record shorter than the widest header) or stopped short of it,
+        // so the skip is signed; `seek_relative` handles both inside the buffer.
+        reader.seek_relative(record_len as i64 - want as i64)?;
+        offset += record_len;
+    }
+    Ok(max_page_id)
 }
 
 pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabReport {
