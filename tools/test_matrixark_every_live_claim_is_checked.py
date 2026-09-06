@@ -93,7 +93,7 @@ def _rust_per_call_env_names() -> set:
             #
             # The name a constant HOLDS is the variable an operator sets, and it is not always the
             # identifier: `pub const TS_BLOCK_SLAB_TARGET_BYTES: &str =
-            # "TS_BLOCK_SEGMENT_TARGET_BYTES"`. Resolve by value.
+            # "TS_BLOCK_SLAB_TARGET_BYTES"`. Resolve by value.
             #
             # Counted as per-call because the accessors call `StorageTuningConfig::from_env()` on
             # each use and nothing caches the result -- checked, not assumed. If that ever gains a

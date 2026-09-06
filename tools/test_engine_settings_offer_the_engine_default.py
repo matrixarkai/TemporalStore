@@ -15,13 +15,13 @@ trusted.
 
 The pairing is on the IDENTIFIER, not the string, and that distinction is the point:
 
-    pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES";
+    pub const TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
     pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
 
-The variable an operator sets is `TS_BLOCK_SEGMENT_TARGET_BYTES`; the constants around it are
-named `SLAB`. Matching the portal's env name against the const IDENTIFIER would find nothing here
-and quietly pass, so the identifier pairs the two consts and the string is what the portal must
-match.
+A previous-name const spells itself differently from the variable it names, because it exists to
+keep an older spelling working. Matching the portal's env name against the const IDENTIFIER would
+find nothing for those and quietly pass, so the identifier pairs the two consts and the string is
+what the portal must match.
 
 Only literal const expressions are evaluated -- integers, `*`, `<<`, parentheses, and the two
 booleans. Anything else is left UNCOMPARED rather than guessed at, so a wrong reading cannot
@@ -99,7 +99,7 @@ class EngineSettingsOfferTheEngineDefaultTest(unittest.TestCase):
         # The case this file exists to not miss: identifier SLAB, variable SEGMENT.
         pairs = _engine_defaults()
         self.assertIn(
-            "TS_BLOCK_SEGMENT_TARGET_BYTES", pairs,
+            "TS_BLOCK_SLAB_TARGET_BYTES", pairs,
             "the slab/segment pair is no longer resolved. Either it was renamed -- fine, say so "
             "here -- or the pairing has quietly gone back to matching on the env string, which "
             "would drop every const whose identifier differs from the variable it names.")

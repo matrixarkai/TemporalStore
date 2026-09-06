@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const TS_CONTEXT_PAGE_TARGET_BYTES: &str = "TS_CONTEXT_PAGE_TARGET_BYTES";
-pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES";
+pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
 pub const TS_STORAGE_ZONE_SIZE: &str = "TS_STORAGE_ZONE_SIZE";
 pub const TS_STREAM_MAX_BLOB_SIZE: &str = "TS_STREAM_MAX_BLOB_SIZE";
 pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
@@ -15,6 +15,16 @@ pub const TS_INDEX_DUMP_WAL_GAP_BYTES: &str = "TS_INDEX_DUMP_WAL_GAP_BYTES";
 /// Previous name for [`TS_INDEX_DUMP_WAL_GAP_BYTES`], still honoured so a deployment that
 /// sets it keeps working. Read only when the current name is unset.
 pub const TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME: &str = "TS_INDEX_DUMP_OPLOG_GAP_BYTES";
+
+/// Previous name for [`TS_BLOCK_SLAB_TARGET_BYTES`], still honoured so a deployment that sets it
+/// keeps working. Read only when the current name is unset.
+///
+/// The constant was renamed to `SLAB` some time ago and kept the SEGMENT spelling as its value, so
+/// the name in the source and the name an operator sets had drifted apart: every doc, config and
+/// conformance list said one thing and the code said another. The variable now spells itself the
+/// way the rest of this store spells it -- the data structure is a slab, the accessor is
+/// `effective_block_slab_target_bytes`, and the field is `block_slab_target_bytes`.
+pub const TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES";
 
 pub const DEFAULT_CONTEXT_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 30;
@@ -76,7 +86,8 @@ impl StorageTuningConfig {
             )
             .max(1024),
             block_slab_target_bytes: parse_u64(
-                get(TS_BLOCK_SLAB_TARGET_BYTES),
+                get(TS_BLOCK_SLAB_TARGET_BYTES)
+                    .or_else(|| get(TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME)),
                 defaults.block_slab_target_bytes,
             )
             .max(1024),
@@ -121,10 +132,11 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 10] {
+    pub fn env_names() -> [&'static str; 11] {
         [
             TS_CONTEXT_PAGE_TARGET_BYTES,
             TS_BLOCK_SLAB_TARGET_BYTES,
+            TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME,
             TS_STORAGE_ZONE_SIZE,
             TS_STREAM_MAX_BLOB_SIZE,
             TS_COMPACTION_WATERMARK_BYTES,
@@ -226,6 +238,7 @@ mod tests {
             StorageTuningConfig::env_names(),
             [
                 "TS_CONTEXT_PAGE_TARGET_BYTES",
+                "TS_BLOCK_SLAB_TARGET_BYTES",
                 "TS_BLOCK_SEGMENT_TARGET_BYTES",
                 "TS_STORAGE_ZONE_SIZE",
                 "TS_STREAM_MAX_BLOB_SIZE",
@@ -237,6 +250,33 @@ mod tests {
                 "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
             ]
         );
+    }
+
+    #[test]
+    fn the_previous_slab_env_name_still_configures_the_knob() {
+        // A deployment that sets the old name must be unaffected by the rename.
+        let env = HashMap::from([(TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME, "2147483648")]);
+        let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
+        assert_eq!(config.block_slab_target_bytes, 2 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn the_current_slab_env_name_wins_when_both_are_set() {
+        // Precedence has to be defined, or a deployment mid-migration gets whichever the lookup
+        // happened to try first.
+        let env = HashMap::from([
+            (TS_BLOCK_SLAB_TARGET_BYTES, "4294967296"),
+            (TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME, "2147483648"),
+        ]);
+        let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
+        assert_eq!(config.block_slab_target_bytes, 4 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn neither_slab_env_name_set_falls_back_to_the_default() {
+        let env: HashMap<&str, &str> = HashMap::new();
+        let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
+        assert_eq!(config.block_slab_target_bytes, DEFAULT_BLOCK_SLAB_TARGET_BYTES);
     }
 
     #[test]

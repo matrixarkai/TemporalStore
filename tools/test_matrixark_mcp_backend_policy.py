@@ -718,7 +718,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
     def _storage_tuning(self) -> dict[str, object]:
         return {
             "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
-            "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+            "TS_BLOCK_SLAB_TARGET_BYTES": 1073741824,
             "TS_STORAGE_ZONE_SIZE": 10485760,
             "TS_STREAM_MAX_BLOB_SIZE": 10485760,
             "TS_COMPACTION_WATERMARK_BYTES": 268435456,
@@ -928,7 +928,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
     def test_scale_report_effective_storage_tuning_reads_public_knobs(self) -> None:
         names = [
             "TS_CONTEXT_PAGE_TARGET_BYTES",
-            "TS_BLOCK_SEGMENT_TARGET_BYTES",
+            "TS_BLOCK_SLAB_TARGET_BYTES",
             "TS_STORAGE_ZONE_SIZE",
             "TS_STREAM_MAX_BLOB_SIZE",
             "TS_COMPACTION_WATERMARK_BYTES",
@@ -943,7 +943,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             os.environ.update(
                 {
                     "TS_CONTEXT_PAGE_TARGET_BYTES": "131072",
-                    "TS_BLOCK_SEGMENT_TARGET_BYTES": "1073741824",
+                    "TS_BLOCK_SLAB_TARGET_BYTES": "1073741824",
                     "TS_STORAGE_ZONE_SIZE": "33554432",
                     "TS_STREAM_MAX_BLOB_SIZE": "67108864",
                     "TS_COMPACTION_WATERMARK_BYTES": "536870912",
@@ -956,7 +956,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase, _BackendPolicyPart4, _Bac
             tuning = effective_storage_tuning_from_env()
 
             self.assertEqual(tuning["TS_CONTEXT_PAGE_TARGET_BYTES"], 131072)
-            self.assertEqual(tuning["TS_BLOCK_SEGMENT_TARGET_BYTES"], 1073741824)
+            self.assertEqual(tuning["TS_BLOCK_SLAB_TARGET_BYTES"], 1073741824)
             self.assertEqual(tuning["TS_STORAGE_ZONE_SIZE"], 33554432)
             self.assertEqual(tuning["TS_STREAM_MAX_BLOB_SIZE"], 67108864)
             self.assertEqual(tuning["TS_COMPACTION_WATERMARK_BYTES"], 536870912)

@@ -509,7 +509,7 @@ configs, or environment readers internally.
 | knob | meaning | default |
 |---|---|---:|
 | `TS_CONTEXT_PAGE_TARGET_BYTES` | Target packed context timestamp page size. | `65536` |
-| `TS_BLOCK_SEGMENT_TARGET_BYTES` | Target durable block/segment size before rolling. | `1073741824` |
+| `TS_BLOCK_SLAB_TARGET_BYTES` | Target durable block/segment size before rolling. | `1073741824` |
 | `TS_STORAGE_ZONE_SIZE` | Storage zone target used by lifecycle and placement. | `10485760` |
 | `TS_STREAM_MAX_BLOB_SIZE` | Stream/blob cap; effective segment target is the lower of this and block segment target. | `10485760` |
 | `TS_COMPACTION_WATERMARK_BYTES` | Compaction scheduling/reclaim watermark. | `268435456` |
@@ -523,7 +523,7 @@ Required report shape:
 {
   "effective_storage_tuning": {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
-    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+    "TS_BLOCK_SLAB_TARGET_BYTES": 1073741824,
     "TS_STORAGE_ZONE_SIZE": 10485760,
     "TS_STREAM_MAX_BLOB_SIZE": 10485760,
     "TS_COMPACTION_WATERMARK_BYTES": 268435456,
