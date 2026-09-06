@@ -1342,7 +1342,8 @@ impl LocalWriteAheadLogStore {
             // batch, so nothing can seal and rename the piece underneath this handle.
             let batch_path = active_wal_path(&mut inner, shard_id);
             let prealloc = wal_preallocate_enabled();
-            WAL_FILE_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(test)]
+            WAL_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
             let mut batch_physical: u64 = 0;
             let mut batch_file = if prealloc {
                 OpenOptions::new()
@@ -2983,36 +2984,21 @@ fn shard_uses_blocks(
     Ok(uses_blocks)
 }
 
-/// How many times an append OPENS the active piece.
+/// How many times an append OPENS the active piece, and how many times it asks the filesystem for
+/// that piece's physical length.
 ///
 /// A batch is one crash-atomic group under one barrier, but it used to open, write, stat and close
-/// the piece once per record -- 4N syscalls against that single barrier. The batch now opens once
-/// and hands the handle down, so this counter reads 1 per batch instead of N, and a regression
-/// shows up as a count rather than as a timing that this machine cannot resolve.
-static WAL_FILE_OPENS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// How many times an append asks the filesystem for the piece's physical length.
+/// the piece once per record -- 4N syscalls against that single barrier. It now opens once and
+/// reads the length once, and these say so as a COUNT, which is the honest measurement when the
+/// syscalls are the cost and the machine cannot resolve the wall clock.
 ///
-/// Under preallocation every record used to `fstat` to find out whether the reservation still had
-/// room. Within a batch nothing else can change that length -- the append lock and the `inner`
-/// lock are both held -- so the batch reads it once and carries it, growing its own copy when it
-/// grows the file.
-static WAL_FILE_STATS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Physical-length stats of the active piece since the last reset.
-pub fn wal_file_stats() -> u64 {
-    WAL_FILE_STATS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Opens of the active piece since the last reset.
-pub fn wal_file_opens() -> u64 {
-    WAL_FILE_OPENS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Reset the open counter. For tests measuring one append path's syscall volume.
-pub fn reset_wal_file_opens() {
-    WAL_FILE_OPENS.store(0, std::sync::atomic::Ordering::Relaxed);
-    WAL_FILE_STATS.store(0, std::sync::atomic::Ordering::Relaxed);
+/// Thread-local and test-only, like `ACTIVE_PATH_CALLS` above, and for the same reason: the suite
+/// runs tests in parallel and every one of them that touches a log opens a file. A process-global
+/// counter reads other tests' work as its own -- which it did, as a flake on `main`.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static WAL_FILE_OPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static WAL_FILE_STATS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn append_record_locked(
@@ -3169,7 +3155,8 @@ fn append_record_locked_on(
             handle
         }
         None => {
-            WAL_FILE_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(test)]
+            WAL_FILE_OPENS.with(|opens| opens.set(opens.get() + 1));
             opened = if prealloc {
                 // Positioned write, not O_APPEND: with a reservation, the physical end of the
                 // file is zeros, and O_APPEND would put this record after them.
@@ -3189,7 +3176,8 @@ fn append_record_locked_on(
         let physical = match carried_physical.as_deref() {
             Some(&known) if known > 0 => known,
             _ => {
-                WAL_FILE_STATS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(test)]
+                WAL_FILE_STATS.with(|stats| stats.set(stats.get() + 1));
                 file.metadata()?.len()
             }
         };
@@ -5379,17 +5367,24 @@ mod tests {
             })
             .collect();
 
-        super::reset_wal_file_opens();
-        store.append_batch_atomic(1, commands.clone(), true).unwrap();
-        let batched = super::wal_file_opens();
-        let batched_stats = super::wal_file_stats();
+        let reset = || {
+            super::WAL_FILE_OPENS.with(|opens| opens.set(0));
+            super::WAL_FILE_STATS.with(|stats| stats.set(0));
+        };
+        let opens = || super::WAL_FILE_OPENS.with(|opens| opens.get());
+        let stats = || super::WAL_FILE_STATS.with(|stats| stats.get());
 
-        super::reset_wal_file_opens();
+        reset();
+        store.append_batch_atomic(1, commands.clone(), true).unwrap();
+        let batched = opens();
+        let batched_stats = stats();
+
+        reset();
         for command in commands {
             store.append_with_sync(1, command, true).unwrap();
         }
-        let one_at_a_time = super::wal_file_opens();
-        let one_at_a_time_stats = super::wal_file_stats();
+        let one_at_a_time = opens();
+        let one_at_a_time_stats = stats();
 
         assert!(
             one_at_a_time >= 64,
