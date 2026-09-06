@@ -1015,7 +1015,25 @@ function liveStream(options) {
        remove them -- a write of an unknown key is refused, correctly -- so it says where they
        are instead. */
     var forgotten = ((d.settings || {}).unknown_stored) || [];
-    $("warnings").innerHTML = (d.warnings || []).map(function (w) {
+    /* A stored configuration that is NOT in force. `load()` returns the same empty document for
+       a file that is absent, unreadable, unparsable or the wrong shape -- correctly, because the
+       deployment has to start regardless -- so without this the screen below is identical to a
+       deployment nobody has configured, while every value in that file is being ignored and the
+       build-in defaults are what is running.
+
+       First, and its own kind of note, because it invalidates everything under it: the fields
+       are showing what this process resolved, and none of the stored half reached it. */
+    var fileState = (d.settings || {}).config_file_status || d.config_file_status || {};
+    var notApplied = fileState.applied === false
+      ? '<div class="note err">The configuration file at <span class="mono">'
+        + esc(fileState.path || "") + "</span> is not being used"
+        + (fileState.detail ? " (" + esc(fileState.detail) + ")" : "")
+        + ". Every value stored in it is ignored and this deployment is running built-in "
+        + "defaults, so the settings below are not what that file says. Repair or remove the "
+        + "file; nothing here can rewrite it while it cannot be read."
+        + "</div>"
+      : "";
+    $("warnings").innerHTML = notApplied + (d.warnings || []).map(function (w) {
       return '<div class="note">' + esc(w) + "</div>";
     }).join("") + (forgotten.length
       ? '<div class="note">' + esc(forgotten.length) +

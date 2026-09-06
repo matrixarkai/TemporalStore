@@ -1446,6 +1446,45 @@ def config_path() -> str:
     return os.path.join(home, DEFAULT_CONFIG_FILENAME)
 
 
+def config_file_status() -> Json:
+    """Whether the stored configuration is being applied, and when it is not, why.
+
+    ``load()`` returns the same empty document for a file that is absent, unreadable, unparsable
+    or the wrong shape, and it is right to: a deployment must start whatever state that file is
+    in. But those are four situations and only one of them is normal. In the other three every
+    stored setting is being ignored and the deployment is running built-in defaults -- which on
+    the screen is indistinguishable from having configured nothing at all.
+
+    Read separately rather than reported by ``load()``, so the hot path keeps its one job and its
+    promise never to raise. This is asked for once, by the page that draws it.
+    """
+    path = config_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = handle.read()
+    except FileNotFoundError:
+        # Nothing stored, so nothing is being ignored. This is the ordinary state of a fresh
+        # deployment and must NOT be reported as a problem.
+        return {"state": "absent", "path": path, "applied": True}
+    except OSError as exc:
+        return {"state": "unreadable", "path": path, "applied": False,
+                "detail": exc.strerror or exc.__class__.__name__}
+    try:
+        document = json.loads(raw)
+    except ValueError as exc:
+        return {"state": "unparsable", "path": path, "applied": False,
+                "detail": str(exc)[:200]}
+    if not isinstance(document, dict):
+        return {"state": "wrong_shape", "path": path, "applied": False,
+                "detail": "the file holds a %s, not an object" % type(document).__name__}
+    values = document.get("values")
+    if values is not None and not isinstance(values, dict):
+        return {"state": "wrong_shape", "path": path, "applied": False,
+                "detail": "\"values\" holds a %s, not an object" % type(values).__name__}
+    return {"state": "ok", "path": path, "applied": True,
+            "settings": len(values or {})}
+
+
 def load() -> Json:
     """The stored document, or an empty one. A corrupt file is treated as empty, never fatal: a
     deployment must still start when someone hand-edits this file and breaks it."""
@@ -1655,6 +1694,9 @@ def snapshot(include_catalog: bool = True) -> Json:
     document = load()
     values: Dict[str, str] = {k: str(v) for k, v in (document.get("values") or {}).items()}
     override_layers = _override_layers_by_env()
+    # Whether what is on disk is actually in force. Without this a corrupt file renders exactly
+    # like a deployment nobody has configured yet, and every value in it is being ignored.
+    file_status = config_file_status()
     groups: Dict[str, List[Json]] = {}
     for setting in SETTINGS:
         value, source = _effective(setting, values)
@@ -1726,6 +1768,10 @@ def snapshot(include_catalog: bool = True) -> Json:
             for name, meta in GROUPS.items() if name in groups
         },
         "inventory": inventory(),
+        # Whether the file on disk is in force. `absent` is the ordinary state of a deployment
+        # nobody has configured and reports applied; the other states mean every value stored
+        # there is being ignored while the deployment runs built-in defaults.
+        "config_file_status": file_status,
     }
     if include_catalog:
         result["presets"] = {

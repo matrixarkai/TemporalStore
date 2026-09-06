@@ -28,13 +28,19 @@ _DEF = re.compile(r"\bfunction\s+([A-Za-z_$][\w$]*)\s*\(")
 
 
 def _functions(text: str) -> dict:
-    """Every `function name(...) { ... }` in `text`, by name, brace-matched.
+    """Every `function name(...) { ... }` in `text`, by name, as a LIST of bodies.
 
-    A name defined more than once is dropped rather than guessed at: this file is about whether
-    two definitions agree, and picking one of several would be inventing the question.
+    A list rather than one body, because the builder holds templates for several pages and the
+    same function name legitimately appears once per template. The first version of this file
+    DROPPED any name defined more than once -- "picking one of several would be inventing the
+    question" -- which silently excused exactly those names from the check. `renderSummary` is
+    defined twice in the builder, so it was skipped, and a mutation that changed only the
+    builder's copy of it survived this guard.
+
+    Dropping them was also invisible: nothing said which names had been skipped, so the guard
+    read as covering everything it had parsed.
     """
     found: dict = {}
-    duplicates = set()
     for match in _DEF.finditer(text):
         name = match.group(1)
         try:
@@ -48,13 +54,8 @@ def _functions(text: str) -> dict:
             elif text[index] == "}":
                 depth -= 1
                 if depth == 0:
-                    body = text[match.start():index + 1]
-                    if name in found and found[name] != body:
-                        duplicates.add(name)
-                    found[name] = body
+                    found.setdefault(name, []).append(text[match.start():index + 1])
                     break
-    for name in duplicates:
-        found.pop(name, None)
     return found
 
 
@@ -64,8 +65,10 @@ def _read(path: str) -> dict:
 
 
 def _shared() -> dict:
+    """name -> (the page's single definition, every definition the builder holds of that name)."""
     page, builder = _read(PAGE), _read(BUILDER)
-    return {name: (page[name], builder[name]) for name in sorted(set(page) & set(builder))}
+    return {name: (page[name], builder[name])
+            for name in sorted(set(page) & set(builder))}
 
 
 class ThePageAndItsBuilderAgreeTest(unittest.TestCase):
@@ -75,15 +78,31 @@ class ThePageAndItsBuilderAgreeTest(unittest.TestCase):
         # passes them all: an empty intersection has no disagreement in it.
         shared = _shared()
         self.assertGreater(len(shared), 5, sorted(shared))
-        for name in ("controlHtml", "fieldHtml"):
+        for name in ("controlHtml", "fieldHtml", "renderSummary"):
             self.assertIn(name, shared)
 
     def test_every_shared_function_is_identical(self) -> None:
-        differing = sorted(name for name, (page, builder) in _shared().items()
-                           if page != builder)
+        """The page's copy must be one of the builder's copies of that name.
+
+        Not "the builder's copy", because the builder holds a template per page and the same
+        name appears once per template. What must hold is that the page a browser runs is one
+        the builder can still produce.
+        """
+        differing = sorted(name for name, (page_bodies, builder_bodies) in _shared().items()
+                           if not set(page_bodies) & set(builder_bodies))
         self.assertEqual([], differing,
                          "%d function(s) differ between the shipped page and the builder that "
                          "writes pages; the harnesses only exercise the page" % len(differing))
+
+    def test_a_name_the_builder_defines_twice_is_still_checked(self) -> None:
+        """The gap this file used to have. Names defined more than once were dropped, silently,
+        so the guard read as covering everything it had parsed while excusing exactly those."""
+        builder = _read(BUILDER)
+        repeated = sorted(name for name, bodies in builder.items() if len(bodies) > 1)
+        self.assertTrue(repeated, "the builder no longer repeats any name; this test is moot")
+        covered = [name for name in repeated if name in _shared()]
+        self.assertTrue(covered,
+                        "every repeated name is being skipped again: %s" % repeated[:5])
 
 
 class TheReaderWorksTest(unittest.TestCase):
@@ -93,16 +112,24 @@ class TheReaderWorksTest(unittest.TestCase):
     def test_it_finds_a_function_and_its_whole_body(self) -> None:
         found = _functions("function a(x) { if (x) { return 1; } return 2; }\n")
         self.assertEqual(["a"], sorted(found))
-        self.assertTrue(found["a"].endswith("return 2; }"), found["a"])
+        self.assertEqual(1, len(found["a"]))
+        self.assertTrue(found["a"][0].endswith("return 2; }"), found["a"])
 
     def test_it_reports_a_difference_when_there_is_one(self) -> None:
         left = _functions("function a() { return 1; }")
         right = _functions("function a() { return 2; }")
-        self.assertNotEqual(left["a"], right["a"])
+        self.assertFalse(set(left["a"]) & set(right["a"]))
 
-    def test_a_name_defined_twice_is_left_out_rather_than_guessed(self) -> None:
+    def test_a_name_defined_twice_keeps_both(self) -> None:
         found = _functions("function a() { return 1; }\nfunction a() { return 2; }")
-        self.assertNotIn("a", found)
+        self.assertIn("a", found)
+        self.assertEqual(2, len(found["a"]))
+
+    def test_matching_one_of_several_is_enough(self) -> None:
+        """A page whose copy equals the SECOND of the builder's definitions agrees with it."""
+        page = _functions("function a() { return 2; }")
+        builder = _functions("function a() { return 1; }\nfunction a() { return 2; }")
+        self.assertTrue(set(page["a"]) & set(builder["a"]))
 
     def test_the_real_files_parse_into_something(self) -> None:
         for path in (PAGE, BUILDER):
