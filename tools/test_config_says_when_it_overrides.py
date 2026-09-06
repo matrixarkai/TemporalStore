@@ -37,9 +37,14 @@ KNOWN_OVERRIDES: Dict[str, str] = {
         "read is served",
 }
 
-# The same, for keys whose value is a number. Empty today: all six comparable numeric keys restate
-# the engine default. A new entry here is a deployment decision and its reason belongs beside it in
-# the file, exactly as for the booleans above.
+# The same, for keys whose value is a number. Empty today: all EIGHT comparable numeric keys
+# restate the engine default. A new entry here is a deployment decision and its reason belongs
+# beside it in the file, exactly as for the booleans above.
+#
+# Six of them until the extractor below learned the engine's other way of stating a number --
+# as the argument of env_u64/env_usize rather than in an .unwrap_or written after the name.
+# Two more keys became comparable and both restate, so the list stays empty; what changed is
+# that it is now empty about more of the file.
 KNOWN_NUMERIC_OVERRIDES: Dict[str, str] = {}
 
 _LINE = re.compile(
