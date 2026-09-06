@@ -154,6 +154,28 @@ class ThereIsOneIndexNormaliserTest(unittest.TestCase):
             first, second,
             "two distinct facts share a dedup key, so one of them is dropped by the extraction")
 
+    def test_an_index_term_list_never_contains_the_empty_string(self) -> None:
+        """The other way an index term stops being a name.
+
+        `context_index_name` returns "" for anything that normalises to nothing, and the term
+        builders append its result unconditionally. matrixark_mcp_indexing had its own
+        `_ordered_unique` that neither trimmed nor dropped the empty string, so
+        `metadata_index_terms({})` returned [""]. An index name of "" is not a name -- every
+        record producing one posts under the same key.
+        """
+        indexing = _import(HOME)
+        core = _import("matrixark_mcp_core")
+        self.assertIs(
+            core.ordered_unique, indexing.ordered_unique,
+            "ordered_unique is two objects again, and the copies disagreed about the empty string")
+        for metadata in ({}, {"keywords": []}, {"keywords": ["", " ", "k"]}):
+            for terms in (indexing.metadata_index_terms(metadata),
+                          core.metadata_index_terms(metadata)):
+                self.assertNotIn(
+                    "", terms,
+                    "metadata_index_terms(%r) returned an empty index term: %r"
+                    % (metadata, terms))
+
     def test_ascii_is_unchanged(self) -> None:
         """Control. This passes under either copy, and is here to say so.
 

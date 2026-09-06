@@ -2049,16 +2049,15 @@ def dedupe_entities(entities: list[Json]) -> list[Json]:
     return [entity for index, entity in enumerate(out) if index in kept_indexes]
 
 
-def ordered_unique(values: list[str]) -> list[str]:
-    seen = set()
-    out = []
-    for value in values:
-        value = value.strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    return out
+# `ordered_unique` is not defined here either. matrixark_mcp_indexing had its own copy, spelled
+# `_ordered_unique`, and that copy neither trimmed nor dropped the empty string -- so the index
+# term builders there returned [""] for metadata with none of the fields they read. This copy is
+# the one that drops it, and it is now the only one. Twelve modules import the name from here and
+# are unaffected: the behaviour they get is exactly what this definition did.
+try:
+    from tools.matrixark_mcp_indexing import ordered_unique
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import ordered_unique
 
 
 RAW_BYTE_METADATA_FIELDS = {"raw_bytes", "file_bytes", "bytes", "binary", "payload_bytes", "data_url", "base64"}
