@@ -41,7 +41,12 @@ PROVIDER_NAMES = {"deterministic", "openai_compatible", "openai_compatible_llm",
 # The classifier's own sets, which are the one place this may be written.
 CLASSIFIER_SETS = {"_OPENAI_EXTRACTION_PROVIDERS", "_ANTHROPIC_EXTRACTION_PROVIDERS",
                    "_API_EMBEDDING_PROVIDERS", "_OSS_EMBEDDING_PROVIDERS",
-                   "_DELIBERATE_FALLBACK_PROVIDERS"}
+                   "_DELIBERATE_FALLBACK_PROVIDERS",
+                   # What the summary path maps onto the model route and what it
+                   # treats as that route directly. Named for the same reason as
+                   # the others: so the mirror test reads the writer's literals
+                   # rather than restating them.
+                   "_SUMMARY_OSS_ALIASES", "_SUMMARY_MODEL_PROVIDERS"}
 PARTICIPATING = ("MATRIXARK_EMBEDDING_PROVIDER", "MATRIXARK_EMBEDDING_MODEL",
                  "MATRIXARK_EMBED_DRAINER")
 

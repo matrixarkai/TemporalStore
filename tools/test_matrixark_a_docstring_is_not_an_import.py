@@ -36,7 +36,16 @@ import unittest
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 
-import test_a_module_only_tests_reach_is_not_live as guard  # noqa: E402
+
+def _guard():
+    """The module this one checks, imported on use.
+
+    Importing it at import time reorders `unittest discover`, which is the thing
+    the cross-import guard exists to prevent -- so this module does not do it.
+    """
+    import test_a_module_only_tests_reach_is_not_live as guard
+
+    return guard
 
 
 def graph_for(source: str, targets=("matrixark_mcp_core",)) -> set:
@@ -44,7 +53,7 @@ def graph_for(source: str, targets=("matrixark_mcp_core",)) -> set:
     modules = {"caller": ("tools/caller.py", ast.parse(source))}
     for name in targets:
         modules[name] = ("tools/%s.py" % name, ast.parse(""))
-    return guard._edges(modules).get("caller", set())
+    return _guard()._edges(modules).get("caller", set())
 
 
 class ADocstringIsNotAnEdgeTest(unittest.TestCase):
@@ -100,7 +109,7 @@ class TheTwoPackersAreRealTest(unittest.TestCase):
                    for n in tree.body)
 
     def test_each_is_recorded_as_unreachable(self) -> None:
-        recorded = {name for group in guard.UNREACHABLE.values() for name in group}
+        recorded = {name for group in _guard().UNREACHABLE.values() for name in group}
         for module in self.PACKERS:
             self.assertIn(module, recorded)
 
@@ -116,7 +125,7 @@ class TheTwoPackersAreRealTest(unittest.TestCase):
 
     def test_the_live_copy_is_the_one_production_reaches(self) -> None:
         """The floor for the test above: a duplicate only matters if the OTHER one is live."""
-        _library, reachable = guard.reachable_from_production()
+        _library, reachable = _guard().reachable_from_production()
         for module, (_function, live) in self.PACKERS.items():
             with self.subTest(module=module):
                 self.assertIn(live, reachable)
