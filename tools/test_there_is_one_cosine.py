@@ -7,12 +7,16 @@ unit vectors and a different one as soon as either is not, and every vector-comp
 produces a non-unit vector. `matrixark_mcp_core.cosine` was the bare dot product, and never got
 that fix.
 
-The copy that never got the fix was the one the retrieval path used.
-`matrixark_mcp_retrieve_entity_scan`, `matrixark_mcp_retrieve_summary_scan` and
-`matrixark_mcp_retrieve_compression_scan` each import `cosine` from `matrixark_mcp_core` and feed
-the result to `normalized_dense_score`, which clamps into [0, 1]. An unnormalised dot of 32.0
-arrives there as exactly 1.0, so every candidate above the clamp pins to the endpoint together and
-their relative order is gone.
+The copy that never got the fix is the one a live retrieve uses.
+`matrixark_local_adapter_retrieve` -- the `retrieve` mixin the local adapter serves from -- imports
+`cosine` from `matrixark_mcp_core` and calls it at twelve sites, scoring events, entities, segments,
+summaries, resources and compressions, then feeds each result to `normalized_dense_score`, which
+clamps into [0, 1]. An unnormalised dot of 32.0 arrives there as exactly 1.0, so every candidate
+above the clamp pins to the endpoint together and their relative order is gone.
+
+The three `matrixark_mcp_retrieve_*_scan` modules import it the same way and are checked below, but
+they are reached only by tests -- nothing outside `tools/test_*` imports them. Naming those as "the
+retrieval path" was the first answer here, and it was wrong: a call site is not a code path.
 
 Vectors stored today are unit length, so the two answered the same and nothing had gone wrong. That
 is what let one copy be fixed while the other was not.
@@ -32,8 +36,16 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).name
 
-#: Every module that reads `cosine` to score a retrieval candidate.
-SCAN_MODULES = (
+#: The module that scores a live retrieve. `_LocalAdapterRetrieveMixin.retrieve` calls `cosine` at
+#: twelve sites -- events, entities, segments, summaries, resources and compressions -- and takes
+#: the result through `normalized_dense_score` into the dense half of the blend.
+LIVE_CONSUMER = "matrixark_local_adapter_retrieve"
+
+#: Reached only by tests. They are checked too, so that a second implementation cannot appear here
+#: and be adopted later, but a pass on THESE is not evidence about a live retrieve -- which is the
+#: mistake this list is written down to stop repeating. Nothing outside tools/test_* imports any of
+#: them, and no non-Python file names them.
+TEST_ONLY_SCANS = (
     "matrixark_mcp_retrieve_entity_scan",
     "matrixark_mcp_retrieve_summary_scan",
     "matrixark_mcp_retrieve_compression_scan",
@@ -94,8 +106,18 @@ class ThereIsOneCosineTest(unittest.TestCase):
             "for the unit vectors stored today and differently for anything compacted, which is "
             "how the first divergence went unnoticed -- re-export it instead of reimplementing it")
 
-    def test_every_retrieval_scan_reaches_that_one(self) -> None:
-        for name in SCAN_MODULES:
+    def test_the_live_retrieve_reaches_that_one(self) -> None:
+        """The assertion that is about a running system rather than about a test fixture."""
+        _import("matrixark_mcp_local_adapter")      # the mixin is reached through the adapter
+        module = _import(LIVE_CONSUMER)
+        reached = _module_name(module.cosine)
+        self.assertEqual(
+            HOME, reached,
+            "%s scores a live retrieve with a cosine from %s rather than %s, at twelve call sites"
+            % (LIVE_CONSUMER, reached, HOME))
+
+    def test_the_test_only_scans_reach_it_too(self) -> None:
+        for name in TEST_ONLY_SCANS:
             module = _import(name)
             reached = _module_name(module.cosine)
             self.assertEqual(
