@@ -2553,6 +2553,19 @@ fn roll_wal_segment_if_due(
     inner.block_mode_by_shard.remove(&shard_id);
     // The offset and sequence a footer would record belong to the piece that just sealed.
     inner.block_last_record_by_shard.remove(&shard_id);
+    // How many bytes of the ACTIVE piece a barrier has covered -- and the active piece is now a
+    // different, empty one. The piece just sealed is counted from the filesystem as a sealed
+    // piece from here on, so leaving its length here counts it twice, and
+    // `persistent_length_bytes` then reports more durable bytes than the log physically holds.
+    // That is the direction the field exists to rule out: understating is survivable, overstating
+    // says unsynced records are on disk to survive a crash.
+    //
+    // It could not correct itself either. One of the three writers takes a `.max()` rather than
+    // overwriting, so a stale high value survives every barrier that path serves.
+    //
+    // Removed rather than set: absent reads as zero, and zero is what a piece whose header has
+    // not been barriered yet has actually got durable.
+    inner.durable_active_bytes_by_shard.remove(&shard_id);
     Ok(true)
 }
 
@@ -4514,6 +4527,93 @@ mod tests {
         for (_, line) in &after {
             decode_wal_line(line).expect("every record must still decode");
         }
+    }
+
+    /// Durable bytes never exceed the bytes the log holds, across a roll.
+    ///
+    /// `persistent_length_bytes` is "the sealed pieces, plus how far a barrier reached into the
+    /// active one". The second half is remembered per shard. A roll replaces the active piece, so
+    /// a value left behind describes a piece that is now counted from the filesystem as a sealed
+    /// one -- counted twice.
+    ///
+    /// The append that rolls usually repairs this by syncing straight afterwards and overwriting
+    /// the entry. This drives the case it does not: a barrier lands, THEN a roll happens on an
+    /// append that does not sync. One of the three writers of this entry takes a `.max()` rather
+    /// than overwriting, so once the value is stale-high it cannot come back down that way.
+    ///
+    /// Overstating is the direction this field exists to rule out: it claims unsynced records are
+    /// on disk to survive a crash. Reporting more durable bytes than the log physically holds is
+    /// the plainest form of that.
+    #[test]
+    fn durable_bytes_never_exceed_the_bytes_the_log_holds() {
+        let segment = 2 * WAL_BLOCK_BYTES;
+        set_wal_segment_bytes_for_test(Some(segment));
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+
+        let sealed_count = || {
+            std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|entry| {
+                    // A sealed piece, not the active one and not the append LOCK file --
+                    // `shard-1.wal.lock` also contains "wal." and counted as a sealed piece,
+                    // which made this read as rolled before anything had rolled.
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    name.starts_with("shard-1.wal.")
+                        && name.ends_with(".jsonl")
+                        && name != "shard-1.wal.jsonl"
+                })
+                .count()
+        };
+        let append = |index: usize, sync: bool| {
+            store
+                .append_with_sync(
+                    1,
+                    Command::StringSet {
+                        key: format!("k{index:06}"),
+                        value: vec![b'v'; 1024],
+                    },
+                    sync,
+                )
+                .unwrap();
+        };
+
+        // Fill the ACTIVE piece to a little over half the roll threshold, then put a barrier on
+        // it. `info().length_bytes` is the whole log, pieces included, so it is the wrong ruler
+        // here -- reading it as the active piece's length ran this loop straight past the roll.
+        let active = write_ahead_log_path(dir.path(), 1);
+        let active_len = || active.metadata().map(|meta| meta.len()).unwrap_or(0);
+        let mut index = 0usize;
+        while active_len() < segment / 2 {
+            append(index, false);
+            index += 1;
+            assert!(index < 40_000, "the piece must fill within a bounded number of appends");
+        }
+        store.flush(1).unwrap();
+        let before = store.info(1).unwrap();
+        assert!(
+            before.persistent_length_bytes > 0,
+            "the barrier must have recorded a durable extent for this to be the case that matters"
+        );
+        assert_eq!(sealed_count(), 0, "nothing should have rolled yet");
+
+        // Now roll, on appends that do not ask for a barrier of their own.
+        while sealed_count() == 0 {
+            append(index, false);
+            index += 1;
+            assert!(index < 40_000, "the log must roll within a bounded number of appends");
+        }
+
+        let info = store.info(1).unwrap();
+        assert!(
+            info.persistent_length_bytes <= info.length_bytes,
+            "durable bytes ({}) must not exceed what the log holds ({}) -- the piece that just \
+             sealed is counted both as a sealed piece and as the active piece's durable extent",
+            info.persistent_length_bytes,
+            info.length_bytes
+        );
+        set_wal_segment_bytes_for_test(None);
     }
 
     /// A piece rolled into gets blocks, even when the piece before it had none.
