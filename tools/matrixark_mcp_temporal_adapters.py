@@ -514,47 +514,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter, _TemporalDirect
     proxy boundary.
     """
 
-    def read_all(self) -> list[Json]:
-        """Read through the native record log, not MatrixArkLocalAdapter's JSONL log.
-
-        `MatrixArkLocalAdapter` precedes the direct mixins in this class's MRO and also
-        defines `read_all`, so its JSONL implementation won here -- and on a native backend
-        there is no JSONL log, so it returned ZERO records. Every reader built on read_all
-        (get / get_all / update / history / keyed recall) therefore read empty while the
-        records sat durably in the record log; the same inherited method is correct on the
-        JSONL backend, which is why only the native backends looked broken.
-
-        Only `read_all` collided: `read_all_without_disk_fallback_recovery` is defined solely
-        on `_TemporalDirectReadMixin` and already resolved correctly, so delegating to it
-        reproduces the direct read exactly without reordering bases (which would silently
-        move every other method both classes define).
-
-        The live-view post-processing MUST be kept: `MatrixArkLocalAdapter.read_all` does not
-        just read, it filters the log down to live records. Delegating to the raw direct read
-        alone silently drops that -- forget/delete tombstones stop being honoured (the subject's
-        records stay visible after a forget) and a TTL record never expires, because expiry is
-        enforced on read and is never cached.
-
-        The body is deliberately identical to `MatrixArkLocalAdapter.read_all`; only the
-        `_read_all_compacted` beneath it differs per backend.
-        """
-        try:
-            from tools.matrixark_mcp_local_adapter import (
-                compact_and_apply_tombstones,
-                filter_live_memory_records,
-            )
-        except ModuleNotFoundError:  # Direct script execution from tools/.
-            from matrixark_mcp_local_adapter import (
-                compact_and_apply_tombstones,
-                filter_live_memory_records,
-            )
-        records = self._read_all_compacted()
-        # All three serving stages, in the order every other read path uses. This ran only the
-        # last of them: expiry and retention were applied, compaction and tombstones were not. A
-        # forget wrote its tombstone, reported an accurate removed_count, and then served every
-        # one of those records straight back on the next read.
-        return filter_live_memory_records(compact_and_apply_tombstones(records))
-
     def _read_all_compacted(self) -> list[Json]:
         """The compacted, tombstone-swept view -- WITHOUT the expiry/retention filter.
 
@@ -4100,35 +4059,6 @@ class MatrixArkRustProxyClient:
         ordered = sorted(values)
         index = min(len(ordered) - 1, max(0, math.ceil(percentile * len(ordered)) - 1))
         return ordered[index]
-
-    def matrixark_retrieve_context_pack(
-        self,
-        *,
-        count_key: str,
-        record_hash_key: str,
-        shard_size: int,
-        request: Json,
-    ) -> Json:
-        return self._call_json(
-            "matrixark_retrieve_context_pack",
-            count_key=count_key,
-            record_hash_key=record_hash_key,
-            shard_size=shard_size,
-            record_types=[
-                "context_compression_event",
-                "context_entity",
-                "context_event",
-                "context_index",
-                "context_segment",
-                "context_summary",
-                "resource_chunk",
-                "skill_section",
-            ],
-            return_index_records=False,
-            scope=request.get("scope", {}),
-            secondary_index_groups=request.get("secondary_index_groups", []),
-            record=request,
-        )
 
     def matrixark_publish_visibility(self, visibility_keys: list[str] | None = None) -> Json:
         return self._call_json("matrixark_publish_visibility", visibility_keys=visibility_keys or [])

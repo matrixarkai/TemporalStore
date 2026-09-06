@@ -326,35 +326,6 @@ class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
     def _percentile(values: list[float], percentile_value: float) -> float:
         return percentile(values, percentile_value)
 
-    def matrixark_retrieve_context_pack(
-        self,
-        *,
-        count_key: str,
-        record_hash_key: str,
-        shard_size: int,
-        request: Json,
-    ) -> Json:
-        return self._call_json(
-            "matrixark_retrieve_context_pack",
-            count_key=count_key,
-            record_hash_key=record_hash_key,
-            shard_size=shard_size,
-            record_types=[
-                "context_compression_event",
-                "context_entity",
-                "context_event",
-                "context_index",
-                "context_segment",
-                "context_summary",
-                "resource_chunk",
-                "skill_section",
-            ],
-            return_index_records=False,
-            scope=request.get("scope", {}),
-            secondary_index_groups=request.get("secondary_index_groups", []),
-            record=request,
-        )
-
     def matrixark_publish_visibility(self, visibility_keys: list[str] | None = None) -> Json:
         return self._call_json("matrixark_publish_visibility", visibility_keys=visibility_keys or [])
 
