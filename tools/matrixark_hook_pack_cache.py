@@ -36,8 +36,33 @@ def context_pack_cache_path(agent: str, workspace_root: str) -> Path:
     return Path(root) / f"{agent}-{stamp}.txt"
 
 
+# The fixed opening of the notice the hooks emit when retrieval errors. Matched as a phrase rather
+# than on a word like "failed", because a real pack can discuss a failure and must still be kept.
+_FAILURE_NOTICE_MARKERS = (
+    "retrieval was attempted for this prompt but failed",
+    "retrieval was attempted but failed",
+)
+
+
+def looks_like_failure_notice(text: str) -> bool:
+    """Is this the hook's retrieval-failure notice rather than a context pack?
+
+    The notice lands in the same variable a pack would occupy, so without this the cache stores it
+    and a later turn serves "retrieval failed" back as prior context -- which is worse than serving
+    nothing, because it reaches the agent labelled as history.
+    """
+    head = text[:400].lower()
+    return any(marker in head for marker in _FAILURE_NOTICE_MARKERS)
+
+
 def remember_context_pack(path: Path, text: str) -> None:
-    """Keep this pack, so a later turn that cannot reach the store still has something true."""
+    """Keep this pack, so a later turn that cannot reach the store still has something true.
+
+    A failure notice is refused: it occupies the same variable a pack does, and storing it would
+    hand a later turn "retrieval failed" as remembered history.
+    """
+    if looks_like_failure_notice(text):
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write-then-rename: a turn that dies mid-write must not leave a torn pack behind for the

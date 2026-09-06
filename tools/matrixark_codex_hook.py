@@ -1946,9 +1946,13 @@ def codex_hook_output(
             _cache_path = _pack_cache.context_pack_cache_path(
                 "codex", str(agent_context.get("workspace_root") or "")
             )
-            if additional_context.strip():
+            if error:
+                # `additional_context` holds a failure NOTICE here, not a pack. Remembering it
+                # would serve "retrieval failed" back to a later turn as remembered history.
+                pass
+            elif additional_context.strip():
                 _pack_cache.remember_context_pack(_cache_path, additional_context)
-            elif not error and not _pack_cache.store_answered(retrieve):
+            elif not _pack_cache.store_answered(retrieve):
                 _previous, _age_s = _pack_cache.recover_context_pack(
                     _cache_path, max_age_s=_pack_cache.pack_cache_max_age_s()
                 )
