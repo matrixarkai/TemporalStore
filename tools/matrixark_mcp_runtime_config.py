@@ -242,6 +242,35 @@ def live_int(variable: str, fallback: int) -> int:
     return parsed if parsed > 0 else fallback
 
 
+DEFAULT_HOOK_MAX_CONTEXT_TOKENS = 128000  # build default; the resolver below reads the env
+
+
+def hook_max_context_tokens() -> int:
+    """The budget an AGENT HOOK asks for, which is not the one an API caller gets.
+
+    `DEFAULT_MAX_CONTEXT_TOKENS` above is 500,000 and is what the packer, the schema documentation
+    and the portal's budget panel all quote. The hooks never used it: they read
+    `MATRIXARK_HOOK_MAX_CONTEXT_TOKENS` first, fall back to `MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS`,
+    and fall back again to a number of their own -- and the installation manual sets the first one
+    to 10,000. So on a deployment installed by the book the agent path runs a budget fifty times
+    smaller than every surface reporting it.
+
+    Both hooks carried this expression inline, which is why nothing could report it: a duplicated
+    literal in two scripts is not something a panel can ask.
+    """
+    for variable in ("MATRIXARK_HOOK_MAX_CONTEXT_TOKENS", "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS"):
+        raw = os.environ.get(variable)
+        if raw is None:
+            continue
+        try:
+            parsed = int(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return DEFAULT_HOOK_MAX_CONTEXT_TOKENS
+
+
 def live_float(variable: str, fallback: float) -> float:
     """A section's share of the budget, read per pack. The float counterpart of `live_int`.
 

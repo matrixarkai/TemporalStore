@@ -453,6 +453,14 @@ SETTINGS: List[Setting] = [
             "share above is set."),
 
     # ---- retrieval and context budget ----------------------------------------------------------
+    Setting("retrieval.hook_max_context_tokens", "retrieval",
+            "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS",
+            "Agent hook context budget (tokens)", "int", "128000", "live",
+            "The budget the agent hooks ask for. They have never used the setting below, and the "
+            "installation manual sets this to 10000 -- so on a deployment installed by the book "
+            "the agent path runs a budget fifty times smaller than the one the panels quoted. "
+            "Every share on the budget panel is a percentage of whichever of the two the caller "
+            "uses."),
     Setting("retrieval.default_max_context_tokens", "retrieval",
             "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS",
             "Default context budget (tokens)", "int", "500000", "restart",
