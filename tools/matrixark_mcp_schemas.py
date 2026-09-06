@@ -95,6 +95,16 @@ STORAGE_OPTIONS_SCHEMA: Json = {
             "enum": ["default", "shared_store", "raft"],
             "description": "Friendly route selector. Choose shared_store or raft, then combine with write_mode=async|sync.",
         },
+        "durability": {
+            "type": "string",
+            "enum": ["default", "async", "sync"],
+            "description": "Durability shorthand. Defaults to async for highest write/read QPS; set sync only for records that must be durable before ack. canonical_storage_route reads this and uses it as write_mode when write_mode is left at default.",
+        },
+        "read_preference": {
+            "type": "string",
+            "enum": ["default", "primary", "replica", "replica_preferred"],
+            "description": "Requested serving read preference. Async context ingest defaults to replica_preferred so read-heavy paths can use replicas.",
+        },
         "write_mode": {
             "type": "string",
             "enum": ["default", "async", "sync"],
