@@ -17,7 +17,9 @@ PARTIAL_USER_IDS="${PARTIAL_USER_IDS:-}"
 PARTIAL_SESSION_IDS="${PARTIAL_SESSION_IDS:-}"
 PARTIAL_FILTER_JSON="${PARTIAL_FILTER_JSON:-}"
 PARTIAL_REQUIRE_BOUNDED="${PARTIAL_REQUIRE_BOUNDED:-1}"
-METASERVER="${METASERVER:-${MATRIXARK_METASERVER:-127.0.0.1:65000}}"
+# The documented spelling first, then the bare one, then the value the shipped config
+# declares. This wrapper defaulted to 127.0.0.1:65000, which no deployment listens on.
+METASERVER="${METASERVER:-${MATRIXARK_TEMPORALSTORE_METASERVER:-${MATRIXARK_METASERVER:-127.0.0.1:18000}}}"
 NAMESPACE="${NAMESPACE:-${MATRIXARK_NAMESPACE:-matrixark}}"
 TABLE="${TABLE:-${MATRIXARK_TABLE:-context}}"
 PROM_OUTPUT="${PROM_OUTPUT:-/tmp/matrixark_context_backfill_${JOB_ID}.prom}"

@@ -2456,7 +2456,18 @@ def run_verify_manifest(args: argparse.Namespace) -> Json:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Backfill MatrixArk context records from MatrixArk raw ingestion logs.')
-    parser.add_argument('--metaserver', default=os.environ.get('MATRIXARK_METASERVER', '127.0.0.1:65000'))
+    # MATRIXARK_TEMPORALSTORE_METASERVER first: that is the spelling the shipped config, the
+    # compose file and every deploy document use, and the one the running processes carry.
+    # This read only ever saw the bare MATRIXARK_METASERVER, which nothing sets, so an
+    # operator who configured the documented variable changed nothing here and the tool dialled
+    # 127.0.0.1:65000 -- a port that does not listen, in a deployment whose live value is
+    # "local". The bare name is still ACCEPTED, because accepting an old spelling costs
+    # nothing and refusing it breaks whoever set it; it is emitting one that loses.
+    parser.add_argument(
+        '--metaserver',
+        default=(os.environ.get('MATRIXARK_TEMPORALSTORE_METASERVER')
+                 or os.environ.get('MATRIXARK_METASERVER')
+                 or '127.0.0.1:18000'))
     # The namespace and table the shipped config declares for these two variables, which is also
     # what the running processes carry. These defaulted to 'matrixark' and 'context', and nothing
     # else in the repository names either -- so a backfill run without --namespace addressed a

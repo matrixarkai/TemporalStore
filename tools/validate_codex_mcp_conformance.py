@@ -119,7 +119,11 @@ def validate_rust_cli_smoke() -> dict[str, object]:
     env.setdefault("CARGO_TARGET_DIR", "/tmp/temporalstore-mcp-parity-target")
     request = {
         "op": "put_string",
-        "metaserver": os.environ.get("MATRIXARK_METASERVER", "127.0.0.1:18000"),
+        # The documented spelling first; the bare one stays accepted. Same order as the
+        # backfill tool, so a deployment configures one variable and both honour it.
+        "metaserver": (os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER")
+                       or os.environ.get("MATRIXARK_METASERVER")
+                       or "127.0.0.1:18000"),
         "namespace": os.environ.get("MATRIXARK_NAMESPACE", "deploy_ns"),
         "table": os.environ.get("MATRIXARK_TABLE", "deploy_table"),
         "key": "matrixark:mcp:parity",
