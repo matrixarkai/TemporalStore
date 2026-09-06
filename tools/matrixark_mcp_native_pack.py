@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import os
 from typing import Any
 
@@ -69,9 +75,7 @@ def build_native_context_pack_request(target: Any, args: Json) -> Json:
         "native_score_rerank_pack",
     ]
     debug_context_pack = bool(args.get("debug_context_pack") or args.get("include_retrieval_debug"))
-    verbose_native_contract = debug_context_pack or os.environ.get(
-        "MATRIXARK_NATIVE_CONTEXT_PACK_VERBOSE_CONTRACT", ""
-    ).strip().lower() in {"1", "true", "yes"}
+    verbose_native_contract = debug_context_pack or env_bool("MATRIXARK_NATIVE_CONTEXT_PACK_VERBOSE_CONTRACT", False)
     request: Json = {
         "api_version": 1,
         "storage_prefix": target._storage_prefix,

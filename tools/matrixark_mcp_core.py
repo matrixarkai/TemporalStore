@@ -9,6 +9,12 @@ adapter that can be replaced with TemporalStore RPC calls later.
 """
 
 from __future__ import annotations
+
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
 import base64 as _base64
 import struct as _struct
 from struct import error as struct_error
@@ -77,10 +83,11 @@ DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").st
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 CONTEXT_TELEMETRY_WRITE_MODE = os.environ.get("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE", "inline").strip().lower()
-ENABLE_CONTEXT_DEBUG_RECORDS = os.environ.get("MATRIXARK_CONTEXT_DEBUG_RECORDS", "0").strip().lower() in {"1", "true", "yes"}
-ENABLE_CONTEXT_REPLAY = os.environ.get("MATRIXARK_ENABLE_REPLAY", "0").strip().lower() in {"1", "true", "yes"}
-ENABLE_SUMMARY_REFRESH_AUDIT = os.environ.get("MATRIXARK_SUMMARY_REFRESH_AUDIT", "0").strip().lower() in {"1", "true", "yes"}
-ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS = os.environ.get("MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS", "0").strip().lower() in {"1", "true", "yes"}
+# These four, and four more below, are defined here AND in matrixark_mcp_runtime_config. See the
+# single-source note beside DEFAULT_MAX_CONTEXT_TOKENS further down: that constant was read from
+# the same variable in both modules with different fallbacks, and an operator who set nothing got
+# one answer through core paths and another through runtime-config paths. Same shape, same file --
+# so take the value from there rather than writing a second literal that can drift the same way.
 SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000"))
 SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64"))
 # Largest share of wall-clock the background summary refresher may occupy. A refresh pass
@@ -93,7 +100,7 @@ SUMMARY_REFRESH_MAX_BACKOFF_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_M
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
 MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
-MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
+# MATRIXARK_ALLOW_LOCAL_BACKEND comes from matrixark_mcp_runtime_config, above.
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
 MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
@@ -108,15 +115,31 @@ BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_REA
 # still honour MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS when it is set.
 try:
     from tools.matrixark_mcp_runtime_config import (
+        AUDIT_DEBUG_PAYLOAD,
+        CONTEXT_PACK_DEBUG_REFS,
+        ENABLE_CONTEXT_DEBUG_RECORDS,
+        ENABLE_CONTEXT_REPLAY,
+        ENABLE_LLM_MERGE_OPERATOR,
+        ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS,
+        ENABLE_SUMMARY_REFRESH_AUDIT,
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_runtime_config import (
+        AUDIT_DEBUG_PAYLOAD,
+        CONTEXT_PACK_DEBUG_REFS,
+        ENABLE_CONTEXT_DEBUG_RECORDS,
+        ENABLE_CONTEXT_REPLAY,
+        ENABLE_LLM_MERGE_OPERATOR,
+        ENABLE_SUMMARY_DIRTY_DEBUG_FIELDS,
+        ENABLE_SUMMARY_REFRESH_AUDIT,
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
         DEFAULT_MAX_CONTEXT_TOKENS as _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS,
     )
 DEFAULT_MAX_CONTEXT_TOKENS = _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS
-CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
-AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
+CONTEXT_PACK_DEBUG_REFS = env_bool("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", False)
+AUDIT_DEBUG_PAYLOAD = env_bool("MATRIXARK_AUDIT_DEBUG_PAYLOAD", False)
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
@@ -202,7 +225,7 @@ def prune_internal_index_terms(terms):
 MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "8"))
 MAX_RESOURCE_FACTS_PER_RESOURCE = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_RESOURCE", "8"))
 MAX_RESOURCE_FACTS_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK", "2"))
-ENABLE_GENERIC_RESOURCE_FACTS = os.environ.get("MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS", "0").strip().lower() in {"1", "true", "yes"}
+ENABLE_GENERIC_RESOURCE_FACTS = env_bool("MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS", False)
 RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", str(2 * 1024 * 1024)))
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS", "200000"))
 RESOURCE_ASYNC_DEFAULT_PATH_COUNT = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT", "32"))
@@ -268,7 +291,7 @@ TIME_COMPRESSION_SUMMARY_MODEL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMM
 TIME_COMPRESSION_SUMMARY_BASE_URL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
 TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
 TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "30"))
-TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = os.environ.get("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", "").strip().lower() in {"1", "true", "yes"}
+TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = env_bool("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", False)
 EXTRACTION_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b"))
 EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")).rstrip("/")
 EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
@@ -294,7 +317,7 @@ SUMMARY_LLM_PROVIDER = os.environ.get(
 # could name models that endpoint does not both serve, and the portal offered no way to see that.
 SUMMARY_LLM_MODEL = EXTRACTION_LLM_MODEL
 SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
-ENABLE_LLM_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", "").strip().lower() in {"1", "true", "yes"}
+# ENABLE_LLM_MERGE_OPERATOR comes from matrixark_mcp_runtime_config, above.
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
@@ -3535,7 +3558,7 @@ def oss_embedding_for_text(text: str) -> list[float]:
         vector = encoder.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
         return [round(float(value), 6) for value in vector]
     except Exception as exc:  # pragma: no cover - depends on optional local model packages.
-        if os.environ.get("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", "").strip().lower() in {"1", "true", "yes"}:
+        if env_bool("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", False):
             raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
         _EMBEDDING_FALLBACK_USED = True
         previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")

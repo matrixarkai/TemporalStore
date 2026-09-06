@@ -36,6 +36,14 @@ _READ = re.compile(
 _SPELLING = re.compile(r'["\'](1|0|true|false|yes|no|on|off)["\']', re.I)
 _NUMERIC = re.compile(r"\b(?:int|float)\s*\(")
 _OTHER_FLAG = re.compile(r'["\']([A-Z][A-Z0-9_]{3,})["\']')
+# The same read, once it goes through the one parser. Sites are being moved onto `env_bool`, and a
+# scan that only knew the hand-rolled shape would watch its own population drain away and then
+# report that every remaining reader agrees. Two of the three disagreements cannot occur here --
+# `env_bool` fixes the spellings and the sense for every caller -- but the DEFAULT is still written
+# at each site, so two readers of one flag can still disagree about what unset means.
+_ENV_BOOL = re.compile(
+    r'env_bool\(\s*["\']([A-Z][A-Z0-9_]{3,})["\']\s*,\s*(True|False)\s*\)')
+ONE_VOCABULARY = ("<env_bool>",)
 
 # Twenty-one when this was written. Asserted so a scan that stops matching fails rather than
 # reporting that every reader agrees.
@@ -84,6 +92,9 @@ def _readers() -> Dict[str, List[Tuple[str, int, str, Tuple[str, ...], bool]]]:
                     continue
                 found[name].append((path, number + 1, default.lower(), accepted,
                                     "not in" in statement))
+            for match in _ENV_BOOL.finditer(line):
+                name, default = match.group(1), match.group(2)
+                found[name].append((path, number + 1, default.lower(), ONE_VOCABULARY, False))
     return found
 
 

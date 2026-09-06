@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import os
 import re
 import time
@@ -43,9 +49,7 @@ def _positive_int_env(name: str, default: int) -> int:
         return default
 
 
-PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get(
-    "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0"
-).strip().lower() in {"1", "true", "yes"}
+PRE_RETRIEVAL_SUMMARY_REFRESH = env_bool("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT = _positive_int_env(
     "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT", 2
 )

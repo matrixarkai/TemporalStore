@@ -5,6 +5,12 @@
 
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import json
 import os
 from typing import Any
@@ -105,11 +111,7 @@ def context_event_time_index_payload(record: Json) -> str:
 
 def context_event_time_index_entries(storage_prefix: str, records: list[Json]) -> list[Json]:
     entries: list[Json] = []
-    full_payload = os.environ.get("MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
+    full_payload = env_bool("MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD", False)
     for record in records:
         if record.get("record_type") != "context_event":
             continue

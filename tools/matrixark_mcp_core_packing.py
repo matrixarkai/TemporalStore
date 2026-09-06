@@ -5,6 +5,12 @@ relative/absolute import pattern so the same core module object is reused under
 both the package path (tools.matrixark_mcp_core) and the top-level path. No
 import-time cycle. __all__ lists every moved name for total re-export."""
 import os
+
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
 import re
 
 try:  # package path (tools.matrixark_mcp_core)
@@ -55,7 +61,7 @@ __all__ = ['packing_sort_key', 'context_text_hashes', 'local_context_budget', 'c
 # boost can crowd out raw events, and raw events retain exact hashes/numbers/lists that
 # summaries drop (measured ~2/6 exact-fact loss). When enabled, dampen the compression boost
 # and lift raw events for precision question-types so exactness is preserved. Ships OFF.
-PACK_RAW_PRECISION = os.environ.get("MATRIXARK_PACK_RAW_PRECISION", "0").strip().lower() in {"1", "true", "yes"}
+PACK_RAW_PRECISION = env_bool("MATRIXARK_PACK_RAW_PRECISION", False)
 # Exact-fact query types where raw events (hashes/numbers/lists) beat lossy summaries.
 # NOT current_state/latest — those legitimately want the distilled current-value entity.
 PRECISION_QUESTION_TYPES = {"fact", "multi_hop", "evidence", "benchmark_quality", "date"}

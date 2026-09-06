@@ -5,6 +5,12 @@ relative/absolute import pattern so the same core module object is reused under
 both the package path (tools.matrixark_mcp_core) and the top-level path. No
 import-time cycle. __all__ lists every moved name for total re-export."""
 import os
+
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
 from typing import Any, Callable
 
 try:  # package path (tools.matrixark_mcp_core)

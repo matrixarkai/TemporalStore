@@ -3,6 +3,12 @@
 # Copyright 2026 MatrixArkAI
 from __future__ import annotations
 
+try:
+    from tools.matrixark_mcp_env import env_bool
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool
+
+
 import argparse
 import hashlib
 import json
@@ -2251,7 +2257,7 @@ def local_backend_allowed() -> bool:
     is another way to turn a production guard off, and the safe direction for a disagreement about
     a guard is the narrower one.
     """
-    return os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
+    return env_bool("MATRIXARK_ALLOW_LOCAL_BACKEND", False)
 
 
 def default_hook_backend() -> str:
