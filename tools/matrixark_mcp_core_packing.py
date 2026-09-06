@@ -475,6 +475,33 @@ def serving_refs_for_pack(
     ]
 
 
+_PACK_REDUNDANCY = {}
+
+
+def _redundancy_filter_enabled() -> bool:
+    """Is MATRIXARK_PACK_DROP_REDUNDANT_ITEMS on? Asked of the module that owns the answer."""
+    fn = _PACK_REDUNDANCY.get("enabled")
+    if fn is None:
+        try:
+            from tools.matrixark_mcp_context_pack import _pack_redundancy_filter_enabled as fn
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_mcp_context_pack import _pack_redundancy_filter_enabled as fn
+        _PACK_REDUNDANCY["enabled"] = fn
+    return bool(fn())
+
+
+def _drop_redundant_pack_items(groups: list[Json]) -> list[Json]:
+    """The one filter, in the module that owns it."""
+    fn = _PACK_REDUNDANCY.get("drop")
+    if fn is None:
+        try:
+            from tools.matrixark_mcp_context_pack import drop_redundant_pack_items as fn
+        except ImportError:  # Direct script execution from tools/.
+            from matrixark_mcp_context_pack import drop_redundant_pack_items as fn
+        _PACK_REDUNDANCY["drop"] = fn
+    return fn(groups)
+
+
 def serving_ref_groups_for_pack(
     refs: list[Json],
     *,
@@ -501,7 +528,23 @@ def serving_ref_groups_for_pack(
         )
         groups[key]["items"].append(item)
         groups[key]["n"] += 1
-    return [groups[key] for key in order]
+    built = [groups[key] for key in order]
+    # An entity item is a projection of the event it came from, so one fact is commonly shipped
+    # twice and billed twice to the reader's budget. matrixark_mcp_context_pack has carried the
+    # filter for that since it was written, behind MATRIXARK_PACK_DROP_REDUNDANT_ITEMS, which
+    # defaults ON and is declared as a tenant knob (`pack_drop_redundant_items`, default True).
+    #
+    # This copy never had it, and this copy is the one a live retrieve reaches:
+    # matrixark_local_adapter_retrieve, matrixark_mcp_local_adapter and matrixark_mcp_core all
+    # resolve `serving_ref_groups_for_pack` here. So the knob was on, the filter existed, and the
+    # pack still shipped the entity beside the event that already contained it.
+    #
+    # Imported on first use rather than at module level: this module already imports
+    # matrixark_mcp_core, and matrixark_mcp_core star-imports this module, so the order in which
+    # the three settle is not something to add a fourth edge to.
+    if _redundancy_filter_enabled():
+        built = _drop_redundant_pack_items(built)
+    return built
 
 
 def selected_ref_count_from_pack(pack: Json) -> int:
