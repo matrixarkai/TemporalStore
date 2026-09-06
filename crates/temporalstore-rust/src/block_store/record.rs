@@ -823,6 +823,22 @@ pub(super) fn max_page_id_in_slab_file(
     Ok(max_page_id)
 }
 
+/// TS_BLOCK_INDEX_CHECKSUMS: recompute and record a hex digest per page record while inspecting.
+///
+/// Default OFF. `inspect_slab` runs at every engine open, and this hashes each payload a second
+/// time -- `decode_page_record` has already verified the stored checksum -- then allocates a
+/// 64-character String for it. Measured on a live-store copy, slab verification ran at 13.5 MB/s
+/// against hundreds of MB/s for sha256 alone. Nothing in the crate reads the field; it is kept for
+/// hand-inspecting a slab.
+fn block_index_checksums_enabled() -> bool {
+    std::env::var("TS_BLOCK_INDEX_CHECKSUMS")
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            value == "1" || value == "true" || value == "yes"
+        })
+        .unwrap_or(false)
+}
+
 pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabReport {
     let mut report = BlockStoreSlabReport {
         page_slab_id,
@@ -905,7 +921,12 @@ pub(super) fn inspect_slab(slab: &[u8], page_slab_id: u64) -> BlockStoreSlabRepo
                     deleted: decoded.logical_len == 0,
                     block_in_log: false,
                     routing_bucket: header.routing_bucket,
-                    checksum: Some(sha256_hex(&decoded.payload)),
+                    // Re-hashing the payload here doubled the sha256 work of every engine open
+                    // to fill a field no caller reads. `decode_page_record` above has already
+                    // verified this record's stored checksum. Opt in with
+                    // TS_BLOCK_INDEX_CHECKSUMS=1 when inspecting a slab by hand.
+                    checksum: block_index_checksums_enabled()
+                        .then(|| sha256_hex(&decoded.payload)),
                 });
                 report.block_index_count = report.block_index_entries.len() as u64;
                 if decoded.compression == PageRecordCompression::Zstd {
