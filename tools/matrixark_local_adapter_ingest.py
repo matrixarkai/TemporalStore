@@ -4068,7 +4068,7 @@ class _LocalAdapterIngestMixin:
                 ref_type = "summary"
                 ref_hash = record.get("summary_hash") or record.get("node_hash")
             elif record_type == "context_entity":
-                text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                text = entity_ref_text(record)
                 ref_type = "entity"
                 ref_hash = record.get("entity_hash")
             elif record_type == "context_segment":
