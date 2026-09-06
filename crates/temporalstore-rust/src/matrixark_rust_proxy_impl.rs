@@ -7171,33 +7171,18 @@ mod tests {
             .get("selected_refs")
             .and_then(Value::as_array)
             .expect("selected refs");
-        for field in [
-            "ref_hash",
-            "node_hash",
-            "node_path",
-            "token_estimate",
-            "score",
-            "continuity_boost",
-            "cross_session_rerank_boost",
-            "continuity_reason",
-            "selection_reason",
-            "source_session_ids",
-            "source_entity_hashes",
-            "source_entity_types",
-            "source_roles",
-            "source_role_counts",
-            "budget_source_roles",
-            "budget_source_role_counts",
-            "source_hook_types",
-            "source_hook_type_counts",
-            "source_codex_events",
-            "source_codex_event_counts",
-            "source_memory_scopes",
-            "source_session_continuities",
-            "source_extraction_phases",
-            "source_profile_promotion_policies",
-            "source_profile_promotion_blockers",
-        ] {
+        // Walking the production lists means a field ADDED to them is covered here without
+        // anyone remembering to add it -- which is the drift that left the old hand-written copy
+        // checking 25 of 26. It cannot, on its own, notice a field REMOVED from them: the loop
+        // would simply stop asking about it. So the extent is pinned too, and a shrinking list
+        // fails here rather than quietly starting to leak.
+        assert_eq!(
+            LINEAGE_ONLY_FIELDS.len(),
+            22,
+            "the lineage list changed size; if a field was deliberately dropped, say so and              update this number, because dropping one is how a served ref starts carrying it"
+        );
+        assert_eq!(SCORE_ONLY_FIELDS.len(), 4, "the score list changed size");
+        for field in LINEAGE_ONLY_FIELDS.iter().chain(SCORE_ONLY_FIELDS.iter()) {
             assert!(
                 selected_refs.iter().all(|value| value.get(field).is_none()),
                 "default serving ref leaked {field}"
