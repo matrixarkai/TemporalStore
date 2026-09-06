@@ -1961,7 +1961,8 @@ def _probe(kind: str, url: str, payload: Json, headers: Dict[str, str], timeout:
         status, parsed = _post_json(url, payload, headers, timeout)
         result["status"] = status
         result["ok"] = 200 <= status < 300
-        result["response"] = parsed if isinstance(parsed, str) else _summarize(kind, parsed)
+        result["response"] = (parsed if isinstance(parsed, str)
+                              else _summarize(kind, parsed, payload.get("model")))
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
@@ -1978,31 +1979,64 @@ def _probe(kind: str, url: str, payload: Json, headers: Dict[str, str], timeout:
     return result
 
 
-def _summarize(kind: str, parsed: Any) -> Json:
+def _with_match(summary: Json, requested: Any) -> Json:
+    """Add what was asked for, and whether the answer matches it.
+
+    Absent rather than False when either side is unknown: a provider that returns no model name
+    has not disagreed with anything, and saying it did would put a warning on every endpoint that
+    is merely terse.
+    """
+    served = summary.get("model")
+    summary["requested_model"] = requested or None
+    if requested and served:
+        summary["model_matches_request"] = _same_model(requested, served)
+    return summary
+
+
+def _same_model(asked: Any, served: Any) -> bool:
+    """Whether two model names denote the same model.
+
+    An organisation prefix is not a difference: `sentence-transformers/paraphrase-multilingual-
+    MiniLM-L12-v2` and `paraphrase-multilingual-MiniLM-L12-v2` are one model under two spellings,
+    and the shipped local_minilm preset uses the short one while the encoder catalogue lists the
+    long one. Reporting that pair as a mismatch would be a false alarm on a supported setup, and
+    a warning that cries wolf on the shipped configuration is one nobody reads.
+    """
+    left = str(asked or "").strip().lower().rsplit("/", 1)[-1]
+    right = str(served or "").strip().lower().rsplit("/", 1)[-1]
+    return left == right
+
+
+def _summarize(kind: str, parsed: Any, requested: Any = None) -> Json:
     """Keep only what an operator needs from a provider response -- never the whole body, which for
-    an embedding probe is a full vector."""
+    an embedding probe is a full vector.
+
+    `requested` is carried in so the answer can be compared with the question. Reporting only the
+    model that came back reads as confirmation that the endpoint serves it, and against a server
+    that echoes the request that confirmation is of the operator's own input.
+    """
     if not isinstance(parsed, dict):
         return {"raw": str(parsed)[:200]}
     if kind == "embedding":
         data = parsed.get("data")
         vector = data[0].get("embedding") if isinstance(data, list) and data and isinstance(data[0], dict) else None
-        return {
+        return _with_match({
             "model": parsed.get("model"),
             "dimensions": len(vector) if isinstance(vector, list) else None,
-        }
+        }, requested)
     if kind == "extraction_anthropic":
         # Messages API: the reply is a list of content blocks, not a choices list.
         blocks = parsed.get("content")
         text = "".join(str(b.get("text", "")) for b in blocks
                        if isinstance(b, dict) and b.get("type", "text") == "text") \
             if isinstance(blocks, list) else ""
-        return {"model": parsed.get("model"), "sample": text[:120]}
+        return _with_match({"model": parsed.get("model"), "sample": text[:120]}, requested)
     choices = parsed.get("choices")
     text = ""
     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
         message = choices[0].get("message") or {}
         text = str(message.get("content", ""))[:120]
-    return {"model": parsed.get("model"), "sample": text}
+    return _with_match({"model": parsed.get("model"), "sample": text}, requested)
 
 
 def probe(targets: Optional[List[str]] = None, timeout: float = 10.0) -> Json:
