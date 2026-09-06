@@ -21,6 +21,7 @@ against the source with a rule simpler than this one, and states how much source
 """
 import io
 import pathlib
+import ast
 import re
 import sys
 
@@ -562,7 +563,23 @@ SETTERS = [
     ("script", re.compile(r'(?:environ(?:\.setdefault)?|env)\s*[\[(]\s*"%s"\s*[\])]?\s*(?:,|=[^=])'
                           % NAME)),
 ]
+#: SHELL ONLY. An assignment without `export` still sets the variable for the command it prefixes,
+#: and that is how the deploy script passes half of what it passes:
+#:
+#:     TS_META_MUTATION_LOG="$DATA_DIR/meta/mutation-log.jsonl" \\
+#:
+#: Kept out of the Python scan because there the same characters are a KEYWORD ARGUMENT:
+#: `MATRIXARK_SESSION_ID=item.session_id` passes a value to a function and sets no environment.
+#: Anchored on a boundary so `${TS_X:-...}`, a read, does not match, and followed by a lookahead
+#: for something a value can start with -- `TS_MATRIXOBJECT_ENDPOINT=<host:port>` inside an echo is
+#: telling an operator the shape, and `<` cannot begin a value.
+SHELL_SETTERS = [
+    ("launch", re.compile(r"""(?:^|[\s;&|(])%s=(?=["'$A-Za-z0-9_./~-])""" % NAME, re.M)),
+]
 CONFIG_NAME = re.compile(NAME)
+#: The same name, anchored, for asking whether a dict KEY is a flag rather than
+#: whether a line mentions one.
+FLAG_NAME_ONLY = re.compile(r"^" + NAME + r"$")
 SET_ROOTS = [
     (ROOT / "crates" / "temporalstore-rust" / "src", (".rs",)),
     (ROOT / "crates" / "temporalstore-rust" / "tests", (".rs",)),
@@ -570,6 +587,73 @@ SET_ROOTS = [
     (ROOT / "tools", (".sh", ".py")),
     (ROOT / "deploy", (".sh", ".yml", ".yaml", ".env")),
 ]
+
+
+# A Python launcher hands a child process a DICT, not a subscript assignment:
+#
+#     env.update({"TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY": "1", ...})
+#     subprocess.run(cmd, env={"TS_SHARD_ID": "1", ...})
+#
+# The pattern above matches `environ["NAME"] =` and misses every one of these, which is why the
+# column said "nothing" for flags a shipped harness sets on every run.
+#
+# It is read from the AST rather than by pattern, and the reason is a defect this repository has
+# already had. A decision list writes `{"TS_X": "why it is kept"}` and an env dict writes
+# `{"TS_X": "1"}` -- the same shape. A guard that matched the shape once fed itself its own list
+# and went red on merge (mx#910). So the question asked here is not what the dict LOOKS like but
+# what it IS: assigned to a name meaning environment, passed as `env=`, merged into one, the value
+# of an "env" key, or built inside or handed to a function whose own name says environment.
+def _env_dict_keys(node):
+    if not isinstance(node, ast.Dict):
+        return []
+    return [key.value for key in node.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            and FLAG_NAME_ONLY.match(key.value)]
+
+
+def _looks_like_env(node):
+    if isinstance(node, ast.Name):
+        return "env" in node.id.lower()
+    if isinstance(node, ast.Attribute):
+        return "env" in node.attr.lower()
+    return False
+
+
+def _env_dict_names(body):
+    try:
+        tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return set()
+    found = set()
+    for fn in ast.walk(tree):
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and "env" in fn.name.lower():
+            for inner in ast.walk(fn):
+                found.update(_env_dict_keys(inner))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(_looks_like_env(t) for t in node.targets):
+            found.update(_env_dict_keys(node.value))
+        if isinstance(node, ast.AnnAssign) and _looks_like_env(node.target) and node.value:
+            found.update(_env_dict_keys(node.value))
+        if isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg and "env" in keyword.arg.lower():
+                    found.update(_env_dict_keys(keyword.value))
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ("update", "setdefault"):
+                receiver = node.func.value
+                if _looks_like_env(receiver) or (isinstance(receiver, ast.Attribute)
+                                                 and "environ" in receiver.attr):
+                    for arg in node.args:
+                        found.update(_env_dict_keys(arg))
+            callee = (node.func.attr if isinstance(node.func, ast.Attribute)
+                      else getattr(node.func, "id", ""))
+            if "env" in str(callee).lower():
+                for arg in node.args:
+                    found.update(_env_dict_keys(arg))
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if isinstance(key, ast.Constant) and key.value == "env":
+                    found.update(_env_dict_keys(value))
+    return found
 
 
 def _setters_by_name():
@@ -600,8 +684,19 @@ def _setters_by_name():
             # script pattern matches a Python test's os.environ assignment identically, so without
             # this every flag a unit test touches was reported as one a script sets -- and adding a
             # test that names a flag rewrote this document with a claim about deployments.
+            # A COMMENT is not a setting, in either language. A deploy script spells an
+            # assignment out in its usage text to show an operator what to type, and this file
+            # spells one out to explain that -- so without this the generator credited a flag to
+            # the very comment describing the problem, which is the self-reference that made an
+            # earlier guard feed on its own output.
+            body = "\n".join(line for line in body.splitlines()
+                              if not line.lstrip().startswith("#"))
             is_test = path.name.startswith("test_") or "tests" in path.parts
-            for label, pattern in SETTERS:
+            if path.suffix == ".py":
+                for name in _env_dict_names(body):
+                    found.setdefault(name, set()).add("test" if is_test else "script")
+            patterns = SETTERS + (SHELL_SETTERS if path.suffix == ".sh" else [])
+            for label, pattern in patterns:
                 label = "test" if is_test else label
                 for name in pattern.findall(body):
                     found.setdefault(name, set()).add(label)
