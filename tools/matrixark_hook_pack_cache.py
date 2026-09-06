@@ -73,6 +73,22 @@ def pack_cache_max_age_s() -> float:
         return DEFAULT_MAX_AGE_S
 
 
+def store_answered(retrieve: object) -> bool:
+    """Whether the store returned a pack for this turn, whatever was rendered from it.
+
+    This is the question the fallback needs, and it is not "did anything get rendered". A turn whose
+    retrieved pack contains only the hook's own heartbeat renders to nothing on purpose -- there was
+    an answer, and it had nothing in it worth showing. Serving the previous pack there injects
+    stale context into a turn that deliberately has none, which is the opposite of the fallback's
+    reason for existing: emitting {} when the store COULD NOT answer tells the agent it has no
+    history, which is both wrong and silent.
+    """
+    if not isinstance(retrieve, dict) or retrieve.get("_hook_tool_timeout"):
+        return False
+    return any(bool(retrieve.get(key)) for key in
+               ("pack_id", "context_pack_id", "context", "refs", "selected_refs"))
+
+
 def label_previous_pack(previous: str, age_s: float) -> str:
     """Mark a served pack as prior context, in band, with its age.
 

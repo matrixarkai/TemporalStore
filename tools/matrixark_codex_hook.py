@@ -2153,7 +2153,7 @@ def codex_hook_output(
             )
             if additional_context.strip():
                 _pack_cache.remember_context_pack(_cache_path, additional_context)
-            elif not error:
+            elif not error and not _pack_cache.store_answered(retrieve):
                 _previous, _age_s = _pack_cache.recover_context_pack(
                     _cache_path, max_age_s=_pack_cache.pack_cache_max_age_s()
                 )
