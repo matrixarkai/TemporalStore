@@ -130,11 +130,15 @@ fn wide_window_end(now: u64) -> u64 {
     now.saturating_add(86_400_000)
 }
 
-fn scope_session(scope: &ProxyContextScope) -> String {
+fn scope_session(scope: &ProxyContextScope) -> &str {
+    // Borrowed, not owned. Every caller uses this as a `&str` -- `rawlog_key` takes one, the rest
+    // interpolate it or pass it on -- so the `String` existed only to be pointed at: a clone of
+    // the caller's session id, or a fresh allocation of the constant "default", once per context
+    // request.
     if scope.session_id.is_empty() {
-        "default".to_string()
+        "default"
     } else {
-        scope.session_id.clone()
+        &scope.session_id
     }
 }
 
@@ -312,7 +316,7 @@ impl ProxyService {
         let tenant_hash = context_tenant_hash(&request.scope);
         let shard_id = self.context_shard_id(tenant_hash);
         let session = scope_session(&request.scope);
-        let key = rawlog_key(tenant_hash, &session);
+        let key = rawlog_key(tenant_hash, session);
         let now = now_ms();
         // Kept inside 8 digits so the field stays fixed-width and lexicographic order
         // remains arrival order. Wrapping needs a hundred million ingests AND a same-
@@ -433,7 +437,7 @@ impl ProxyService {
         // Commit with no inline messages: replay the buffered raw events.
         let mut replayed_buffer = false;
         if sources.is_empty() {
-            sources = self.context_replay_rawlog(&server_addr, shard_id, tenant_hash, &session);
+            sources = self.context_replay_rawlog(&server_addr, shard_id, tenant_hash, session);
             replayed_buffer = !sources.is_empty();
         }
 
@@ -460,7 +464,7 @@ impl ProxyService {
         let response = self.context_forward_to(&server_addr, "/context/ingest_extract", &body);
         // Clear the buffer only after a successful replay-driven extraction.
         if replayed_buffer && response.0 == 200 {
-            self.context_clear_rawlog(&server_addr, shard_id, tenant_hash, &session);
+            self.context_clear_rawlog(&server_addr, shard_id, tenant_hash, session);
         }
         response
     }
@@ -648,6 +652,34 @@ mod ingest_key_tests {
     /// Both are ordering contracts, not cosmetics: raw events are read back in lexicographic
     /// order and that is only arrival order while every component stays fixed width. A key that
     /// merely looks right would reorder history.
+    /// An absent session reads as "default", and a present one is used as given.
+    ///
+    /// `scope_session` borrows now instead of returning an owned `String` -- every caller wanted a
+    /// `&str`, so the allocation existed only to be pointed at. The fallback is the part a change
+    /// like that can quietly invert, and the session lands in the buffer KEY: getting it wrong
+    /// files a scope's records under someone else's key.
+    #[test]
+    fn an_absent_session_reads_as_default() {
+        let empty = ProxyContextScope {
+            session_id: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(scope_session(&empty), "default");
+
+        let named = ProxyContextScope {
+            session_id: "s-42".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(scope_session(&named), "s-42");
+
+        // And the key built from each differs, which is the reason the fallback matters.
+        assert_ne!(
+            rawlog_key(7, scope_session(&empty)),
+            rawlog_key(7, scope_session(&named)),
+            "two scopes must not share a buffer key"
+        );
+    }
+
     #[test]
     fn the_ingest_keys_are_what_format_produced() {
         for tenant_hash in [0u64, 1, 42, 9_999_999, u64::MAX] {
