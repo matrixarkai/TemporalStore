@@ -982,6 +982,29 @@ class _LocalAdapterSummariesMixin:
                     "updated_at_ms": refreshed_at_ms,
                 }
                 self.append(summary_record)
+                # Lever 1. The events this summary rolls up no longer need postings of their own:
+                # the summary carries its own, and those are the surviving recall path. The
+                # tombstone names exactly the events covered, and the serving sweep drops their
+                # postings.
+                #
+                # `index_compaction_tombstone` returns None when there is nothing to compact, so a
+                # summary with no source events appends nothing and the log stays byte-identical to
+                # what it was before this.
+                try:
+                    from tools.matrixark_index_growth_bound import (
+                        index_compact_on_summary_enabled, index_compaction_tombstone)
+                except ImportError:  # Direct script execution from tools/.
+                    from matrixark_index_growth_bound import (
+                        index_compact_on_summary_enabled, index_compaction_tombstone)
+                summary_scope = summary_record.get("scope")
+                if index_compact_on_summary_enabled(summary_scope):
+                    compaction = index_compaction_tombstone(
+                        source_event_ids=source_event_ids,
+                        scope=summary_scope if isinstance(summary_scope, dict) else None,
+                        summary_hash=summary_hash,
+                    )
+                    if compaction is not None:
+                        self.append(compaction)
                 for index_name in candidate_index_terms(summary_record, {}, {}):
                     self.append(
                         context_index_posting_record(
