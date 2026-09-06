@@ -4704,6 +4704,72 @@ mod tests {
         set_wal_segment_bytes_for_test(None);
     }
 
+    /// What compressing a record costs the append that writes it.
+    ///
+    /// The fused writer exists so an append does not build the record twice: it declares the
+    /// frame's length up front and lets the encoder append straight into the buffer that goes to
+    /// the file. Compression cannot use it -- the compressed length is not knowable until the
+    /// payload has been compressed -- so that arm builds the payload into its own buffer, hands it
+    /// to the compressor, and frames the result.
+    ///
+    /// Compression became the default after the fused writer landed, so every append now takes the
+    /// arm the fused writer was written to avoid. This measures what that is worth in allocations
+    /// and bytes, which is the question a default flip should have been able to answer.
+    #[test]
+    #[ignore]
+    #[cfg(feature = "alloc-probe")]
+    fn what_compression_costs_an_append() {
+        for value_len in [64usize, 1024, 4096] {
+            let measure = |compress: bool| -> (f64, f64) {
+                std::env::set_var("TS_WAL_COMPRESS_RECORDS", if compress { "1" } else { "0" });
+                let dir = tempfile::tempdir().unwrap();
+                let store = LocalWriteAheadLogStore::new(dir.path());
+                let runs = 32usize;
+                // warm the piece and any once-only work
+                store
+                    .append(
+                        1,
+                        Command::StringSet {
+                            key: "warm".to_string(),
+                            value: incompressible_seeded(value_len, 9_999),
+                        },
+                    )
+                    .unwrap();
+
+                let probe = crate::alloc_probe::Probe::start();
+                for index in 0..runs {
+                    store
+                        .append(
+                            1,
+                            Command::StringSet {
+                                key: format!("k{index:06}"),
+                                value: incompressible_seeded(value_len, index as u64),
+                            },
+                        )
+                        .unwrap();
+                }
+                let counts = probe.stop();
+                (
+                    counts.allocs as f64 / runs as f64,
+                    counts.alloc_bytes as f64 / runs as f64,
+                )
+            };
+
+            let (off_allocs, off_bytes) = measure(false);
+            let (on_allocs, on_bytes) = measure(true);
+            std::env::remove_var("TS_WAL_COMPRESS_RECORDS");
+
+            println!(
+                "  COMPALLOC value {value_len:>5}B | off {off_allocs:>5.1} allocs {off_bytes:>8.0} B | on {on_allocs:>5.1} allocs {on_bytes:>8.0} B | compression adds {:>5.1} allocs {:>8.0} B ({:>5.2}x the bytes)",
+                on_allocs - off_allocs,
+                on_bytes - off_bytes,
+                on_bytes / off_bytes.max(1.0),
+            );
+
+            assert!(on_allocs > 0.0, "the probe must observe appends at {value_len}B");
+        }
+    }
+
     /// A payload the record compressor cannot shrink.
     ///
     /// These tests are about block geometry, rolling and truncation, and every one of them used a
