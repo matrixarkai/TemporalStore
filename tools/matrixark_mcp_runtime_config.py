@@ -242,6 +242,20 @@ def live_int(variable: str, fallback: int) -> int:
     return parsed if parsed > 0 else fallback
 
 
+# One number for the transport timeouts, which the adapter CLI and both hooks each used to
+# answer differently: 20,000 here, 60,000 there, for the same variable. Unified at the larger,
+# because a socket timeout that is too long makes a slow call wait while one that is too short
+# makes a working call fail, and only the second loses the answer.
+DEFAULT_TRANSPORT_REQUEST_TIMEOUT_MS = 60000
+DEFAULT_TRANSPORT_IO_TIMEOUT_MS = 60000
+
+
+def transport_timeout_ms(variable: str, fallback: int) -> int:
+    """A transport timeout in force now. Anything unusable falls back to the build default: a
+    socket timeout of zero or nonsense would either never time out or fail every call."""
+    return live_int(variable, fallback)
+
+
 DEFAULT_HOOK_MAX_CONTEXT_TOKENS = 128000  # build default; the resolver below reads the env
 
 

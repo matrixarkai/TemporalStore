@@ -1647,6 +1647,49 @@ def _model_picker_body(target: str) -> Json:
     return body
 
 
+def _latency_summary() -> Json:
+    """Which control actually decides how long a retrieve can take.
+
+    There are two, and only one of them can stop a slow call. The retrieval deadline is
+    COOPERATIVE: `deadline_exceeded()` is consulted between stages and every 64 or 128 candidates,
+    and never around a call to the store. So it bounds the work a retrieve chooses to keep doing,
+    and a single backend call runs to the transport timeout regardless of it.
+
+    That is why a deployment with a five-second deadline was seeing retrieves return after sixty:
+    the deadline was not being ignored, it was being checked at moments the call had not returned
+    from. `deadline_can_be_overrun_by_ms` is that gap, stated rather than left to be inferred.
+    """
+    try:
+        try:
+            from tools import matrixark_mcp_retrieve_planning as planning  # type: ignore
+            from tools import matrixark_mcp_runtime_config as runtime  # type: ignore
+        except ImportError:
+            import matrixark_mcp_retrieve_planning as planning  # type: ignore
+            import matrixark_mcp_runtime_config as runtime  # type: ignore
+    except Exception:  # pragma: no cover - the portal still works without the retrieval modules
+        return {"available": False}
+    # Asked of the same resolver a retrieve uses, so this cannot drift from what runs.
+    deadline = int(planning.retrieval_deadline_ms({}, {}) or 0)
+    request = runtime.transport_timeout_ms("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS",
+                                           runtime.DEFAULT_TRANSPORT_REQUEST_TIMEOUT_MS)
+    io_timeout = runtime.transport_timeout_ms("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS",
+                                              runtime.DEFAULT_TRANSPORT_IO_TIMEOUT_MS)
+    return {
+        "available": True,
+        "deadline_ms": deadline,
+        "deadline_is_cooperative": True,
+        "transport_request_timeout_ms": request,
+        "transport_io_timeout_ms": io_timeout,
+        # Never the deadline, whatever its value: it is not applied to the call.
+        "bounds_a_slow_call": "transport_request_timeout_ms",
+        "worst_case_single_call_ms": request,
+        # 0 when no deadline is set -- there is nothing to overrun. Otherwise this is how much
+        # longer than the deadline one slow call can take, which is the number an operator is
+        # actually looking for when a retrieve came back late.
+        "deadline_can_be_overrun_by_ms": max(0, request - deadline) if deadline > 0 else 0,
+    }
+
+
 def _shared_budget_summary() -> Json:
     """What each section of a pack is allowed, asked of the packer rather than worked out here.
 
@@ -4806,6 +4849,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "counts": counts,
                 "traffic": traffic,
                 "footprint": footprint,
+                "latency": _latency_summary(),
                 "imports": imports,
                 "config": config_snapshot,
             })

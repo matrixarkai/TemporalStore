@@ -453,6 +453,24 @@ SETTINGS: List[Setting] = [
             "share above is set."),
 
     # ---- retrieval and context budget ----------------------------------------------------------
+    Setting("retrieval.timeout_ms", "retrieval", "MATRIXARK_RETRIEVAL_TIMEOUT_MS",
+            "Retrieval deadline (ms)", "int", "0", "live",
+            "How long a retrieve may keep working before it returns what it has. 0 means no "
+            "deadline. It is COOPERATIVE: it is checked between stages and every 64 or 128 "
+            "candidates, never around a call to the store -- so it bounds the work a retrieve "
+            "does, and cannot bound one slow backend call. The transport timeout below is what "
+            "does that, and the pack panel reports which of the two is the smaller."),
+    Setting("limits.transport_request_timeout_ms", "limits",
+            "MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS",
+            "Transport request timeout (ms)", "int", "60000", "live",
+            "The per-request timeout on the call to the store. This is the one that decides how "
+            "long a single slow call can take, whatever the deadline above says. It answered "
+            "20000 in the adapter and 60000 in the agent hooks for the same variable until they "
+            "were given one number."),
+    Setting("limits.transport_io_timeout_ms", "limits",
+            "MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS",
+            "Transport I/O timeout (ms)", "int", "60000", "live",
+            "The I/O timeout underneath the request timeout above. Same story, same fix."),
     Setting("retrieval.hook_max_context_tokens", "retrieval",
             "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS",
             "Agent hook context budget (tokens)", "int", "128000", "live",
