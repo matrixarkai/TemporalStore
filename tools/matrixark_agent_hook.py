@@ -598,13 +598,21 @@ def hook_messages_from_payload(payload: Json, *, event: str, text: str) -> list[
         normalized_role = normalized_hook_message_role(role, event=event)
         selected_content = compact_for_role(normalized_role, content)
         message: Json = {"role": normalized_role, "content": selected_content}
+        original = content if original_content is None else original_content
         selection = codex_memory_selection_metadata(
             role=normalized_role,
             event=event,
             text=selected_content,
-            original_text=content if original_content is None else original_content,
+            original_text=original,
         )
-        if selection:
+        # 572 bytes of it, on a message with no content: selected_text_chars 0, original 0,
+        # dropped 0, retained ratio 1.0 -- a description of a selection that never happened. A hook
+        # event carrying no text produces exactly that, and mx#1065 made those the common case by
+        # stopping the envelope being used as the text.
+        #
+        # Only the both-empty case goes. A selection that had text and kept none of it is the one
+        # worth recording, so `original` alone is enough to keep the block.
+        if selection and (selected_content or original):
             message["metadata"] = {"codex_memory_selection": selection}
         return message
 
