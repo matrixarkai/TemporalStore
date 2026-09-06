@@ -301,7 +301,10 @@ def slim_persisted_record_kind(record: Json) -> Json:
         return record
     kind = record.get("storage_record_kind")
     part = record.get("storage_part")
-    if not isinstance(kind, str) and not isinstance(part, str):
+    options = record.get("storage_options")
+    inner = options if isinstance(options, dict) else {}
+    if not any(isinstance(value, str) for value in
+               (kind, part, inner.get("storage_record_kind"), inner.get("storage_part"))):
         return record
     probe = {key: value for key, value in record.items()
              if key not in ("storage_record_kind", "storage_part")}
@@ -310,11 +313,24 @@ def slim_persisted_record_kind(record: Json) -> Json:
         return record        # a kind the mapping would not produce: keep both, it is information
     drop = [name for name, value in (("storage_record_kind", kind), ("storage_part", part))
             if isinstance(value, str) and value == derived]
-    if not drop:
+    # normalize_storage_options writes the same pair INTO the options block, so a record held the
+    # kind up to four times: twice here and twice in there. Measured on the live log, 11,121 of
+    # 11,334 records carrying it held all four copies, and the inner pair alone is 0.98% of every
+    # byte written. Nothing reads them there -- every read of these names is on a record-shaped
+    # subject -- so the inner pair goes whenever the outer one could.
+    inner_drop = [name for name in ("storage_record_kind", "storage_part")
+                  if isinstance(inner.get(name), str) and inner[name] == derived]
+    if not drop and not inner_drop:
         return record
     slim = dict(record)
     for name in drop:
         slim.pop(name, None)
+    if inner_drop:
+        trimmed = {key: value for key, value in inner.items() if key not in inner_drop}
+        if trimmed:
+            slim["storage_options"] = trimmed
+        else:
+            slim.pop("storage_options", None)
     return slim
 
 

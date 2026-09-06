@@ -100,5 +100,72 @@ class RecordKindTests(unittest.TestCase):
         self.assertEqual("feedback", storage_record_kind(slim))
 
 
+class KindInsideTheOptionsBlockTests(unittest.TestCase):
+    """normalize_storage_options writes the same pair into the options block.
+
+    A record therefore held the kind up to FOUR times -- twice at its top level and twice in there.
+    Nothing reads the inner pair: every read of these names in the tree is on a record-shaped
+    subject, and inside the block they are only ever written.
+    """
+
+    def test_the_inner_pair_is_dropped_too(self):
+        record = {"record_type": "context_index",
+                  "storage_record_kind": "index", "storage_part": "index",
+                  "storage_options": {"route": "default",
+                                      "storage_record_kind": "index", "storage_part": "index"}}
+        slim = slim_persisted_record_kind(record)
+        self.assertEqual({"route": "default"}, slim["storage_options"])
+        self.assertNotIn("storage_record_kind", slim)
+
+    def test_the_inner_pair_is_kept_on_an_override(self):
+        record = {"record_type": "context_index",
+                  "storage_record_kind": "custom", "storage_part": "custom",
+                  "storage_options": {"storage_record_kind": "custom"}}
+        slim = slim_persisted_record_kind(record)
+        self.assertEqual("custom", slim["storage_options"]["storage_record_kind"])
+        self.assertEqual("custom", slim["storage_record_kind"])
+
+    def test_the_inner_pair_goes_even_when_the_outer_is_absent(self):
+        record = {"record_type": "context_summary",
+                  "storage_options": {"route": "default", "storage_part": "summary"}}
+        slim = slim_persisted_record_kind(record)
+        self.assertEqual({"route": "default"}, slim["storage_options"])
+
+    def test_an_options_block_left_empty_is_removed(self):
+        record = {"record_type": "context_summary",
+                  "storage_options": {"storage_record_kind": "summary",
+                                      "storage_part": "summary"}}
+        self.assertNotIn("storage_options", slim_persisted_record_kind(record))
+
+    def test_the_other_option_fields_survive(self):
+        record = {"record_type": "context_summary",
+                  "storage_options": {"route": "default", "write_mode": "async",
+                                      "storage_record_kind": "summary"}}
+        slim = slim_persisted_record_kind(record)
+        self.assertEqual({"route": "default", "write_mode": "async"}, slim["storage_options"])
+
+    def test_the_callers_options_dict_is_not_mutated(self):
+        options = {"route": "default", "storage_record_kind": "summary"}
+        record = {"record_type": "context_summary", "storage_options": options}
+        slim_persisted_record_kind(record)
+        self.assertIn("storage_record_kind", options,
+                      "the caller's options dict was trimmed in place")
+
+    def test_the_kind_still_derives_after_all_four_copies_go(self):
+        record = {"record_type": "context_summary",
+                  "storage_record_kind": "summary", "storage_part": "summary",
+                  "storage_options": {"storage_record_kind": "summary",
+                                      "storage_part": "summary"}}
+        slim = slim_persisted_record_kind(record)
+        self.assertEqual("summary", storage_record_kind(slim))
+
+    def test_a_non_dict_options_value_is_left_alone(self):
+        record = {"record_type": "context_summary", "storage_record_kind": "summary",
+                  "storage_options": "not a dict"}
+        slim = slim_persisted_record_kind(record)
+        self.assertEqual("not a dict", slim["storage_options"])
+        self.assertNotIn("storage_record_kind", slim)
+
+
 if __name__ == "__main__":
     unittest.main()
