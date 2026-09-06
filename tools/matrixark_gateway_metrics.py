@@ -168,7 +168,8 @@ class GatewayMetrics:
         # sum, latency count) -- so a rate is the difference between two samples. Storing rates
         # directly would mean a missed sample silently invents or erases traffic; a difference
         # between two totals cannot.
-        self._series: Deque[Tuple[float, int, int, float, int]] = deque(maxlen=SERIES_SAMPLES)
+        self._series: Deque[Tuple[float, int, int, float, int, Optional[int]]] = deque(
+            maxlen=SERIES_SAMPLES)
         self._series_at = 0.0
 
         self._datanode: Optional[Tuple[str, float]] = None
@@ -197,6 +198,18 @@ class GatewayMetrics:
             status = int(status)
         except (TypeError, ValueError):
             status = 0
+        # Read the worker's resident size BEFORE taking the lock, and only when a sample is due.
+        # It costs ~144us against a whole record() at ~5us, so holding the lock across it would
+        # make every concurrent caller wait on a /proc read for 28 times the work this call does.
+        # The check is deliberately unsynchronised: the worst a race costs is one extra read that
+        # _sample_locked then declines to use, and the alternative is taking the lock to decide
+        # whether to take the lock.
+        resident = None
+        if time.time() - self._series_at >= SERIES_INTERVAL_S:
+            try:
+                resident = worker_resident().get("resident_bytes")
+            except Exception:  # pragma: no cover - the recording-never-raises promise
+                resident = None
         with self._lock:
             key = (route, method, status)
             self._requests[key] = self._requests.get(key, 0) + 1
@@ -221,14 +234,19 @@ class GatewayMetrics:
             if response_bytes:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
             try:
-                self._sample_locked(time.time())
+                self._sample_locked(time.time(), resident)
             except Exception:  # pragma: no cover - the promise above, kept
                 pass
             if status >= 400:
                 self._failures.append((time.time(), route, method, status, incident))
 
-    def _sample_locked(self, now: float) -> None:
-        """Append one cumulative sample, at most once per interval. The lock is already held."""
+    def _sample_locked(self, now: float, resident: Optional[int] = None) -> None:
+        """Append one cumulative sample, at most once per interval. The lock is already held.
+
+        `resident` is a LEVEL, not a counter: it is stored as read and reported as read. Every
+        other field here is cumulative and differenced into a rate, and treating a memory size
+        that way would plot the change in footprint as though it were the footprint.
+        """
         if now - self._series_at < SERIES_INTERVAL_S:
             return
         self._series_at = now
@@ -239,6 +257,7 @@ class GatewayMetrics:
                 if status >= 400),
             sum(self._sum.values()),
             sum(self._count.values()),
+            resident,
         ))
 
     def note_datanode(self, state: str) -> None:
@@ -260,7 +279,7 @@ class GatewayMetrics:
         with self._lock:
             samples = list(self._series)
         points = []
-        for (t0, r0, e0, s0, c0), (t1, r1, e1, s1, c1) in zip(samples, samples[1:]):
+        for (t0, r0, e0, s0, c0, _m0), (t1, r1, e1, s1, c1, m1) in zip(samples, samples[1:]):
             span = t1 - t0
             if span <= 0:  # pragma: no cover - a clock that went backwards
                 continue
@@ -270,6 +289,10 @@ class GatewayMetrics:
                 "requests_per_s": round(max(0, r1 - r0) / span, 4),
                 "errors_per_s": round(max(0, e1 - e0) / span, 4),
                 "mean_ms": round((s1 - s0) / calls * 1000.0, 3) if calls > 0 else None,
+                # The level at the END of the interval, not a difference across it. None where
+                # the platform cannot report one -- absent, which the chart omits, rather than
+                # zero, which would draw a worker holding no memory.
+                "resident_bytes": m1,
             })
         return {
             "interval_s": SERIES_INTERVAL_S,

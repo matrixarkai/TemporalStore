@@ -2231,6 +2231,14 @@ function liveStream(options) {
       sparkline(points, function (p) { return p.requests_per_s; }, "Requests", "/s")
       + sparkline(points, function (p) { return p.errors_per_s; }, "Errors", "/s")
       + sparkline(points, function (p) { return p.mean_ms; }, "Mean latency", "ms")
+      /* The footprint panel says what this worker holds RIGHT NOW, which answers "is it big"
+         and not "is it growing" -- and growing is the question a memory number is usually being
+         asked. Bytes are divided here rather than in the payload so the series stays in the
+         unit it was measured in. A platform that cannot report a size sends null for every
+         point, and sparkline() draws nothing rather than a worker holding zero. */
+      + sparkline(points, function (p) {
+          return p.resident_bytes == null ? null : p.resident_bytes / 1048576;
+        }, "Worker resident", "MiB")
       + '<p class="hint">' + points.length + " intervals of "
       + series.interval_s + "s" + (minutes ? ", covering about " + minutes + " minutes" : "")
       + ". This worker only.</p>";
