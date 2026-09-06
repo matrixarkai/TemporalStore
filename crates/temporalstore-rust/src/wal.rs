@@ -4468,7 +4468,7 @@ mod tests {
                         1,
                         Command::StringSet {
                             key: format!("k{index:05}"),
-                            value: vec![b'v'; 1024],
+                            value: incompressible(1024),
                         },
                         false,
                     )
@@ -4500,7 +4500,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:05}"),
-                        value: vec![b'v'; 1024],
+                        value: incompressible(1024),
                     },
                     false,
                 )
@@ -4630,7 +4630,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:06}"),
-                        value: vec![b'v'; 1024],
+                        value: incompressible(1024),
                     },
                     false,
                 )
@@ -4702,6 +4702,29 @@ mod tests {
             decode_wal_line(line).expect("every record must still decode");
         }
         set_wal_segment_bytes_for_test(None);
+    }
+
+    /// A payload the record compressor cannot shrink.
+    ///
+    /// These tests are about block geometry, rolling and truncation, and every one of them used a
+    /// single byte repeated. Once records began being compressed by default that payload encoded
+    /// to almost nothing, so the workloads stopped filling blocks and stopped rolling, and the
+    /// tests failed saying so: "the workload must span several blocks or this proves nothing:
+    /// 115870", "at a 262144-byte threshold this log should be several pieces, got 1 file(s)".
+    /// One of them subtracted 40 from a payload that was no longer 40 bytes long and panicked.
+    ///
+    /// A test that measures how bytes are LAID OUT needs bytes the compressor cannot remove.
+    fn incompressible(len: usize) -> Vec<u8> {
+        // xorshift64*, seeded by length so each size gets its own stream and runs are repeatable.
+        let mut state = 0x2545_F491_4F6C_DD1D_u64 ^ (len as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        (0..len)
+            .map(|_| {
+                state ^= state >> 12;
+                state ^= state << 25;
+                state ^= state >> 27;
+                (state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 32) as u8
+            })
+            .collect()
     }
 
     /// A record that ENDS inside a block's footer slot, in a log written without footers.
@@ -4811,7 +4834,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:05}"),
-                        value: vec![b'v'; 1024],
+                        value: incompressible(1024),
                     },
                     false,
                 )
@@ -4859,7 +4882,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:05}"),
-                        value: vec![b'v'; 1024],
+                        value: incompressible(1024),
                     },
                     false,
                 )
@@ -4915,7 +4938,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:05}"),
-                        value: vec![b'v'; 1024],
+                        value: incompressible(1024),
                     },
                     false,
                 )
@@ -4964,7 +4987,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:05}"),
-                        value: vec![b'v'; 1024],
+                        value: incompressible(1024),
                     },
                     false,
                 )
@@ -5042,7 +5065,7 @@ mod tests {
                         1,
                         Command::StringSet {
                             key: format!("k{index:06}"),
-                            value: vec![118u8; 256],
+                            value: incompressible(256),
                         },
                         // Sync ON: with it off nothing syncs, the counters read zero on both
                         // sides, and the comparison below passes on having measured nothing.
@@ -5353,7 +5376,7 @@ mod tests {
         set_wal_segment_bytes_for_test(Some(4 * 1024));
         let dir = tempfile::tempdir().unwrap();
         let store = LocalWriteAheadLogStore::new(dir.path());
-        let value = vec![118u8; 512];
+        let value = incompressible(512);
 
         for index in 0..40usize {
             store
@@ -5414,7 +5437,7 @@ mod tests {
                     1,
                     Command::StringSet {
                         key: format!("k{index:05}"),
-                        value: vec![118u8; 512],
+                        value: incompressible(512),
                     },
                 )
                 .unwrap();
@@ -5859,7 +5882,7 @@ mod tests {
                         1,
                         Command::StringSet {
                             key: format!("k{index:06}"),
-                            value: vec![118u8; 256],
+                            value: incompressible(256),
                         },
                     )
                     .unwrap();
@@ -6006,7 +6029,7 @@ mod tests {
         for value_len in [64usize, 1024, 4096] {
             let dir = tempfile::tempdir().unwrap();
             let store = LocalWriteAheadLogStore::new(dir.path());
-            let value = vec![118u8; value_len];
+            let value = incompressible(value_len);
             let path = write_ahead_log_path(dir.path(), 1);
 
             let append = |index: usize| {
@@ -7956,7 +7979,7 @@ mod tests {
             sequence: 8,
             command: Some(Command::StringSet {
                 key: "k".to_string(),
-                value: vec![7u8; 900],
+                value: incompressible(900),
             }),
             metadata: None,
             staged_pages: Vec::new(),
