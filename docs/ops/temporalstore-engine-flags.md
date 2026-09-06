@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 293 of them, read by 91 functions.
+There are 292 of them, read by 90 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,8 +46,8 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 293 |
-| booleans whose default this could read off the source | 29 |
+| total | 292 |
+| booleans whose default this could read off the source | 28 |
 | numbers whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 1 |
 | offered on the portal | 26 |
@@ -290,7 +290,7 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_STORAGE_ZONE_SIZE` | 1073741824 | config, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, portal | 1 | — |
 
-## context (24)
+## context (23)
 
 The memory pipeline: what gets extracted, embedded, drained and packed. The surface a deployment tunes for recall rather than for throughput.
 
@@ -308,7 +308,6 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_COMPRESSION_WINDOW` | — | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_QUERY_OVERFETCH` | 2 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | 64 | nothing | 1 | — |
-| `MATRIXARK_CONTEXT_SECONDARY_INDEX` | off | test | 1 | — |
 | `MATRIXARK_EMBEDDING_MODEL` | — | config, script, test, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |

@@ -333,44 +333,16 @@ pub fn ingest_resource_skill_context(
         fanout.compression_count += 1;
 
         for (index_name, index_ref_value) in index_writes {
-            if !crate::context_workflow::context_secondary_index_enabled() {
-                // The refs are still REPORTED (callers read the report to know what would be
-                // indexed); only the durable writes and their query-back are skipped.
-                match index_name.as_str() {
-                    "resource_ref" => secondary_indexes.resource_refs.push(index_ref_value),
-                    "skill_ref" => secondary_indexes.skill_refs.push(index_ref_value),
-                    "entity_ref" => secondary_indexes.entity_refs.push(index_ref_value),
-                    "source_ref" => secondary_indexes.source_refs.push(index_ref_value),
-                    "summary_ref" => secondary_indexes.summary_refs.push(index_ref_value),
-                    _ => {}
-                }
-                continue;
-            }
-            let response = engine.execute_durable(ExecuteRequest {
-                shard_id: request.shard_id,
-                command: Command::ContextWriteIndexRef {
-                    tenant_hash: request.tenant_hash,
-                    index_name: index_name.clone(),
-                    index_value_hash: stable_hash64(&index_ref_value),
-                    scope_hash: 0,
-                    event_time_ms: extract.event.event_time_ms,
-                    index_ref: extract.index_ref.clone(),
-                },
-            });
-            if response.status.ok {
-                fanout.secondary_index_count += 1;
-                match index_name.as_str() {
-                    "resource_ref" => secondary_indexes.resource_refs.push(index_ref_value),
-                    "skill_ref" => secondary_indexes.skill_refs.push(index_ref_value),
-                    "entity_ref" => secondary_indexes.entity_refs.push(index_ref_value),
-                    "source_ref" => secondary_indexes.source_refs.push(index_ref_value),
-                    "summary_ref" => secondary_indexes.summary_refs.push(index_ref_value),
-                    _ => {}
-                }
-            } else {
-                secondary_indexes
-                    .missing_refs
-                    .push(format!("{index_name}:{index_ref_value}"));
+            // The refs are REPORTED, so a caller still learns what would be indexed.
+            // Nothing is written: retrieval does not read these, so the write was cost
+            // with no reader.
+            match index_name.as_str() {
+                "resource_ref" => secondary_indexes.resource_refs.push(index_ref_value),
+                "skill_ref" => secondary_indexes.skill_refs.push(index_ref_value),
+                "entity_ref" => secondary_indexes.entity_refs.push(index_ref_value),
+                "source_ref" => secondary_indexes.source_refs.push(index_ref_value),
+                "summary_ref" => secondary_indexes.summary_refs.push(index_ref_value),
+                _ => {}
             }
         }
 
@@ -669,56 +641,6 @@ pub(crate) fn verify_resource_skill_fanout(
     let entity_refs = secondary_indexes.entity_refs.clone();
     let source_refs = secondary_indexes.source_refs.clone();
     let summary_refs = secondary_indexes.summary_refs.clone();
-    verify_secondary_index_refs(
-        engine,
-        shard_id,
-        tenant_hash,
-        "resource_ref",
-        &resource_refs,
-        start_time_ms,
-        end_time_ms,
-        secondary_indexes,
-    );
-    verify_secondary_index_refs(
-        engine,
-        shard_id,
-        tenant_hash,
-        "skill_ref",
-        &skill_refs,
-        start_time_ms,
-        end_time_ms,
-        secondary_indexes,
-    );
-    verify_secondary_index_refs(
-        engine,
-        shard_id,
-        tenant_hash,
-        "entity_ref",
-        &entity_refs,
-        start_time_ms,
-        end_time_ms,
-        secondary_indexes,
-    );
-    verify_secondary_index_refs(
-        engine,
-        shard_id,
-        tenant_hash,
-        "source_ref",
-        &source_refs,
-        start_time_ms,
-        end_time_ms,
-        secondary_indexes,
-    );
-    verify_secondary_index_refs(
-        engine,
-        shard_id,
-        tenant_hash,
-        "summary_ref",
-        &summary_refs,
-        start_time_ms,
-        end_time_ms,
-        secondary_indexes,
-    );
 
     missing.sort();
     missing.dedup();
@@ -778,33 +700,6 @@ pub(crate) fn context_resource_skill_embedding_evidence(
     report
 }
 
-pub(crate) fn verify_secondary_index_refs(
-    engine: &TemporalEngine,
-    shard_id: ShardId,
-    tenant_hash: u64,
-    index_name: &str,
-    refs: &[String],
-    start_time_ms: u64,
-    end_time_ms: u64,
-    report: &mut ContextResourceSkillSecondaryIndexReport,
-) {
-    // Nothing was written when index building is off, so there is nothing to query back --
-    // reporting every ref as missing would fail the ingest for skipping work on purpose.
-    if !crate::context_workflow::context_secondary_index_enabled() {
-        return;
-    }
-    report
-        .missing_refs
-        .extend(query_missing_secondary_index_refs(
-            engine,
-            shard_id,
-            tenant_hash,
-            index_name,
-            refs,
-            start_time_ms,
-            end_time_ms,
-        ));
-}
 
 pub(crate) fn query_missing_secondary_index_refs(
     engine: &TemporalEngine,

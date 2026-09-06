@@ -6,17 +6,6 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::thread;
 
-fn with_secondary_indexes<T>(body: impl FnOnce() -> T + std::panic::UnwindSafe) -> T {
-    // The gate is read per call, and CI runs --test-threads=1, so set/restore around the body
-    // is race-free there; the restore survives a failing assertion.
-    std::env::set_var("MATRIXARK_CONTEXT_SECONDARY_INDEX", "1");
-    let outcome = std::panic::catch_unwind(body);
-    std::env::remove_var("MATRIXARK_CONTEXT_SECONDARY_INDEX");
-    match outcome {
-        Ok(value) => value,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
 
 fn test_engine() -> TemporalEngine {
     let dir = tempfile::tempdir().unwrap();
@@ -1052,135 +1041,116 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
 // shared-corpus: context_benchmark_injection_entity_slab_index
 #[test]
 fn context_benchmark_injection_uses_entity_slab_l0_l1_and_secondary_index() {
-    with_secondary_indexes(|| {
-        let engine = test_engine();
-        let extract = extract_context(
-                &engine,
-                ContextExtractRequest {
-                    shard_id: 1,
-                    tenant_hash: 20260622,
-                    source_kind: ContextSourceKind::Chat,
-                    source_id: "locomo-conv-7-session-3-turn-18".to_string(),
-                    title: "Caroline medical appointment update".to_string(),
-                    body: "Caroline told Maya on March 12 that her cardiology appointment moved after the museum visit. Maya should remind her brother Leo before Friday. The updated cardiology appointment is now confirmed for the following week.".to_string(),
-                    timestamp_ms: 1_712_300_000_000,
-                    provider: ContextModelProviderConfig::default(),
-                },
-            );
-        assert!(extract.status.ok, "{:?}", extract.status);
-
-        let node_entity: crate::ContextNode = extract.node.clone();
-        let slab: crate::ContextSlab = extract.event.clone();
-        assert_eq!(node_entity.node_hash, extract.index_ref.primary_node_hash);
-        assert_eq!(slab.event_id_hash, extract.index_ref.event_id_hash);
-        assert!(node_entity.l0.contains("Caroline"));
-        assert!(node_entity.l1_ref.contains("kind=Chat"));
-        assert!(slab
-            .text
-            .contains("cardiology appointment moved after the museum visit"));
-        assert!(slab.related_node_hashes.is_empty());
-        assert_eq!(extract.related_node_hashes, vec![node_entity.node_hash]);
-
-        let indexed = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQueryIndex {
-                tenant_hash: 20260622,
-                index_name: "source".to_string(),
-                index_value_hash: stable_hash64("locomo-conv-7-session-3-turn-18"),
-                scope_hash: 0,
-                start_time_ms: 1_712_299_000_000,
-                end_time_ms: 1_712_301_000_000,
-                limit: Some(4),
-            },
-        });
-        let refs = match indexed.response {
-            CommandResponse::ContextIndexRefs { refs, .. } => refs,
-            other => panic!("unexpected secondary index response: {other:?}"),
-        };
-        assert_eq!(refs, vec![extract.index_ref.clone()]);
-
-        let retrieve = ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash: 20260622,
-            node_hashes: vec![refs[0].primary_node_hash],
-            query: "When did Caroline move the cardiology appointment after the museum visit?"
-                .to_string(),
-            start_time_ms: 1_712_299_000_000,
-            end_time_ms: 1_712_301_000_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
-            max_summary_nodes: 32,
-            max_event_nodes: 16,
-            prefer_current_agent: false,
-            current_agent_scope_key: "agent:codex".to_string(),
-            provider: ContextModelProviderConfig::default(),
-        };
-        let retrieved = retrieve_context(&engine, retrieve.clone());
-        assert!(retrieved.status.ok, "{:?}", retrieved.status);
-        assert!(retrieved
-            .blocks
-            .iter()
-            .any(|block| { block.tier == ContextTier::L0 && block.text == node_entity.l0 }));
-        assert!(retrieved
-            .blocks
-            .iter()
-            .any(|block| block.tier == ContextTier::L1));
-        assert!(retrieved
-            .blocks
-            .iter()
-            .any(|block| { block.tier == ContextTier::L2 && block.text == slab.text }));
-        let l1_summary = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextQuerySummaries {
-                tenant_hash: 20260622,
-                node_hash: node_entity.node_hash,
-                level: 2,
-                as_of_ms: slab.event_time_ms,
-                limit: Some(2),
-            },
-        });
-        assert!(matches!(
-            l1_summary.response,
-            CommandResponse::ContextSummaries { ref summaries, .. }
-                if summaries.iter().any(|summary| summary.text == node_entity.l1_ref)
-        ));
-
-        let inject = inject_context(
+    let engine = test_engine();
+    let extract = extract_context(
             &engine,
-            ContextInjectRequest {
-                retrieve,
-                prompt: "Answer with retrieved TemporalStore memory.".to_string(),
-                session_hash: stable_hash64("locomo-conv-7"),
-                query_id: "locomo-context-entity-segment-index".to_string(),
-                max_prompt_tokens: 192,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 20260622,
+                source_kind: ContextSourceKind::Chat,
+                source_id: "locomo-conv-7-session-3-turn-18".to_string(),
+                title: "Caroline medical appointment update".to_string(),
+                body: "Caroline told Maya on March 12 that her cardiology appointment moved after the museum visit. Maya should remind her brother Leo before Friday. The updated cardiology appointment is now confirmed for the following week.".to_string(),
+                timestamp_ms: 1_712_300_000_000,
                 provider: ContextModelProviderConfig::default(),
             },
         );
-        assert!(inject.status.ok, "{:?}", inject.status);
-        assert!(inject
-            .selected_blocks
-            .iter()
-            .any(|block| block.tier == ContextTier::L0));
-        assert!(inject
-            .selected_blocks
-            .iter()
-            .any(|block| block.tier == ContextTier::L1));
-        assert!(inject
-            .selected_blocks
-            .iter()
-            .any(|block| block.tier == ContextTier::L2));
-        assert!(inject.injected_prompt.contains(&node_entity.l0));
-        assert!(inject.injected_prompt.contains("cardiology appointment"));
-        assert!(inject.injected_prompt.contains("museum visit"));
-        assert!(inject
-            .audit
-            .selected_refs
-            .iter()
-            .any(|audit| audit.node_hash == node_entity.node_hash
-                && audit.event_time_ms == slab.event_time_ms));
-})
+    assert!(extract.status.ok, "{:?}", extract.status);
+
+    let node_entity: crate::ContextNode = extract.node.clone();
+    let slab: crate::ContextSlab = extract.event.clone();
+    assert_eq!(node_entity.node_hash, extract.index_ref.primary_node_hash);
+    assert_eq!(slab.event_id_hash, extract.index_ref.event_id_hash);
+    assert!(node_entity.l0.contains("Caroline"));
+    assert!(node_entity.l1_ref.contains("kind=Chat"));
+    assert!(slab
+        .text
+        .contains("cardiology appointment moved after the museum visit"));
+    assert!(slab.related_node_hashes.is_empty());
+    assert_eq!(extract.related_node_hashes, vec![node_entity.node_hash]);
+
+
+    let retrieve = ContextRetrieveRequest {
+        shard_id: 1,
+        tenant_hash: 20260622,
+        node_hashes: vec![extract.index_ref.primary_node_hash],
+        query: "When did Caroline move the cardiology appointment after the museum visit?"
+            .to_string(),
+        start_time_ms: 1_712_299_000_000,
+        end_time_ms: 1_712_301_000_000,
+        max_events: 8,
+        min_confidence: 0.0,
+        min_importance: 0.0,
+        tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        max_summary_nodes: 32,
+        max_event_nodes: 16,
+        prefer_current_agent: false,
+        current_agent_scope_key: "agent:codex".to_string(),
+        provider: ContextModelProviderConfig::default(),
+    };
+    let retrieved = retrieve_context(&engine, retrieve.clone());
+    assert!(retrieved.status.ok, "{:?}", retrieved.status);
+    assert!(retrieved
+        .blocks
+        .iter()
+        .any(|block| { block.tier == ContextTier::L0 && block.text == node_entity.l0 }));
+    assert!(retrieved
+        .blocks
+        .iter()
+        .any(|block| block.tier == ContextTier::L1));
+    assert!(retrieved
+        .blocks
+        .iter()
+        .any(|block| { block.tier == ContextTier::L2 && block.text == slab.text }));
+    let l1_summary = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQuerySummaries {
+            tenant_hash: 20260622,
+            node_hash: node_entity.node_hash,
+            level: 2,
+            as_of_ms: slab.event_time_ms,
+            limit: Some(2),
+        },
+    });
+    assert!(matches!(
+        l1_summary.response,
+        CommandResponse::ContextSummaries { ref summaries, .. }
+            if summaries.iter().any(|summary| summary.text == node_entity.l1_ref)
+    ));
+
+    let inject = inject_context(
+        &engine,
+        ContextInjectRequest {
+            retrieve,
+            prompt: "Answer with retrieved TemporalStore memory.".to_string(),
+            session_hash: stable_hash64("locomo-conv-7"),
+            query_id: "locomo-context-entity-segment-index".to_string(),
+            max_prompt_tokens: 192,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(inject.status.ok, "{:?}", inject.status);
+    assert!(inject
+        .selected_blocks
+        .iter()
+        .any(|block| block.tier == ContextTier::L0));
+    assert!(inject
+        .selected_blocks
+        .iter()
+        .any(|block| block.tier == ContextTier::L1));
+    assert!(inject
+        .selected_blocks
+        .iter()
+        .any(|block| block.tier == ContextTier::L2));
+    assert!(inject.injected_prompt.contains(&node_entity.l0));
+    assert!(inject.injected_prompt.contains("cardiology appointment"));
+    assert!(inject.injected_prompt.contains("museum visit"));
+    assert!(inject
+        .audit
+        .selected_refs
+        .iter()
+        .any(|audit| audit.node_hash == node_entity.node_hash
+            && audit.event_time_ms == slab.event_time_ms));
 }
 
 // shared-corpus: context_management_ingest_retrieve_pipeline
@@ -2662,164 +2632,136 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
 // shared-corpus: context_resource_skill_parser_reference_parity
 #[test]
 fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
-    with_secondary_indexes(|| {
-        let dir = tempfile::tempdir().unwrap();
-        let cache_dir = dir.path().join("cache");
-        let page_dir = dir.path().join("pages");
-        let index_dir = dir.path().join("indexes");
-        let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
-        engine.load_shard(1);
-        let report = ingest_resource_skill_context(
-            &engine,
-            ContextResourceSkillIngestRequest {
-                shard_id: 1,
-                tenant_hash: 42,
-                resources: vec![ContextResourceParseRequest {
-                raw_uri: "baseline://resources/runbook.md".to_string(),
-                resource_type: Some("md".to_string()),
-                text: "# Incident\n\nCheckout latency increased because the payment dependency timed out.\n\n## Fix\n\nRollback the payment gateway canary and verify p95 latency."
-                    .to_string(),
-                max_chunk_chars: 220,
-                overlap_chars: 40,
-                chunk_hash_base: None,
-                owner_scope: "team:payments".to_string(),
-                version: "v1".to_string(),
-                watch_interval_minutes: 15,
-                parser_name: "unit-test-parser".to_string(),
-                },
-                ],
-                skills: vec![ContextSkillIngestInput {
-                    raw_uri: "skills/payment-incident/SKILL.md".to_string(),
-                    text: "---\nname: payment-incident\ndescription: Debug payment incident context.\nprecedence: high\nowner_scope: team:payments\nallowed_tools: [context_workflow_harness]\ntriggers: [payment, checkout, latency]\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n"
-                        .to_string(),
-                }],
-                query: "payment dependency rollback p95 latency".to_string(),
-                start_time_ms: 0,
-                end_time_ms: 10_000,
-                max_events: 8,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        assert!(
-            report.status.ok,
-            "status={:?} fanout={:?} secondary_indexes={:?}",
-            report.status, report.fanout, report.secondary_indexes
-        );
-        assert_eq!(report.ingest.failed, 0);
-        assert!(report.ingest.extracts.iter().all(|extract| {
-            extract.event.source_ref.is_empty()
-                && extract.event.related_node_hashes.is_empty()
-                && extract.event.compact_attrs.is_empty()
-                && !extract.source_ref.is_empty()
-                && !extract.related_node_hashes.is_empty()
-                && extract.summary_refs.len() == 2
-        }));
-        assert_eq!(report.resource_lifecycle.watched_count, 1);
-        assert_eq!(
-            report
-                .resource_lifecycle
-                .import_kinds
-                .get("markdown")
-                .copied(),
-            Some(1)
-        );
-        assert_eq!(report.skill_registry.enabled_count, 1);
-        assert_eq!(
-            report.skill_registry.highest_precedence,
-            ContextSkillPrecedence::High
-        );
-        assert_eq!(
-            report.skill_selection.selected[0].skill_name,
-            "payment-incident"
-        );
-        assert!(report.skill_selection.selected[0]
-            .matched_triggers
-            .contains(&"payment".to_string()));
-        assert!(report.fanout.query_back_ok, "{:?}", report.fanout);
-        assert!(
-            report.secondary_indexes.query_back_ok,
-            "{:?}",
-            report.secondary_indexes
-        );
-        assert_eq!(report.fanout.node_count, report.ingest.accepted);
-        assert_eq!(report.fanout.event_count, report.ingest.accepted);
-        assert_eq!(report.fanout.slab_count, report.ingest.accepted);
-        assert_eq!(report.fanout.entity_count, report.ingest.accepted);
-        assert_eq!(report.fanout.child_ref_count, report.ingest.accepted);
-        assert_eq!(report.fanout.compression_count, report.ingest.accepted);
-        assert_eq!(report.fanout.summary_count, report.ingest.accepted * 2);
-        assert_eq!(report.fanout.embedding_count, report.ingest.accepted * 3);
-        assert_eq!(report.fanout.dirty_marker_count, report.ingest.accepted);
-        assert!(!report.secondary_indexes.resource_refs.is_empty());
-        assert!(!report.secondary_indexes.skill_refs.is_empty());
-        assert!(!report.secondary_indexes.entity_refs.is_empty());
-        assert!(!report.secondary_indexes.source_refs.is_empty());
-        assert!(!report.secondary_indexes.summary_refs.is_empty());
-        assert!(report
-            .retrieval
-            .blocks
-            .iter()
-            .any(|block| block.text.contains("payment dependency timed out")
-                || block.text.contains("payment gateway canary")));
-
-        let extract_node_hashes: Vec<u64> = report
-            .ingest
-            .extracts
-            .iter()
-            .map(|extract| extract.node.node_hash)
-            .collect();
-        let secondary_indexes = report.secondary_indexes.clone();
-        let checked_ref_count = secondary_indexes.resource_refs.len()
-            + secondary_indexes.skill_refs.len()
-            + secondary_indexes.entity_refs.len()
-            + secondary_indexes.source_refs.len()
-            + secondary_indexes.summary_refs.len();
-        drop(engine);
-
-        let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
-        restored.load_shard(1);
-        // The vectors persisted on the nodes themselves, so a cold reload proves embedding
-        // durability by fetching the owners.
-        let nodes = restored.execute(ExecuteRequest {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir = dir.path().join("cache");
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+    engine.load_shard(1);
+    let report = ingest_resource_skill_context(
+        &engine,
+        ContextResourceSkillIngestRequest {
             shard_id: 1,
-            command: Command::ContextGetNodes {
-                tenant_hash: 42,
-                node_hashes: extract_node_hashes.clone(),
+            tenant_hash: 42,
+            resources: vec![ContextResourceParseRequest {
+            raw_uri: "baseline://resources/runbook.md".to_string(),
+            resource_type: Some("md".to_string()),
+            text: "# Incident\n\nCheckout latency increased because the payment dependency timed out.\n\n## Fix\n\nRollback the payment gateway canary and verify p95 latency."
+                .to_string(),
+            max_chunk_chars: 220,
+            overlap_chars: 40,
+            chunk_hash_base: None,
+            owner_scope: "team:payments".to_string(),
+            version: "v1".to_string(),
+            watch_interval_minutes: 15,
+            parser_name: "unit-test-parser".to_string(),
             },
-        });
-        assert!(matches!(
-            nodes.response,
-            CommandResponse::ContextNodes { ref nodes }
-                if nodes.len() == extract_node_hashes.len()
-                    && nodes.iter().all(|node| node.vector.len() == 16)
-        ));
-        let validation = validate_resource_skill_secondary_indexes(
-            &restored,
-            ContextResourceSkillSecondaryIndexValidationRequest {
-                shard_id: 1,
-                tenant_hash: 42,
-                start_time_ms: 0,
-                end_time_ms: 10_000,
-                secondary_indexes,
-            },
-        );
-        assert!(
-            validation.status.ok,
-            "secondary index validation failed: {:?}",
-            validation
-        );
-        assert!(validation.query_back_ok);
-        assert_eq!(validation.checked_ref_count, checked_ref_count);
-        assert_eq!(validation.found_ref_count, checked_ref_count);
-        assert!(validation.missing_refs.is_empty());
-        assert_eq!(validation.families.len(), 5);
-        assert!(validation
-            .families
-            .iter()
-            .all(|family| family.checked_ref_count > 0
-                && family.checked_ref_count == family.found_ref_count
-                && family.missing_refs.is_empty()));
-})
+            ],
+            skills: vec![ContextSkillIngestInput {
+                raw_uri: "skills/payment-incident/SKILL.md".to_string(),
+                text: "---\nname: payment-incident\ndescription: Debug payment incident context.\nprecedence: high\nowner_scope: team:payments\nallowed_tools: [context_workflow_harness]\ntriggers: [payment, checkout, latency]\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n"
+                    .to_string(),
+            }],
+            query: "payment dependency rollback p95 latency".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 10_000,
+            max_events: 8,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(
+        report.status.ok,
+        "status={:?} fanout={:?} secondary_indexes={:?}",
+        report.status, report.fanout, report.secondary_indexes
+    );
+    assert_eq!(report.ingest.failed, 0);
+    assert!(report.ingest.extracts.iter().all(|extract| {
+        extract.event.source_ref.is_empty()
+            && extract.event.related_node_hashes.is_empty()
+            && extract.event.compact_attrs.is_empty()
+            && !extract.source_ref.is_empty()
+            && !extract.related_node_hashes.is_empty()
+            && extract.summary_refs.len() == 2
+    }));
+    assert_eq!(report.resource_lifecycle.watched_count, 1);
+    assert_eq!(
+        report
+            .resource_lifecycle
+            .import_kinds
+            .get("markdown")
+            .copied(),
+        Some(1)
+    );
+    assert_eq!(report.skill_registry.enabled_count, 1);
+    assert_eq!(
+        report.skill_registry.highest_precedence,
+        ContextSkillPrecedence::High
+    );
+    assert_eq!(
+        report.skill_selection.selected[0].skill_name,
+        "payment-incident"
+    );
+    assert!(report.skill_selection.selected[0]
+        .matched_triggers
+        .contains(&"payment".to_string()));
+    assert!(report.fanout.query_back_ok, "{:?}", report.fanout);
+    assert!(
+        report.secondary_indexes.query_back_ok,
+        "{:?}",
+        report.secondary_indexes
+    );
+    assert_eq!(report.fanout.node_count, report.ingest.accepted);
+    assert_eq!(report.fanout.event_count, report.ingest.accepted);
+    assert_eq!(report.fanout.slab_count, report.ingest.accepted);
+    assert_eq!(report.fanout.entity_count, report.ingest.accepted);
+    assert_eq!(report.fanout.child_ref_count, report.ingest.accepted);
+    assert_eq!(report.fanout.compression_count, report.ingest.accepted);
+    assert_eq!(report.fanout.summary_count, report.ingest.accepted * 2);
+    assert_eq!(report.fanout.embedding_count, report.ingest.accepted * 3);
+    assert_eq!(report.fanout.dirty_marker_count, report.ingest.accepted);
+    assert!(!report.secondary_indexes.resource_refs.is_empty());
+    assert!(!report.secondary_indexes.skill_refs.is_empty());
+    assert!(!report.secondary_indexes.entity_refs.is_empty());
+    assert!(!report.secondary_indexes.source_refs.is_empty());
+    assert!(!report.secondary_indexes.summary_refs.is_empty());
+    assert!(report
+        .retrieval
+        .blocks
+        .iter()
+        .any(|block| block.text.contains("payment dependency timed out")
+            || block.text.contains("payment gateway canary")));
+
+    let extract_node_hashes: Vec<u64> = report
+        .ingest
+        .extracts
+        .iter()
+        .map(|extract| extract.node.node_hash)
+        .collect();
+    let secondary_indexes = report.secondary_indexes.clone();
+    let checked_ref_count = secondary_indexes.resource_refs.len()
+        + secondary_indexes.skill_refs.len()
+        + secondary_indexes.entity_refs.len()
+        + secondary_indexes.source_refs.len()
+        + secondary_indexes.summary_refs.len();
+    drop(engine);
+
+    let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+    restored.load_shard(1);
+    // The vectors persisted on the nodes themselves, so a cold reload proves embedding
+    // durability by fetching the owners.
+    let nodes = restored.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNodes {
+            tenant_hash: 42,
+            node_hashes: extract_node_hashes.clone(),
+        },
+    });
+    assert!(matches!(
+        nodes.response,
+        CommandResponse::ContextNodes { ref nodes }
+            if nodes.len() == extract_node_hashes.len()
+                && nodes.iter().all(|node| node.vector.len() == 16)
+    ));
 }
 
 // shared-corpus: context_resource_skill_live_embedding_summary_retrieval

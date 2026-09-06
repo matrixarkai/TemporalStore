@@ -37,10 +37,12 @@ INVENTORY = os.path.join(REPO, "docs", "ops", "temporalstore-engine-flags.md")
 
 # Every boolean whose other arm no shipped selector reaches, and why it keeps one.
 KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
-    "MATRIXARK_CONTEXT_SECONDARY_INDEX":
-        "retrieval does not read the ctxidx refs, so ON is write-only cost on the live path -- but "
-        "ON is what the harness query-back validation reads, and the accessor calls it the escape "
-        "hatch for anything still on that surface, held until a redesign gives the refs a reader",
+    # Empty, and that is the finding rather than an oversight: no boolean flag in the
+    # engine now carries a second arm that nothing ships a selector for. The entries that
+    # were here were resolved two ways -- five collapsed to the arm every deployment took,
+    # and six struck once the sweep was corrected to ask the whole tree, which showed a
+    # harness script selecting them. A new entry means somebody added a branch nothing can
+    # choose; decide about it here rather than leaving it to be rediscovered.
 }
 
 # The eight benchmark modes are one decision, not eight, and it is worth saying so once: they live
