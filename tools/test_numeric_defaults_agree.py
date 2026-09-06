@@ -32,6 +32,14 @@ it that way and computes no budgets. The MCP server's 30000 is a different layer
 waits for the tool call before abandoning it. Resolving the sentinel to 30000 would silently turn
 stage budgeting on for every unbudgeted request, so these must not be made to agree.
 
+`MATRIXARK_READER_MAX_TOKENS` is struck. It was not two reader paths that happened to differ:
+they are the HTTP and local-transformers backends of ONE reader, built from the same evidence
+bundle and the same prompts, defaulting to 160 and 64. With the variable unset the two wrote
+answers of different lengths, while the shared-model contract -- which requires both sides to
+use 'the same reader output-token budget' -- reported 160 for both. Both now call
+`reader_max_tokens_from_env()`, the resolver whose value the contract publishes, so there is
+one literal left and it belongs to the contract.
+
 The two TemporalStore SDK timeouts are struck. They were not a client/server difference: one option
 with one meaning, declared by three parsers, defaulting to 20000 in the backend resolver and 60000
 in both agent hooks. Every launcher supplies 60000 -- the three installers, the codex hook wrapper,
@@ -60,8 +68,6 @@ _READ = re.compile(
 KNOWN_DISAGREEMENTS: Dict[str, str] = {
     "MATRIXARK_HTTP_PORT":
         "servers bind 8080, the CLI paths use 0 (an ephemeral port)",
-    "MATRIXARK_READER_MAX_TOKENS":
-        "two reader paths in one benchmark script, 160 and 64",
     "MATRIXARK_RETRIEVAL_TIMEOUT_MS":
         "JUSTIFIED: the 0 is a sentinel, not a default -- no deadline was supplied for this "
         "request -- and the MCP server's 30000 is a different layer, how long it waits for the "
