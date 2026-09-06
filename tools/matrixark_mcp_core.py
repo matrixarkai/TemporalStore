@@ -117,7 +117,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 DEFAULT_MAX_CONTEXT_TOKENS = _RUNTIME_DEFAULT_MAX_CONTEXT_TOKENS
 CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
-CONTEXT_PACK_DEBUG_LINEAGE = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
@@ -3869,7 +3868,7 @@ def serving_memory_selection_policy_budget(policy: Any) -> Json:
 
 def serving_memory_layer_budget(memory_layer_budget: Any, *, include_debug: bool = False) -> Json:
     normalized = normalize_memory_layer_budget_role_fields(memory_layer_budget)
-    if include_debug or CONTEXT_PACK_DEBUG_LINEAGE:
+    if include_debug:
         return normalized
     for field in [
         "by_source_role",
@@ -3896,7 +3895,7 @@ def serving_memory_layer_pressure(memory_layer_pressure: Any, *, include_debug: 
     if not isinstance(memory_layer_pressure, dict):
         return {}
     compact = dict(memory_layer_pressure)
-    if include_debug or CONTEXT_PACK_DEBUG_LINEAGE:
+    if include_debug:
         return compact
     lineage_dimensions = {
         "by_source_role",
@@ -4296,8 +4295,6 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
     if recall_summary:
         compact["recall_policy_summary"] = recall_summary
     memory_hierarchy = memory_hierarchy_contract_from_recall_policy(record.get("recall_policy", {}))
-    if memory_hierarchy and CONTEXT_PACK_DEBUG_LINEAGE:
-        compact["memory_hierarchy"] = memory_hierarchy
     memory_layer_budget = record.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
         recall_policy = record.get("recall_policy") if isinstance(record.get("recall_policy"), dict) else {}

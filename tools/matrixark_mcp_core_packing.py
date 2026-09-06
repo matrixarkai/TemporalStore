@@ -10,7 +10,6 @@ import re
 try:  # package path (tools.matrixark_mcp_core)
     from .matrixark_mcp_core import (
         CODEX_OUTCOME_ENTITY_TYPES,
-        CONTEXT_PACK_DEBUG_LINEAGE,
         DEFAULT_MAX_CONTEXT_TOKENS,
         Json,
         MatrixArkError,
@@ -31,7 +30,6 @@ try:  # package path (tools.matrixark_mcp_core)
 except ImportError:  # top-level path (matrixark_mcp_core)
     from matrixark_mcp_core import (
         CODEX_OUTCOME_ENTITY_TYPES,
-        CONTEXT_PACK_DEBUG_LINEAGE,
         DEFAULT_MAX_CONTEXT_TOKENS,
         Json,
         MatrixArkError,
@@ -432,73 +430,6 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "", def
         item["profile_entity_current"] = True
     if bool(ref.get("profile_summary_current") or metadata.get("profile_summary_current")):
         item["profile_summary_current"] = True
-    lineage_fields = [
-        "source_session_ids",
-        "source_roles",
-        "source_role_counts",
-        "budget_source_roles",
-        "budget_source_role_counts",
-        "source_hook_types",
-        "source_hook_type_counts",
-        "source_codex_events",
-        "source_codex_event_counts",
-        "source_memory_selection_policies",
-        "source_memory_selection_policy_counts",
-        "source_memory_scopes",
-        "source_session_continuities",
-        "source_extraction_phases",
-        "source_entity_types",
-        "source_profile_promotion_policies",
-        "source_profile_promotion_blockers",
-        "source_final_session_boundary_count",
-        "source_event_ids",
-    ] if CONTEXT_PACK_DEBUG_LINEAGE else []
-    for field in lineage_fields:
-        value = ref.get(field, metadata.get(field))
-        if isinstance(value, list) and value:
-            if field in {"source_roles", "budget_source_roles"}:
-                roles = ordered_normalized_role_list(value)
-                if roles:
-                    item[field] = roles[:8]
-            else:
-                item[field] = value[:8]
-        elif isinstance(value, dict) and value:
-            compact_counts: Json = {}
-            for key, count in list(value.items())[:8]:
-                name = normalize_message_role(key) if field in {"source_role_counts", "budget_source_role_counts"} else str(key or "").strip()
-                if not name:
-                    continue
-                try:
-                    compact_count = int(count or 0)
-                except (TypeError, ValueError):
-                    continue
-                if compact_count:
-                    compact_counts[name] = int(compact_counts.get(name, 0)) + compact_count
-            if compact_counts:
-                item[field] = compact_counts
-    if CONTEXT_PACK_DEBUG_LINEAGE:
-        extraction_phase = ref.get("extraction_phase", metadata.get("extraction_phase"))
-        if extraction_phase not in (None, "", [], {}):
-            item["extraction_phase"] = extraction_phase
-        if bool(ref.get("final_session_boundary") or metadata.get("final_session_boundary")):
-            item["final_session_boundary"] = True
-        source_entity_hashes = ref.get("source_entity_hashes", metadata.get("source_entity_hashes"))
-        if isinstance(source_entity_hashes, list) and source_entity_hashes:
-            item["source_entity_count"] = len(source_entity_hashes)
-        source_entity_count = ref.get("source_entity_count", metadata.get("source_entity_count"))
-        if isinstance(source_entity_count, int) and source_entity_count > 0:
-            item["source_entity_count"] = source_entity_count
-        source_event_count = ref.get("source_event_count", metadata.get("source_event_count"))
-        if isinstance(source_event_count, int) and source_event_count > 0:
-            item["source_event_count"] = source_event_count
-        source_record_type = ref.get("source_record_type", metadata.get("source_record_type"))
-        if isinstance(source_record_type, str) and source_record_type.strip():
-            item["source_record_type"] = source_record_type.strip()
-        segment_origin = ref.get("segment_origin", metadata.get("segment_origin"))
-        if isinstance(segment_origin, str) and segment_origin.strip():
-            item["segment_origin"] = segment_origin.strip()
-        if ref.get("derived_from_context_events") is True or metadata.get("derived_from_context_events") is True:
-            item["derived_from_context_events"] = True
     return item
 
 

@@ -973,50 +973,6 @@ class _CodexPipelinePart1:
         self.assertEqual(8, len(item["source_session_ids"]))
         self.assertEqual(3, item["source_entity_count"])
 
-    def test_prebuilt_context_pack_groups_honor_debug_lineage_flag(self) -> None:
-        pack = {
-            "context_pack_id": "pack-prebuilt-group-env-debug",
-            "groups": [
-                {
-                    "type": "entity",
-                    "n": 1,
-                    "debug_payload": {"raw": "hidden group debug"},
-                    "items": [
-                        {
-                            "text": "assistant decision from a native prebuilt group",
-                            "entity_type": "assistant_decision",
-                            "source_roles": ["llm", "tool"],
-                            "source_role_counts": {"llm": 2, "tool": 1},
-                            "source_hook_type_counts": {"after_llm": 2},
-                            "source_codex_event_counts": {"Stop": 1},
-                            "source_session_ids": ["session-a"],
-                            "source_entity_hashes": ["aaa", "bbb"],
-                            "lineage": {"raw_source_ids": ["hidden-source"]},
-                        }
-                    ],
-                }
-            ],
-        }
-
-        default_serving = core_compact_context_pack_for_serving(pack)
-        self.assert_no_default_context_pack_debug_lineage(default_serving)
-
-        with (
-            mock.patch("matrixark_mcp_context_pack.DEBUG_LINEAGE_PAYLOAD", True),
-            mock.patch("tools.matrixark_mcp_context_pack.DEBUG_LINEAGE_PAYLOAD", True),
-        ):
-            debug_serving = core_compact_context_pack_for_serving(pack)
-
-        serialized = json.dumps(debug_serving)
-        self.assertNotIn("debug_payload", serialized)
-        self.assertNotIn("raw_source_ids", serialized)
-        item = debug_serving["groups"][0]["items"][0]
-        self.assertEqual(["assistant", "tool"], item["source_roles"])
-        self.assertEqual({"assistant": 2, "tool": 1}, item["source_role_counts"])
-        self.assertEqual({"after_llm": 2}, item["source_hook_type_counts"])
-        self.assertEqual({"Stop": 1}, item["source_codex_event_counts"])
-        self.assertEqual(["session-a"], item["source_session_ids"])
-        self.assertEqual(2, item["source_entity_count"])
 
     def test_async_readiness_reports_layer_specific_freshness_warnings(self) -> None:
         scope = {

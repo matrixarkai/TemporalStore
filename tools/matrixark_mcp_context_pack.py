@@ -13,7 +13,6 @@ from typing import Any
 Json = dict[str, Any]
 
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
-DEBUG_LINEAGE_PAYLOAD = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE", "0").strip().lower() in {"1", "true", "yes"}
 
 DEFAULT_HIDDEN_DEBUG_LINEAGE_FIELDS = {
     "debug",
@@ -78,7 +77,9 @@ DEFAULT_HIDDEN_DEBUG_LINEAGE_KEY_FRAGMENTS = (
 
 
 def debug_lineage_enabled(*, include_debug: bool = False) -> bool:
-    return bool(include_debug or DEBUG_LINEAGE_PAYLOAD)
+    # The caller decides. This used to be OR'd with an environment flag, which gave the
+    # question two answers depending on how the process was started.
+    return bool(include_debug)
 
 
 def _is_default_hidden_debug_lineage_key(key: Any) -> bool:
@@ -252,8 +253,6 @@ def serving_memory_selection_policy_budget(value: Any) -> Json:
 
 def serving_memory_layer_budget(value: Any) -> Json:
     compact = compact_memory_layer_budget_roles(value)
-    if DEBUG_LINEAGE_PAYLOAD:
-        return compact
     for field in [
         "by_source_role",
         "by_hook_type",
@@ -275,8 +274,6 @@ def serving_memory_layer_pressure(value: Any) -> Json:
     if not isinstance(value, dict):
         return {}
     compact = dict(value)
-    if DEBUG_LINEAGE_PAYLOAD:
-        return compact
     lineage_dimensions = {
         "by_source_role",
         "by_hook_type",
@@ -577,7 +574,7 @@ def compact_context_pack_ref(ref: Json, *, include_debug: bool = False) -> Json:
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
-    if os.environ.get("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", "0").strip().lower() in {"1", "true", "yes"}:
+    if False:  # scores are not served; see native_serving_ref
         if "score" in ref:
             try:
                 item["score"] = round(float(ref.get("score") or 0.0), 4)
@@ -841,7 +838,7 @@ def compact_context_pack_audit_record(record: Json, *, include_debug: bool = Fal
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
         memory_hierarchy = memory_hierarchy_contract_from_recall_policy(recall_policy)
-        if memory_hierarchy and (include_debug or DEBUG_LINEAGE_PAYLOAD):
+        if memory_hierarchy and include_debug:
             compact["memory_hierarchy"] = memory_hierarchy
     memory_layer_budget = record.get("memory_layer_budget")
     if not isinstance(memory_layer_budget, dict):
@@ -1589,7 +1586,7 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         compact["include_retrieval_metrics"] = True
     if (
         isinstance(pack.get("retrieval_metrics"), dict)
-        and (pack.get("include_retrieval_metrics") or include_debug or DEBUG_LINEAGE_PAYLOAD)
+        and (pack.get("include_retrieval_metrics") or include_debug)
     ):
         compact["retrieval_metrics"] = serving_retrieval_metrics(pack["retrieval_metrics"], include_debug=include_debug)
     retrieval_metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
@@ -1676,8 +1673,8 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         except ModuleNotFoundError:  # Direct script execution from tools/.
             from matrixark_mcp_core import memory_hierarchy_contract_from_recall_policy
         memory_hierarchy = memory_hierarchy_contract_from_recall_policy(recall_policy)
-        if memory_hierarchy and (include_debug or DEBUG_LINEAGE_PAYLOAD):
+        if memory_hierarchy and include_debug:
             compact["memory_hierarchy"] = memory_hierarchy
-    if include_debug or DEBUG_LINEAGE_PAYLOAD:
+    if include_debug:
         return compact
     return strip_default_debug_lineage_fields(compact)

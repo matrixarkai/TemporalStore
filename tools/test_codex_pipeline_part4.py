@@ -668,36 +668,6 @@ class _CodexPipelinePart4:
             )
             self.assertNotIn("pre_retrieval_summary_refresh", opt_in_msg["retrieve"])
 
-            debug_msg = self.run_hook(
-                repo,
-                opt_in_log,
-                event="UserPromptSubmit",
-                payload={
-                    "prompt": "User prompt: show refresh diagnostics only when debug lineage is enabled.",
-                    "thread_id": "codex-refresh-debug-thread",
-                },
-                extra_env={
-                    "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH": "1",
-                    "MATRIXARK_HOOK_PRE_RETRIEVAL_SUMMARY_REFRESH_LIMIT": "3",
-                    "MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE": "1",
-                },
-            )
-            opt_in_refresh = debug_msg["retrieve"]["pre_retrieval_summary_refresh"]
-            self.assertTrue(opt_in_refresh["enabled"])
-            self.assertEqual(3, opt_in_refresh["requested_limit"])
-            self.assertIn(opt_in_refresh["status"], {"refreshed", "no_dirty_nodes"})
-            self.assertGreaterEqual(opt_in_refresh.get("refreshed_count", 0), 0)
-            self.assertLessEqual(opt_in_refresh.get("refreshed_count", 0), 3)
-            self.assertGreaterEqual(opt_in_refresh.get("skipped_dirty_count", 0), 0)
-            self.assertEqual(
-                debug_msg["retrieve"]["pre_retrieval_summary_refresh"],
-                debug_msg["retrieve"]["layers"]["pre_retrieval_summary_refresh"],
-            )
-            self.assertIn(
-                "summary_refresh[enabled=true",
-                debug_msg["hookSpecificOutput"]["additionalContext"],
-            )
-            self.assertIn(f"status={opt_in_refresh['status']}", debug_msg["hookSpecificOutput"]["additionalContext"])
 
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "", extra_env: dict | None = None) -> dict:
         cmd = [

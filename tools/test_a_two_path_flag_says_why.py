@@ -40,11 +40,6 @@ KNOWN_TWO_PATH_FLAGS: Dict[str, str] = {
         "retrieval does not read the ctxidx refs, so ON is write-only cost on the live path -- but "
         "ON is what the harness query-back validation reads, and the accessor calls it the escape "
         "hatch for anything still on that surface, held until a redesign gives the refs a reader",
-    "MATRIXARK_CONTEXT_PACK_DEBUG_LINEAGE":
-        "OFF strips ref_hash, node_hash, node_path and continuity_reason from a served ref; ON "
-        "returns them. ON reads what OFF suppresses, which is the whole point of a diagnostic",
-    "MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES":
-        "the same, for the scores behind a pack's ordering",
     "MATRIXARK_CONTEXT_RETRIEVE_TRACE":
         "ON emits per-stage timings from retrieve_context; OFF emits none. The only way to see "
         "where a slow retrieval spent its time",
