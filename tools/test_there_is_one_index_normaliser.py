@@ -35,6 +35,32 @@ SELF = Path(__file__).name
 
 HOME = "matrixark_mcp_indexing"
 
+
+def _import(name: str):
+    """Import a tools module whichever way the suite is being run.
+
+    The suite runs both from tools/ (bare names) and from the repository root (as
+    `tools.<module>`), and every module in the tree carries the same try/except for this reason.
+    A guard that picks one path fails on the OTHER path, which reads as a defect in the code it
+    is guarding rather than in how it was invoked.
+    """
+    try:
+        return importlib.import_module("tools." + name)
+    except ImportError:
+        return importlib.import_module(name)
+
+
+def _module_name(obj) -> str:
+    """The defining module's name without its package prefix.
+
+    The suite runs both from tools/ and as `tools.<module>`, so the same function reports
+    `matrixark_mcp_scoring` in one and `tools.matrixark_mcp_scoring` in the other. Comparing whole
+    dotted names makes this file fail on the import path rather than on what it is checking.
+    """
+    module = inspect.getmodule(obj)
+    return getattr(module, "__name__", "").rsplit(".", 1)[-1]
+
+
 #: Everything that normalises an index value, on either side of the lookup.
 CALLERS = (
     "matrixark_mcp_core",
@@ -79,19 +105,19 @@ class ThereIsOneIndexNormaliserTest(unittest.TestCase):
 
     def test_every_caller_reaches_that_one(self) -> None:
         for module_name in CALLERS:
-            module = importlib.import_module(module_name)
+            module = _import(module_name)
             for name in ("normalized_index_value", "context_index_name"):
                 fn = getattr(module, name, None)
                 if fn is None:
                     continue
                 self.assertEqual(
-                    HOME, inspect.getmodule(fn).__name__,
+                    HOME, _module_name(fn),
                     "%s reaches a %s from %s rather than %s, so the writer and the reader can "
                     "normalise differently"
-                    % (module_name, name, inspect.getmodule(fn).__name__, HOME))
+                    % (module_name, name, _module_name(fn), HOME))
 
     def test_a_non_ascii_term_survives(self) -> None:
-        indexing = importlib.import_module(HOME)
+        indexing = _import(HOME)
         for term in NON_ASCII_TERMS:
             self.assertNotEqual(
                 "", indexing.normalized_index_value(term),
@@ -104,8 +130,8 @@ class ThereIsOneIndexNormaliserTest(unittest.TestCase):
 
     def test_the_writer_and_the_reader_agree_on_the_same_term(self) -> None:
         """The property that actually matters: one term, two paths, one index name."""
-        core = importlib.import_module("matrixark_mcp_core")
-        query = importlib.import_module("matrixark_mcp_query")
+        core = _import("matrixark_mcp_core")
+        query = _import("matrixark_mcp_query")
         for term in NON_ASCII_TERMS + ("plain ascii term",):
             written = core.context_index_name("keyword", term)
             read = query.context_index_name("keyword", term)
@@ -120,7 +146,7 @@ class ThereIsOneIndexNormaliserTest(unittest.TestCase):
         drops every non-ASCII character, two unrelated Chinese facts both normalise to "" and the
         second is discarded as a duplicate.
         """
-        norm = importlib.import_module("matrixark_mcp_extraction_normalization")
+        norm = _import("matrixark_mcp_extraction_normalization")
         first = norm.normalized_index_value("内存不足")
         second = norm.normalized_index_value("延迟过高")
         self.assertNotEqual("", first)
@@ -134,7 +160,7 @@ class ThereIsOneIndexNormaliserTest(unittest.TestCase):
         On its own it is not evidence of anything -- it is the assertion that made the original
         divergence invisible.
         """
-        indexing = importlib.import_module(HOME)
+        indexing = _import(HOME)
         self.assertEqual("hello_world", indexing.normalized_index_value("Hello World"))
         self.assertEqual("matrixark-2026", indexing.normalized_index_value("MatrixArk-2026"))
         self.assertEqual("", indexing.normalized_index_value(""))
