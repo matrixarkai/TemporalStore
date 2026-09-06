@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 2 modules that were already here, triaged by
+The entries below are NOT an endorsement. One module is left, and it is here on purpose rather than by oversight, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -70,8 +70,19 @@ REPO = os.path.dirname(TOOLS)
 
 #: module stem -> what it is, so removing it is a reading task and not a guess.
 KNOWN_ORPHANS: Dict[str, str] = {
-    "matrixark_mcp_rust_proxy_client": "29 KB, 48 definitions, fourteen unique here",
-    "matrixark_mcp_time_compression_runtime": "21 KB, six functions, one unique here",
+    "matrixark_mcp_rust_proxy_client":
+        "NOT dead by accident, and the reason it is still here. It is the pre-split proxy client, "
+        "and it heads a cluster: matrixark_mcp_rust_proxy_cache_mixin and "
+        "matrixark_mcp_rust_proxy_coalesce are imported by NOTHING ELSE, so they go with it. "
+        "Between them they implement a string cache, a scan-hash cache, a context-pack response "
+        "cache, and coalescing for batch hset, batch hget and record append. The live "
+        "MatrixArkRustProxyClient in matrixark_mcp_temporal_adapters -- which is the one "
+        "matrixark_mcp_server imports -- has NONE of that: no base class, and no member whose "
+        "name contains cache or coalesce. The live one is richer where it counts for "
+        "correctness (__init__ 69 lines against 23, _record_call_metrics 88 against 2, _call_json "
+        "66 against 51) and has no performance layer at all. Removing this makes that gap "
+        "permanent; wiring it up is a product decision. Either is a choice somebody should make "
+        "on purpose, which is why it is written down rather than deleted.",
 }
 
 #: 330 non-test modules under tools/ when this was written.
