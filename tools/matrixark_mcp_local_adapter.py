@@ -4728,8 +4728,17 @@ def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
     except ImportError:  # Direct script execution from tools/.
         from matrixark_pipeline_task_slim import bound_pipeline_task_footprint
     records = bound_pipeline_task_footprint(records)
+    # The compaction sweep runs on the log's own order, BEFORE the posting rebuild below.
+    # `sweep_index_compaction` drops a posting only when a tombstone that FOLLOWS it covers every
+    # ref, and `compact_latest_context_state_records` rebuilds postings -- so sweeping afterwards
+    # hands it fresh rows positioned after the tombstones, which it cannot match. Measured: 4 of 60
+    # event postings survived that way.
+    try:
+        from tools.matrixark_index_growth_bound import sweep_index_compaction
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_index_growth_bound import sweep_index_compaction
     served = compact_latest_context_state_records(
-        apply_memory_tombstones(compact_latest_value_records(records)))
+        apply_memory_tombstones(compact_latest_value_records(sweep_index_compaction(records))))
     # Secondary-index growth bounding runs LAST, and for the same reason the footprint bound above
     # runs first: it was written for this pipeline and was reachable from nowhere. Its module
     # documents a four-lever ladder, registers two levers as operator knobs with measured recall
@@ -4747,6 +4756,12 @@ def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
         from tools.matrixark_index_growth_bound import enforce_secondary_index_bounds
     except ImportError:  # Direct script execution from tools/.
         from matrixark_index_growth_bound import enforce_secondary_index_bounds
+    # Lever 1 before the budget, which is the module's own order: "Lever 1 has already removed every
+    # posting that was purely redundant, so whatever a cap evicts on top of it is a live lookup
+    # path." Bounding first would spend the budget evicting postings the sweep removes for free.
+    #
+    # Identity when the log carries no compaction tombstone, so a store that has never rolled up a
+    # summary is byte-identical to before.
     return enforce_secondary_index_bounds(served)
 
 

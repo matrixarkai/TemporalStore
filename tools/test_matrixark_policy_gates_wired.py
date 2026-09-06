@@ -33,14 +33,13 @@ GATES_MODULE = os.path.join(TOOLS, "matrixark_index_growth_bound.py")
 # wired -- the test fails if you forget to.
 #
 # This was six until the caller check started requiring a real call rather than a mention of the
-# name; the true figure was twelve. `extract_segments` and `generate_embeddings` are now wired, so
-# ten remain. The wider surface is worse still: of 42 functions in the policy module, 3 are
-# reachable from production code.
+# name; the true figure was twelve. `extract_segments` and `generate_embeddings` are now wired, and
+# `index_compact_on_summary` with the rollup sweep, so nine remain. The wider surface is worse
+# still: of 42 functions in the policy module, 3 are reachable from production code.
 KNOWN_UNWIRED: Set[str] = {
     "dedupe_index_postings_enabled",
     "embed_node_path_prefix_enabled",
     "generate_l1_summaries_enabled",
-    "index_compact_on_summary_enabled",
     # `return_all_candidates` is NOT a wiring job, and calling it one would mislead whoever picks
     # it up. It means "return every candidate, no prefilter and no scoring", and no such bypass
     # exists in `retrieve()` -- nor does anything read its companion knob
