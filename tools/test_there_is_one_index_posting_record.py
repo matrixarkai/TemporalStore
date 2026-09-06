@@ -55,29 +55,6 @@ def _origin(function) -> str:
 
 
 
-def _recorded_module_names(path: pathlib.Path) -> set[str]:
-    """Module names held as DATA in the reachability record.
-
-    Collected from module-level assignments only, so a name that merely appears in a comment or a
-    docstring does not count as recorded. Mutation testing found the earlier substring version
-    passing with the name commented out -- a mention is not membership.
-    """
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, SyntaxError):
-        return set()
-    names: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        for inner in ast.walk(node):
-            if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
-                value = inner.value.strip()
-                if value.startswith("matrixark_") and "\n" not in value and " " not in value:
-                    names.add(value)
-    return names
-
-
 class ThereIsOneIndexPostingRecordInUseTest(unittest.TestCase):
 
     def setUp(self) -> None:
@@ -160,11 +137,18 @@ class ThereIsOneIndexPostingRecordInUseTest(unittest.TestCase):
             % "; ".join("%s -> %s" % (m, o) for m, o in sorted(resolved.items())
                         if len(origins) > 1))
 
-    def test_the_unused_definition_is_not_production_reachable(self) -> None:
-        """The other half of why the duplicate is safe, and the thing most likely to change."""
+    def test_the_unused_definition_has_no_caller_at_all(self) -> None:
+        """Why the duplicate is safe -- and it is a THINNER margin than "the module is dead".
+
+        `matrixark_mcp_indexing` is a LIVE module: it is one of the seeds in the reachability
+        record's LIVE_ROOTS. So the unused copy is not protected by sitting in dead code. It is
+        protected only by the fact that nothing calls it -- not one production module, and not even
+        the module that defines it. One `from matrixark_mcp_indexing import
+        context_index_posting_record` is all it would take to split the index key.
+        """
         definers = self._definers()
         if len(definers) < 2:
-            self.skipTest("only one definition; nothing to be unreachable")
+            self.skipTest("only one definition; nothing to be unused")
 
         callers = self._calling_modules()
         in_use = set()
@@ -180,24 +164,16 @@ class ThereIsOneIndexPostingRecordInUseTest(unittest.TestCase):
         unused = [d for d in definers if d not in in_use]
         self.assertTrue(
             unused,
-            "every definition of %s is in use by some production caller, so the index key depends "
-            "on which import a module happened to take" % NAME)
+            "every definition of %s is in use by some production caller, so which index_hash a "
+            "posting gets depends on which import its module happened to take" % NAME)
 
-        recorded = (self.tools / "test_a_module_only_tests_reach_is_not_live.py")
-        if not recorded.exists():
-            self.skipTest("the reachability record is gone; cannot confirm the unused copy is dead")
-        listed = _recorded_module_names(recorded)
-        self.assertTrue(
-            listed,
-            "parsed no module names out of the reachability record -- the membership check would "
-            "pass for every name, which is how a substring version of this passed with the name "
-            "commented out")
+        # The defining module must not call its own copy either -- that would make it a caller,
+        # and the key would then depend on which module did the minting.
         for module_name in unused:
-            self.assertIn(
-                module_name, listed,
-                "%s defines an unused %s but is NOT recorded as unreachable from production. If it "
-                "became reachable, postings would be filed under two different index_hash values "
-                "with nothing failing." % (module_name, NAME))
+            self.assertNotIn(
+                module_name, callers,
+                "%s defines an unused %s and also CALLS it, so it mints postings under a "
+                "different index_hash than every other module" % (module_name, NAME))
 
 
 if __name__ == "__main__":
