@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -198,6 +199,23 @@ class AnEmptyListSaysWhichKindOfEmptyTest(unittest.TestCase):
                 os.environ["MATRIXARK_AUDIT_MODE"] = previous
 
         self.addCleanup(restore)
+        # Pinned at a file that does not exist, so apply_boot() has nothing to seed.
+        # make_v1_app() calls it, and on a configured box the stored document carries
+        # real values -- which would land in the environment after this isolation ran
+        # and be read as though the test had set them.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        stored = os.environ.get("MATRIXARK_RUNTIME_CONFIG_FILE")
+
+        def restore_config() -> None:
+            if stored is None:
+                os.environ.pop("MATRIXARK_RUNTIME_CONFIG_FILE", None)
+            else:
+                os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = stored
+
+        self.addCleanup(restore_config)
+        os.environ["MATRIXARK_RUNTIME_CONFIG_FILE"] = os.path.join(
+            directory.name, "runtime.json")
 
     def _payload(self, rows):
         _st, _h, body = _get(_app(_Server(rows=rows)), "/v1/admin/audit")
