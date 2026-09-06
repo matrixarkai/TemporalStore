@@ -50,8 +50,8 @@ Anything else is blank, and a blank means go and look.
 | booleans whose default this could read off the source | 26 |
 | numbers whose default this could read off the source | 34 |
 | **defaulting on, and set by nothing** | 0 |
-| offered on the portal | 26 |
-| **that nothing in this repository sets** | 169 |
+| offered on the portal | 27 |
+| **that nothing in this repository sets** | 168 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -154,7 +154,7 @@ Secrets. Never a form field, never in a launch artifact.
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `TS_RAFT_AUTH_TOKEN` | — | harness, script | 2 | — |
-| `MATRIXARK_HOOK_MAX_CONTEXT_TOKENS` | — | nothing | 1 | — |
+| `MATRIXARK_HOOK_MAX_CONTEXT_TOKENS` | — | test, portal | 1 | — |
 | `MATRIXARK_MODEL_API_KEY` | — | nothing | 1 | — |
 | `TS_API_AUTH_TOKEN` | — | nothing | 1 | — |
 | `TS_META_ADMIN_TOKEN` | — | nothing | 1 | — |

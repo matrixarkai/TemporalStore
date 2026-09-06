@@ -1700,13 +1700,42 @@ def _shared_budget_summary() -> Json:
             "bound_by": bound_by,
         }
 
+    skills = section("skill", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
+                     "DEFAULT_SHARED_SKILL_BUDGET_RATIO")
+    resources = section("resource", "MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
+                        "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO")
+    # The agent hooks do not use the budget above and never did. Reporting one number as "the"
+    # context budget made every token figure on this panel wrong for the path that serves agents --
+    # by fifty times on a deployment installed by the manual, which sets the hook budget to 10,000.
+    # The SHARE is the same on both paths; only what it comes to differs, so both are reported and
+    # neither is called the answer.
+    hook_total = runtime.hook_max_context_tokens()
+    paths = []
+    for name, label, budget, variable in (
+            ("api", "API callers", total, "MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS"),
+            ("agent_hooks", "Agent hooks", hook_total, "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS")):
+        paths.append({
+            "path": name,
+            "label": label,
+            "context_budget_tokens": budget,
+            "variable": variable,
+            "sections": {
+                "skills": min(int(budget * float(policy.get("skill_budget_ratio") or 0.0)),
+                              int(policy.get("skill_max_budget_tokens") or budget) or budget),
+                "resources": min(
+                    int(budget * float(policy.get("resource_budget_ratio") or 0.0)),
+                    int(policy.get("resource_max_budget_tokens") or budget) or budget),
+            },
+        })
     return {
         "available": True,
         "context_budget_tokens": total,
-        "skills": section("skill", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
-                          "DEFAULT_SHARED_SKILL_BUDGET_RATIO"),
-        "resources": section("resource", "MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
-                             "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO"),
+        "skills": skills,
+        "resources": resources,
+        "paths": paths,
+        # Not a warning: on a default deployment they DO differ, and a warning that always fires is
+        # noise. It is a fact the reader needs in order to read the rows above correctly.
+        "paths_differ": hook_total != total,
     }
 
 

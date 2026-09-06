@@ -14,6 +14,15 @@ from __future__ import annotations
 import argparse
 import json
 try:
+    from tools.matrixark_mcp_runtime_config import (
+        hook_max_context_tokens as _hook_max_context_tokens,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import (  # type: ignore
+        hook_max_context_tokens as _hook_max_context_tokens,
+    )
+
+try:
     from tools import matrixark_hook_pack_cache as _pack_cache
 except ImportError:  # running from inside tools/, as the hooks do
     import matrixark_hook_pack_cache as _pack_cache
@@ -231,7 +240,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--team", default=os.environ.get("MATRIXARK_TEAM", "agent"))
     parser.add_argument("--project", default=os.environ.get("MATRIXARK_PROJECT", "local"))
     parser.add_argument("--query", default="")
-    parser.add_argument("--max-context-tokens", type=int, default=int(os.environ.get("MATRIXARK_HOOK_MAX_CONTEXT_TOKENS", os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "128000"))))
+    parser.add_argument("--max-context-tokens", type=int,
+                        default=_hook_max_context_tokens())
     parser.add_argument("--metaserver", default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"))
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
