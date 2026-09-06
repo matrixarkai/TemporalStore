@@ -1505,7 +1505,7 @@ class _TemporalDirectBackendMixin:
         head_versions = head_versions if isinstance(head_versions, list) else []
         if tail_index != chunk_count or merged_versions != head_versions:
             payload = {
-                "locations": head_locations,
+                "locations": compact_location_list(head_locations, self._location_base()),
                 "resource_versions": merged_versions,
                 "location_chunks": tail_index,
             }
