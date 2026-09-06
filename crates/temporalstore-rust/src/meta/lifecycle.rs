@@ -202,25 +202,25 @@ impl SingleNodeMeta {
             request.limit.min(LIST_SHARDS_DEFAULT_LIMIT)
         };
 
-        let mut ids = state
-            .shards
-            .keys()
-            .copied()
-            .filter(|shard_id| *shard_id > request.after_shard_id)
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-
         // Which shards this answer will carry, decided before anything is
         // looked up for them. Naming the table that owns a shard used to be
         // done by building that map for every shard in the cluster -- walking
         // every table, over every shard it declares, cloning its namespace and
         // its name for each -- and then using at most one page of it.
+        //
+        // The map is kept in shard order, so this walks from the cursor rather
+        // than over everything above it: a page costs the page. It used to cost
+        // the cluster, which made paging through one quadratic.
         let mut page = Vec::new();
         let mut next_after_shard_id = None;
-        for shard_id in ids {
-            let Some(location) = state.shards.get(&shard_id) else {
-                continue;
-            };
+        for (shard_id, location) in state
+            .shards
+            .range((
+                std::ops::Bound::Excluded(request.after_shard_id),
+                std::ops::Bound::Unbounded,
+            ))
+        {
+            let shard_id = *shard_id;
             if !request.server_addr.is_empty() && location.server_addr != request.server_addr {
                 continue;
             }

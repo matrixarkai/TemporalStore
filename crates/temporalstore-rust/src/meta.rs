@@ -1672,7 +1672,9 @@ impl MetaState {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct MetaState {
-    shards: HashMap<ShardId, ShardLocation>,
+    /// Kept in shard order so a page of them is a range rather than a scan
+    /// of everything above the cursor.
+    shards: BTreeMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
     proxy_groups: BTreeMap<String, ProxyGroupInfo>,
