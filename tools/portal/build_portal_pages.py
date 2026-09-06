@@ -1126,6 +1126,16 @@ SETUP_BODY = """
       the store, so a single slow call runs to the transport timeout whatever the deadline says.</p>
     <div id="latency"><div class="empty">Loading&hellip;</div></div>
   </section>
+
+  <section>
+    <h2>Traffic over time</h2>
+    <p class="hint" style="margin-top:0">The counters this page tabulates, drawn. Sampled every
+      fifteen seconds on the request path, so the shape is there whether or not anyone had this
+      page open &mdash; and it survives a reload, which a series built in the browser would not.
+      One worker&rsquo;s: two workers no more add up to the deployment&rsquo;s traffic than their
+      resident memory adds up to its footprint.</p>
+    <div id="trend"><div class="empty">Loading&hellip;</div></div>
+  </section>
   </section>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-deployment" id="pane-deployment" hidden>
@@ -2430,6 +2440,56 @@ SETUP_JS = r"""
     $("latency").innerHTML = "<table><tbody>" + rows + "</tbody></table>";
   }
 
+  /* ---------- traffic over time ---------- */
+  function sparkline(points, pick, label, unit) {
+    var W = 320, H = 56, PAD = 3;
+    var values = points.map(pick);
+    var real = values.filter(function (v) { return v !== null && v !== undefined; });
+    if (!real.length) { return ""; }
+    var top = Math.max.apply(null, real);
+    /* A flat line at the bottom of an empty chart and a flat line at the bottom of a real one look
+       identical, so a zero maximum gets a nominal scale and the label still says 0. */
+    var scale = top > 0 ? top : 1;
+    var step = values.length > 1 ? (W - PAD * 2) / (values.length - 1) : 0;
+    var drawn = [];
+    values.forEach(function (v, i) {
+      if (v === null || v === undefined) { return; }
+      var x = PAD + i * step;
+      var y = H - PAD - (v / scale) * (H - PAD * 2);
+      drawn.push(x.toFixed(1) + "," + y.toFixed(1));
+    });
+    if (drawn.length < 2) { return ""; }
+    return '<figure class="spark"><figcaption>' + label
+         + ' <span class="aux">peak ' + (Math.round(top * 100) / 100) + " " + unit
+         + '</span></figcaption>'
+         + '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + label + '">'
+         + '<polyline fill="none" stroke="currentColor" stroke-width="1.5" points="'
+         + drawn.join(" ") + '"/></svg></figure>';
+  }
+
+  function renderTrend(series) {
+    if (!series || !series.points) {
+      $("trend").innerHTML = '<div class="empty">Not available.</div>';
+      return;
+    }
+    var points = series.points;
+    if (points.length < 2) {
+      /* Not an empty chart: an empty chart reads as "no traffic", and this is "not enough
+         samples yet". Two samples make one interval, and one interval is not a line. */
+      $("trend").innerHTML = '<div class="empty">Watching. A line needs two intervals &mdash; '
+        + "about " + Math.round((series.interval_s || 15) * 2) + " seconds of traffic.</div>";
+      return;
+    }
+    var minutes = Math.round((series.covers_s || 0) / 60);
+    $("trend").innerHTML =
+      sparkline(points, function (p) { return p.requests_per_s; }, "Requests", "/s")
+      + sparkline(points, function (p) { return p.errors_per_s; }, "Errors", "/s")
+      + sparkline(points, function (p) { return p.mean_ms; }, "Mean latency", "ms")
+      + '<p class="hint">' + points.length + " intervals of "
+      + series.interval_s + "s" + (minutes ? ", covering about " + minutes + " minutes" : "")
+      + ". This worker only.</p>";
+  }
+
   function loadFootprint() {
     fetch("/v1/admin/overview", { headers: auth() })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
@@ -2439,12 +2499,14 @@ SETUP_JS = r"""
         renderFootprint(d.footprint);
         renderBudgets((((d.config || {}).skills) || {}).budgets);
         renderLatency(d.latency);
+        renderTrend(d.metrics_series);
       })
       .catch(function () {
         $("footprint").innerHTML =
           '<div class="msg err">Could not read the footprint.</div>';
         $("budgets").innerHTML = '<div class="msg err">Could not read the budget.</div>';
         $("latency").innerHTML = '<div class="msg err">Could not read the timing.</div>';
+        $("trend").innerHTML = '<div class="msg err">Could not read the traffic series.</div>';
       });
   }
 

@@ -124,6 +124,13 @@ def bucket_quantile(buckets: List[float], quantile: float, observed_max_s: float
     return observed_max_s
 
 
+# How often the rolling series takes a sample, and how many it keeps. Fifteen seconds over four
+# hours is 960 tuples of five numbers -- a few tens of kilobytes, bounded like the failure ring
+# above and for the same reason: this is a process-lifetime structure on a hot path.
+SERIES_INTERVAL_S = 15.0
+SERIES_SAMPLES = 960
+
+
 class GatewayMetrics:
     """Process-wide edge counters. Every method is cheap and lock-guarded; recording never raises,
     because a metrics bug must not be able to fail a customer request."""
@@ -155,6 +162,14 @@ class GatewayMetrics:
         # Not probed here -- a metrics endpoint that opens an outbound connection is one that can
         # hang, and scraping would put the datanode's health check on Prometheus's cadence times
         # every worker.
+        # A rolling series, so the portal can PLOT traffic rather than only tabulate a total.
+        # Each entry is CUMULATIVE at the moment it was taken -- (when, requests, errors, latency
+        # sum, latency count) -- so a rate is the difference between two samples. Storing rates
+        # directly would mean a missed sample silently invents or erases traffic; a difference
+        # between two totals cannot.
+        self._series: Deque[Tuple[float, int, int, float, int]] = deque(maxlen=SERIES_SAMPLES)
+        self._series_at = 0.0
+
         self._datanode: Optional[Tuple[str, float]] = None
 
     # ---- recording -----------------------------------------------------------------------------
@@ -204,8 +219,26 @@ class GatewayMetrics:
                 self._req_bytes[route] = self._req_bytes.get(route, 0) + int(request_bytes)
             if response_bytes:
                 self._resp_bytes[route] = self._resp_bytes.get(route, 0) + int(response_bytes)
+            try:
+                self._sample_locked(time.time())
+            except Exception:  # pragma: no cover - the promise above, kept
+                pass
             if status >= 400:
                 self._failures.append((time.time(), route, method, status, incident))
+
+    def _sample_locked(self, now: float) -> None:
+        """Append one cumulative sample, at most once per interval. The lock is already held."""
+        if now - self._series_at < SERIES_INTERVAL_S:
+            return
+        self._series_at = now
+        self._series.append((
+            now,
+            sum(self._requests.values()),
+            sum(count for (_route, _method, status), count in self._requests.items()
+                if status >= 400),
+            sum(self._sum.values()),
+            sum(self._count.values()),
+        ))
 
     def note_datanode(self, state: str) -> None:
         """Record what the readiness probe just found."""
@@ -213,6 +246,41 @@ class GatewayMetrics:
             self._datanode = (str(state), time.time())
 
     # ---- reading -------------------------------------------------------------------------------
+    def series(self) -> Json:
+        """Per-interval rates, derived from consecutive cumulative samples.
+
+        Deliberately NOT part of `snapshot()`: that goes into the live frame every two seconds to
+        every open tab, and an hour of history in it would be paid for on every tick by every
+        viewer. This is asked for once, by the page that draws it.
+
+        `mean_ms` is the mean over ITS interval, not since the process started. A lifetime mean
+        flattens every spike a plot exists to show.
+        """
+        with self._lock:
+            samples = list(self._series)
+        points = []
+        for (t0, r0, e0, s0, c0), (t1, r1, e1, s1, c1) in zip(samples, samples[1:]):
+            span = t1 - t0
+            if span <= 0:  # pragma: no cover - a clock that went backwards
+                continue
+            calls = c1 - c0
+            points.append({
+                "at": round(t1, 3),
+                "requests_per_s": round(max(0, r1 - r0) / span, 4),
+                "errors_per_s": round(max(0, e1 - e0) / span, 4),
+                "mean_ms": round((s1 - s0) / calls * 1000.0, 3) if calls > 0 else None,
+            })
+        return {
+            "interval_s": SERIES_INTERVAL_S,
+            "points": points,
+            # n samples make n-1 intervals, so one sample plots nothing. Saying how much is
+            # covered is the difference between "quiet" and "only just started watching".
+            "covers_s": round(samples[-1][0] - samples[0][0], 1) if len(samples) > 1 else 0.0,
+            # Every worker keeps its own. Two workers do not add up to the deployment's traffic
+            # any more than two workers' resident memory adds up to its footprint.
+            "worker_scoped": True,
+        }
+
     def snapshot(self) -> Json:
         """A JSON view for the portal's metrics panel (the same numbers Prometheus scrapes)."""
         with self._lock:

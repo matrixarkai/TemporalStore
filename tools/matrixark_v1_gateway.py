@@ -1647,6 +1647,14 @@ def _model_picker_body(target: str) -> Json:
     return body
 
 
+def _metrics_series() -> Json:
+    """The rolling traffic series, for the page to plot. Never fatal to the overview."""
+    try:
+        return _gwmetrics.METRICS.series()
+    except Exception:  # pragma: no cover - a metrics bug must not fail the page
+        return {"interval_s": 0, "points": [], "covers_s": 0.0, "worker_scoped": True}
+
+
 def _latency_summary() -> Json:
     """Which control actually decides how long a retrieve can take.
 
@@ -4850,6 +4858,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "traffic": traffic,
                 "footprint": footprint,
                 "latency": _latency_summary(),
+                "metrics_series": _metrics_series(),
                 "imports": imports,
                 "config": config_snapshot,
             })
