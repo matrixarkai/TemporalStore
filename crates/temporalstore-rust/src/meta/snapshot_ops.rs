@@ -56,7 +56,7 @@ impl SingleNodeMeta {
             }
         }
         let mut restored = MetaState {
-            shards: snapshot.shards,
+            shards: snapshot.shards.into_iter().collect(),
             servers: snapshot.servers,
             proxies: snapshot.proxies,
             proxy_groups: snapshot.proxy_groups,
@@ -136,7 +136,11 @@ impl MetaSnapshot {
         MetaSnapshot {
             format_version: 1,
             created_at_ms: now_ms(),
-            shards: state.shards.clone(),
+            shards: state
+                .shards
+                .iter()
+                .map(|(shard_id, location)| (*shard_id, location.clone()))
+                .collect(),
             servers: state.servers.clone(),
             proxies: state.proxies.clone(),
             proxy_groups: state.proxy_groups.clone(),
