@@ -351,7 +351,15 @@ pub fn post_json_with_options_and_headers<Req: Serialize, Res: DeserializeOwned>
     options: HttpRequestOptions,
 ) -> Result<Res, HttpError> {
     let body = serde_json::to_vec(request)?;
-    let headers = format!("Content-Type: application/json\r\n{extra_headers}");
+    // Borrowed when there is nothing to append, which is every caller but meta sync. The
+    // sibling of this line in `request_bytes_with_options` was given a `Cow` and this one was
+    // not, so the two allocations `format!` costs stayed on the JSON POST path -- the path the
+    // proxy forwards execute, batch and the context routes through.
+    let headers: std::borrow::Cow<'static, str> = if extra_headers.is_empty() {
+        std::borrow::Cow::Borrowed("Content-Type: application/json\r\n")
+    } else {
+        std::borrow::Cow::Owned(format!("Content-Type: application/json\r\n{extra_headers}"))
+    };
     let raw = request_raw_with_options(addr, "POST", path, &body, &headers, options)?;
     Ok(serde_json::from_slice(&raw)?)
 }
@@ -1082,6 +1090,44 @@ mod content_type_header_tests {
     /// This line goes on the wire ahead of every forwarded body, so "close enough" is a protocol
     /// error rather than a cosmetic one. The non-JSON branch is checked too, because that is the
     /// one that still formats and would be the one to rot.
+    /// The JSON POST header ends in a real CR LF, and matches what the `format!` produced.
+    ///
+    /// The sibling of this line in `request_bytes_with_options` was given a `Cow` and this one was
+    /// not, so the JSON POST path -- the one the proxy forwards through -- kept allocating for a
+    /// constant string.
+    ///
+    /// It asserts the BYTES, 13 and 10, not two source literals against each other. Writing this
+    /// patch, an escaping slip turned the header into a real newline in the source; a test that
+    /// compared one literal to another passed happily, because both sides were wrong in the same
+    /// way. A header ending in a bare LF is a broken HTTP frame, not a slower one.
+    #[test]
+    fn the_json_post_header_ends_in_a_real_crlf() {
+        for extra in ["", "X-Ts-Topology-Version: 7\r\n", "A: 1\r\nB: 2\r\n"] {
+            let actual: std::borrow::Cow<'static, str> = if extra.is_empty() {
+                std::borrow::Cow::Borrowed("Content-Type: application/json\r\n")
+            } else {
+                std::borrow::Cow::Owned(format!("Content-Type: application/json\r\n{extra}"))
+            };
+
+            let bytes = actual.as_bytes();
+            assert_eq!(
+                &bytes[bytes.len() - 2..],
+                &[13u8, 10u8],
+                "the header must end in CR LF, not a bare newline: {actual:?}"
+            );
+            assert_eq!(
+                actual.as_ref(),
+                format!("Content-Type: application/json\r\n{extra}"),
+                "extra headers: {extra:?}"
+            );
+            assert_eq!(
+                matches!(actual, std::borrow::Cow::Borrowed(_)),
+                extra.is_empty(),
+                "the empty case must borrow and the non-empty case must own: {extra:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_content_type_header_is_what_format_produced() {
         for content_type in [
