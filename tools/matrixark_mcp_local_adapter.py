@@ -2612,69 +2612,10 @@ def memory_layer_budget_question_reason(question_type: str) -> str:
     return "normal_queries_keep_profile_and_cross_session_budget compact so same-session context dominates"
 
 
-def codex_outcome_event_segment_layer_fractions(question_type: str, *, outcome_query: bool = False) -> Json:
-    normalized_question_type = str(question_type or "fact").strip().lower()
-    defaults: Json = {
-        "same_session_codex_outcome_event": 0.22,
-        "cross_session_codex_outcome_event": 0.20,
-        "same_session_codex_outcome_segment": 0.20,
-        "cross_session_codex_outcome_segment": 0.18,
-    }
-    if outcome_query:
-        defaults.update(
-            {
-                "same_session_codex_outcome_event": 0.45,
-                "cross_session_codex_outcome_event": 0.42,
-                "same_session_codex_outcome_segment": 0.38,
-                "cross_session_codex_outcome_segment": 0.36,
-            }
-        )
-    elif normalized_question_type in {"current_state", "latest"}:
-        defaults.update(
-            {
-                "same_session_codex_outcome_event": 0.35,
-                "cross_session_codex_outcome_event": 0.30,
-                "same_session_codex_outcome_segment": 0.30,
-                "cross_session_codex_outcome_segment": 0.28,
-            }
-        )
-    elif normalized_question_type == "profile_memory":
-        defaults.update(
-            {
-                "same_session_codex_outcome_event": 0.25,
-                "cross_session_codex_outcome_event": 0.35,
-                "same_session_codex_outcome_segment": 0.22,
-                "cross_session_codex_outcome_segment": 0.32,
-            }
-        )
-    elif normalized_question_type in {"multi_hop", "date"}:
-        defaults.update(
-            {
-                "same_session_codex_outcome_event": 0.35,
-                "cross_session_codex_outcome_event": 0.35,
-                "same_session_codex_outcome_segment": 0.32,
-                "cross_session_codex_outcome_segment": 0.32,
-            }
-        )
-    elif normalized_question_type == "benchmark_quality":
-        defaults.update(
-            {
-                "same_session_codex_outcome_event": 0.42,
-                "cross_session_codex_outcome_event": 0.45,
-                "same_session_codex_outcome_segment": 0.35,
-                "cross_session_codex_outcome_segment": 0.40,
-            }
-        )
-    elif normalized_question_type in {"broad_exploration", "evidence"}:
-        defaults.update(
-            {
-                "same_session_codex_outcome_event": 0.38,
-                "cross_session_codex_outcome_event": 0.35,
-                "same_session_codex_outcome_segment": 0.34,
-                "cross_session_codex_outcome_segment": 0.32,
-            }
-        )
-    return defaults
+try:  # the implementation lives in matrixark_mcp_retrieve_pre_refresh; this module re-exports it
+    from tools.matrixark_mcp_retrieve_pre_refresh import codex_outcome_event_segment_layer_fractions
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_pre_refresh import codex_outcome_event_segment_layer_fractions
 
 
 def auto_memory_selection_policy_budget_tokens(

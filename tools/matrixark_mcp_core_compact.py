@@ -309,52 +309,10 @@ def attach_context_placement(record: Json, *, scope_key: str = "", node_hash: An
     return record
 
 
-def compact_record_lifecycle_fields(record: Json) -> Json:
-    record_type = str(record.get("record_type") or "")
-    if record_type not in COMPACT_TIMESTAMP_RECORD_TYPES:
-        return record
-    compacted = dict(record)
-    if str(compacted.get("scope_key") or ""):
-        for field in COMPACT_DERIVED_SCOPE_FIELDS:
-            compacted.pop(field, None)
-        if record_type in COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES:
-            for field in COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS:
-                compacted.pop(field, None)
-    if record_type == "context_event":
-        # event_time_key + parent hash/type is the serving key; the fully
-        # expanded string is debug-only noise in hot records.
-        compacted.pop("context_event_key", None)
-    if record_type == "context_embedding":
-        model_name = str(compacted.get("model") or "")
-        if model_name:
-            compacted.setdefault("model_ref", embedding_model_ref_for_name(model_name))
-            compacted.pop("model_hash", None)
-    if compacted.get("created_at_ms") is not None and compacted.get("updated_at_ms") is not None:
-        try:
-            created_at_ms = int(compacted.get("created_at_ms"))
-            updated_at_ms = int(compacted.get("updated_at_ms"))
-        except (TypeError, ValueError):
-            created_at_ms = None
-            updated_at_ms = None
-        if created_at_ms is not None and created_at_ms == updated_at_ms:
-            compacted.pop("created_at_ms", None)
-    node_path = compacted.get("node_path")
-    if isinstance(node_path, list) and compacted.get("depth") is not None:
-        try:
-            depth = int(compacted.get("depth"))
-        except (TypeError, ValueError):
-            depth = None
-        if depth == len(node_path):
-            compacted.pop("depth", None)
-    if record_type == "context_node" and isinstance(node_path, list) and node_path:
-        if str(compacted.get("node_name") or "") == str(node_path[-1]):
-            compacted.pop("node_name", None)
-    if record_type in TOPOLOGY_DERIVED_PATH_RECORD_TYPES:
-        compacted.pop("parent_path", None)
-        compacted.pop("child_path", None)
-        compacted.pop("child_name", None)
-        compacted.pop("depth", None)
-    return compacted
+try:  # the implementation lives in matrixark_mcp_serving_records; this module re-exports it
+    from tools.matrixark_mcp_serving_records import compact_record_lifecycle_fields
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_serving_records import compact_record_lifecycle_fields
 
 
 def compact_storage_record(record: Json) -> Json:

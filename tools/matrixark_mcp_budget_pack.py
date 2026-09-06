@@ -325,75 +325,10 @@ def candidate_memory_layer_name(candidate: Json) -> str:
     return context_class or ref_type or "unknown"
 
 
-def local_context_budget(args: Json) -> Json:
-    raw_items = args.get("local_context", [])
-    if raw_items is None:
-        raw_items = []
-    if not isinstance(raw_items, list):
-        raise MatrixArkError("local_context must be an array")
-    items: list[Json] = []
-    text_hashes: set[int] = set()
-    token_total = 0
-    for index, item in enumerate(raw_items):
-        if isinstance(item, str):
-            text = item
-            source = f"local:{index}"
-            ref_type = "local_context"
-        elif isinstance(item, dict):
-            text = str(item.get("text") or item.get("content") or "")
-            source = str(item.get("source") or item.get("ref") or f"local:{index}")
-            ref_type = str(item.get("ref_type") or "local_context")
-        else:
-            raise MatrixArkError("local_context items must be strings or objects")
-        text = clip_context_text(text)
-        if not text:
-            continue
-        item_tokens = token_count(text)
-        token_total += item_tokens
-        text_hashes.update(context_text_hashes(text))
-        items.append(
-            {
-                "ref_type": ref_type,
-                "source": source,
-                "text": text,
-                "token_estimate": item_tokens,
-                "text_hash": stable_hash(text[:512]),
-            }
-        )
-    explicit_tokens = args.get("local_context_tokens")
-    token_source = "estimated_from_local_context"
-    if explicit_tokens is not None:
-        if not isinstance(explicit_tokens, int) or explicit_tokens < 0:
-            raise MatrixArkError("local_context_tokens must be a non-negative integer")
-        token_total = max(token_total, explicit_tokens)
-        token_source = "agent_provided_local_context_tokens"
-    raw_safety_margin = args.get("local_context_safety_margin_tokens")
-    if raw_safety_margin is None:
-        raw_safety_margin = os.environ.get("MATRIXARK_LOCAL_CONTEXT_SAFETY_MARGIN_TOKENS")
-    if raw_safety_margin is None:
-        raw_max_context = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
-        try:
-            max_context_tokens = max(0, int(raw_max_context or DEFAULT_MAX_CONTEXT_TOKENS))
-        except (TypeError, ValueError):
-            max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
-        safety_margin_tokens = min(512, max_context_tokens // 20)
-        safety_margin_source = "matrixark_default_5_percent_capped"
-    else:
-        try:
-            safety_margin_tokens = int(raw_safety_margin or 0)
-        except (TypeError, ValueError):
-            raise MatrixArkError("local_context_safety_margin_tokens must be a non-negative integer")
-        safety_margin_source = "agent_provided_safety_margin" if "local_context_safety_margin_tokens" in args else "env_safety_margin"
-    if safety_margin_tokens < 0:
-        raise MatrixArkError("local_context_safety_margin_tokens must be a non-negative integer")
-    return {
-        "items": items,
-        "token_estimate": token_total,
-        "text_hashes": text_hashes,
-        "token_source": token_source,
-        "safety_margin_tokens": safety_margin_tokens,
-        "safety_margin_source": safety_margin_source,
-    }
+try:  # the implementation lives in matrixark_mcp_core_packing; this module re-exports it
+    from tools.matrixark_mcp_core_packing import local_context_budget
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core_packing import local_context_budget
 
 
 def compact_local_context_refs(local_budget: Json) -> list[Json]:

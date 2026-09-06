@@ -30,62 +30,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 
 
-def detect_memory_segments(messages: list[Json], envelope: Json | None = None) -> tuple[list[Json], Json]:
-    envelope = envelope or {}
-    provider = str(envelope.get("segment_provider") or os.getenv("MATRIXARK_SEGMENT_PROVIDER", "deterministic")).strip().lower()
-    if provider in {"oss_encoder", "oss-encoder", "embedding"}:
-        segments = oss_encoder_memory_segments(messages)
-        return segments, {
-            "provider": "oss_encoder",
-            "execution_mode": "oss_embedding_model",
-            "model": embedding_model_name(),
-            "fallback_used": False,
-            "segment_count": len(segments),
-        }
-    if provider in {"", "deterministic", "rules", "local"}:
-        if require_oss_understanding():
-            raise MatrixArkError("deterministic segmentation is disabled because MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1")
-        return intelligent_memory_segments(messages), {
-            "provider": "deterministic",
-            "execution_mode": "rules",
-            "model": "matrixark-local-segmentation-v1",
-            "fallback_used": False,
-        }
-
-    fallback_enabled = bool(envelope.get("segment_provider_fallback", False)) or provider in {"oss-fallback", "oss_with_fallback"} or os.getenv("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", "").lower() in {"1", "true", "yes"}
-    if provider in {"oss", "oss-fallback", "oss_with_fallback"}:
-        model = str(envelope.get("segment_model") or os.getenv("MATRIXARK_SEGMENT_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
-        model_path = str(envelope.get("segment_model_path") or os.getenv("MATRIXARK_SEGMENT_MODEL_PATH", ""))
-        max_new_tokens = int(envelope.get("segment_max_new_tokens") or os.getenv("MATRIXARK_SEGMENT_MAX_NEW_TOKENS", "512"))
-        try:
-            raw = oss_model_memory_segments(
-                messages,
-                model=model,
-                model_path=model_path,
-                max_new_tokens=max_new_tokens,
-                local_only=fallback_enabled,
-            )
-            segments = normalize_model_segments(raw, messages)
-            return segments, {
-                "provider": "oss",
-                "execution_mode": "oss_model",
-                "model": model_path or model,
-                "fallback_used": False,
-                "segment_count": len(segments),
-            }
-        except Exception as exc:  # pragma: no cover - optional local model stack.
-            if not fallback_enabled:
-                raise MatrixArkError(f"OSS segment provider failed: {exc}") from exc
-            segments = intelligent_memory_segments(messages)
-            return segments, {
-                "provider": "oss",
-                "execution_mode": "rules_fallback",
-                "model": model_path or model,
-                "fallback_used": True,
-                "fallback_reason": str(exc),
-                "segment_count": len(segments),
-            }
-    raise MatrixArkError("segment_provider must be deterministic, oss, or oss-fallback")
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from tools.matrixark_mcp_core import detect_memory_segments
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import detect_memory_segments
 
 
 def build_segment_prompt(messages: list[Json]) -> str:
@@ -141,46 +89,10 @@ def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: s
     return parse_first_json_object(response)
 
 
-def normalize_model_segments(raw: Any, messages: list[Json]) -> list[Json]:
-    if isinstance(raw, list):
-        raw_segments = raw
-    elif isinstance(raw, dict) and isinstance(raw.get("segments"), list):
-        raw_segments = raw["segments"]
-    else:
-        raise MatrixArkError("OSS segment provider must return {segments:[...]}")
-    max_index = len(messages) - 1
-    normalized: list[Json] = []
-    for raw_segment in raw_segments[:12]:
-        if not isinstance(raw_segment, dict):
-            continue
-        topic = re.sub(r"[^a-z0-9_]+", "_", str(raw_segment.get("topic") or "model_segment").lower()).strip("_") or "model_segment"
-        coordinate_tuples = normalize_coordinate_tuples(raw_segment.get("coordinate_tuples"), max_index)
-        message_indexes = normalize_message_indexes(raw_segment.get("message_indexes"), coordinate_tuples, max_index)
-        if not message_indexes:
-            continue
-        if not coordinate_tuples:
-            coordinate_tuples = contiguous_ranges(message_indexes)
-        segment_text = "\n".join(f"{index}: {messages[index].get('content', '')}" for index in message_indexes)
-        saliency = raw_segment.get("saliency_score", 0.85)
-        try:
-            saliency_score = max(0.0, min(1.0, float(saliency)))
-        except (TypeError, ValueError):
-            saliency_score = 0.85
-        summary_text = str(raw_segment.get("summary_text") or summarize_text(segment_text, limit=420))
-        normalized.append(
-            {
-                "topic": topic,
-                "coordinate_tuples": coordinate_tuples,
-                "message_indexes": message_indexes,
-                "saliency_score": round(saliency_score, 6),
-                "summary_text": summarize_text(summary_text, limit=420),
-                "text": segment_text,
-                "non_contiguous": len(coordinate_tuples) > 1,
-                "detected_by": "oss_model",
-            }
-        )
-    normalized.sort(key=lambda item: (-item["saliency_score"], item["topic"]))
-    return normalized
+try:  # the implementation lives in matrixark_mcp_core; this module re-exports it
+    from tools.matrixark_mcp_core import normalize_model_segments
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import normalize_model_segments
 
 
 def normalize_coordinate_tuples(value: Any, max_index: int) -> list[list[int]]:
