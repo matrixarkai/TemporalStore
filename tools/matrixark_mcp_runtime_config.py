@@ -199,10 +199,8 @@ DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXA
 DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "0.20"))
 DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "0.15"))
 DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO", "0.30"))
-DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "65536"))
-DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = int(
-    os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS", "196608")
-)
+DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 65536  # build default; live_int reads the environment
+DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 196608  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "3"))
 DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "24"))
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "2"))
@@ -223,10 +221,31 @@ DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
 
 DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO", "0.25"))
 DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO", "0.25"))
-DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS", "131072"))
+def live_int(variable: str, fallback: int) -> int:
+    """The value in force NOW, not the one bound when this module was imported.
+
+    A budget ceiling is a decision about the shape of the next pack, and the next pack is when an
+    operator means it -- not the next restart. Every value it feeds is already resolved per request,
+    so there is no cached state for a late change to contradict.
+
+    Anything unparseable, or a nonsensical zero or negative, falls back to the constant: a ceiling
+    that resolved to nothing would cut its section to zero, which is a worse failure than ignoring a
+    bad value. That is the same choice `explicit_int` makes for the retrieval budgets.
+    """
+    raw = os.environ.get(variable)
+    if raw is None:
+        return fallback
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = 131072  # build default; live_int reads the environment
 DEFAULT_SHARED_SKILL_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"))
 DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO", "0.10"))
-DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS", "65536"))
+DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = 65536  # build default; live_int reads the environment
 DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
 
 # Conditional follow-up query rewriting: rewrite the RETRIEVAL query (ranking only) from

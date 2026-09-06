@@ -10,6 +10,7 @@ from typing import Any
 try:  # package path (tools.matrixark_mcp_core)
     from .matrixark_mcp_core import (
         ACTIVE_MEMORY_GOAL_QUERY_RE,
+        live_int,
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
         DEFAULT_CROSS_SESSION_BUDGET_RATIO,
@@ -51,6 +52,7 @@ try:  # package path (tools.matrixark_mcp_core)
 except ImportError:  # top-level path (matrixark_mcp_core)
     from matrixark_mcp_core import (
         ACTIVE_MEMORY_GOAL_QUERY_RE,
+        live_int,
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
         DEFAULT_CROSS_SESSION_BUDGET_RATIO,
@@ -349,10 +351,14 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         default_max_budget_ratio = max(default_max_budget_ratio, default_ratio)
     max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", default_max_budget_ratio))))
     budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
+    # Read per pack, so raising a ceiling applies to the next retrieve rather than the next
+    # restart. The constant is the fallback.
     max_budget_default = (
-        DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS
+        live_int("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
+                 DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS)
         if profile_budget_query
-        else DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
+        else live_int("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS",
+                      DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS)
     )
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
     ratio_budget_cap = int(remote_budget_tokens * max_budget_ratio) if max_budget_ratio > 0 else 0
@@ -498,8 +504,18 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
         resource_budget_tokens = integer_arg(config, "resource_budget_tokens", resource_budget_tokens, minimum=0)
     if "skill_budget_tokens" in config:
         skill_budget_tokens = integer_arg(config, "skill_budget_tokens", skill_budget_tokens, minimum=0)
-    resource_max = integer_arg(config, "resource_max_budget_tokens", DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS, minimum=0)
-    skill_max = integer_arg(config, "skill_max_budget_tokens", DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS, minimum=0)
+    # Read per pack, exactly as the copy of this in matrixark_mcp_budget_policies does. Making
+    # one of the two live and not the other is how a setting comes to work on some requests.
+    resource_max = integer_arg(
+        config, "resource_max_budget_tokens",
+        live_int("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS",
+                 DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS),
+        minimum=0)
+    skill_max = integer_arg(
+        config, "skill_max_budget_tokens",
+        live_int("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS",
+                 DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS),
+        minimum=0)
     resource_ratio_cap = int(remote_budget_tokens * resource_max_budget_ratio) if resource_max_budget_ratio > 0 else 0
     skill_ratio_cap = int(remote_budget_tokens * skill_max_budget_ratio) if skill_max_budget_ratio > 0 else 0
     if resource_ratio_cap == 0 and remote_budget_tokens > 0 and resource_max_budget_ratio > 0:
