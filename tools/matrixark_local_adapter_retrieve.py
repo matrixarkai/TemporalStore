@@ -199,7 +199,6 @@ try:  # names owned by the parent module
     auto_memory_layer_budget_tokens,
     auto_memory_selection_policy_budget_tokens,
     auto_source_role_budget_tokens,
-    codex_outcome_budget_query,
     codex_session_identity_policy,
     compact_context_pack_for_serving,
     dropped_ref_layer_budget,
@@ -227,7 +226,6 @@ except ImportError:
     auto_memory_layer_budget_tokens,
     auto_memory_selection_policy_budget_tokens,
     auto_source_role_budget_tokens,
-    codex_outcome_budget_query,
     codex_session_identity_policy,
     compact_context_pack_for_serving,
     dropped_ref_layer_budget,
@@ -543,7 +541,6 @@ class _LocalAdapterRetrieveMixin:
             memory_layer_budget_tokens, memory_layer_budget_mode = pre_retrieval_summary_refresh_memory_layer_budget_tokens(
                 remote_budget_tokens=remote_context_budget_tokens,
                 question_type=question_type,
-                outcome_query=codex_outcome_budget_query(args, ranking, question_type=question_type),
                 args=args,
                 ranking=ranking,
             )

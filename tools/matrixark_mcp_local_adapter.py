@@ -3402,11 +3402,21 @@ def pre_retrieval_summary_refresh_memory_layer_budget_tokens(
     *,
     remote_budget_tokens: int,
     question_type: str = "fact",
-    outcome_query: bool = False,
     args: Json | None = None,
     ranking: Json | None = None,
 ) -> tuple[Json, str]:
-    del outcome_query
+    # No `outcome_query` parameter. This delegate used to accept one and `del` it, and the one
+    # caller that supplied it computed the value with codex_outcome_budget_query -- a question-type
+    # test AND a query-text test -- only for it to be discarded here. The target decides the flag
+    # for itself, from the question type alone, so passing it changed nothing and removing it
+    # changes nothing. Two live callers now reach the same rule by the same route.
+    #
+    # The rule the target uses is BROADER than the one the caller was computing: every evidence,
+    # current_state, latest and benchmark_quality question is treated as an outcome query whatever
+    # its text, which moves four layer fractions by up to 40%. Whether the narrower rule is the
+    # better one is a retrieval-tuning question, and a live one -- its sibling
+    # auto_memory_layer_budget_tokens applies the narrower rule to the same request. That is worth
+    # deciding on measured recall, not by quietly honouring an argument nobody knew was ignored.
     return shared_pre_retrieval_summary_refresh_memory_layer_budget_tokens(
         remote_budget_tokens=remote_budget_tokens,
         question_type=question_type,
