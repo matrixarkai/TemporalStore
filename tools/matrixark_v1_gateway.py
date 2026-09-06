@@ -1655,8 +1655,11 @@ def _shared_budget_summary() -> Json:
     deciding its size from a percentage of a 500,000-token budget, so the one number a customer
     could see about their pack was invented.
 
-    `bound_by` is the point of the whole panel: a percentage that a ceiling is overriding is a
-    control that does not control anything, and that is exactly the state this deployment shipped in.
+    `bound_by` is the point of the whole panel: a percentage that something else is overriding is
+    a control that does not control anything, and that is exactly the state this deployment shipped
+    in -- twice over. A ceiling in tokens could override it, and so could a guard on the share
+    itself, which sat at exactly the share's own default and so refused every raise. Three limits
+    can decide a section's size and the customer is owed the name of the one that did.
     """
     try:
         try:
@@ -1670,25 +1673,40 @@ def _shared_budget_summary() -> Json:
     total = runtime.DEFAULT_MAX_CONTEXT_TOKENS
     policy = policies.build_shared_context_policy({}, {}, remote_budget_tokens=total)
 
-    def section(ratio_key: str, tokens_key: str, ceiling_key: str) -> Json:
-        ratio = float(policy.get(ratio_key) or 0.0)
-        ceiling = int(policy.get(ceiling_key) or 0)
+    def section(prefix: str, variable: str, constant: str) -> Json:
+        ratio = float(policy.get("%s_budget_ratio" % prefix) or 0.0)
+        guard = float(policy.get("%s_max_budget_ratio" % prefix) or 0.0)
+        ceiling = int(policy.get("%s_max_budget_tokens" % prefix) or 0)
+        allowed = int(policy.get("%s_budget_tokens" % prefix) or 0)
         by_percentage = int(total * ratio)
-        allowed = int(policy.get(tokens_key) or 0)
+        # What the deployment ASKED for, before the guard had its say. The packer only returns the
+        # resolved share, so a raise the guard refused is invisible in the policy it hands back --
+        # which is precisely the case a customer needs to see, and the reason this asks the
+        # resolver rather than reading the resolved number twice.
+        asked = runtime.live_float(variable, getattr(runtime, constant))
+        if asked > ratio + 1e-9:
+            bound_by = "share_guard"
+        elif ceiling and by_percentage > ceiling:
+            bound_by = "ceiling"
+        else:
+            bound_by = "percentage"
         return {
             "percent": round(ratio * 100, 2),
+            "asked_percent": round(asked * 100, 2),
+            "guard_percent": round(guard * 100, 2),
             "tokens": allowed,
             "ceiling_tokens": ceiling,
             "by_percentage_tokens": by_percentage,
-            "bound_by": "ceiling" if ceiling and by_percentage > ceiling else "percentage",
+            "bound_by": bound_by,
         }
 
     return {
         "available": True,
         "context_budget_tokens": total,
-        "skills": section("skill_budget_ratio", "skill_budget_tokens", "skill_max_budget_tokens"),
-        "resources": section("resource_budget_ratio", "resource_budget_tokens",
-                             "resource_max_budget_tokens"),
+        "skills": section("skill", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
+                          "DEFAULT_SHARED_SKILL_BUDGET_RATIO"),
+        "resources": section("resource", "MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
+                             "DEFAULT_SHARED_RESOURCE_BUDGET_RATIO"),
     }
 
 

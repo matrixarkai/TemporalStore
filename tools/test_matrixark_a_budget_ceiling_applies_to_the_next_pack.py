@@ -189,14 +189,17 @@ class TheLiveClaimIsEarnedTest(unittest.TestCase):
     def test_the_detector_would_notice_an_import_time_read(self) -> None:
         """The floor for the rule above, on a variable that IS still captured at import.
 
-        It used to name the four ceilings themselves, because they were captured in
-        `runtime_config` -- and then this change stopped capturing them, which is the whole point,
-        so the floor was asserting the defect it exists to detect. The RATIO beside each ceiling is
-        still bound at import and still labelled restart, so it is the honest subject.
+        It has now named two subjects a later change removed: first the four ceilings, then the
+        share beside them. Both times the floor was pinned to something the next improvement was
+        going to delete, which is the wrong shape for a floor. So it names no budget control at
+        all -- it asserts the parser still finds a substantial set of import-time reads, plus one
+        variable that is not a per-pack decision and has no reason to become one.
         """
         bound = module_scope_reads("matrixark_mcp_runtime_config.py")
-        self.assertIn("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", bound)
         self.assertIn("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", bound)
+        self.assertGreater(len(bound), 20,
+                           "the parser found %d import-time reads; it used to find dozens"
+                           % len(bound))
 
     def test_the_ceilings_are_no_longer_captured_anywhere(self) -> None:
         """What replaced it: the constants are plain build defaults now, so clearing a setting

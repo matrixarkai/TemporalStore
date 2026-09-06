@@ -154,7 +154,7 @@ cross_session_max_candidates = 200          # MATRIXARK_CROSS_SESSION_MAX_CANDID
 cross_session_max_sessions = 3              # MATRIXARK_CROSS_SESSION_MAX_SESSIONS  max other sessions consulted
 cross_session_min_score = 0.20              # MATRIXARK_CROSS_SESSION_MIN_SCORE  min score for a cross-session ref
 cross_session_max_budget_tokens = 500000    # MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS  absolute cap on cross-session tokens
-cross_session_max_budget_ratio = 0.20       # MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO  max fraction for cross-session
+cross_session_max_budget_ratio = 0.50       # MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO  the guard on the share above, not the share
 cross_session_parallelism = 4               # MATRIXARK_CROSS_SESSION_PARALLELISM  concurrent cross-session lookups
 # --- profile lane (long-lived user profile) ---
 cross_session_profile_max_candidates = 200  # MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES  profile candidate cap (raised 48 -> 200 for consistency)
@@ -163,6 +163,9 @@ cross_session_profile_budget_ratio = 0.30   # MATRIXARK_CROSS_SESSION_PROFILE_BU
 # --- shared resource / skill lanes ---
 shared_resource_budget_ratio = 0.25         # MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO  shared-resource lane budget fraction
 shared_skill_budget_ratio = 0.10            # MATRIXARK_SHARED_SKILL_BUDGET_RATIO  shared-skill lane budget fraction
+shared_skill_max_budget_ratio = 0.50        # MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO  the guard on the share above
+shared_resource_max_budget_ratio = 0.50     # MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO  the guard on the resource share
+cross_session_profile_max_budget_ratio = 0.60  # MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO  the guard on the profile share
 shared_context_min_score = 0.20             # MATRIXARK_SHARED_CONTEXT_MIN_SCORE  min score for shared-context refs
 # --- optional retrieval features (ship OFF) ---
 mode_dependent_quota = 0                     # MATRIXARK_MODE_DEPENDENT_QUOTA  1 = per-mode budget quota

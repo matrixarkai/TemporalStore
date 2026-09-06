@@ -194,13 +194,13 @@ DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD = float(
     os.environ.get("MATRIXARK_NEAR_DUPLICATE_OVERLAP_THRESHOLD", "0.85")
 )
 
-DEFAULT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", "0.12"))
+DEFAULT_CROSS_SESSION_BUDGET_RATIO = 0.12  # build default; live_float reads the environment
 DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "0.20"))
 DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "0.20"))
 DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "0.15"))
-DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO", "0.30"))
-DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 65536  # build default; live_int reads the environment
-DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 196608  # build default; live_int reads the environment
+DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO = 0.30  # build default; live_float reads the environment
+DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
+DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS = 327680  # build default; live_int reads the environment
 DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "3"))
 DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "24"))
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "2"))
@@ -208,8 +208,8 @@ DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "256"))
 DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "0.20"))
 DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "0.45"))
-DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO", "0.20"))
-DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO", "0.35"))
+DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
+DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO = 0.60  # the guard, not the setting: the share below is what decides
 DEFAULT_CROSS_SESSION_PROFILE_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS", "6"))
 DEFAULT_CROSS_SESSION_PROFILE_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MAX_CANDIDATES", "48"))
 DEFAULT_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS", "3"))
@@ -219,8 +219,8 @@ DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     if item.strip()
 )
 
-DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO", "0.25"))
-DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO", "0.25"))
+DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = 0.25  # build default; live_float reads the environment
+DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
 def live_int(variable: str, fallback: int) -> int:
     """The value in force NOW, not the one bound when this module was imported.
 
@@ -242,10 +242,31 @@ def live_int(variable: str, fallback: int) -> int:
     return parsed if parsed > 0 else fallback
 
 
-DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = 131072  # build default; live_int reads the environment
-DEFAULT_SHARED_SKILL_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"))
-DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO", "0.10"))
-DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = 65536  # build default; live_int reads the environment
+def live_float(variable: str, fallback: float) -> float:
+    """A section's share of the budget, read per pack. The float counterpart of `live_int`.
+
+    A value outside 0.0-1.0 is not a share of anything, so it falls back to the build default
+    rather than clamping: a number the operator has to correct is better than one silently
+    reinterpreted as something they did not ask for.
+
+    Zero IS accepted, unlike `live_int` above. A ceiling of zero would cut its section to nothing
+    by accident; a share of zero says "this section gets none of the pack", which is a decision an
+    operator can mean and cannot express any other way.
+    """
+    raw = os.environ.get(variable)
+    if raw is None:
+        return fallback
+    try:
+        parsed = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if 0.0 <= parsed <= 1.0 else fallback
+
+
+DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
+DEFAULT_SHARED_SKILL_BUDGET_RATIO = 0.10  # build default; live_float reads the environment
+DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO = 0.50  # the guard, not the setting: the share below is what decides
+DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = 262144  # build default; live_int reads the environment
 DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
 
 # Conditional follow-up query rewriting: rewrite the RETRIEVAL query (ranking only) from
