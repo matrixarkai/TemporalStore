@@ -31,20 +31,6 @@ const LEXICAL_SCORE_SATURATION: i64 = 1_000;
 /// remain rankable (never a flat 0) instead of collapsing to recency order.
 const LEXICAL_MATCH_MICROS: i64 = 500_000;
 
-/// MATRIXARK_CONTEXT_SECONDARY_INDEX (default OFF): whether ingest builds the ctxidx
-/// secondary-index refs at all.
-///
-/// Retrieval does not read them -- candidate selection is namespace nodes plus vector and
-/// lexical scoring -- so on the live path they are write-only cost: one durable command per
-/// (index, value) per ingest whose only reader is the ingest verifier checking that the writes
-/// it just made landed. Skipped by default until the redesign gives them a reader; the env var
-/// is the escape hatch for anything still relying on the query-back surface.
-pub(crate) fn context_secondary_index_enabled() -> bool {
-    std::env::var("MATRIXARK_CONTEXT_SECONDARY_INDEX")
-        .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
 
 /// Map a raw lexical-relevance score into the same micros scale cosine similarity
 /// uses (`context_embedding_similarity_micros`), so lexical and cosine node scores
@@ -1817,16 +1803,6 @@ pub(crate) fn extract_context_gated(
         commands.push(Command::ContextUpsertSummary {
             tenant_hash: request.tenant_hash,
             summary: summary_l1,
-        });
-    }
-    if context_secondary_index_enabled() {
-        commands.push(Command::ContextWriteIndexRef {
-            tenant_hash: request.tenant_hash,
-            index_name: "source".to_string(),
-            index_value_hash: stable_hash64(&request.source_id),
-            scope_hash: 0,
-            event_time_ms: timestamp_ms,
-            index_ref: index_ref.clone(),
         });
     }
     if embedding_deferred {
