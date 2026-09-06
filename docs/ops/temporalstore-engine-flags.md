@@ -48,7 +48,7 @@ Anything else is blank, and a blank means go and look.
 |---|---|
 | total | 289 |
 | booleans whose default this could read off the source | 49 |
-| numbers whose default this could read off the source | 34 |
+| numbers whose default this could read off the source | 70 |
 | **defaulting on, and set by nothing** | 5 |
 | offered on the portal | 27 |
 | **that nothing in this repository sets** | 156 |
@@ -65,8 +65,8 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_META_ADDR` | — | config, launch, script | 3 | — |
 | `TS_PROXY_ADDR` | — | launch, script | 3 | — |
 | `TS_RAFT_NODES` | — | harness, script | 3 | — |
-| `TS_RAFT_NODE_ID` | — | harness, script | 3 | — |
-| `TS_RAFT_SHARD_ID` | — | harness, script | 3 | — |
+| `TS_RAFT_NODE_ID` | 1 | harness, script | 3 | — |
+| `TS_RAFT_SHARD_ID` | 1 | harness, script | 3 | — |
 | `TS_RAFT_WAL_DIR` | — | config, harness, script | 3 | — |
 | `TS_SHARD_ID` | 1 | config, launch, script | 3 | — |
 | `TS_META_RAFT_NODES` | off | config | 2 | — |
@@ -82,7 +82,7 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_MATRIXOBJECT_ENDPOINT` | — | config | 1 | — |
 | `TS_MATRIXOBJECT_STORE_DIR` | — | config | 1 | — |
 | `TS_META_BIND_ADDR` | — | config, launch | 1 | — |
-| `TS_META_RAFT_NODE_ID` | — | nothing | 1 | — |
+| `TS_META_RAFT_NODE_ID` | 1 | nothing | 1 | — |
 | `TS_PAGE_STORE_DIR` | — | config, launch, script | 1 | — |
 | `TS_PROXY_ADVERTISED_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_BIND_ADDR` | — | config, launch | 1 | — |
@@ -124,24 +124,24 @@ What the metaserver does about nodes it cannot reach -- conviction, freezing, re
 | `TS_META_MUTATION_LOG` | — | launch | 1 | — |
 | `TS_META_PLACEMENT_AWARE_REBALANCE` | off | nothing | 1 | — |
 | `TS_META_PROXY_CALIBRATION` | off | nothing | 1 | — |
-| `TS_META_PROXY_FREEZE_COOLDOWN_MS` | — | nothing | 1 | — |
+| `TS_META_PROXY_FREEZE_COOLDOWN_MS` | 0 | nothing | 1 | — |
 | `TS_META_PROXY_FREEZE_MS` | — | nothing | 1 | — |
 | `TS_META_PROXY_RETENTION_MS` | — | nothing | 1 | — |
 | `TS_META_RAFT` | off | config, script | 1 | — |
-| `TS_META_RAFT_ELECTION_TICK_MS` | — | nothing | 1 | — |
+| `TS_META_RAFT_ELECTION_TICK_MS` | 50 | nothing | 1 | — |
 | `TS_META_REBALANCE_LOCATION_SCOPED` | on | nothing | 1 | — |
 | `TS_META_REBALANCE_PER_TABLE` | on | nothing | 1 | — |
-| `TS_META_REBALANCE_SAFE_GAP` | — | nothing | 1 | — |
+| `TS_META_REBALANCE_SAFE_GAP` | 0 | nothing | 1 | — |
 | `TS_META_RETENTION_GC` | off | nothing | 1 | — |
 | `TS_META_RETENTION_MS` | — | nothing | 1 | — |
-| `TS_META_SERVER_FREEZE_COOLDOWN_MS` | — | nothing | 1 | — |
+| `TS_META_SERVER_FREEZE_COOLDOWN_MS` | 0 | nothing | 1 | — |
 | `TS_META_SERVER_FREEZE_MS` | — | nothing | 1 | — |
 | `TS_META_SERVER_RETENTION_MS` | — | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_CHECK` | off | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_REBOOT_GRACE_MS` | — | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_SETTLE_GRACE_MS` | — | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_WINDOW_MS` | — | nothing | 1 | — |
-| `TS_META_STALE_AFTER_MS` | — | nothing | 1 | — |
+| `TS_META_STALE_AFTER_MS` | 30000 | nothing | 1 | — |
 | `TS_META_TABLE_FREEZE_MS` | — | nothing | 1 | — |
 | `TS_META_TABLE_RETENTION_MS` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_BASE_POSTPONE_MS` | — | nothing | 1 | — |
@@ -166,13 +166,13 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `MATRIXARK_BULK_INGEST_EXPECTED_WAL_COMMANDS` | — | test | 2 | — |
-| `TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 2 | — |
+| `TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | 30000 | nothing | 2 | — |
 | `MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS` | 1000 | nothing | 1 | — |
 | `TS_BARRIER_PROFILE_WRITES` | 50 | nothing | 1 | — |
 | `TS_CROSS_SHARD_RECLAIM_GUARD` | on | config | 1 | yes |
 | `TS_DATA_NODE_LIFECYCLE_SNAPSHOT` | — | nothing | 1 | — |
 | `TS_INDEX_DUMP_WAL_GAP_BYTES` | 1048576 | config, portal | 1 | — |
-| `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
+| `TS_META_RAFT_SNAPSHOT_CHECK_INTERVAL_MS` | 30000 | nothing | 1 | — |
 | `TS_META_SCHEDULER_SNAPSHOT` | — | nothing | 1 | — |
 | `TS_WAL_BINARY_FRAME` | on | launch, test, portal | 1 | — |
 | `TS_WAL_BINARY_RECORDS` | on | launch, test, portal | 1 | — |
@@ -208,10 +208,10 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
-| `TS_RAFT_HEARTBEAT_INTERVAL_MS` | — | harness, script | 3 | — |
+| `TS_RAFT_HEARTBEAT_INTERVAL_MS` | 100 | harness, script | 3 | — |
 | `TS_PAGE_STORE_COMPRESSION_MIN_BYTES` | 256 | config, test | 2 | — |
 | `TS_PROXY_CONTEXT_IO_TIMEOUT_MS` | 30000 | nothing | 2 | — |
-| `TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT` | — | nothing | 2 | — |
+| `TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT` | 256 | nothing | 2 | — |
 | `MATRIXARK_BACKFILL_CACHE_BYTES` | — | nothing | 1 | — |
 | `MATRIXARK_BACKFILL_MAX_BODY` | 2000 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_COMPRESSION_MAX_AGE_MS` | — | nothing | 1 | — |
@@ -226,41 +226,41 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS` | 30000 | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | script | 1 | — |
 | `TS_BLOB_CHUNK_BYTES` | — | config | 1 | — |
-| `TS_BLOB_PEER_FETCH_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_BLOB_PEER_FETCH_TIMEOUT_MS` | 5000 | nothing | 1 | — |
 | `TS_BLOCK_INDEX_CACHE_BYTES` | 67108864 | config, test, portal | 1 | — |
 | `TS_BLOCK_SEGMENT_TARGET_BYTES` | — | nothing | 1 | — |
 | `TS_BLOCK_SLAB_TARGET_BYTES` | 1073741824 | config, test, portal | 1 | — |
 | `TS_CACHE_MEMORY_BYTES` | — | config, launch | 1 | — |
 | `TS_COMPACTION_WATERMARK_BYTES` | 268435456 | config, test, portal | 1 | — |
 | `TS_CONTEXT_PAGE_TARGET_BYTES` | 65536 | config, test, portal | 1 | — |
-| `TS_DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG` | — | nothing | 1 | — |
-| `TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG` | 0 | nothing | 1 | — |
+| `TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS` | 1000 | nothing | 1 | — |
 | `TS_DISTRIBUTED_RAFT_CATCHUP_TIMEOUT_SECS` | 30 | nothing | 1 | — |
 | `TS_EVICT_POOL_SIZE` | — | nothing | 1 | — |
 | `TS_INDEX_DUMP_OPLOG_GAP_BYTES` | — | config | 1 | — |
-| `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS` | — | nothing | 1 | — |
+| `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS` | 100 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_PROBE_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_MAX_RETAINED_FINISHED_JOBS` | 64 | portal | 1 | — |
-| `TS_META_AUTO_REBALANCE_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_META_AUTO_REBALANCE_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
 | `TS_META_AUTO_REBALANCE_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_META_AUTO_REBALANCE_IO_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_META_AUTO_REBALANCE_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_META_CONVICT_CRITICAL_RATIO_PERCENT` | — | nothing | 1 | — |
 | `TS_META_CONVICT_MIN_ABNORMAL` | — | nothing | 1 | — |
 | `TS_META_CONVICT_WARNING_RATIO_PERCENT` | — | nothing | 1 | — |
-| `TS_META_FAILURE_DETECTOR_INTERVAL_MS` | — | nothing | 1 | — |
+| `TS_META_FAILURE_DETECTOR_INTERVAL_MS` | 10000 | nothing | 1 | — |
 | `TS_META_FD_INITIAL_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_FD_MAX_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_FD_MAX_ROUND_PAUSE_MS` | — | nothing | 1 | — |
-| `TS_META_FREEZE_AGING_INTERVAL_MS` | — | nothing | 1 | — |
+| `TS_META_FREEZE_AGING_INTERVAL_MS` | 60000 | nothing | 1 | — |
 | `TS_META_FREEZE_AGING_MAX_DROPS` | — | nothing | 1 | — |
 | `TS_META_PROXY_CALIBRATION_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_META_PROXY_CALIBRATION_MAX_CHANGES` | — | nothing | 1 | — |
-| `TS_META_RAFT_HEARTBEAT_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_META_RETENTION_INTERVAL_MS` | — | nothing | 1 | — |
+| `TS_META_RAFT_HEARTBEAT_INTERVAL_MS` | 100 | nothing | 1 | — |
+| `TS_META_RETENTION_INTERVAL_MS` | 60000 | nothing | 1 | — |
 | `TS_META_RETENTION_MAX_PURGES` | — | nothing | 1 | — |
-| `TS_META_SHARD_DIVERGENCE_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_META_SHARD_DIVERGENCE_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_META_SHARD_DIVERGENCE_IO_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_META_SHARD_DIVERGENCE_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_META_SHARD_DIVERGENCE_MAX_MOVES` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_INFLIGHT` | — | nothing | 1 | — |
 | `TS_META_TASK_SCHEDULER_MAX_POSTPONE_MS` | — | nothing | 1 | — |
@@ -277,14 +277,14 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_PROXY_MAX_INFLIGHT_WRITE_REQUESTS` | — | nothing | 1 | — |
 | `TS_PROXY_MAX_RETRIES` | — | config | 1 | — |
 | `TS_PROXY_TOPOLOGY_CHECK_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_RAFT_AUTO_FAILOVER_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_RAFT_AUTO_FAILOVER_CONNECT_TIMEOUT_MS` | 500 | nothing | 1 | — |
 | `TS_RAFT_AUTO_FAILOVER_INTERVAL_MS` | — | nothing | 1 | — |
-| `TS_RAFT_AUTO_FAILOVER_IO_TIMEOUT_MS` | — | nothing | 1 | — |
+| `TS_RAFT_AUTO_FAILOVER_IO_TIMEOUT_MS` | 2000 | nothing | 1 | — |
 | `TS_RAFT_MAX_APPLIED_LOG_BYTES` | — | nothing | 1 | — |
 | `TS_RAFT_MAX_INFLIGHTS_REPLICATE` | — | test | 1 | — |
 | `TS_SERVER_HEARTBEAT_INTERVAL_MS` | 3000 | config, script | 1 | — |
-| `TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH` | — | config | 1 | — |
-| `TS_SERVER_MAX_QUEUE_DEPTH` | — | config | 1 | — |
+| `TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH` | 128 | config | 1 | — |
+| `TS_SERVER_MAX_QUEUE_DEPTH` | 1024 | config | 1 | — |
 | `TS_SHARED_STORE_MAX_PENDING` | 50000 | nothing | 1 | yes |
 | `TS_STORAGE_ZONE_SIZE` | 1073741824 | config, test, portal | 1 | — |
 | `TS_STREAM_MAX_BLOB_SIZE` | 10485760 | config, test, portal | 1 | — |
@@ -363,10 +363,10 @@ Everything else that changes what the engine does.
 | `MATRIXARK_EAGER_CACHE_WARM_ON_LOAD` | on | config | 5 | — |
 | `TS_RAFT_ALLOW_PLAINTEXT` | on | harness, script | 4 | — |
 | `MATRIXARK_BULK_INGEST` | off | config, test, portal | 3 | — |
-| `TS_RAFT_ELECTION_TICK_MS` | — | harness, script | 3 | — |
+| `TS_RAFT_ELECTION_TICK_MS` | 50 | harness, script | 3 | — |
 | `TS_RAFT_ENABLE_LOCAL_ADMIN` | off | harness, script | 3 | — |
-| `TS_RAFT_RPC_DEADLINE_MS` | — | harness, script | 3 | — |
-| `TS_RAFT_RPC_RETRIES` | — | harness, script | 3 | — |
+| `TS_RAFT_RPC_DEADLINE_MS` | 1000 | harness, script | 3 | — |
+| `TS_RAFT_RPC_RETRIES` | 2 | harness, script | 3 | — |
 | `MATRIXARK_BULK_INGEST_REPLAY_FROM_SEQUENCE` | — | config, test | 2 | — |
 | `TEMPORALSTORE_RUST_CODEX_HOOK_ROOT` | — | launch | 2 | — |
 | `TS_PAGE_STORE_COMPRESSION_ENABLED` | — | config, launch, test | 2 | — |
@@ -378,7 +378,7 @@ Everything else that changes what the engine does.
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG` | — | launch | 1 | — |
 | `TEMPORALSTORE_RUST_CODEX_EVENT_LOG_ENABLE` | — | nothing | 1 | — |
 | `TS_BLOB_PEER_FETCH` | off | nothing | 1 | — |
-| `TS_BLOB_RUNTIME_THREADS` | — | nothing | 1 | — |
+| `TS_BLOB_RUNTIME_THREADS` | 4 | nothing | 1 | — |
 | `TS_CACHE_DISK_TIER` | — | test | 1 | — |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | on | config, test, portal | 1 | — |
 | `TS_DATA_RAFT_READ_MODE` | — | config | 1 | — |
@@ -386,7 +386,7 @@ Everything else that changes what the engine does.
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
 | `TS_MALLOC_TRIM` | on | test, portal | 1 | — |
 | `TS_MATRIXOBJECT_CHECKPOINT_ON_START` | on | nothing | 1 | — |
-| `TS_MATRIXOBJECT_FLUSH_BATCH` | — | nothing | 1 | — |
+| `TS_MATRIXOBJECT_FLUSH_BATCH` | 256 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` | on | nothing | 1 | — |
 | `TS_MATRIXOBJECT_SYNC_FLUSH` | off | nothing | 1 | — |
 | `TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS` | — | nothing | 1 | — |
@@ -411,13 +411,13 @@ Everything else that changes what the engine does.
 | `TS_SERVER_RAFT` | off | nothing | 1 | — |
 | `TS_SERVER_RAFT_READ_MODE` | — | nothing | 1 | — |
 | `TS_SERVER_READONLY` | — | nothing | 1 | — |
-| `TS_SERVER_WORKER_THREADS` | — | config | 1 | — |
+| `TS_SERVER_WORKER_THREADS` | 4 | config | 1 | — |
 | `TS_SHARD_END_ROUTING_SLOT` | — | test | 1 | — |
-| `TS_SHARD_LOAD_VERSION` | — | test | 1 | — |
+| `TS_SHARD_LOAD_VERSION` | 0 | test | 1 | — |
 | `TS_SHARD_READONLY` | — | test | 1 | — |
 | `TS_SHARD_READ_BURST` | — | nothing | 1 | — |
 | `TS_SHARD_READ_QPS` | — | nothing | 1 | — |
-| `TS_SHARD_START_ROUTING_SLOT` | — | test | 1 | — |
+| `TS_SHARD_START_ROUTING_SLOT` | 0 | test | 1 | — |
 | `TS_SHARD_WRITE_BURST` | — | nothing | 1 | — |
 | `TS_SHARD_WRITE_QPS` | — | nothing | 1 | — |
 | `TS_TABLE_NAME` | — | test | 1 | — |

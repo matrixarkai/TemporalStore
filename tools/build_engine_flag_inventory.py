@@ -495,6 +495,55 @@ def numeric_default_of_statement(lines, read_line, consts):
     return ""
 
 
+#: The numeric siblings of `env_bool`. Same call shape, same place for the default:
+#:
+#:     env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000)
+#:     env_usize("TS_SERVER_WORKER_THREADS", 4)
+#:
+#: `numeric_default_of_statement` reads `.unwrap_or(N)` written after the name, which is the other
+#: way the engine states a number and the only one it could see. A helper call states it as an
+#: argument instead, and a hundred flags showed an em dash on the page an operator consults to
+#: decide what to change.
+_NUMERIC_HELPER = re.compile(r"\benv_(?:u8|u16|u32|u64|i8|i16|i32|i64|usize|isize|f32|f64)\s*\(")
+
+
+def numeric_helper_default(lines, read_line, consts):
+    """The literal, or named constant, given as the last argument of the call around the read.
+
+    Bounded by the call's own parentheses like `_any_helper_default`, and for the same reason: the
+    statement is the wrong unit when these sit as fields of a struct literal, where it would run to
+    the end of the struct and pick up a sibling's number. That is the mistake that once reported
+    `MATRIXARK_ACCOUNT_ID` as defaulting to 1024.
+
+    An ARITHMETIC argument -- `1024 * 1024` -- is left unread rather than evaluated, and so is a
+    struct field such as `defaults.max_retries`. Both are answerable, and neither is answerable
+    without running Rust in your head; a blank cell says look, and a wrong number does not.
+    """
+    text = NEWLINE.join(lines)
+    offset = sum(len(line) + 1 for line in lines[:read_line])
+    match = FLAG_READ.search(text, offset)
+    if not match:
+        return ""
+    helper = None
+    for found in _NUMERIC_HELPER.finditer(text, max(0, match.start() - 2000)):
+        if found.start() > match.start():
+            break
+        helper = found
+    if helper is None:
+        return ""
+    open_paren = helper.end() - 1
+    close = _balanced(text, open_paren)
+    if close < 0 or not open_paren < match.start() < close:
+        return ""
+    tail = _last_argument(text[open_paren + 1:close]).strip()
+    if _INT_LITERAL.fullmatch(tail):
+        return tail.replace("_", "")
+    if _CONST_NAME.fullmatch(tail) and tail in consts:
+        value = consts[tail]
+        return value if value not in ("on", "off") else ""
+    return ""
+
+
 def classify(name: str) -> str:
     for label, pattern in CLASS_RULES:
         if pattern.search(name):
@@ -564,6 +613,8 @@ for rel, text in prod.items():
             entry["default"] = bool_helper_default(lines, line_no)
         if not entry["default"]:
             entry["default"] = numeric_default_of_statement(lines, line_no, CONSTS)
+        if not entry["default"]:
+            entry["default"] = numeric_helper_default(lines, line_no, CONSTS)
         if entry["doc"]:
             continue
         text_doc, shared_with = doc_for_flag(name, " ".join(doc), lines, fn_line)
