@@ -459,7 +459,13 @@ SETTINGS: List[Setting] = [
             "deadline. It is COOPERATIVE: it is checked between stages and every 64 or 128 "
             "candidates, never around a call to the store -- so it bounds the work a retrieve "
             "does, and cannot bound one slow backend call. The transport timeout below is what "
-            "does that, and the pack panel reports which of the two is the smaller."),
+            "does that, and the pack panel reports which of the two is the smaller. "
+            "SETTING THIS ALSO LOWERS THE SERVER'S ABORT CEILING for the matrixark_retrieve "
+            "tool: the same variable is read there, where UNSET means 30000ms rather than no "
+            "deadline. Below that ceiling the server discards a ContextPack it had already "
+            "computed and returns an empty deadline_fallback_pack instead -- refs found and "
+            "dropped, with nothing on this page to say so. A value here is a ceiling as well as "
+            "a budget; leave room above what a retrieve actually takes."),
     Setting("limits.transport_request_timeout_ms", "limits",
             "MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS",
             "Transport request timeout (ms)", "int", "60000", "live",
@@ -1068,6 +1074,516 @@ def _apply_build_defaults(settings: List[Setting]) -> None:
 
 
 _apply_build_defaults(SETTINGS)
+
+#: Flags production code already read and the portal did not offer. Each one is derived
+#: rather than written: the DEFAULT is the literal at the read site, `applies` is
+#: `restart` where the read happens at module level and `live` where it happens inside a
+#: function, and the group is the one the existing settings' own vocabulary puts it in.
+#: A flag whose default could not be read, or whose read sites disagree about it, is NOT
+#: here -- a declared default is written as an explicit value when a deployment is
+#: cloned, so a guessed one would reconfigure the clone.
+SETTINGS.extend([
+    Setting("embedding.cache_entries", "embedding", "MATRIXARK_EMBEDDING_CACHE_ENTRIES",
+            "Cache entries", "int", "8192", "restart",
+            "Cache entries. Defaults to 8192. Frozen when the process starts. Read by "
+            "matrixark_mcp_embeddings."),
+    Setting("embedding.dims", "embedding", "MATRIXARK_EMBEDDING_DIMS",
+            "Dims", "int", "512", "restart",
+            "Dims. Defaults to 512. Frozen when the process starts. Read by matrixark_mcp_embeddings."),
+    Setting("embedding.require_oss_embeddings", "embedding", "MATRIXARK_REQUIRE_OSS_EMBEDDINGS",
+            "Require oss embeddings", "bool", "0", "restart",
+            "Require oss embeddings. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("embedding.rust_proxy_native_c_api_compat", "embedding", "MATRIXARK_RUST_PROXY_NATIVE_MATRIXARK_C_API_COMPAT",
+            "Rust proxy native c api compat", "bool", "0", "restart",
+            "Rust proxy native c api compat. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_rust_proxy_process, matrixark_mcp_temporal_adapters."),
+    Setting("embedding.text_prefix_share", "embedding", "MATRIXARK_EMBEDDING_TEXT_PREFIX_SHARE",
+            "Text prefix share", "float", "0.2", "restart",
+            "Text prefix share. Defaults to 0.2. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("embedding.vector_base64", "embedding", "MATRIXARK_EMBEDDING_VECTOR_BASE64",
+            "Vector base64", "bool", "1", "restart",
+            "Vector base64. On by default. Frozen when the process starts. Read by matrixark_mcp_core."),
+    Setting("embedding.vector_int8", "embedding", "MATRIXARK_EMBEDDING_VECTOR_INT8",
+            "Vector int8", "bool", "0", "restart",
+            "Vector int8. Off by default. Frozen when the process starts. Read by matrixark_mcp_core."),
+    Setting("extraction.require_llm_time_compression", "extraction", "MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION",
+            "Require llm time compression", "bool", "0", "restart",
+            "Require llm time compression. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("extraction.summary_dirty_debug_fields", "extraction", "MATRIXARK_SUMMARY_DIRTY_DEBUG_FIELDS",
+            "Summary dirty debug fields", "bool", "0", "restart",
+            "Summary dirty debug fields. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config."),
+    Setting("extraction.time_compression_max_windows_per_refresh", "extraction", "MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH",
+            "Time compression max windows per refresh", "int", "4", "restart",
+            "Time compression maximum windows per refresh. Defaults to 4. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("extraction.time_compression_min_event_age_ms", "extraction", "MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS",
+            "Time compression min event age ms", "int", "0", "restart",
+            "Time compression minimum event age milliseconds. Defaults to 0. Frozen when the process "
+            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("extraction.time_compression_summary_timeout_sec", "extraction", "MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC",
+            "Time compression summary timeout sec", "float", "30.0", "restart",
+            "Time compression summary timeout seconds. Defaults to 30.0. Frozen when the process starts. "
+            "Read by matrixark_mcp_core."),
+    Setting("ingestion.allow_local_backend", "ingestion", "MATRIXARK_ALLOW_LOCAL_BACKEND",
+            "Allow local backend", "bool", "0", "restart",
+            "Allow local backend. Off by default. Frozen when the process starts. Read by "
+            "matrixark_codex_hook, matrixark_mcp_runtime_config."),
+    Setting("ingestion.idle_drain_min_interval_ms", "ingestion", "MATRIXARK_IDLE_DRAIN_MIN_INTERVAL_MS",
+            "Idle drain min interval ms", "int", "1000", "restart",
+            "Idle drain minimum interval milliseconds. Defaults to 1000. Frozen when the process starts. "
+            "Read by matrixark_local_adapter_retrieval."),
+    Setting("ingestion.local_binary_vectors", "ingestion", "MATRIXARK_LOCAL_BINARY_VECTORS",
+            "Local binary vectors", "bool", "1", "restart",
+            "Local binary vectors. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("ingestion.local_durable_read_cache_block_records", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_BLOCK_RECORDS",
+            "Local durable read cache block records", "int", "256", "restart",
+            "Local durable read cache block records. Defaults to 256. Frozen when the process starts. "
+            "Read by matrixark_mcp_local_adapter."),
+    Setting("ingestion.local_durable_read_cache_compress", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS",
+            "Local durable read cache compress", "bool", "1", "restart",
+            "Local durable read cache compress. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("ingestion.local_durable_read_cache_compress_level", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_COMPRESS_LEVEL",
+            "Local durable read cache compress level", "int", "6", "restart",
+            "Local durable read cache compress level. Defaults to 6. Frozen when the process starts. Read "
+            "by matrixark_mcp_local_adapter."),
+    Setting("ingestion.local_durable_read_cache_max_delta", "ingestion", "MATRIXARK_LOCAL_DURABLE_READ_CACHE_MAX_DELTA",
+            "Local durable read cache max delta", "int", "250", "restart",
+            "Local durable read cache maximum delta. Defaults to 250. Frozen when the process starts. "
+            "Read by matrixark_mcp_local_adapter."),
+    Setting("ingestion.local_jsonl_block_log", "ingestion", "MATRIXARK_LOCAL_JSONL_BLOCK_LOG",
+            "Local jsonl block log", "bool", "1", "restart",
+            "Local jsonl block log. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("ingestion.local_jsonl_compress_sealed", "ingestion", "MATRIXARK_LOCAL_JSONL_COMPRESS_SEALED",
+            "Local jsonl compress sealed", "bool", "1", "restart",
+            "Local jsonl compress sealed. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("ingestion.pre_retrieval_summary_refresh", "ingestion", "MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH",
+            "Pre retrieval summary refresh", "bool", "0", "restart",
+            "Pre retrieval summary refresh. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter, matrixark_mcp_retrieve_pre_refresh."),
+    Setting("ingestion.rust_proxy_read_lanes", "ingestion", "MATRIXARK_RUST_PROXY_READ_LANES",
+            "Rust proxy read lanes", "int", "4", "restart",
+            "Rust proxy read lanes. Defaults to 4. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("ingestion.rust_proxy_write_lanes", "ingestion", "MATRIXARK_RUST_PROXY_WRITE_LANES",
+            "Rust proxy write lanes", "int", "4", "restart",
+            "Rust proxy write lanes. Defaults to 4. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("ingestion.stream_materialize_interval_ms", "ingestion", "MATRIXARK_STREAM_MATERIALIZE_INTERVAL_MS",
+            "Stream materialize interval ms", "int", "1500", "restart",
+            "Stream materialize interval milliseconds. Defaults to 1500. Frozen when the process starts. "
+            "Read by matrixark_mcp_server."),
+    Setting("ingestion.summary_refresh_audit", "ingestion", "MATRIXARK_SUMMARY_REFRESH_AUDIT",
+            "Summary refresh audit", "bool", "0", "restart",
+            "Summary refresh audit. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config."),
+    Setting("ingestion.summary_refresh_max_backoff_ms", "ingestion", "MATRIXARK_SUMMARY_REFRESH_MAX_BACKOFF_MS",
+            "Summary refresh max backoff ms", "int", "300000", "restart",
+            "Summary refresh maximum backoff milliseconds. Defaults to 300000. Frozen when the process "
+            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("ingestion.summary_refresh_max_duty", "ingestion", "MATRIXARK_SUMMARY_REFRESH_MAX_DUTY",
+            "Summary refresh max duty", "float", "0.2", "restart",
+            "Summary refresh maximum duty. Defaults to 0.2. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.admin_timeout_ms", "limits", "MATRIXARK_ADMIN_TIMEOUT_MS",
+            "Admin timeout ms", "int", "10000", "restart",
+            "Admin timeout milliseconds. Defaults to 10000. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.backend_readiness_connect_timeout_ms", "limits", "MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS",
+            "Backend readiness connect timeout ms", "int", "1000", "restart",
+            "Backend readiness connect timeout milliseconds. Defaults to 1000. Frozen when the process "
+            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.backpressure_fallback_record_limit", "limits", "MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT",
+            "Backpressure fallback record limit", "int", "0", "restart",
+            "Backpressure fallback record limit. Defaults to 0. Frozen when the process starts. Read by "
+            "matrixark_mcp_server_request_policy."),
+    Setting("limits.backpressure_timeout_ms", "limits", "MATRIXARK_BACKPRESSURE_TIMEOUT_MS",
+            "Backpressure timeout ms", "int", "100", "restart",
+            "Backpressure timeout milliseconds. Defaults to 100. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.direct_audit_buffer_max_records", "limits", "MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS",
+            "Direct audit buffer max records", "int", "128", "restart",
+            "Direct audit buffer maximum records. Defaults to 128. Frozen when the process starts. Read "
+            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.direct_audit_flush_interval_ms", "limits", "MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS",
+            "Direct audit flush interval ms", "int", "1000", "restart",
+            "Direct audit flush interval milliseconds. Defaults to 1000. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.direct_placement_candidate_table_cache_max_entries", "limits", "MATRIXARK_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES",
+            "Direct placement candidate table cache max entri", "int", "1024", "restart",
+            "Direct placement candidate table cache maximum entries. Defaults to 1024. Frozen when the "
+            "process starts. Read by matrixark_mcp_core."),
+    Setting("limits.direct_raw_ingestion", "limits", "MATRIXARK_DIRECT_RAW_INGESTION",
+            "Direct raw ingestion", "bool", "0", "restart",
+            "Direct raw ingestion. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("limits.direct_raw_ingestion_queue", "limits", "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE",
+            "Direct raw ingestion queue", "bool", "0", "restart",
+            "Direct raw ingestion queue. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("limits.direct_record_log_shard_size", "limits", "MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE",
+            "Direct record log shard size", "int", "4096", "restart",
+            "Direct record log shard size. Defaults to 4096. Frozen when the process starts. Read by "
+            "matrixark_context_backfill."),
+    Setting("limits.direct_retrieval_candidate_cache_max_entries", "limits", "MATRIXARK_DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES",
+            "Direct retrieval candidate cache max entries", "int", "256", "restart",
+            "Direct retrieval candidate cache maximum entries. Defaults to 256. Frozen when the process "
+            "starts. Read by matrixark_mcp_core."),
+    Setting("limits.direct_write_backoff_ms", "limits", "MATRIXARK_DIRECT_WRITE_BACKOFF_MS",
+            "Direct write backoff ms", "int", "25", "restart",
+            "Direct write backoff milliseconds. Defaults to 25. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.direct_write_queue", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE",
+            "Direct write queue", "bool", "0", "restart",
+            "Direct write queue. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("limits.direct_write_queue_drain_max_batches", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES",
+            "Direct write queue drain max batches", "int", "64", "restart",
+            "Direct write queue drain maximum batches. Defaults to 64. Frozen when the process starts. "
+            "Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("limits.direct_write_queue_max_records", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS",
+            "Direct write queue max records", "int", "10000", "restart",
+            "Direct write queue maximum records. Defaults to 10000. Frozen when the process starts. Read "
+            "by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("limits.direct_write_queue_put_timeout_ms", "limits", "MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS",
+            "Direct write queue put timeout ms", "int", "1000", "restart",
+            "Direct write queue put timeout milliseconds. Defaults to 1000. Frozen when the process "
+            "starts. Read by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("limits.direct_write_retries", "limits", "MATRIXARK_DIRECT_WRITE_RETRIES",
+            "Direct write retries", "int", "3", "restart",
+            "Direct write retries. Defaults to 3. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.direct_write_throttle_ms", "limits", "MATRIXARK_DIRECT_WRITE_THROTTLE_MS",
+            "Direct write throttle ms", "int", "0", "restart",
+            "Direct write throttle milliseconds. Defaults to 0. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("limits.feedback_timeout_ms", "limits", "MATRIXARK_FEEDBACK_TIMEOUT_MS",
+            "Feedback timeout ms", "int", "15000", "restart",
+            "Feedback timeout milliseconds. Defaults to 15000. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.ingest_timeout_ms", "limits", "MATRIXARK_INGEST_TIMEOUT_MS",
+            "Ingest timeout ms", "int", "30000", "restart",
+            "Ingest timeout milliseconds. Defaults to 30000. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.intern_backend_metadata", "limits", "MATRIXARK_INTERN_BACKEND_METADATA",
+            "Intern backend metadata", "bool", "0", "restart",
+            "Intern backend metadata. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_append."),
+    Setting("limits.max_concurrent_ingest", "limits", "MATRIXARK_MAX_CONCURRENT_INGEST",
+            "Max concurrent ingest", "int", "32", "restart",
+            "Maximum concurrent ingest. Defaults to 32. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.replay_timeout_ms", "limits", "MATRIXARK_REPLAY_TIMEOUT_MS",
+            "Replay timeout ms", "int", "10000", "restart",
+            "Replay timeout milliseconds. Defaults to 10000. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.resource_ocr_timeout_s", "limits", "MATRIXARK_RESOURCE_OCR_TIMEOUT_S",
+            "Resource ocr timeout s", "float", "30.0", "restart",
+            "Resource ocr timeout seconds. Defaults to 30.0. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("limits.retrieve_shed_cooldown_ms", "limits", "MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS",
+            "Retrieve shed cooldown ms", "int", "0", "restart",
+            "Retrieve shed cooldown milliseconds. Defaults to 0. Frozen when the process starts. Read by "
+            "matrixark_mcp_server."),
+    Setting("limits.rust_proxy_startup_warmup_timeout_ms", "limits", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_TIMEOUT_MS",
+            "Rust proxy startup warmup timeout ms", "int", "120000", "restart",
+            "Rust proxy startup warmup timeout milliseconds. Defaults to 120000. Frozen when the process "
+            "starts. Read by matrixark_rust_proxy_daemon."),
+    Setting("retrieval.allow_python_retrieval_fallback", "retrieval", "MATRIXARK_ALLOW_PYTHON_RETRIEVAL_FALLBACK",
+            "Allow python retrieval fallback", "bool", "0", "restart",
+            "Allow python retrieval fallback. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_retrieval."),
+    Setting("retrieval.audit_debug_payload", "retrieval", "MATRIXARK_AUDIT_DEBUG_PAYLOAD",
+            "Audit debug payload", "bool", "0", "restart",
+            "Audit debug payload. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_context_pack, matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.audit_workers", "retrieval", "MATRIXARK_AUDIT_WORKERS",
+            "Audit workers", "int", "2", "restart",
+            "Audit workers. Defaults to 2. Frozen when the process starts. Read by matrixark_mcp_server."),
+    Setting("retrieval.augment_cross_session_budget_ratio", "retrieval", "MATRIXARK_AUGMENT_CROSS_SESSION_BUDGET_RATIO",
+            "Augment cross session budget ratio", "float", "0.6", "restart",
+            "Augment cross session budget ratio. Defaults to 0.6. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config."),
+    Setting("retrieval.codex_hook_capture_raw_payload", "retrieval", "MATRIXARK_CODEX_HOOK_CAPTURE_RAW_PAYLOAD",
+            "Codex hook capture raw payload", "bool", "0", "restart",
+            "Codex hook capture raw payload. Off by default. Frozen when the process starts. Read by "
+            "matrixark_codex_hook."),
+    Setting("retrieval.context_debug_records", "retrieval", "MATRIXARK_CONTEXT_DEBUG_RECORDS",
+            "Context debug records", "bool", "0", "restart",
+            "Context debug records. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config, matrixark_mcp_serving_records."),
+    Setting("retrieval.context_event_time_index_full_payload", "retrieval", "MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD",
+            "Context event time index full payload", "bool", "0", "restart",
+            "Context event time index full payload. Off by default. Frozen when the process starts. Read "
+            "by matrixark_mcp_event_keys, matrixark_temporal_direct_backend."),
+    Setting("retrieval.context_pack_cache_max_entries", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES",
+            "Context pack cache max entries", "int", "256", "restart",
+            "Context pack cache maximum entries. Defaults to 256. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters."),
+    Setting("retrieval.context_pack_cache_ttl_s", "retrieval", "MATRIXARK_CONTEXT_PACK_CACHE_TTL_S",
+            "Context pack cache ttl s", "float", "30.0", "restart",
+            "Context pack cache time to live seconds. Defaults to 30.0. Frozen when the process starts. "
+            "Read by matrixark_mcp_local_adapter, matrixark_mcp_temporal_adapters."),
+    Setting("retrieval.context_pack_debug_refs", "retrieval", "MATRIXARK_CONTEXT_PACK_DEBUG_REFS",
+            "Context pack debug refs", "bool", "0", "restart",
+            "Context pack debug refs. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_broad_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO",
+            "Cross session broad budget ratio", "float", "0.15", "restart",
+            "Cross session broad budget ratio. Defaults to 0.15. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_current_state_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO",
+            "Cross session current state budget ratio", "float", "0.2", "restart",
+            "Cross session current state budget ratio. Defaults to 0.2. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_min_budget_tokens", "retrieval", "MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS",
+            "Cross session min budget tokens", "int", "256", "restart",
+            "Cross session minimum budget tokens. Defaults to 256. Frozen when the process starts. Read "
+            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_min_entity_bridge_refs", "retrieval", "MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS",
+            "Cross session min entity bridge refs", "int", "2", "restart",
+            "Cross session minimum entity bridge refs. Defaults to 2. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_multi_hop_budget_ratio", "retrieval", "MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO",
+            "Cross session multi hop budget ratio", "float", "0.2", "restart",
+            "Cross session multi hop budget ratio. Defaults to 0.2. Frozen when the process starts. Read "
+            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_profile_min_entity_bridge_refs", "retrieval", "MATRIXARK_CROSS_SESSION_PROFILE_MIN_ENTITY_BRIDGE_REFS",
+            "Cross session profile min entity bridge refs", "int", "3", "restart",
+            "Cross session profile minimum entity bridge refs. Defaults to 3. Frozen when the process "
+            "starts. Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.cross_session_raw_evidence_min_score", "retrieval", "MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE",
+            "Cross session raw evidence min score", "float", "0.45", "restart",
+            "Cross session raw evidence minimum score. Defaults to 0.45. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.direct_write_queue_allow_sync_context", "retrieval", "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT",
+            "Direct write queue allow sync context", "bool", "0", "restart",
+            "Direct write queue allow sync context. Off by default. Frozen when the process starts. Read "
+            "by matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("retrieval.disable_native_context_pack", "retrieval", "MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK",
+            "Disable native context pack", "bool", "0", "restart",
+            "Disable native context pack. Off by default. Frozen when the process starts. Read by "
+            "matrixark_temporal_direct_read."),
+    Setting("retrieval.hard_max_children_scored_per_parent", "retrieval", "MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT",
+            "Hard max children scored per parent", "int", "100000", "restart",
+            "Hard maximum children scored per parent. Defaults to 100000. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("retrieval.hook_additional_context_char_limit", "retrieval", "MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT",
+            "Hook additional context char limit", "int", "40000", "restart",
+            "Hook additional context char limit. Defaults to 40000. Frozen when the process starts. Read "
+            "by matrixark_codex_hook."),
+    Setting("retrieval.hook_fail_open", "retrieval", "MATRIXARK_HOOK_FAIL_OPEN",
+            "Hook fail open", "bool", "1", "restart",
+            "Hook fail open. On by default. Frozen when the process starts. Read by matrixark_codex_hook."),
+    Setting("retrieval.memory_purge_threshold", "retrieval", "MATRIXARK_MEMORY_PURGE_THRESHOLD",
+            "Memory purge threshold", "int", "0", "restart",
+            "Memory purge threshold. Defaults to 0. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("retrieval.pack_precision_expand_max_events", "retrieval", "MATRIXARK_PACK_PRECISION_EXPAND_MAX_EVENTS",
+            "Pack precision expand max events", "int", "12", "restart",
+            "Pack precision expand maximum events. Defaults to 12. Frozen when the process starts. Read "
+            "by matrixark_mcp_runtime_config."),
+    Setting("retrieval.pack_raw_precision", "retrieval", "MATRIXARK_PACK_RAW_PRECISION",
+            "Pack raw precision", "bool", "0", "restart",
+            "Pack raw precision. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_core_packing."),
+    Setting("retrieval.query_rewrite_window", "retrieval", "MATRIXARK_QUERY_REWRITE_WINDOW",
+            "Query rewrite window", "int", "3", "restart",
+            "Query rewrite window. Defaults to 3. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config."),
+    Setting("retrieval.remote_only_cross_session_budget_ratio", "retrieval", "MATRIXARK_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO",
+            "Remote only cross session budget ratio", "float", "0.3", "restart",
+            "Remote only cross session budget ratio. Defaults to 0.3. Frozen when the process starts. "
+            "Read by matrixark_mcp_runtime_config."),
+    Setting("retrieval.remote_only_local_fallback_floor_tokens", "retrieval", "MATRIXARK_REMOTE_ONLY_LOCAL_FALLBACK_FLOOR_TOKENS",
+            "Remote only local fallback floor tokens", "int", "2048", "restart",
+            "Remote only local fallback floor tokens. Defaults to 2048. Frozen when the process starts. "
+            "Read by matrixark_mcp_runtime_config."),
+    Setting("retrieval.resource_overlap_tokens", "retrieval", "MATRIXARK_RESOURCE_OVERLAP_TOKENS",
+            "Resource overlap tokens", "int", "24", "restart",
+            "Resource overlap tokens. Defaults to 24. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("retrieval.rust_proxy_dedicated_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
+            "Rust proxy dedicated pack lanes", "bool", "0", "restart",
+            "Rust proxy dedicated pack lanes. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("retrieval.rust_proxy_pack_lanes", "retrieval", "MATRIXARK_RUST_PROXY_PACK_LANES",
+            "Rust proxy pack lanes", "int", "8", "restart",
+            "Rust proxy pack lanes. Defaults to 8. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("retrieval.segment_max_new_tokens", "retrieval", "MATRIXARK_SEGMENT_MAX_NEW_TOKENS",
+            "Segment max new tokens", "int", "512", "restart",
+            "Segment maximum new tokens. Defaults to 512. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("retrieval.session_commit_threshold", "retrieval", "MATRIXARK_SESSION_COMMIT_THRESHOLD",
+            "Session commit threshold", "int", "20", "restart",
+            "Session commit threshold. Defaults to 20. Frozen when the process starts. Read by "
+            "matrixark_agent_hook, matrixark_codex_hook."),
+    Setting("retrieval.summary_refresh_pass_budget_ms", "retrieval", "MATRIXARK_SUMMARY_REFRESH_PASS_BUDGET_MS",
+            "Summary refresh pass budget ms", "int", "30000", "restart",
+            "Summary refresh pass budget milliseconds. Defaults to 30000. Frozen when the process starts. "
+            "Read by matrixark_local_adapter_summaries."),
+    Setting("retrieval.temporalstore_async_context_warmup", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP",
+            "Temporalstore async context warmup", "bool", "1", "restart",
+            "Temporalstore async context warmup. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("retrieval.temporalstore_async_context_warmup_force", "retrieval", "MATRIXARK_TEMPORALSTORE_ASYNC_CONTEXT_WARMUP_FORCE",
+            "Temporalstore async context warmup force", "bool", "0", "restart",
+            "Temporalstore async context warmup force. Off by default. Frozen when the process starts. "
+            "Read by matrixark_temporal_direct_write."),
+    Setting("skills.dedupe_skill_chunk_embedding", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_EMBEDDING",
+            "Dedupe skill chunk embedding", "bool", "1", "restart",
+            "Dedupe skill chunk embedding. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("skills.dedupe_skill_chunk_text", "skills", "MATRIXARK_DEDUPE_SKILL_CHUNK_TEXT",
+            "Dedupe skill chunk text", "bool", "1", "restart",
+            "Dedupe skill chunk text. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("skills.enable_generic_resource_facts", "skills", "MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS",
+            "Enable generic resource facts", "bool", "0", "restart",
+            "Enable generic resource facts. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("skills.max_resource_facper_chunk", "skills", "MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK",
+            "Max resource facper chunk", "int", "2", "restart",
+            "Maximum resource facper chunk. Defaults to 2. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("skills.max_resource_facper_resource", "skills", "MATRIXARK_MAX_RESOURCE_FACTS_PER_RESOURCE",
+            "Max resource facper resource", "int", "8", "restart",
+            "Maximum resource facper resource. Defaults to 8. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("skills.max_resource_fact_chunks", "skills", "MATRIXARK_MAX_RESOURCE_FACT_CHUNKS",
+            "Max resource fact chunks", "int", "8", "restart",
+            "Maximum resource fact chunks. Defaults to 8. Frozen when the process starts. Read by "
+            "matrixark_mcp_core."),
+    Setting("skills.resource_append_batch_records", "skills", "MATRIXARK_RESOURCE_APPEND_BATCH_RECORDS",
+            "Resource append batch records", "int", "512", "restart",
+            "Resource append batch records. Defaults to 512. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("skills.resource_async_default_path_count", "skills", "MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT",
+            "Resource async default path count", "int", "32", "restart",
+            "Resource async default path count. Defaults to 32. Frozen when the process starts. Read by "
+            "matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("skills.resource_async_default_text_chars", "skills", "MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS",
+            "Resource async default text chars", "int", "200000", "restart",
+            "Resource async default text chars. Defaults to 200000. Frozen when the process starts. Read "
+            "by matrixark_mcp_core, matrixark_mcp_runtime_config."),
+    Setting("skills.resource_event_text_chars", "skills", "MATRIXARK_RESOURCE_EVENT_TEXT_CHARS",
+            "Resource event text chars", "int", "4096", "restart",
+            "Resource event text chars. Defaults to 4096. Frozen when the process starts. Read by "
+            "matrixark_mcp_core_resource_io."),
+    Setting("skills.resource_import_queue_max", "skills", "MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX",
+            "Resource import queue max", "int", "64", "restart",
+            "Resource import queue maximum. Defaults to 64. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("skills.resource_import_workers", "skills", "MATRIXARK_RESOURCE_IMPORT_WORKERS",
+            "Resource import workers", "int", "2", "restart",
+            "Resource import workers. Defaults to 2. Frozen when the process starts. Read by "
+            "matrixark_mcp_local_adapter."),
+    Setting("skills.resource_json_records_per_chunk", "skills", "MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK",
+            "Resource json records per chunk", "int", "20", "restart",
+            "Resource json records per chunk. Defaults to 20. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_max_chunk_tokens", "skills", "MATRIXARK_RESOURCE_MAX_CHUNK_TOKENS",
+            "Resource max chunk tokens", "int", "240", "restart",
+            "Resource maximum chunk tokens. Defaults to 240. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_max_directory_depth", "skills", "MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH",
+            "Resource max directory depth", "int", "8", "restart",
+            "Resource maximum directory depth. Defaults to 8. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_max_directory_files", "skills", "MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES",
+            "Resource max directory files", "int", "256", "restart",
+            "Resource maximum directory files. Defaults to 256. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_max_total_chunks", "skills", "MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS",
+            "Resource max total chunks", "int", "2048", "restart",
+            "Resource maximum total chunks. Defaults to 2048. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_overlap_chars", "skills", "MATRIXARK_RESOURCE_OVERLAP_CHARS",
+            "Resource overlap chars", "int", "120", "restart",
+            "Resource overlap chars. Defaults to 120. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_slim_chunk_metadata", "skills", "MATRIXARK_RESOURCE_SLIM_CHUNK_METADATA",
+            "Resource slim chunk metadata", "bool", "0", "restart",
+            "Resource slim chunk metadata. Off by default. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.resource_table_rows_per_chunk", "skills", "MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK",
+            "Resource table rows per chunk", "int", "20", "restart",
+            "Resource table rows per chunk. Defaults to 20. Frozen when the process starts. Read by "
+            "matrixark_resource_parser."),
+    Setting("skills.rust_proxy_shared_process", "skills", "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+            "Rust proxy shared process", "bool", "1", "restart",
+            "Rust proxy shared process. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters."),
+    Setting("skills.rust_proxy_startup_warmup_max_selected_refs", "skills", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_MAX_SELECTED_REFS",
+            "Rust proxy startup warmup max selected refs", "int", "1", "restart",
+            "Rust proxy startup warmup maximum selected refs. Defaults to 1. Frozen when the process "
+            "starts. Read by matrixark_rust_proxy_daemon."),
+    Setting("skills.skill_discovery_max_skills", "skills", "MATRIXARK_SKILL_DISCOVERY_MAX_SKILLS",
+            "Skill discovery max skills", "int", "8", "restart",
+            "Skill discovery maximum skills. Defaults to 8. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config."),
+    Setting("skills.skill_discovery_min_support", "skills", "MATRIXARK_SKILL_DISCOVERY_MIN_SUPPORT",
+            "Skill discovery min support", "int", "2", "restart",
+            "Skill discovery minimum support. Defaults to 2. Frozen when the process starts. Read by "
+            "matrixark_mcp_runtime_config."),
+    Setting("storage_engine.index_keyword_limit", "storage_engine", "MATRIXARK_INDEX_KEYWORD_LIMIT",
+            "Index keyword limit", "int", "12", "restart",
+            "Index keyword limit. Defaults to 12. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("storage_engine.index_only_consultable_terms", "storage_engine", "MATRIXARK_INDEX_ONLY_CONSULTABLE_TERMS",
+            "Index only consultable terms", "bool", "1", "restart",
+            "Index only consultable terms. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("storage_engine.index_posting_lists", "storage_engine", "MATRIXARK_INDEX_POSTING_LISTS",
+            "Index posting lists", "bool", "1", "restart",
+            "Index posting lists. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("storage_engine.index_skip_owner_derivable_terms", "storage_engine", "MATRIXARK_INDEX_SKIP_OWNER_DERIVABLE_TERMS",
+            "Index skip owner derivable terms", "bool", "1", "restart",
+            "Index skip owner derivable terms. On by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_ingest_resource_chunk_records."),
+    Setting("storage_engine.max_secondary_index_records_per_operation", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION",
+            "Max secondary index records per operation", "int", "128", "restart",
+            "Maximum secondary index records per operation. Defaults to 128. Frozen when the process "
+            "starts. Read by matrixark_mcp_core, matrixark_mcp_indexing."),
+    Setting("storage_engine.max_secondary_index_refs_per_posting", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING",
+            "Max secondary index refs per posting", "int", "512", "restart",
+            "Maximum secondary index refs per posting. Defaults to 512. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
+    Setting("storage_engine.max_secondary_index_terms_per_record", "storage_engine", "MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD",
+            "Max secondary index terms per record", "int", "10", "restart",
+            "Maximum secondary index terms per record. Defaults to 10. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
+    Setting("storage_engine.native_side_index_assume_fresh", "storage_engine", "MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH",
+            "Native side index assume fresh", "bool", "0", "restart",
+            "Native side index assume fresh. Off by default. Frozen when the process starts. Read by "
+            "matrixark_mcp_temporal_adapters, matrixark_temporal_direct_backend."),
+    Setting("storage_engine.rust_proxy_startup_warmup_full_scan", "storage_engine", "MATRIXARK_RUST_PROXY_STARTUP_WARMUP_FULL_SCAN",
+            "Rust proxy startup warmup full scan", "bool", "1", "restart",
+            "Rust proxy startup warmup full scan. On by default. Frozen when the process starts. Read by "
+            "matrixark_rust_proxy_daemon."),
+    Setting("storage_engine.secondary_index_posting_bucket_ms", "storage_engine", "MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS",
+            "Secondary index posting bucket ms", "int", "60000", "restart",
+            "Secondary index posting bucket milliseconds. Defaults to 60000. Frozen when the process "
+            "starts. Read by matrixark_mcp_core, matrixark_mcp_indexing."),
+    Setting("storage_engine.secondary_index_time_bucket_ms", "storage_engine", "MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS",
+            "Secondary index time bucket ms", "int", "60000", "restart",
+            "Secondary index time bucket milliseconds. Defaults to 60000. Frozen when the process starts. "
+            "Read by matrixark_mcp_core, matrixark_mcp_indexing."),
+    Setting("storage_engine.stream_materialize_max_scopes", "storage_engine", "MATRIXARK_STREAM_MATERIALIZE_MAX_SCOPES",
+            "Stream materialize max scopes", "int", "20000", "restart",
+            "Stream materialize maximum scopes. Defaults to 20000. Frozen when the process starts. Read "
+            "by matrixark_mcp_server."),
+])
+
 SETTINGS.extend(_knob_settings())
 SETTINGS_BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
 
