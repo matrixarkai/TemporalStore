@@ -120,90 +120,26 @@ def clamp_refs_to_token_budget(
     return kept, trimmed, used_tokens
 
 
-def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
-    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
-    audit_ref = {
-        "ref_type": candidate.get("ref_type", ""),
-        "ref_hash": candidate.get("ref_hash"),
-        "context_class": candidate.get("context_class") or candidate.get("ref_type", ""),
-        "drop_reason": reason,
-        "reason": reason,
-        "score": candidate.get("score", 0.0),
-        "origin_score": candidate.get("origin_score", 0.0),
-        "packing_score": round(packing_sort_key(candidate, str(candidate.get("packing_policy") or "fact"))[0], 6),
-        "token_estimate": token_estimate,
-        "token_cost": token_estimate,
-        "raw_uri": candidate.get("raw_uri", ""),
-        "source_ref": candidate.get("source_ref", ""),
-        "citation": candidate.get("citation") or candidate.get("source_ref", ""),
-        "resource_type": candidate.get("resource_type", ""),
-        "resource_version": candidate.get("resource_version") or metadata.get("resource_version", ""),
-        "version_state": candidate.get("version_state", "current"),
-        "stale_or_superseded": bool(candidate.get("stale_or_superseded", False)),
-        "access_decision": candidate.get("access_decision", "allowed_by_scope"),
-        "selection_reason": candidate.get("selection_reason", ""),
-        "matched_index_terms": candidate.get("matched_index_terms", []),
-        "node_hash": candidate.get("node_hash"),
-        "node_path": candidate.get("node_path", []),
-    }
-    for field in [
-        "memory_scope",
-        "session_continuity",
-        "extraction_phase",
-        "entity_type",
-        "entity_name",
-        "event_type",
-        "source_role",
-        "classification",
-        "extraction_status",
-        "extraction_mode",
-        "source_roles",
-        "source_role_counts",
-        "budget_source_roles",
-        "budget_source_role_counts",
-        "budget_memory_layer",
-        "budget_memory_selection_policies",
-        "memory_selection_policy_budget_capped_policies",
-        "memory_layer_budget_capped_layer",
-        "memory_layer_floor_reserved_layer",
-        "source_hook_types",
-        "source_hook_type_counts",
-        "source_codex_events",
-        "source_codex_event_counts",
-        "source_role_budget_capped_roles",
-        "profile_shadowed_by_ref_hash",
-        "profile_shadowed_reason",
-    ]:
-        value = candidate.get(field)
-        if value not in (None, "", [], {}):
-            audit_ref[field] = value
-    return audit_ref
-
-
-def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    ref_type = str(candidate.get("ref_type") or "")
-    context_class = str(candidate.get("context_class") or "")
-    is_memory_candidate = ref_type in {
-        "event",
-        "entity",
-        "segment",
-        "summary",
-        "compression",
-        "resource_chunk",
-        "skill_section",
-    } or context_class in {
-        "raw_event",
-        "entity_state",
-        "assistant_decision",
-        "tool_evidence",
-        "summary",
-        "compression",
-        "resource_fact",
-        "resource_entity_fact",
-    }
-    if not is_memory_candidate and not is_resource_or_skill_candidate(candidate):
-        return
-    dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
+# `record_dropped_candidate` is not defined here. It was, with a WIDER rule than the copy in
+# matrixark_mcp_recall_scoring -- that one recorded only a resource/skill candidate or a stale
+# entity, so an audit built there counted drops it never explained. The two had also drifted the
+# other way: its `dropped_candidate_audit_ref` emits six fields this module's did not
+# (entity_name, entity_type, memory_scope, session_continuity, and the two profile_shadowed_*).
+# Neither was the complete one, so the surviving pair takes the wider rule and the richer record.
+#
+# It lives there rather than here because that module does not import matrixark_mcp_core and this
+# one does; matrixark_mcp_budget_pack, which the gateway reaches, already resolved both names
+# there.
+try:
+    from tools.matrixark_mcp_recall_scoring import (
+        dropped_candidate_audit_ref,
+        record_dropped_candidate,
+    )
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_recall_scoring import (
+        dropped_candidate_audit_ref,
+        record_dropped_candidate,
+    )
 
 
 def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:

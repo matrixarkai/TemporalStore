@@ -292,9 +292,48 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
     }
 
 
+#: A candidate whose drop is worth explaining. Taken from
+#: matrixark_mcp_core_ref_selection, which recorded these while this module recorded only a
+#: resource/skill candidate or a stale entity -- so an audit produced here counted drops it never
+#: explained, `cross_session_budget: 2` beside `refs: []`.
+MEMORY_CANDIDATE_REF_TYPES = {
+    "event",
+    "entity",
+    "segment",
+    "summary",
+    "compression",
+    "resource_chunk",
+    "skill_section",
+}
+MEMORY_CANDIDATE_CONTEXT_CLASSES = {
+    "raw_event",
+    "entity_state",
+    "assistant_decision",
+    "tool_evidence",
+    "summary",
+    "compression",
+    "resource_fact",
+    "resource_entity_fact",
+}
+
+
 def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    if not is_resource_or_skill_candidate(candidate) and not (
-        reason == "stale" and str(candidate.get("ref_type") or "") == "entity"
+    """Record WHICH ref was dropped, not only that one was.
+
+    The rule is the wider of the two this replaces and the record is the richer, because the two
+    had drifted in opposite directions and neither was complete: that one recorded more candidate
+    kinds, this one recorded more fields per candidate.
+
+    `reason == "stale"` on an entity is kept as its own clause even though an entity is now a
+    memory candidate anyway -- it was the one case the narrow rule went out of its way to include,
+    and dropping the clause would rely on the set above continuing to contain "entity".
+    """
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or "")
+    is_memory_candidate = (ref_type in MEMORY_CANDIDATE_REF_TYPES
+                           or context_class in MEMORY_CANDIDATE_CONTEXT_CLASSES)
+    if not is_memory_candidate and not is_resource_or_skill_candidate(candidate) and not (
+        reason == "stale" and ref_type == "entity"
     ):
         return
     dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
