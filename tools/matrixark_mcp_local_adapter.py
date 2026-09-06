@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64 as _base64
 import copy as _copy
 import hashlib as _hashlib
+import struct as _struct
 import queue as thread_queue
 import zlib
 from typing import Any
@@ -1473,12 +1475,115 @@ def _copy_interned_value(value: Any) -> Any:
     return _copy.deepcopy(value)
 
 
+#: The packed vector field. A separate key rather than a re-typed ``vector`` so a record is either
+#: one form or the other and a reader can tell which by looking, not by guessing.
+VECTOR_F32_KEY = "vector_f32"
+#: Off by default: a reader from before this change finds no ``vector`` on a packed record and
+#: carries on without one, which is lost recall and no error. Every other switch in this family
+#: degrades to re-deriving from the log; this one degrades to a quietly worse answer.
+LOCAL_BINARY_VECTORS = os.environ.get(
+    "MATRIXARK_LOCAL_BINARY_VECTORS", "0"
+).strip().lower() not in ("0", "false", "no", "off")
+
+
+def encode_vector_f32(values: list[float]) -> str:
+    """Little-endian float32, base64 -- 5.33 bytes a dimension against 20.96 for the JSON digits."""
+    return _base64.b64encode(
+        _struct.pack("<%df" % len(values), *[float(v) for v in values])).decode("ascii")
+
+
+def decode_vector_f32(text: str) -> list[float]:
+    raw = _base64.b64decode(text)
+    return list(_struct.unpack("<%df" % (len(raw) // 4), raw[: len(raw) // 4 * 4]))
+
+
+def _is_float_vector(value: Any) -> bool:
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(item, (int, float)) and not isinstance(item, bool)
+                    for item in value))
+
+
+def round_vector_to_f32(record: Json) -> Json:
+    """Hold the value that will be stored.
+
+    Packing only on the way to the log left the cache and the snapshot holding the original
+    float64s, so a warm read answered -0.408248 where a cold read that re-derived from the log
+    answered -0.40824800729751587. Same store, two answers, decided by which path served it.
+
+    Called from `_sanitize_jsonl_record`, which is the one thing BOTH append paths run per record.
+    The list form below is a wrapper over this; putting the rounding in the list comprehensions
+    instead reached only one of the two, because the other spells the same loop with a different
+    variable name.
+    """
+    if not LOCAL_BINARY_VECTORS or not isinstance(record, dict):
+        return record
+    if not _is_float_vector(record.get("vector")):
+        return record
+    record = dict(record)
+    record["vector"] = decode_vector_f32(encode_vector_f32(record["vector"]))
+    return record
+
+
+def round_vectors_to_f32(records: list[Json]) -> list[Json]:
+    """Hold the value that will be stored.
+
+    Packing only on the way to the log left the cache and the snapshot holding the original
+    float64s, so a warm read answered -0.408248 where a cold read that re-derived from the log
+    answered -0.40824800729751587. Same store, two answers, decided by which path served it --
+    exactly the warm-and-cold disagreement that is worth refusing to ship.
+
+    Applied where the record is made, so the cache, the snapshot and the log all carry the same
+    float32 value and packing is left with nothing to change but the bytes.
+    """
+    if not LOCAL_BINARY_VECTORS:
+        return records
+    return [round_vector_to_f32(record) for record in records]
+
+
+def pack_record_vectors(records: list[Json]) -> list[Json]:
+    """Replace list-valued ``vector`` fields with the packed form, on the way to the log."""
+    if not LOCAL_BINARY_VECTORS:
+        return records
+    out: list[Json] = []
+    for record in records:
+        vector = record.get("vector") if isinstance(record, dict) else None
+        if _is_float_vector(vector):
+            record = {key: value for key, value in record.items() if key != "vector"}
+            record[VECTOR_F32_KEY] = encode_vector_f32(vector)
+        out.append(record)
+    return out
+
+
+def unpack_record_vectors(records: list[Json]) -> list[Json]:
+    """The read-side inverse. Applied whatever the flag says, so a log written with it on still
+    reads with it off -- the flag chooses what to WRITE, never what can be read."""
+    out: list[Json] = []
+    for record in records:
+        if isinstance(record, dict) and isinstance(record.get(VECTOR_F32_KEY), str):
+            packed = record[VECTOR_F32_KEY]
+            record = {key: value for key, value in record.items() if key != VECTOR_F32_KEY}
+            try:
+                record["vector"] = decode_vector_f32(packed)
+            except (ValueError, _struct.error):
+                # A damaged vector is a lost vector, not a lost record: the row still carries its
+                # text and its identity, and retrieval falls through to the lexical path exactly as
+                # it does for a row that was never embedded.
+                pass
+        out.append(record)
+    return out
+
+
 def expand_interned_records(records: list[Json]) -> list[Json]:
     """Re-expand interned metadata tokens to full values and drop the ``matrixark_intern_dict`` sidecar
     records. This is the single read-side inverse of :func:`encode_interned_records` and is applied at
     every raw-read choke point so no downstream consumer ever sees a token. A no-op (other than
     stripping any dict records) when nothing is interned, so old inline-field logs pass through
     unchanged."""
+    # Before the fast path below, which returns early when nothing is interned -- a packed vector
+    # has nothing to do with interning and would be skipped by it.
+    if any(isinstance(record, dict) and isinstance(record.get(VECTOR_F32_KEY), str)
+           for record in records):
+        records = unpack_record_vectors(records)
     dict_map: dict[tuple[str, str], Any] = {}  # legacy per-field sidecars
     bundle_map: dict[str, dict[str, Any]] = {}  # bundle sidecars: token -> {field: value}
     saw_token = False
@@ -5012,6 +5117,9 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         }
 
     def _sanitize_jsonl_record(self, record: Json) -> Json:
+        # Above the early return, so the bulky-fields case is covered too. Both append paths run
+        # this per record, which is what makes it the right place -- see round_vector_to_f32.
+        record = round_vector_to_f32(record)
         if LOCAL_JSONL_INCLUDE_BULKY_FIELDS:
             return record
         sanitized = dict(record)
@@ -6057,10 +6165,11 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
         bulky-field-stripped; the returned list interleaves any new ``matrixark_intern_dict`` sidecar
         records (first) ahead of the encoded data records. No-op when the flag is OFF."""
         if not INTERN_RECORD_METADATA:
-            return sanitized
+            return pack_record_vectors(sanitized)
         if not self._intern_tokens_seeded:
             self._seed_intern_tokens_locked()
-        return encode_interned_records(sanitized, self._intern_emitted_tokens)
+        return pack_record_vectors(
+            encode_interned_records(sanitized, self._intern_emitted_tokens))
 
     def _seed_model_registry_seen_locked(self) -> None:
         """Seed the seen-identity set from the durable log so a fresh adapter does not re-append a
