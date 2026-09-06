@@ -678,11 +678,18 @@ fn pool_take(addr: &str) -> Option<TcpStream> {
 fn pool_put(addr: &str, stream: TcpStream) {
     CLIENT_CONN_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
-        let bucket = pool.entry(addr.to_string()).or_default();
-        if bucket.len() < CLIENT_POOL_MAX_PER_ADDR {
-            bucket.push(stream);
+        // Look the bucket up by `&str` first. `entry` needs an owned key, so reaching for it
+        // straight away allocated the address on EVERY request to find a bucket that is already
+        // there -- a new bucket happens once per address, not once per request. `pool_take` on
+        // the line above has always looked up by borrow.
+        if let Some(bucket) = pool.get_mut(addr) {
+            if bucket.len() < CLIENT_POOL_MAX_PER_ADDR {
+                bucket.push(stream);
+            }
+            // else: drop the socket (bucket full)
+            return;
         }
-        // else: drop the socket (bucket full)
+        pool.entry(addr.to_string()).or_default().push(stream);
     });
 }
 
