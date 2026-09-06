@@ -362,6 +362,81 @@ fn a_cached_answer_reads_back_as_itself() {
     );
 }
 
+/// A batch is written as ONE record, and that is worth pinning.
+///
+/// The log can take a batch two ways: N records, one per command, or one record carrying every
+/// item. The second amortises the envelope, measured at 16.9% for eight items and 19.0% for
+/// sixty-four with compression off, so the figure is the envelope rather than the compressor.
+///
+/// `batch_execute` already chooses the one-record form when the items can be found again after a
+/// crash, and nothing asserted it. That is how this kind of saving disappears: the condition
+/// (`wal_data_only_enabled() && !staged_outcomes.is_empty() && recoverable`) has three terms, any
+/// of which can quietly become false -- a flag default flips, a path stops staging outcomes -- and
+/// the batch goes back to N records with every test still green.
+///
+/// Counted through the log rather than by reading the file: records are length-framed, so counting
+/// newlines counts nothing -- a first attempt at this reported 7 for both forms -- and
+/// `info().length_bytes` is the preallocated file length rather than what the records occupy.
+#[test]
+fn a_batch_is_written_as_one_record() {
+    let items = 16usize;
+    let commands = |prefix: &str| -> Vec<Command> {
+        (0..items)
+            .map(|index| Command::StringSet {
+                key: format!("{prefix}/{index:06}"),
+                value: vec![118u8; 256],
+            })
+            .collect()
+    };
+    let records_in = |dir: &std::path::Path| -> usize {
+        crate::wal::LocalWriteAheadLogStore::new(dir.join("indexes").join("wals"))
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .map(|rows| rows.len())
+            .unwrap_or(0)
+    };
+    let engine_in = |dir: &std::path::Path| {
+        let engine = TemporalEngine::with_local_dirs(
+            32 * 1024 * 1024,
+            dir.join("cache"),
+            dir.join("pages"),
+            dir.join("indexes"),
+        );
+        engine.load_shard(1);
+        engine
+    };
+
+    let single_dir = tempfile::tempdir().unwrap();
+    let engine = engine_in(single_dir.path());
+    for command in commands("single") {
+        engine.execute(ExecuteRequest { shard_id: 1, command });
+    }
+    let one_at_a_time = records_in(single_dir.path());
+
+    let batch_dir = tempfile::tempdir().unwrap();
+    let engine = engine_in(batch_dir.path());
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: commands("batch"),
+    });
+    assert!(response.status.ok, "the batch must succeed: {:?}", response.status);
+    let as_a_batch = records_in(batch_dir.path());
+
+    println!(
+        "  BATCHFORM {items} commands | one at a time: {one_at_a_time} record(s) | as a batch: {as_a_batch} record(s)"
+    );
+
+    // The positive control: written separately they must be a record each, or "one record for the
+    // batch" would hold for an uninteresting reason.
+    assert_eq!(
+        one_at_a_time, items,
+        "written one at a time, each command should be its own record"
+    );
+    assert_eq!(
+        as_a_batch, 1,
+        "a batch should be one record carrying every item, not {items} of them"
+    );
+}
+
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     let dir = tempfile::tempdir().unwrap();
