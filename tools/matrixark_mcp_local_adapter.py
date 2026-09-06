@@ -6289,9 +6289,6 @@ class MatrixArkLocalAdapter(_LocalAdapterRetrieveMixin, _LocalAdapterIngestMixin
             )
         )
 
-    def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
-        return {"status": "ready", "backend": "local", "reason": reason}
-
     def recent_records(self, limit: int = 128) -> list[Json]:
         limit = max(1, int(limit or 1))
         records = self.read_all()

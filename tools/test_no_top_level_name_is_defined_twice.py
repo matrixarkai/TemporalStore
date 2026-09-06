@@ -13,6 +13,14 @@ zero-fraction policies entirely, which the live one cannot express; the live one
 feature-profile branch the dead one never got. Neither was the complete one. Reading either as
 current would have been wrong.
 
+The same is true INSIDE a class, and that half was missing here until a duplicated test method
+slipped past this very file: it checked module bodies only, so a method defined twice in one class
+was invisible. Seven were, across four modules and 272 lines, and one of them mattered --
+`MatrixArkLocalAdapter.ensure_backend_ready` had a rich implementation shadowed by a later
+three-line one, while `matrixark_mcp_core_session.adapter_ensure_backend_ready` tried the rich
+signature, caught the TypeError, and silently fell back. A readiness check asking for
+`probe=True, timeout_ms=1000` got `{status, backend, reason}` back and no checks at all.
+
 There is one shape that is not this defect, and it is derived rather than listed:
 
     class _HookStoreReader:            # abstract; raises NotImplementedError
@@ -64,6 +72,37 @@ def extends_the_earlier(later, name: str) -> bool:
                for spot in spots for inner in ast.walk(spot))
 
 
+
+def _is_overload_or_property_pair(copies) -> tuple:
+    """A setter is not a shadow.
+
+    `@x.setter` and `@typing.overload` deliberately define one name more than once, and the later
+    definition does not replace the earlier -- the descriptor protocol and the typing machinery keep
+    both. Derived from the decorator rather than listed, so a third such decorator is covered when
+    somebody uses it: the marker is a decorator whose attribute is `setter`, `getter` or `deleter`,
+    or whose name ends in `overload`.
+
+    NOTHING IN THIS TREE USES EITHER IDIOM RIGHT NOW -- after the seven duplicated methods were
+    resolved, zero remain, so this branch has nothing real to exempt and its control below is
+    synthetic by necessity. It is kept rather than deleted because a property setter is ordinary
+    Python and the rule would reject it the day somebody writes one; it is controlled rather than
+    trusted because a branch that never runs is a branch nobody notices breaking.
+    """
+    verdict = []
+    for node in copies:
+        marks = False
+        for decorator in getattr(node, "decorator_list", []):
+            if isinstance(decorator, ast.Attribute) and decorator.attr in {"setter", "getter",
+                                                                          "deleter"}:
+                marks = True
+            name = (decorator.id if isinstance(decorator, ast.Name)
+                    else decorator.attr if isinstance(decorator, ast.Attribute) else "")
+            if name.endswith("overload"):
+                marks = True
+        verdict.append(marks)
+    return tuple(verdict)
+
+
 def collect_shadowed() -> list[tuple[str, str, list[int], int]]:
     """(module, name, the lines each copy starts on, lines that cannot run)."""
     shadowed = []
@@ -72,17 +111,23 @@ def collect_shadowed() -> list[tuple[str, str, list[int], int]]:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
         except (SyntaxError, OSError):
             continue
-        by_name: dict[str, list] = {}
-        for node in tree.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                by_name.setdefault(node.name, []).append(node)
-        for name, copies in by_name.items():
-            if len(copies) < 2:
-                continue
-            if any(extends_the_earlier(later, name) for later in copies[1:]):
-                continue
-            dead = sum(c.end_lineno - c.lineno + 1 for c in copies[:-1])
-            shadowed.append((path.name, name, [c.lineno for c in copies], dead))
+        bodies = [("", tree.body)]
+        bodies += [(node.name + ".", node.body) for node in ast.walk(tree)
+                   if isinstance(node, ast.ClassDef)]
+        for prefix, body in bodies:
+            by_name: dict[str, list] = {}
+            for node in body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    by_name.setdefault(node.name, []).append(node)
+            for name, copies in by_name.items():
+                if len(copies) < 2:
+                    continue
+                if any(extends_the_earlier(later, name) for later in copies[1:]):
+                    continue
+                if any(_is_overload_or_property_pair(copies)):
+                    continue
+                dead = sum(c.end_lineno - c.lineno + 1 for c in copies[:-1])
+                shadowed.append((path.name, prefix + name, [c.lineno for c in copies], dead))
     return shadowed
 
 
@@ -134,6 +179,50 @@ class NoTopLevelNameIsDefinedTwiceTest(unittest.TestCase):
             extends_the_earlier(recursive, "C"),
             "a call in the body resolves to the later definition itself -- treating recursion as "
             "an exemption would exempt every self-calling function that gets redefined")
+
+    def test_a_property_setter_is_not_called_a_shadow(self) -> None:
+        """Synthetic, because the tree has no setter or overload pair to point at.
+
+        Checked in both directions: the decorated pair must be exempt, and an UNdecorated pair with
+        the same shape must not be -- otherwise the exemption would swallow the defect this file
+        exists for.
+        """
+        setter = ast.parse(
+            "class C:\n"
+            "    @property\n"
+            "    def x(self):\n"
+            "        return 1\n"
+            "    @x.setter\n"
+            "    def x(self, v):\n"
+            "        pass\n").body[0]
+        copies = [n for n in setter.body if isinstance(n, ast.FunctionDef)]
+        self.assertTrue(
+            any(_is_overload_or_property_pair(copies)),
+            "a property setter is now reported as shadowing its getter")
+
+        plain = ast.parse(
+            "class C:\n"
+            "    def x(self):\n"
+            "        return 1\n"
+            "    def x(self, v):\n"
+            "        pass\n").body[0]
+        copies = [n for n in plain.body if isinstance(n, ast.FunctionDef)]
+        self.assertFalse(
+            any(_is_overload_or_property_pair(copies)),
+            "an undecorated method defined twice is exempt, so the exemption now swallows the "
+            "defect this file exists for")
+
+        overloaded = ast.parse(
+            "class C:\n"
+            "    @typing.overload\n"
+            "    def x(self, v: int):\n"
+            "        ...\n"
+            "    def x(self, v):\n"
+            "        pass\n").body[0]
+        copies = [n for n in overloaded.body if isinstance(n, ast.FunctionDef)]
+        self.assertTrue(
+            any(_is_overload_or_property_pair(copies)),
+            "a typing.overload pair is now reported as shadowing")
 
     def test_no_module_defines_the_same_top_level_name_twice(self) -> None:
         shadowed = collect_shadowed()
