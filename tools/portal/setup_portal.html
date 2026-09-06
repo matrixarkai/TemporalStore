@@ -1719,25 +1719,39 @@ function liveStream(options) {
 
   function policyControl(name, knob) {
     var id = "pol_" + name;
+    /* Marked, not withdrawn. An override here is stored and resolved exactly like any other and
+       changes nothing, which is indistinguishable from one that works -- so it is said. But the
+       control stays: a tenant may already HAVE an override on one of these, and taking the
+       control away would leave that value set, invisible and impossible to clear from here. That
+       is the mistake the settings field made with its reset button, hidden for exactly the fields
+       that had something to clear. */
+    var inert = knob.read_by_nothing
+      ? '<span class="hint" style="margin:0 0 0 6px" title="This build resolves the value and '
+        + 'never reads it, so setting it changes nothing today. It is still shown because an '
+        + 'override already stored here would otherwise be invisible.">not read by this build'
+        + "</span>"
+      : "";
     if (!settableHere(name)) {
       /* Shown, not hidden: a customer looking for a setting needs to find it and learn where it
          lives, rather than conclude it does not exist. */
-      return '<span class="hint" style="margin:0">set it for the whole tenant</span>';
+      return '<span class="hint" style="margin:0">set it for the whole tenant</span>'
+        + inert;
     }
     if (knob.kind === "bool") {
       return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
         "<option value='0'" + (knob.value ? "" : " selected") + ">off</option>" +
-        "<option value='1'" + (knob.value ? " selected" : "") + ">on</option></select>";
+        "<option value='1'" + (knob.value ? " selected" : "") + ">on</option></select>"
+        + inert;
     }
     if (knob.kind === "choice") {
       return "<select id='" + id + "' data-knob='" + esc(name) + "'>" +
         (knob.choices || []).map(function (c) {
           return "<option value='" + esc(c) + "'" + (c === knob.value ? " selected" : "") + ">" +
             esc(c) + "</option>";
-        }).join("") + "</select>";
+        }).join("") + "</select>" + inert;
     }
     return "<input type='text' id='" + id + "' data-knob='" + esc(name) + "' value='" +
-      esc(knob.value) + "' spellcheck='false'>";
+      esc(knob.value) + "' spellcheck='false'>" + inert;
   }
 
   function renderPolicy() {

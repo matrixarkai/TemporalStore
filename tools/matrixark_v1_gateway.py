@@ -3095,6 +3095,11 @@ def _policy_view(policy_mod: Any, tenant_id: str, user_id: str) -> Json:
             "default": knob.default,
             "choices": sorted(knob.choices) if knob.choices else [],
             "description": knob.description,
+            # Travels with the knob for the same reason its description does: the policy screen
+            # offers an override for every knob in the registry, and eleven of them are read by
+            # nothing in this build. The settings field says so (a value written there is at
+            # least stored); an override written here is stored, resolved, and equally inert.
+            "read_by_nothing": name in _gwconfig.KNOBS_READ_BY_NOTHING,
         }
     return {
         "status": "ok",
