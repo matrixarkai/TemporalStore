@@ -38,10 +38,15 @@ cfg = gw._gwconfig
 # Names that only appear in a collection because something is deciding what a provider IS.
 PROVIDER_NAMES = {"deterministic", "openai_compatible", "openai_compatible_llm", "anthropic",
                   "voyage", "oss", "open_source", "sentence_transformers", "claude"}
-# The classifier's own sets, which are the one place this may be written.
+# The classifier's own sets, which are the one place this may be written. The last two belong to
+# the SUMMARY path: they were written as named sets on purpose, so the mirror test can compare them
+# against the writer's own literals rather than restate them, which is the shape this guard asks
+# for. Adding a name here is only correct for a set the classifier owns -- a literal written inline
+# at a decision site is the thing being forbidden, and it does not become allowed by being named.
 CLASSIFIER_SETS = {"_OPENAI_EXTRACTION_PROVIDERS", "_ANTHROPIC_EXTRACTION_PROVIDERS",
                    "_API_EMBEDDING_PROVIDERS", "_OSS_EMBEDDING_PROVIDERS",
-                   "_DELIBERATE_FALLBACK_PROVIDERS"}
+                   "_DELIBERATE_FALLBACK_PROVIDERS",
+                   "_SUMMARY_OSS_ALIASES", "_SUMMARY_MODEL_PROVIDERS"}
 PARTICIPATING = ("MATRIXARK_EMBEDDING_PROVIDER", "MATRIXARK_EMBEDDING_MODEL",
                  "MATRIXARK_EMBED_DRAINER")
 
