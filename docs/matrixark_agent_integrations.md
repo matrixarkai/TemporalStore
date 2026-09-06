@@ -228,8 +228,7 @@ Add to Claude Desktop's MCP config file:
       "command": "wsl.exe",
       "env": {
         "MATRIXARK_LOCAL_MODE": "cluster",
-        "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
-        "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000"
+        "MATRIXARK_MCP_BACKEND": "temporalstore-direct"
       }
     }
   }
@@ -286,8 +285,7 @@ Use the same MCP server shape:
       ],
       "env": {
         "MATRIXARK_LOCAL_MODE": "cluster",
-        "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
-        "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000"
+        "MATRIXARK_MCP_BACKEND": "temporalstore-direct"
       }
     }
   }

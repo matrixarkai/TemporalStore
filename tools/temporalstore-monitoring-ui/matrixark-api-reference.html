@@ -104,7 +104,7 @@
         <div class="doc-grid">
           <article>
             <h3>End-to-End Retrieval</h3>
-            <p><code>MATRIXARK_RETRIEVAL_TIMEOUT_MS=5000</code> is the default context retrieval budget.</p>
+            <p><code>MATRIXARK_RETRIEVAL_TIMEOUT_MS</code> sets the context retrieval budget. Unset, the MCP server allows 30000 ms; the Rust launcher supplies 20000 ms. It was 5000 ms until a cold-start retrieve was found to exceed it and lose the pack.</p>
             <ul class="doc-list">
               <li>Includes query understanding and optional LLM extraction</li>
               <li>Includes query embedding generation</li>
