@@ -139,16 +139,23 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
         default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""),
         help="Path to the Rust matrixark_rust_proxy or direct SDK binary for --backend temporalstore-rust.",
     )
+    # 60000 for both, which is the number every launcher supplies and the one the deployment
+    # runs on. These were 20000 here and 60000 in the two agent hooks: one option, one meaning,
+    # three parsers, two numbers -- so a deployment that set nothing got a timeout three times
+    # shorter or longer depending on which path asked, and only that deployment, which is the
+    # one nobody tests. `matrixark_mcp_rust_server.sh` starts THIS server, exports 60000 and
+    # passes --request-timeout-ms explicitly; the three installers export the same. So this
+    # default is reached only by a server started outside all of them, and it was the odd one.
     parser.add_argument(
         "--request-timeout-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")),
+        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")),
         help="Per-request timeout for the native TemporalStore SDK.",
     )
     parser.add_argument(
         "--io-timeout-ms",
         type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "20000")),
+        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")),
         help="BRPC I/O timeout for the native TemporalStore SDK.",
     )
 

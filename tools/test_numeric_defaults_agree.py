@@ -16,11 +16,18 @@ schema used to quote the wrong one of those two numbers at callers, which is wha
 one layer up. Both readers now agree, so the entry goes: the rule below is that a list of known
 differences which is allowed to go stale is read as a description of the tree.
 
-The five below were present when this was written and are NOT endorsed here. Several look like a
-deliberate difference between a client and the server it calls, and one is two reader paths in a
-benchmark. None has been examined, and this file does not pretend otherwise: it exists so a SEVENTH
-has to be looked at rather than joining them quietly. Strike an entry when its difference is either
-justified in the code or removed.
+The remaining three are NOT endorsed here. One looks like a deliberate difference between a client
+and the server it calls, and one is two reader paths in a benchmark. Neither has been examined, and
+this file does not pretend otherwise: it exists so the next one has to be looked at rather than
+joining them quietly. Strike an entry when its difference is either justified in the code or
+removed.
+
+The two TemporalStore SDK timeouts are struck. They were not a client/server difference: one option
+with one meaning, declared by three parsers, defaulting to 20000 in the backend resolver and 60000
+in both agent hooks. Every launcher supplies 60000 -- the three installers, the codex hook wrapper,
+the topology waiter, and `matrixark_mcp_rust_server.sh`, which starts the very server the 20000
+belonged to and passes the value explicitly. So the short number was reached only by a server
+started outside every shipped path, and the resolver now agrees at 60000.
 """
 from __future__ import annotations
 
@@ -47,10 +54,6 @@ KNOWN_DISAGREEMENTS: Dict[str, str] = {
         "two reader paths in one benchmark script, 160 and 64",
     "MATRIXARK_RETRIEVAL_TIMEOUT_MS":
         "the retrieve paths use 0 (no deadline), the MCP server 30000",
-    "MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS":
-        "hooks pass 60000, the backend resolver uses 20000",
-    "MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS":
-        "hooks pass 60000, the backend resolver uses 20000",
 }
 
 # 196 when this was written.
