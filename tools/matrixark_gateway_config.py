@@ -471,6 +471,89 @@ SETTINGS: List[Setting] = [
             "MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS",
             "Transport I/O timeout (ms)", "int", "60000", "live",
             "The I/O timeout underneath the request timeout above. Same story, same fix."),
+    # ---- offered by the config file since it existed; the portal caught up ----------------------
+    Setting("limits.backend_readiness_timeout_ms", "limits",
+            "MATRIXARK_BACKEND_READINESS_TIMEOUT_MS",
+            "Backend readiness timeout (ms)", "int", "30000", "restart",
+            "How long to keep waiting for the store to answer a readiness probe before giving up "
+            "on it. A cold store with a large log takes tens of seconds to load, so a timeout "
+            "below that turns a slow start into a failed one."),
+    Setting("limits.backend_readiness_backoff_ms", "limits",
+            "MATRIXARK_BACKEND_READINESS_BACKOFF_MS",
+            "Backend readiness retry gap (ms)", "int", "200", "restart",
+            "How long to wait between readiness probes while the store is still coming up."),
+    Setting("limits.direct_record_bundle_max_bytes", "limits",
+            "MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES",
+            "Record bundle ceiling (bytes)", "int", "65536", "restart",
+            "The largest bundle of records fetched in one round trip. Bigger bundles mean fewer "
+            "round trips and more memory held per request."),
+    Setting("limits.direct_record_hot_cache_max_records", "limits",
+            "MATRIXARK_DIRECT_RECORD_HOT_CACHE_MAX_RECORDS",
+            "Hot record cache (records)", "int", "20000", "restart",
+            "How many records the read path keeps hot. This is resident memory traded for read "
+            "latency, and the footprint panel is where you can see what it costs."),
+    Setting("retrieval.cross_session_max_candidates", "retrieval",
+            "MATRIXARK_CROSS_SESSION_MAX_CANDIDATES",
+            "Cross-session candidates", "int", "24", "restart",
+            "How many candidates a retrieve may draw from sessions other than the current one "
+            "before ranking them. Each one costs a read."),
+    Setting("retrieval.cross_session_min_score", "retrieval",
+            "MATRIXARK_CROSS_SESSION_MIN_SCORE",
+            "Cross-session score floor", "float", "0.20", "restart",
+            "The score a candidate from another session must reach to be considered at all. "
+            "Raising it makes long-term memory pickier rather than smaller."),
+    Setting("retrieval.cross_session_parallelism", "retrieval",
+            "MATRIXARK_CROSS_SESSION_PARALLELISM",
+            "Cross-session parallelism", "int", "4", "restart",
+            "How many other sessions are searched at once. Raising it shortens a retrieve and "
+            "raises the load one retrieve puts on the store."),
+    Setting("retrieval.cross_session_profile_max_sessions", "retrieval",
+            "MATRIXARK_CROSS_SESSION_PROFILE_MAX_SESSIONS",
+            "Profile sessions searched", "int", "6", "restart",
+            "How many past sessions a profile query reaches into. The durable profile is meant to "
+            "answer most of these without a scan, so this is the fallback breadth."),
+    Setting("retrieval.max_children_scored_per_parent", "retrieval",
+            "MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT",
+            "Children scored per parent", "int", "100000", "restart",
+            "How many children of one node a traversal will score. Scoring a child costs a page "
+            "read, so this is the ceiling on what one branch can cost."),
+    Setting("retrieval.shared_context_min_score", "retrieval",
+            "MATRIXARK_SHARED_CONTEXT_MIN_SCORE",
+            "Shared content score floor", "float", "0.20", "restart",
+            "The score a shared skill or resource chunk must reach before it may take part of the "
+            "pack. The share settings decide how much room it has; this decides whether it "
+            "deserves any."),
+    Setting("retrieval.mode_dependent_quota", "retrieval",
+            "MATRIXARK_MODE_DEPENDENT_QUOTA",
+            "Mode-dependent quota", "bool", "0", "restart",
+            "Off, every caller gets the same cross-session share. On, the share follows the "
+            "context source mode: a caller that already has the current session in its own prompt "
+            "gets the budget spent on long-term memory instead. Shipped off pending a measured "
+            "comparison."),
+    Setting("extraction.entity_merge_operator", "extraction",
+            "MATRIXARK_ENTITY_MERGE_OPERATOR",
+            "Entity merge operator", "str", "EUA_MERGE", "restart",
+            "Which operator decides that two extracted entities are the same one. EUA_MERGE "
+            "applies field patches deterministically, in the serving path, with no model call. "
+            "LLM_MERGE asks the extraction model instead -- and it needs the setting below turned "
+            "on as well: with that off, choosing LLM_MERGE silently gets you EUA_MERGE, which is "
+            "why the two are offered together. Confirmations and corrections always use LATEST "
+            "whatever is set here, so it is not offered as a choice.",
+            ("EUA_MERGE", "LLM_MERGE")),
+    Setting("extraction.enable_llm_merge_operator", "extraction",
+            "MATRIXARK_ENABLE_LLM_MERGE_OPERATOR",
+            "Ask the model to merge entities", "bool", "0", "restart",
+            "Off, entities are merged by the deterministic operator above. On, the extraction "
+            "model is asked as well, which costs a call per ambiguous pair."),
+    Setting("extraction.time_compression_min_events", "extraction",
+            "MATRIXARK_TIME_COMPRESSION_MIN_EVENTS",
+            "Events before compressing a window", "int", "8", "restart",
+            "How many events must gather in a window before they are compressed into a summary. "
+            "Lower compresses sooner and loses raw detail sooner."),
+    Setting("extraction.time_compression_max_raw_events_per_node", "extraction",
+            "MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE",
+            "Raw events kept per node", "int", "256", "restart",
+            "The ceiling on raw events one node keeps before compression is forced."),
     Setting("retrieval.hook_max_context_tokens", "retrieval",
             "MATRIXARK_HOOK_MAX_CONTEXT_TOKENS",
             "Agent hook context budget (tokens)", "int", "128000", "live",
