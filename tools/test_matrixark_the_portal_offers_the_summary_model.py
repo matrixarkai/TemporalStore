@@ -22,6 +22,7 @@ does.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -183,10 +184,16 @@ class TheHelpTextIsTrueTest(unittest.TestCase):
 class TheSelectHonoursTheBlankTest(unittest.TestCase):
     """Asserting that "" is in `choices` proves what the registry says, not what the page draws.
 
-    The page renders a `choices` setting as a `<select>`, and a list without the blank leaves NO
-    option selected -- the browser then shows the first, and saving pins it. This runs the shipped
-    `controlHtml` to check the blank is drawn, is selected when the value is blank, and is still
-    offered once a provider has been picked.
+    The page renders a `choices` setting as a `<select>`. A running value the list does not hold
+    used to leave NO option selected -- the browser then showed the first, the screen reported a
+    provider the deployment was not using, and saving made that report true. This runs the shipped
+    `controlHtml` to check the blank is drawn and selected, is still offered once a provider has
+    been picked, and that a value outside the list is carried and marked rather than dropped.
+
+    The last part is not hypothetical: `summary_provider()` maps `oss`, `open_source`, `local_llm`
+    and `oss_llm` onto `openai_compatible`, and the extraction reader takes `oss` and
+    `oss_with_fallback`. None of those are offered here, so a deployment configured with one had a
+    dropdown that did not contain its own provider.
     """
 
     HARNESS = os.path.join(TOOLS, "portal", "summary_provider_select_harness.js")
@@ -208,8 +215,21 @@ class TheSelectHonoursTheBlankTest(unittest.TestCase):
     def test_it_is_not_a_one_way_door(self) -> None:
         out = self._run().stdout
         self.assertIn("ok   and blank is still offered, so it is not a one-way door", out)
-        self.assertIn("ok   FLOOR: without the blank, nothing is selected and the browser shows "
-                      "the first", out)
+
+    def test_the_blank_reads_as_something(self) -> None:
+        """It is the default on this setting, so it is the row most people see selected, and it
+        used to be an empty line."""
+        self.assertIn("ok   the blank reads as something rather than nothing", self._run().stdout)
+
+    def test_a_value_outside_the_list_is_carried_and_marked(self) -> None:
+        out = self._run().stdout
+        self.assertIn("ok   a running value the list does not hold is still selected", out)
+        self.assertIn("ok   an accepted alias is shown as the running value", out)
+        self.assertIn("ok   and is marked as one the list does not offer", out)
+        self.assertIn("ok   without dropping any offered choice", out)
+        self.assertIn("ok   and exactly one option is selected", out)
+        # The floor: an offered value must NOT pick up the marking, or the mark means nothing.
+        self.assertIn("ok   FLOOR: a value the list does offer carries no marking", out)
 
 
 class TheControlsAreNotDecorativeTest(unittest.TestCase):
@@ -229,6 +249,47 @@ class TheControlsAreNotDecorativeTest(unittest.TestCase):
                         readers.append(entry)
             with self.subTest(setting=key, variable=name):
                 self.assertTrue(readers, "%s is offered and nothing reads %s" % (key, name))
+
+
+class TheTwoCopiesOfTheControlAgreeTest(unittest.TestCase):
+    """`controlHtml` exists twice: in the shipped page and in the builder that writes pages.
+
+    The harness runs the PAGE's copy, so an edit made to only one of them passes every test here
+    while the next generated page carries the old behaviour. They were identical before this
+    change and have to stay that way.
+    """
+
+    FILES = (os.path.join(TOOLS, "portal", "setup_portal.html"),
+             os.path.join(TOOLS, "portal", "build_portal_pages.py"))
+
+    @staticmethod
+    def _control(path: str) -> str:
+        text = io.open(path, encoding="utf-8").read()
+        start = text.find("function controlHtml(f)")
+        if start < 0:
+            raise AssertionError("controlHtml is not in %s" % os.path.basename(path))
+        depth = 0
+        for index in range(text.index("{", start), len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        raise AssertionError("controlHtml is not closed in %s" % os.path.basename(path))
+
+    def test_both_files_still_hold_one(self) -> None:
+        # The floor: if the reader stops finding them, the equality below is "" == "".
+        for path in self.FILES:
+            body = self._control(path)
+            self.assertGreater(len(body), 400, os.path.basename(path))
+            self.assertIn("f.choices", body, os.path.basename(path))
+
+    def test_they_are_the_same_function(self) -> None:
+        page, builder = (self._control(path) for path in self.FILES)
+        self.assertEqual(page, builder,
+                         "the page and the builder disagree about how a control is drawn; the "
+                         "harness only exercises the page")
 
 
 if __name__ == "__main__":

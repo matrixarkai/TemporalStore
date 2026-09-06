@@ -41,11 +41,39 @@ ok("a chosen provider is the one selected",
 ok("and blank is still offered, so it is not a one-way door",
    chosen.indexOf('<option value=""') >= 0, chosen);
 
-/* The comparison: a list WITHOUT the blank cannot express "same as extraction". */
+/* The blank is the DEFAULT on this setting, so it is the row most people see selected. Rendered
+   bare it was an empty line in the dropdown. */
+ok("the blank reads as something rather than nothing",
+   blank.indexOf(">(not set)</option>") >= 0, blank);
+
+/* A list WITHOUT the blank used to mean nothing was selected and the browser showed the first --
+   the screen then reported a provider the deployment was not running, and saving made it true.
+   The running value is carried now, whatever the list holds. */
 const withoutBlank = controlHtml(Object.assign({}, field,
   { choices: ["deterministic", "openai_compatible"] }));
-ok("FLOOR: without the blank, nothing is selected and the browser shows the first",
-   withoutBlank.indexOf("selected") < 0, withoutBlank);
+ok("a running value the list does not hold is still selected",
+   /<option value="" selected>/.test(withoutBlank), withoutBlank);
+ok("and it is not silently presented as an offered choice",
+   withoutBlank.indexOf("(not set)") >= 0, withoutBlank);
+
+/* The case this is really for. summary_provider() maps oss, open_source, local_llm and oss_llm
+   onto openai_compatible, and none of them are offered here, so a deployment configured with one
+   is a deployment whose provider is not in this list. */
+const alias = controlHtml(Object.assign({}, field, { value: "oss" }));
+ok("an accepted alias is shown as the running value",
+   /<option value="oss" selected>/.test(alias), alias);
+ok("and is marked as one the list does not offer",
+   alias.indexOf("oss (in use, not offered)") >= 0, alias);
+ok("without dropping any offered choice",
+   ["", "deterministic", "openai_compatible"].every(function (c) {
+     return alias.indexOf('<option value="' + c + '"') >= 0;
+   }), alias);
+ok("and exactly one option is selected",
+   (alias.match(/ selected>/g) || []).length === 1, alias);
+
+/* The floor for all of the above: an offered value must NOT be marked. */
+ok("FLOOR: a value the list does offer carries no marking",
+   chosen.indexOf("not offered") < 0, chosen);
 
 console.log(failures ? "\n" + failures + " failure(s)" : "\nall good");
 process.exit(failures ? 1 : 0);

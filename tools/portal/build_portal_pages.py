@@ -1326,9 +1326,27 @@ SETUP_JS = r"""
         '<option value="1"' + (f.value === "1" ? " selected" : "") + ">on</option></select>";
     }
     if (f.choices && f.choices.length) {
-      return "<select" + attr + ">" + f.choices.map(function (c) {
-        return '<option value="' + esc(c) + '"' + (c === f.value ? " selected" : "") + ">" +
-          esc(c) + "</option>";
+      /* The value a deployment is RUNNING is not always one of the offered choices. The provider
+         readers accept aliases this list does not carry -- summary_provider() maps oss,
+         open_source, local_llm and oss_llm onto openai_compatible, and the extraction reader
+         takes oss and oss_with_fallback. Rendering only the offered list leaves nothing
+         selected, so the browser shows the FIRST option: the screen then reports a provider the
+         deployment is not using, and saving the form makes that report true. Carry the running
+         value as its own option, marked, so the screen is honest and a save is a no-op.
+
+         The empty choice gets a label too. Rendered bare it is a blank row, which tells the
+         reader exactly as much as it looks like it does -- and on summary.provider that blank
+         is the DEFAULT, so it is the row most people see selected. */
+      var running = f.value == null ? "" : String(f.value);
+      var offered = f.choices.slice();
+      if (offered.indexOf(running) < 0) { offered.push(running); }
+      return "<select" + attr + ">" + offered.map(function (c) {
+        var label;
+        if (c === "") { label = "(not set)"; }
+        else if (f.choices.indexOf(c) < 0) { label = c + " (in use, not offered)"; }
+        else { label = c; }
+        return '<option value="' + esc(c) + '"' + (c === running ? " selected" : "") + ">" +
+          esc(label) + "</option>";
       }).join("") + "</select>";
     }
     return '<input type="text"' + attr + ' spellcheck="false" value="' + esc(f.value || "") + '">';
