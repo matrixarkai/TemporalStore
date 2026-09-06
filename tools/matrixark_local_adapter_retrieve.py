@@ -303,6 +303,86 @@ def _tenant_retrieval_limit(name: str, scope: Any, fallback: int) -> int:
         return fallback
 
 
+
+def first_explicit_bool(key: str, *sources: Json) -> bool | None:
+    """The first of these sources that states `key` explicitly, or None if none does.
+
+    "Explicitly" is the whole point: a missing key, None and "" all mean "did not say", and are
+    skipped so a later source can answer. Only a value that actually spells a boolean -- a bool, a
+    number, or one of the on/off words -- stops the search. Returning None rather than False keeps
+    "nobody said" distinguishable from "somebody said no", which is what lets the caller fall back
+    to its own default instead of silently taking the off arm.
+    """
+    for source in sources:
+        if not isinstance(source, dict) or key not in source:
+            continue
+        value = source.get(key)
+        if value in (None, ""):
+            continue
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off"}:
+                return False
+    return None
+
+def scope_from_node_path(node_path: Any) -> Json:
+    """Recover the access scope encoded in a node path, as far as the path states it.
+
+    A node path carries its scope as `tenant:`/`user:`/`session:` prefixed segments. Only the
+    segments actually present are returned, and empty values are dropped, so the result says what
+    the path KNOWS rather than filling gaps with blanks -- a caller comparing scopes must be able
+    to tell an absent field from an empty one.
+    """
+    if not isinstance(node_path, list):
+        return {}
+    recovered_scope: Json = {}
+    for part in node_path:
+        value = str(part or "")
+        if value.startswith("tenant:"):
+            recovered_scope["tenant_id"] = value.split(":", 1)[1]
+        elif value.startswith("user:"):
+            recovered_scope["user_id"] = value.split(":", 1)[1]
+        elif value.startswith("session:"):
+            recovered_scope["session_id"] = value.split(":", 1)[1]
+    return {key: value for key, value in recovered_scope.items() if value}
+
+def stored_encoder_name(record: Json) -> str:
+    """Which encoder wrote this record's vector.
+
+    Owner records carry it under `embedding_meta`, not at the top level: the separate
+    embedding row was folded into its owner and its fields ride along there. Reading only
+    the top level found nothing on every record a current ingest writes, so the check
+    silently never applied -- the shape of bug it exists to catch.
+    """
+    meta = record.get("embedding_meta")
+    if isinstance(meta, dict):
+        name = meta.get("model") or meta.get("model_ref") or ""
+        if name:
+            return str(name)
+    return str(record.get("model") or record.get("model_ref") or "")
+
+def profile_summary_scope_matches(record: Json, query_scope: Json) -> bool:
+    """Does this record's node path place it in a scope the query may see?
+
+    Delegates the comparison rather than repeating it: the path states only what it states, and
+    `scope_matches` owns what counts as a match. Kept separate from the general recovery path
+    because a profile summary is matched on its node path alone.
+    """
+    if record.get("record_type") != "context_summary":
+        return False
+    node_path = [str(part or "") for part in record.get("node_path", []) if str(part or "")]
+    if "profile:long_term_memory" not in node_path:
+        return False
+    path_scope = scope_from_node_path(node_path)
+    if query_scope.get("account_id") and not path_scope.get("account_id"):
+        path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
+    return scope_matches(path_scope, query_scope)
 class _LocalAdapterRetrieveMixin:
     def retrieve(self, args: Json) -> Json:
         started_perf = time.perf_counter()
@@ -740,24 +820,6 @@ class _LocalAdapterRetrieveMixin:
                     recovered[key] = value
             return recovered
 
-        def first_explicit_bool(key: str, *sources: Json) -> bool | None:
-            for source in sources:
-                if not isinstance(source, dict) or key not in source:
-                    continue
-                value = source.get(key)
-                if value in (None, ""):
-                    continue
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, (int, float)):
-                    return bool(value)
-                if isinstance(value, str):
-                    normalized = value.strip().lower()
-                    if normalized in {"1", "true", "yes", "on"}:
-                        return True
-                    if normalized in {"0", "false", "no", "off"}:
-                        return False
-            return None
 
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
             embedding_metadata = embedding_metadata_by_ref.get(
@@ -1072,19 +1134,6 @@ class _LocalAdapterRetrieveMixin:
             if source_scope:
                 node_scope_by_hash[source_node_hash] = source_scope
 
-        def scope_from_node_path(node_path: Any) -> Json:
-            if not isinstance(node_path, list):
-                return {}
-            recovered_scope: Json = {}
-            for part in node_path:
-                value = str(part or "")
-                if value.startswith("tenant:"):
-                    recovered_scope["tenant_id"] = value.split(":", 1)[1]
-                elif value.startswith("user:"):
-                    recovered_scope["user_id"] = value.split(":", 1)[1]
-                elif value.startswith("session:"):
-                    recovered_scope["session_id"] = value.split(":", 1)[1]
-            return {key: value for key, value in recovered_scope.items() if value}
 
         def recovered_record_scope(record: Json) -> Json:
             record_scope = candidate_access_scope(record)
@@ -1142,16 +1191,6 @@ class _LocalAdapterRetrieveMixin:
                 return False
             return True
 
-        def profile_summary_scope_matches(record: Json, query_scope: Json) -> bool:
-            if record.get("record_type") != "context_summary":
-                return False
-            node_path = [str(part or "") for part in record.get("node_path", []) if str(part or "")]
-            if "profile:long_term_memory" not in node_path:
-                return False
-            path_scope = scope_from_node_path(node_path)
-            if query_scope.get("account_id") and not path_scope.get("account_id"):
-                path_scope = {**path_scope, "account_id": query_scope.get("account_id")}
-            return scope_matches(path_scope, query_scope)
 
         if session_scope_mode(retrieval_scope) == "only":
             records = [
@@ -1302,20 +1341,6 @@ class _LocalAdapterRetrieveMixin:
         embedding_model_conflict_records = 0
         embedding_width_conflict_records = 0
 
-        def stored_encoder_name(record: Json) -> str:
-            """Which encoder wrote this record's vector.
-
-            Owner records carry it under `embedding_meta`, not at the top level: the separate
-            embedding row was folded into its owner and its fields ride along there. Reading only
-            the top level found nothing on every record a current ingest writes, so the check
-            silently never applied -- the shape of bug it exists to catch.
-            """
-            meta = record.get("embedding_meta")
-            if isinstance(meta, dict):
-                name = meta.get("model") or meta.get("model_ref") or ""
-                if name:
-                    return str(name)
-            return str(record.get("model") or record.get("model_ref") or "")
 
         def usable_vector(record: Json) -> list:
             """The record's vector, or nothing at all when it cannot be compared with the query's.
