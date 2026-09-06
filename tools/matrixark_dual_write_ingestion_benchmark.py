@@ -507,8 +507,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--shard-size", type=int, default=int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096")))
     parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
-    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_NAMESPACE", "matrixark"))
-    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TABLE", "context"))
+    # The values config/temporalstore.toml declares for these two variables; see the note in
+    # matrixark_context_backfill, which carried the same pair.
+    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_NAMESPACE", "deploy_ns"))
+    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TABLE", "deploy_table"))
     parser.add_argument("--library-path", default=os.environ.get("TEMPORALSTORE_LIBRARY_PATH", ""))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_IO_TIMEOUT_MS", "20000")))
