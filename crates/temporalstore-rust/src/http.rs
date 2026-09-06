@@ -678,11 +678,18 @@ fn pool_take(addr: &str) -> Option<TcpStream> {
 fn pool_put(addr: &str, stream: TcpStream) {
     CLIENT_CONN_POOL.with(|pool| {
         let mut pool = pool.borrow_mut();
-        let bucket = pool.entry(addr.to_string()).or_default();
-        if bucket.len() < CLIENT_POOL_MAX_PER_ADDR {
-            bucket.push(stream);
+        // Look the bucket up by `&str` first. `entry` needs an owned key, so reaching for it
+        // straight away allocated the address on EVERY request to find a bucket that is already
+        // there -- a new bucket happens once per address, not once per request. `pool_take` on
+        // the line above has always looked up by borrow.
+        if let Some(bucket) = pool.get_mut(addr) {
+            if bucket.len() < CLIENT_POOL_MAX_PER_ADDR {
+                bucket.push(stream);
+            }
+            // else: drop the socket (bucket full)
+            return;
         }
-        // else: drop the socket (bucket full)
+        pool.entry(addr.to_string()).or_default().push(stream);
     });
 }
 
@@ -714,14 +721,22 @@ fn exchange_once(
     extra_headers: &str,
     options: HttpRequestOptions,
 ) -> Result<Vec<u8>, HttpError> {
-    let header = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: keep-alive\r\n\r\n",
-        body.len()
+    // Coalesce header + body into a single buffer so the request leaves in one TCP segment
+    // where possible, and format the header STRAIGHT INTO it. Building the header as its own
+    // `String` first cost two allocations on every request the proxy and the client make, for
+    // a line thrown away as soon as it is copied here.
+    let mut framed = Vec::with_capacity(
+        96 + method.len() + path.len() + addr.len() + extra_headers.len() + body.len(),
     );
-    // Coalesce header + body into a single buffer so the request leaves in one
-    // TCP segment where possible.
-    let mut framed = Vec::with_capacity(header.len() + body.len());
-    framed.extend_from_slice(header.as_bytes());
+    {
+        use std::io::Write as _;
+        // Writing into a `Vec` cannot fail, so there is no error case to handle.
+        let _ = write!(
+            framed,
+            "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: keep-alive\r\n\r\n",
+            body.len()
+        );
+    }
     framed.extend_from_slice(body);
     write_all_with_would_block_retry(stream, &framed, options.io_timeout_ms)?;
     flush_with_would_block_retry(stream, options.io_timeout_ms)?;
@@ -734,16 +749,27 @@ fn exchange_once(
         ));
     }
     let marker = b"\r\n\r\n";
-    let status_line = String::from_utf8_lossy(&response[..header_end])
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    if !status_line.contains(" 200 ") {
+    // The status is decided on the BYTES. Rendering the line into a `String` first allocated on
+    // every request to answer one `contains`, and the string is only wanted when it is the
+    // error being returned -- so it is built there instead.
+    let first_line_end = response[..header_end]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(header_end);
+    let status_bytes = &response[..first_line_end];
+    if !status_bytes.windows(5).any(|window| window == b" 200 ") {
+        let status_line = String::from_utf8_lossy(status_bytes)
+            .trim_end_matches('\r')
+            .to_string();
         return Err(HttpError::BadResponse(status_line));
     }
+    // Hand the body back in the buffer it was read into rather than copying it out. `drain`
+    // moves the bytes down inside the same allocation; `to_vec` made a second one per request.
     let body_start = header_end + marker.len();
-    Ok(response[body_start..body_start + content_length].to_vec())
+    let mut response = response;
+    response.truncate(body_start + content_length);
+    response.drain(..body_start);
+    Ok(response)
 }
 
 fn request_raw_once(
@@ -1100,6 +1126,96 @@ mod content_type_header_tests {
     /// patch, an escaping slip turned the header into a real newline in the source; a test that
     /// compared one literal to another passed happily, because both sides were wrong in the same
     /// way. A header ending in a bare LF is a broken HTTP frame, not a slower one.
+    /// The framed request is byte-identical to the `format!` it replaced.
+    ///
+    /// The header is now written straight into the send buffer instead of through its own
+    /// `String`. That is worth two allocations per request, and it is worth nothing at all if a
+    /// byte moved: this is the wire, and a header a peer parses differently is a broken request,
+    /// not a slower one.
+    #[test]
+    fn the_framed_request_is_what_format_produced() {
+        for (method, path, addr, extra, body) in [
+            ("POST", "/execute", "127.0.0.1:9", "", &b"{}"[..]),
+            ("GET", "/proxy/config", "host:1", "", &b""[..]),
+            (
+                "POST",
+                "/tables/topology",
+                "meta:7",
+                "X-Ts-Topology-Version: 3\r\n",
+                &b"{{\"a\":1}}"[..],
+            ),
+        ] {
+            let expected_header = format!(
+                "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra}Connection: keep-alive\r\n\r\n",
+                body.len()
+            );
+            let mut expected = Vec::with_capacity(expected_header.len() + body.len());
+            expected.extend_from_slice(expected_header.as_bytes());
+            expected.extend_from_slice(body);
+
+            let mut framed = Vec::with_capacity(
+                96 + method.len() + path.len() + addr.len() + extra.len() + body.len(),
+            );
+            {
+                use std::io::Write as _;
+                let _ = write!(
+                    framed,
+                    "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra}Connection: keep-alive\r\n\r\n",
+                    body.len()
+                );
+            }
+            framed.extend_from_slice(body);
+
+            assert_eq!(
+                framed, expected,
+                "the framed request moved for {method} {path}"
+            );
+        }
+    }
+
+    /// The status check reads the same answer off the bytes that the `String` gave.
+    ///
+    /// It used to render the first header line into a `String` on every request to answer one
+    /// `contains(" 200 ")`, and only used that string when returning the error. The byte scan has
+    /// to agree with it exactly -- including the trailing `\r` the old `.lines()` stripped, which is
+    /// the part a hand-written version would get wrong.
+    #[test]
+    fn the_status_check_reads_what_the_string_read() {
+        for header in [
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n",
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 500 Internal Server Error\r\n\r\n",
+            "HTTP/1.1 200 \r\n\r\n",
+            "garbage\r\n\r\n",
+        ] {
+            let response = header.as_bytes();
+            let header_end = response
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .unwrap_or(response.len());
+
+            let old_line = String::from_utf8_lossy(&response[..header_end])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let old_ok = old_line.contains(" 200 ");
+
+            let first_line_end = response[..header_end]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .unwrap_or(header_end);
+            let status_bytes = &response[..first_line_end];
+            let new_ok = status_bytes.windows(5).any(|w| w == b" 200 ");
+            let new_line = String::from_utf8_lossy(status_bytes)
+                .trim_end_matches('\r')
+                .to_string();
+
+            assert_eq!(new_ok, old_ok, "the verdict moved for {header:?}");
+            assert_eq!(new_line, old_line, "the error text moved for {header:?}");
+        }
+    }
+
     #[test]
     fn the_json_post_header_ends_in_a_real_crlf() {
         for extra in ["", "X-Ts-Topology-Version: 7\r\n", "A: 1\r\nB: 2\r\n"] {
