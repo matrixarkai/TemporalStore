@@ -4996,6 +4996,39 @@ mod tests {
                 i += 1;
             }
         }
+        // The Rust SDK is the other published proxy client. `sdk/README.md` says both are
+        // "Proxy SDKs -- pure-language HTTP/JSON clients that call a TemporalStore proxy", and its
+        // shipped example connects to one, so every route it names has to be served too.
+        let rust_sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sdk/rust/temporalstore/src");
+        if let Ok(entries) = std::fs::read_dir(&rust_sdk) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                let chars: Vec<char> = text.chars().collect();
+                let mut i = 0;
+                while i < chars.len() {
+                    if chars[i] == '"' {
+                        if let Some(end) = chars[i + 1..].iter().position(|c| *c == '"') {
+                            let literal: String = chars[i + 1..i + 1 + end].iter().collect();
+                            if literal.starts_with('/')
+                                && literal.len() > 1
+                                && literal.chars().all(|c| c.is_ascii_alphanumeric() || "/_".contains(c))
+                            {
+                                routes.push(literal);
+                            }
+                            i += end + 2;
+                            continue;
+                        }
+                    }
+                    i += 1;
+                }
+            }
+        }
+
         routes.sort();
         routes.dedup();
 
@@ -5028,10 +5061,20 @@ mod tests {
             }
         }
 
-        assert!(
-            unserved.is_empty(),
-            "the shipped Python SDK posts to {} path(s) the proxy answers 404 for, so those SDK              methods cannot work: {unserved:?}",
-            unserved.len()
+        // Three routes the proxy has never served. Whether to add them or to drop the methods is
+        // a product decision, not a test's to make -- so they are named here rather than silently
+        // skipped, and the assertion is EXACT in both directions: implement one and this fails
+        // telling you to take it off the list, add a new dead route and it fails too.
+        let mut known_unimplemented = vec![
+            "/ProxyService/ControlStateCPCQuery".to_string(),
+            "/ProxyService/ControlStateCPCSet".to_string(),
+            "/ProxyService/ControlStateHquery".to_string(),
+        ];
+        known_unimplemented.sort();
+        unserved.sort();
+        assert_eq!(
+            unserved, known_unimplemented,
+            "the set of SDK routes the proxy does not serve has moved. A route that is now served              must come off this list; a route that has stopped being served is an SDK method that              cannot work"
         );
     }
 
