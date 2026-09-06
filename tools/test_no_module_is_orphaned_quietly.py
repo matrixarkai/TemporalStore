@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 20 modules that were already here, triaged by
+The entries below are NOT an endorsement. They are 18 modules that were already here, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -84,9 +84,7 @@ KNOWN_ORPHANS: Dict[str, str] = {
     "matrixark_mcp_hook_validation": "three functions, one unique here",
     "matrixark_mcp_native_retrieve": "one function no live module defines",
     "matrixark_mcp_resource_import_runtime": "seven functions, all unique here",
-    "matrixark_mcp_rust_direct_client": "25 definitions, all also defined live",
     "matrixark_mcp_rust_proxy_client": "29 KB, 48 definitions, fourteen unique here",
-    "matrixark_mcp_temporal_proxy_readiness": "one function, also defined live",
     "matrixark_mcp_temporal_readiness": "two functions, both unique here",
     "matrixark_mcp_time_compression_runtime": "21 KB, six functions, one unique here",
     "matrixark_mcp_visibility": "three functions, one unique here",
