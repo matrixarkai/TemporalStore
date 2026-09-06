@@ -320,35 +320,19 @@ class _LocalAdapterRetrieveMixin:
         # argument rather than a duplicated literal, and it is the only thing that differs.
         audit_mode, audit_sample_rate = _retrieve_planning.retrieval_audit_policy(
             args, default="off")
-        raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
-        try:
-            deadline_ms = int(raw_deadline_ms or 0)
-        except (TypeError, ValueError):
-            raise MatrixArkError("deadline_ms must be an integer")
+        # Same resolution, same order, same error, from the same place -- args, then ranking, then
+        # the environment, and 0 for "this request was given no deadline".
+        deadline_ms = _retrieve_planning.retrieval_deadline_ms(args, ranking)
 
         def deadline_exceeded() -> bool:
             return deadline_ms > 0 and (time.perf_counter() - started_perf) * 1000.0 >= deadline_ms
 
         stage_names = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
         explicit_stage_budgets = optional_object(args, "stage_budgets_ms") or optional_object(ranking, "stage_budgets_ms")
-        if deadline_ms > 0:
-            default_stage_budgets = {
-                "query_understanding": max(25, int(deadline_ms * 0.15)),
-                "candidate_fetch": max(25, int(deadline_ms * 0.20)),
-                "node_traversal": max(25, int(deadline_ms * 0.15)),
-                "rerank_score": max(25, int(deadline_ms * 0.30)),
-                "pack": max(25, int(deadline_ms * 0.15)),
-                "audit": max(10, int(deadline_ms * 0.05)),
-            }
-        else:
-            default_stage_budgets = {
-                "query_understanding": 500,
-                "candidate_fetch": 750,
-                "node_traversal": 500,
-                "rerank_score": 1000,
-                "pack": 500,
-                "audit": 250,
-            }
+        # And the same budgets: nineteen literals were restated here, character for character,
+        # including the split that decides how much of a deadline each stage may spend. Two copies
+        # of a policy agree until one is edited.
+        default_stage_budgets = _retrieve_planning.default_stage_budgets(deadline_ms)
         stage_budgets_ms: dict[str, int] = {}
         for stage in stage_names:
             value = explicit_stage_budgets.get(stage, ranking.get(f"{stage}_budget_ms", default_stage_budgets[stage]))
