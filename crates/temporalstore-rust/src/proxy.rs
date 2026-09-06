@@ -2566,6 +2566,13 @@ mod tests {
                 .collect(),
         );
 
+        // Admission has to ADMIT, or this times the refusal path and reports it as the cost of
+        // being served. A drained proxy, a zero quota or a write-disable would each do that
+        // silently -- the loop below discards the result. Checked once, outside the timing.
+        assert!(
+            proxy.admit(None, &commands).is_ok(),
+            "admission refused before the benchmark started, so this would time the refusal"
+        );
         let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
         let mut handles = Vec::new();
         for _ in 0..threads {
@@ -3017,6 +3024,11 @@ mod tests {
             "the route cache must be warm or this measures the miss path"
         );
 
+        // The route has to RESOLVE, or this times a cache miss and reports it as a hit.
+        assert!(
+            proxy.client().shard_primary_addr(1, false).is_ok(),
+            "no cached route before the benchmark started, so this would time the miss"
+        );
         let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
         let mut handles = Vec::new();
         for _ in 0..threads {
@@ -3403,6 +3415,14 @@ mod tests {
             .unwrap_or(50_000);
 
         let proxy = std::sync::Arc::new(scoped_proxy(ProxyOptions::default()));
+        // Admission has to ADMIT, or this times the refusal path. A drained proxy or a zero
+        // quota would do that silently -- the loop discards the result.
+        assert!(
+            proxy
+                .admit_context(&context_scope("acct", "tenant"), true)
+                .is_ok(),
+            "context admission refused before the benchmark started"
+        );
         let gate = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
         let mut handles = Vec::new();
         for _ in 0..threads {
