@@ -397,28 +397,35 @@ SETTINGS: List[Setting] = [
     # offered here so the backstop is a decision rather than a surprise.
     Setting("skills.shared_skill_max_budget_tokens", "skills",
             "MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS",
-            "Skill budget ceiling (tokens)", "int", "65536", "live",
+            "Skill budget ceiling (tokens)", "int", "262144", "live",
             "A hard ceiling on the skill section, whatever the percentage works out to. It exists "
             "for an unusually large request, not to size the section: leave it above what your "
             "percentage yields, or the percentage stops meaning anything."),
     Setting("skills.shared_resource_max_budget_tokens", "skills",
             "MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS",
-            "Resource budget ceiling (tokens)", "int", "131072", "live",
+            "Resource budget ceiling (tokens)", "int", "262144", "live",
             "The same backstop for shared resource chunks. Above what the resource percentage "
             "yields at your context size, so the percentage is what decides."),
     Setting("retrieval.cross_session_max_budget_tokens", "retrieval",
             "MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS",
-            "Cross-session ceiling (tokens)", "int", "65536", "live",
+            "Cross-session ceiling (tokens)", "int", "262144", "live",
             "A hard ceiling on what other sessions may contribute, whatever the cross-session "
             "percentage works out to."),
     Setting("retrieval.cross_session_profile_max_budget_tokens", "retrieval",
             "MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_TOKENS",
-            "Profile ceiling (tokens)", "int", "196608", "live",
+            "Profile ceiling (tokens)", "int", "327680", "live",
             "The same backstop for the durable profile -- the aggregation that carries memory into "
             "a fresh session, and the section most likely to want room."),
     Setting("skills.shared_skill_budget_ratio", "skills", "MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
-            "Skill share of the context budget", "float", "0.10", "restart",
-            "Fraction of a context pack reserved for skill sections."),
+            "Skill share of the context budget", "float", "0.10", "live",
+            "Fraction of a context pack reserved for skill sections. Raise it and the next pack "
+            "carries more skill content, up to the guard below."),
+    Setting("skills.shared_skill_max_budget_ratio", "skills",
+            "MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO",
+            "Skill share guard", "float", "0.50", "live",
+            "The most of a pack skills may take, whatever the share above asks for. It stops one "
+            "section crowding out the rest and is not the place to set the share. It used to sit "
+            "at exactly the share's own default, which is why raising the share did nothing."),
     Setting("skills.chunks_per_skill", "skills", "MATRIXARK_SKILL_CHUNKS_PER_SKILL",
             "Chunks per skill", "int", "3", "live",
             "How many sections of one skill a pack may carry."),
@@ -437,8 +444,13 @@ SETTINGS: List[Setting] = [
             "than only from the current scope."),
     Setting("skills.shared_resource_budget_ratio", "skills",
             "MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
-            "Resource share of the context budget", "float", "0.10", "restart",
+            "Resource share of the context budget", "float", "0.25", "live",
             "Fraction of a pack reserved for shared resource chunks, separately from skills."),
+    Setting("skills.shared_resource_max_budget_ratio", "skills",
+            "MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO",
+            "Resource share guard", "float", "0.50", "live",
+            "The same guard for resources: the most of a pack they may take however high the "
+            "share above is set."),
 
     # ---- retrieval and context budget ----------------------------------------------------------
     Setting("retrieval.default_max_context_tokens", "retrieval",
@@ -477,9 +489,25 @@ SETTINGS: List[Setting] = [
             "a pack paying twice for one fact."),
     Setting("retrieval.cross_session_budget_ratio", "retrieval",
             "MATRIXARK_CROSS_SESSION_BUDGET_RATIO",
-            "Cross-session share of the budget", "float", "", "restart",
+            "Cross-session share of the budget", "float", "0.12", "live",
             "Fraction of a pack that may come from sessions other than the current one. This is "
             "what carries long-term memory into a fresh session."),
+    Setting("retrieval.cross_session_max_budget_ratio", "retrieval",
+            "MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO",
+            "Cross-session share guard", "float", "0.50", "live",
+            "The most of a pack sessions other than the current one may take, whatever the share "
+            "above asks for."),
+    Setting("retrieval.cross_session_profile_budget_ratio", "retrieval",
+            "MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO",
+            "Profile share of the budget", "float", "0.30", "live",
+            "The cross-session share used instead of the one above when a query is asking about "
+            "the durable profile rather than about recent work. Profile queries are the case "
+            "where long-term memory IS the answer, so the share is larger."),
+    Setting("retrieval.cross_session_profile_max_budget_ratio", "retrieval",
+            "MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO",
+            "Profile share guard", "float", "0.60", "live",
+            "The guard on the profile share. Higher than the others because on a profile query "
+            "that section is what the caller came for."),
     Setting("retrieval.cross_session_max_sessions", "retrieval",
             "MATRIXARK_CROSS_SESSION_MAX_SESSIONS",
             "Cross-session session ceiling", "int", "", "restart",
@@ -890,9 +918,13 @@ def _apply_build_defaults(settings: List[Setting]) -> None:
             continue
         build = (_build_constant(*constant) if isinstance(constant, tuple)
                  else _build_constant(constant))
-        if build is None or build == setting.default:
+        if build is None:
             continue
-        setting.default = build
+        # Correct the default only when it needs correcting, but say what the build runs either
+        # way. A hand-written default that happens to be right today is still a second copy of the
+        # number, and the help is where an operator finds out which one is in force.
+        if build != setting.default:
+            setting.default = build
         setting.help = setting.help.rstrip() + (
             " With nothing set this deployment runs %s." % build)
 

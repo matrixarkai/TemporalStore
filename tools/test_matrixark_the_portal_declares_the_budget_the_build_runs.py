@@ -42,12 +42,22 @@ TRUE = {"1", "true", "yes", "on"}
 SETTING_VARIABLES = {s.env for s in cfg.SETTINGS if s.env}
 
 
+# Resolvers that take (VARIABLE, fallback) and read the environment per call. To this parser
+# they are the same shape as `os.environ.get`, and a setting whose default reaches the build
+# through one of them is exactly as comparable -- but only if the shape is admitted here. Without
+# this the sweep finds no site for those variables at all, which does not read as a gap: it reads
+# as a setting with nothing to compare against, and it is skipped in silence.
+DELEGATING_RESOLVERS = {"live_int", "live_float"}
+
+
 def _get_call(node: ast.AST):
-    """The (variable, second argument) of an ``os.environ.get(VAR, ...)``, or None."""
+    """The (variable, second argument) of an ``os.environ.get(VAR, ...)`` or a resolver, or None."""
     if not isinstance(node, ast.Call) or len(node.args) != 2:
         return None
     target = node.func
-    if not (isinstance(target, ast.Attribute) and target.attr in {"get", "getenv"}):
+    delegated = isinstance(target, ast.Name) and target.id in DELEGATING_RESOLVERS
+    if not delegated and not (isinstance(target, ast.Attribute)
+                              and target.attr in {"get", "getenv"}):
         return None
     first, second = node.args
     if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
@@ -64,6 +74,26 @@ def read_shapes() -> tuple:
     """
     literals: dict = {}
     follows: dict = {}
+    # Module-scope constants that hold a plain literal. A delegated default names one of these
+    # rather than repeating the number, so resolving them is what keeps those settings comparable.
+    constants: dict = {}
+    for name in sorted(os.listdir(TOOLS)):
+        if (not name.endswith(".py") or name.startswith("test_")
+                or name == "matrixark_gateway_config.py"):
+            continue
+        try:
+            with open(os.path.join(TOOLS, name), encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=name)
+        except SyntaxError:  # pragma: no cover - a module this build cannot parse
+            continue
+        for node in tree.body:
+            if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+                continue
+            target, value = node.targets[0], node.value
+            if (isinstance(target, ast.Name) and isinstance(value, ast.Constant)
+                    and isinstance(value.value, (str, int, float))
+                    and not isinstance(value.value, bool)):
+                constants.setdefault(target.id, set()).add(str(value.value))
     for name in sorted(os.listdir(TOOLS)):
         if (not name.endswith(".py") or name.startswith("test_")
                 or name == "matrixark_gateway_config.py"):
@@ -88,8 +118,12 @@ def read_shapes() -> tuple:
                            if isinstance(a, ast.Constant) and isinstance(a.value, str)]
                 if deepest:
                     literals.setdefault(variable, set()).add(deepest[-1])
+            elif isinstance(second, ast.Name) and second.id in constants:
+                # An indirection through a module constant this parser CAN read, because the
+                # constant is a plain literal. That is the shape a delegated default takes.
+                literals.setdefault(variable, set()).update(constants[second.id])
             elif isinstance(second, ast.Name):
-                # An indirection through a module constant: this parser cannot say what it holds,
+                # An indirection through something computed: this parser cannot say what it holds,
                 # so it must not claim the setting has a wrong default either.
                 follows.setdefault(variable, set()).add(second.id)
     return literals, follows
@@ -133,6 +167,63 @@ def classify() -> tuple:
                          % (setting.key, setting.env, setting.default,
                             " / ".join(sorted(repr(x) for x in seen))))
     return wrong, compared, exempt
+
+
+# Settings whose default reaches the build only through a resolver. If the admission above is
+# removed, these fall out of the sweep entirely and eight declared defaults stop being checked
+# without a single test going red.
+DELEGATED_DEFAULTS = (
+    "skills.shared_skill_budget_ratio",
+    "skills.shared_skill_max_budget_ratio",
+    "skills.shared_resource_budget_ratio",
+    "skills.shared_resource_max_budget_ratio",
+    "retrieval.cross_session_budget_ratio",
+    "retrieval.cross_session_max_budget_ratio",
+    "retrieval.cross_session_profile_budget_ratio",
+    "retrieval.cross_session_profile_max_budget_ratio",
+)
+
+
+class TheSweepSeesADelegatedDefaultTest(unittest.TestCase):
+    """A default handed to `live_int`/`live_float` is still a default the portal declares."""
+
+    def test_they_are_compared(self) -> None:
+        _wrong, compared, _exempt = classify()
+        for key in DELEGATED_DEFAULTS:
+            with self.subTest(setting=key):
+                self.assertIn(key, compared)
+
+    def test_they_really_are_delegated(self) -> None:
+        """The floor: if one of them regained an ordinary `os.environ.get` fallback it would be
+        compared for the ordinary reason and the admission above would be untested."""
+        literals, _follows = read_shapes()
+        for key in DELEGATED_DEFAULTS:
+            variable = cfg.SETTINGS_BY_KEY[key].env
+            with self.subTest(setting=key):
+                self.assertIn(variable, literals)
+                self.assertNotIn(variable, _plain_environ_variables())
+
+
+def _plain_environ_variables() -> set:
+    """Variables reached by a literal `os.environ.get(VAR, ...)` somewhere in the build."""
+    found = set()
+    for name in sorted(os.listdir(TOOLS)):
+        if (not name.endswith(".py") or name.startswith("test_")
+                or name == "matrixark_gateway_config.py"):
+            continue
+        try:
+            with open(os.path.join(TOOLS, name), encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=name)
+        except SyntaxError:  # pragma: no cover
+            continue
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and len(node.args) == 2
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"get", "getenv"}
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)):
+                found.add(node.args[0].value)
+    return found
 
 
 class TheParseFoundSomethingTest(unittest.TestCase):

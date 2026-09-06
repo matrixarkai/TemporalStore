@@ -10,6 +10,7 @@ from typing import Any
 try:  # package path (tools.matrixark_mcp_core)
     from .matrixark_mcp_core import (
         ACTIVE_MEMORY_GOAL_QUERY_RE,
+        live_float,
         live_int,
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
@@ -52,6 +53,7 @@ try:  # package path (tools.matrixark_mcp_core)
 except ImportError:  # top-level path (matrixark_mcp_core)
     from matrixark_mcp_core import (
         ACTIVE_MEMORY_GOAL_QUERY_RE,
+        live_float,
         live_int,
         DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
@@ -316,7 +318,8 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     enabled = bool(config.get("enabled", default_enabled)) and cross_session_allowed and remote_budget_tokens > 0
     profile_budget_query = profile_memory_query or feature_memory_query
     if profile_budget_query:
-        default_ratio = DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO
+        default_ratio = live_float("MATRIXARK_CROSS_SESSION_PROFILE_BUDGET_RATIO",
+                                   DEFAULT_CROSS_SESSION_PROFILE_BUDGET_RATIO)
         question_budget_reason = "profile_memory_queries_need_long_term profile and cross-session state"
     elif normalized_question_type in {"current_state", "latest"}:
         default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
@@ -331,7 +334,8 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
         question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
     else:
-        default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
+        default_ratio = live_float("MATRIXARK_CROSS_SESSION_BUDGET_RATIO",
+                                   DEFAULT_CROSS_SESSION_BUDGET_RATIO)
         question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
     # Mode-dependent quota (opt-in). Augment: local carries the current session, so route the
     # memory budget to cross-session + long-term profile. Remote-only: remote reconstructs the
@@ -345,7 +349,13 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     elif _mode_quota and _mode == "remote_only":
         default_ratio = DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO
         question_budget_reason = "remote_only_reserves_majority_of_budget_for_current_session_reconstruction"
-    default_max_budget_ratio = DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO if profile_budget_query else DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO
+    default_max_budget_ratio = (
+        live_float("MATRIXARK_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO",
+                   DEFAULT_CROSS_SESSION_PROFILE_MAX_BUDGET_RATIO)
+        if profile_budget_query
+        else live_float("MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO",
+                        DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO)
+    )
     if _mode_quota and _mode in {"local_and_remote", "remote_only"}:
         # do not let the profile/default max-ratio cap the mode-dependent cross-session allocation
         default_max_budget_ratio = max(default_max_budget_ratio, default_ratio)
@@ -470,31 +480,39 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
     else:
         raise MatrixArkError("shared_context must be an object or boolean")
     enabled = bool(config.get("enabled", True)) and remote_budget_tokens > 0
+    # Read per pack, like the ceilings below: a share of the next pack is decided when the next
+    # pack is built. The constants are the fallback, not the answer.
     resource_max_budget_ratio = float_arg(
         config,
         "resource_max_budget_ratio",
-        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO,
+        live_float("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO",
+                   DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO),
         minimum=0.0,
         maximum=1.0,
     )
     skill_max_budget_ratio = float_arg(
         config,
         "skill_max_budget_ratio",
-        DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO,
+        live_float("MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO",
+                   DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO),
         minimum=0.0,
         maximum=1.0,
     )
     resource_budget_ratio = float_arg(
         config,
         "resource_budget_ratio",
-        min(DEFAULT_SHARED_RESOURCE_BUDGET_RATIO, resource_max_budget_ratio),
+        min(live_float("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
+                       DEFAULT_SHARED_RESOURCE_BUDGET_RATIO),
+            resource_max_budget_ratio),
         minimum=0.0,
         maximum=resource_max_budget_ratio,
     )
     skill_budget_ratio = float_arg(
         config,
         "skill_budget_ratio",
-        min(DEFAULT_SHARED_SKILL_BUDGET_RATIO, skill_max_budget_ratio),
+        min(live_float("MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
+                       DEFAULT_SHARED_SKILL_BUDGET_RATIO),
+            skill_max_budget_ratio),
         minimum=0.0,
         maximum=skill_max_budget_ratio,
     )

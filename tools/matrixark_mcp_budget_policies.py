@@ -11,6 +11,7 @@ from typing import Any
 try:
     from tools.matrixark_mcp_errors import MatrixArkError
     from tools.matrixark_mcp_runtime_config import (
+        live_float,
         live_int,
         DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO,
         DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO,
@@ -48,6 +49,7 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_errors import MatrixArkError
     from matrixark_mcp_runtime_config import (
+        live_float,
         live_int,
         DEFAULT_AUGMENT_CROSS_SESSION_BUDGET_RATIO,
         DEFAULT_REMOTE_ONLY_CROSS_SESSION_BUDGET_RATIO,
@@ -161,31 +163,39 @@ def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_toke
     else:
         raise MatrixArkError("shared_context must be an object or boolean")
     enabled = bool(config.get("enabled", True)) and remote_budget_tokens > 0
+    # Read per pack, like the ceilings below: a share of the next pack is decided when the next
+    # pack is built. The constants are the fallback, not the answer.
     resource_max_budget_ratio = float_arg(
         config,
         "resource_max_budget_ratio",
-        DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO,
+        live_float("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_RATIO",
+                   DEFAULT_SHARED_RESOURCE_MAX_BUDGET_RATIO),
         minimum=0.0,
         maximum=1.0,
     )
     skill_max_budget_ratio = float_arg(
         config,
         "skill_max_budget_ratio",
-        DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO,
+        live_float("MATRIXARK_SHARED_SKILL_MAX_BUDGET_RATIO",
+                   DEFAULT_SHARED_SKILL_MAX_BUDGET_RATIO),
         minimum=0.0,
         maximum=1.0,
     )
     resource_budget_ratio = float_arg(
         config,
         "resource_budget_ratio",
-        min(DEFAULT_SHARED_RESOURCE_BUDGET_RATIO, resource_max_budget_ratio),
+        min(live_float("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO",
+                       DEFAULT_SHARED_RESOURCE_BUDGET_RATIO),
+            resource_max_budget_ratio),
         minimum=0.0,
         maximum=resource_max_budget_ratio,
     )
     skill_budget_ratio = float_arg(
         config,
         "skill_budget_ratio",
-        min(DEFAULT_SHARED_SKILL_BUDGET_RATIO, skill_max_budget_ratio),
+        min(live_float("MATRIXARK_SHARED_SKILL_BUDGET_RATIO",
+                       DEFAULT_SHARED_SKILL_BUDGET_RATIO),
+            skill_max_budget_ratio),
         minimum=0.0,
         maximum=skill_max_budget_ratio,
     )
