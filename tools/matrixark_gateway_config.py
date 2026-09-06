@@ -830,8 +830,10 @@ SETTINGS: List[Setting] = [
     Setting("ingestion.require_model_summaries", "ingestion",
             "MATRIXARK_REQUIRE_MODEL_SUMMARIES",
             "Fail instead of writing rule summaries", "bool", "0", "live",
-            "On, a summary that cannot reach the model errors instead of silently falling back to "
-            "the local rule summariser."),
+            "On, a summary that cannot reach the model errors instead of silently falling "
+            "back to the local rule summariser -- where the ENGINE writes the summaries. "
+            "Nothing in this Python build reads it, so on the local-adapter path the rule "
+            "summariser still runs and this switch changes nothing."),
     Setting("ingestion.time_compression_window_events", "ingestion",
             "MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS",
             "Time compression window (events)", "int", "", "restart",

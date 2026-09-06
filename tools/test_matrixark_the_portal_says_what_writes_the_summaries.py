@@ -112,7 +112,10 @@ class TheSummaryBlockIsReportedTest(unittest.TestCase):
 
     def test_it_is_there_at_all(self) -> None:
         block = snapshot("openai_compatible", None)["summary"]
-        self.assertEqual({"provider", "follows_extraction", "writes", "model"}, set(block))
+        self.assertEqual({"provider", "follows_extraction", "writes", "model",
+                          # Added with the switch that claims to stop rule summaries, which the
+                          # summariser on this path does not read.
+                          "require_model", "require_model_enforced_by"}, set(block))
 
     def test_an_unset_provider_follows_extraction(self) -> None:
         block = snapshot("openai_compatible", None)["summary"]
