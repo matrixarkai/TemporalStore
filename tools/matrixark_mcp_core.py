@@ -3609,10 +3609,22 @@ def oss_embedding_for_text(text: str) -> list[float]:
                 os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = previous
 
 
-def cosine(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    return round(sum(a * b for a, b in zip(left, right)), 6)
+# `cosine` is not defined here. It was, and it returned the bare dot product without dividing by
+# either norm -- the same number as a cosine while both sides are unit vectors, and a different one
+# as soon as either is not. matrixark_mcp_scoring.cosine had already been fixed to normalise, with
+# a docstring explaining why compaction makes it matter; this copy never got the fix, and this copy
+# is the one the retrieval path reaches. matrixark_mcp_retrieve_entity_scan,
+# matrixark_mcp_retrieve_summary_scan and matrixark_mcp_retrieve_compression_scan all import
+# `cosine` from here, and feed the result to normalized_dense_score, which clamps to [0, 1]: an
+# unnormalised dot of 32.0 arrives as exactly 1.0, so every such candidate pins to the endpoint
+# together and their order is lost.
+#
+# Vectors stored today are unit length, so this changes no score now. It changes them under any
+# vector compaction, which is the case the fix was written for.
+try:
+    from tools.matrixark_mcp_scoring import cosine
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import cosine
 
 
 def clamp01(value: Any, default: float = 0.0) -> float:
