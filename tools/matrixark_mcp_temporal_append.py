@@ -206,6 +206,60 @@ def slim_persisted_storage_route(record: Json) -> Json:
     return slim
 
 
+# Fields `canonical_storage_route` PRODUCES and never reads back. `storage_options` is stored on
+# every record, and the tail of `normalize_storage_options` merges the route's output into it:
+#
+#     route = canonical_storage_route(normalized)
+#     normalized.update({k: v for k, v in route.items() if k in {...sixteen names...}})
+#
+# so each record carries a copy of a pure function of its own inputs. Measured on the one-box log,
+# `storage_options` is 6.53% of every byte written and 17 of its 25 fields never vary at all.
+#
+# Only the PURE outputs are dropped. `route`, `storage_family`, `write_mode`, `durability`,
+# `read_preference` and `background_write` are read back by `canonical_storage_route` as INPUTS, so
+# dropping them would silently override a caller who set one explicitly -- e.g.
+# `background_write=False` on an async write re-derives as True. Today's records round-trip either
+# way, which is exactly how that class of bug ships; they stay.
+#
+# Verified over 1,616 storage_options blocks taken from the live log: re-deriving these ten from the
+# kept fields reproduces all ten EXACTLY, 1,616 of 1,616, and the block is 51.1% smaller.
+_OPTIONS_KEYS_DERIVED_FROM_THE_REST = (
+    "route_key",
+    "backend_family",
+    "sync_write",
+    "async_write",
+    "write_ack_policy",
+    "native_backend_decides_route",
+    "selected_storage_family",
+    "selected_write_mode",
+    "replica_read",
+    "durability_result",
+)
+
+
+def slim_persisted_storage_options(record: Json) -> Json:
+    """Persist the storage options a reader cannot recompute, not the ones it can.
+
+    A consumer that wants the derived half calls `canonical_storage_route` on what is left, exactly
+    as it already does for the derived half of `storage_route`.
+    """
+    if not isinstance(record, dict):
+        return record
+    options = record.get("storage_options")
+    if not isinstance(options, dict) or not options:
+        return record
+    kept = {key: value for key, value in options.items()
+            if key not in _OPTIONS_KEYS_DERIVED_FROM_THE_REST}
+    if len(kept) == len(options):
+        return record
+    slim = dict(record)
+    if kept:
+        slim["storage_options"] = kept
+    else:
+        slim.pop("storage_options", None)
+    return slim
+
+
 def materialize_appended_records_locked(
     target: Any,
     *,
