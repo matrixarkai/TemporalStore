@@ -4850,6 +4850,117 @@ mod tests {
         );
     }
 
+    /// Every field the spec documents for the context routes is a field those routes read.
+    ///
+    /// The other two guards cannot see this one. Every field of the context requests is
+    /// `#[serde(default)]`, so serde IGNORES a name it does not know rather than rejecting it. A
+    /// misspelt field in the published document produces no error at all -- it silently drops the
+    /// caller's data, which is worse than a 400 because nothing reports it.
+    ///
+    /// Two sided, because either side can be the one that moved:
+    ///   - a body with known-good keys is parsed and its VALUES are asserted to have landed, so a
+    ///     rename in the Rust type fails here;
+    ///   - the names the spec documents are asserted to be exactly that body's keys, so a typo in
+    ///     the document fails here.
+    #[test]
+    fn the_documented_context_fields_are_fields_the_routes_read() {
+        let ingest_body = serde_json::json!({
+            "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+            "messages": [{"role": "user", "content": "c", "timestamp_ms": 7, "title": "ti"}],
+            "sources": [{}],
+            "records": [{}],
+            "query": "q",
+            "start_time_ms": 11,
+            "end_time_ms": 22,
+            "max_events": 3,
+            "provider": {}
+        });
+        let ingest: context::ProxyContextIngestRequest =
+            serde_json::from_value(ingest_body.clone()).expect("the known-good ingest body parses");
+        // The values landed, so these names are the ones serde matches on.
+        assert_eq!(ingest.query, "q");
+        assert_eq!(ingest.start_time_ms, 11);
+        assert_eq!(ingest.end_time_ms, 22);
+        assert_eq!(ingest.max_events, Some(3));
+        assert_eq!(ingest.scope.tenant_id, "t");
+        assert_eq!(ingest.scope.session_id, "s");
+        assert_eq!(ingest.messages.len(), 1);
+        assert_eq!(ingest.messages[0].role, "user");
+        assert_eq!(ingest.messages[0].content, "c");
+        assert_eq!(ingest.sources.len(), 1);
+        assert_eq!(ingest.records.len(), 1);
+        assert!(ingest.provider.is_some());
+
+        let retrieve_body = serde_json::json!({
+            "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+            "query": "q",
+            "start_time_ms": 11,
+            "end_time_ms": 22,
+            "max_events": 3,
+            "node_hashes": [5],
+            "provider": {}
+        });
+        let retrieve: context::ProxyContextRetrieveRequest =
+            serde_json::from_value(retrieve_body.clone()).expect("the known-good retrieve body parses");
+        assert_eq!(retrieve.query, "q");
+        assert_eq!(retrieve.start_time_ms, 11);
+        assert_eq!(retrieve.end_time_ms, 22);
+        assert_eq!(retrieve.max_events, Some(3));
+        assert_eq!(retrieve.node_hashes, vec![5]);
+        assert_eq!(retrieve.scope.user_id, "u");
+        assert!(retrieve.provider.is_some());
+
+        // Now the document has to name exactly those fields, and no others.
+        let spec_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../sdk/proxy/openapi.yaml");
+        let spec = std::fs::read_to_string(&spec_path).expect("the published proxy spec");
+        let documented = |schema: &str| -> Vec<String> {
+            let head = format!("    {schema}:");
+            let start = spec.find(&head).unwrap_or_else(|| panic!("the spec defines {schema}"));
+            let mut names = Vec::new();
+            let mut in_props = false;
+            for line in spec[start..].lines().skip(1) {
+                if line.starts_with("    ") && !line.starts_with("     ") {
+                    break;
+                }
+                if line.trim() == "properties:" {
+                    in_props = true;
+                    continue;
+                }
+                if in_props && line.starts_with("        ") && !line.starts_with("         ") {
+                    if let Some(name) = line.trim().strip_suffix(':') {
+                        names.push(name.to_string());
+                    }
+                }
+            }
+            names.sort();
+            names
+        };
+        let keys_of = |value: &serde_json::Value| -> Vec<String> {
+            let mut names: Vec<String> =
+                value.as_object().expect("object").keys().cloned().collect();
+            names.sort();
+            names
+        };
+
+        for (schema, body) in [
+            ("ContextIngestRequest", &ingest_body),
+            ("ContextRetrieveRequest", &retrieve_body),
+            ("ContextScope", &ingest_body["scope"]),
+        ] {
+            let listed = documented(schema);
+            assert!(
+                !listed.is_empty(),
+                "read no properties for {schema}, so this test would be checking nothing"
+            );
+            assert_eq!(
+                listed,
+                keys_of(body),
+                "the spec's {schema} does not name the fields the route reads, and serde drops a                  name it does not know without saying so"
+            );
+        }
+    }
+
     /// Every route the published proxy API documents is one the proxy actually answers.
     ///
     /// `sdk/proxy/openapi.yaml` is the contract an outside user builds against -- it ships in the
