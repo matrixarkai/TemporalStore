@@ -14,15 +14,19 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 34 modules and 253 KB that were already here when
-this was written, triaged by whether their definitions still match the live ones:
+The entries below are NOT an endorsement. They are 32 modules that were already here, triaged by
+whether their definitions still match the live ones. Two of the original 34 are gone: both were
+copies whose every function was the live one word for word, so removing them could not lose
+anything.
 
-  * `matrixark_mcp_envelope_keys` is the cleanest case -- all seven of its functions are character
-    for character what `matrixark_mcp_core_session` has, so it is a copy that stopped being read.
-  * `matrixark_mcp_backend_readiness` is two thirds that, against `matrixark_mcp_core_identity`.
   * The rest have DIVERGED from the live definition of the same name, which is the more misleading
     kind: `matrixark_mcp_registry.list_skills` and the live `matrixark_local_adapter_dashboard` one
     no longer agree, and nothing says which is current.
+  * A caveat on that triage, learned removing the two: it compares bodies with each line's
+    whitespace normalised, which does not normalise LINE BREAKS.
+    `matrixark_mcp_backend_readiness.adapter_ensure_backend_ready` was reported as diverged and was
+    identical -- the copy wrapped its signature across four lines where the live one uses one. Read
+    the pair before believing "diverged".
 
 Removing them is follow-up work and wants reading each one first. What this file does is stop the
 set growing while that happens.
@@ -47,11 +51,6 @@ REPO = os.path.dirname(TOOLS)
 
 #: module stem -> what it is, so removing it is a reading task and not a guess.
 KNOWN_ORPHANS: Dict[str, str] = {
-    "matrixark_mcp_envelope_keys":
-        "all seven functions identical to matrixark_mcp_core_session",
-    "matrixark_mcp_backend_readiness":
-        "parse_host_port and metaserver_reachable identical to matrixark_mcp_core_identity; "
-        "adapter_ensure_backend_ready has diverged from matrixark_mcp_core_session",
     "matrixark_mcp_local_backend":
         "all three have diverged -- backend_metrics, ensure_backend_ready, observe_model_latency",
     "matrixark_mcp_registry":
@@ -105,7 +104,7 @@ POSITIVE_CONTROL = "matrixark_mcp_local_adapter"
 
 #: The other control. A module this tree really does not import, asserted to STAY found, so a scan
 #: that quietly stops matching fails instead of reporting that all is well.
-NEGATIVE_CONTROL = "matrixark_mcp_envelope_keys"
+NEGATIVE_CONTROL = "matrixark_mcp_registry"
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 
