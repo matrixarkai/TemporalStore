@@ -11,8 +11,10 @@ except ImportError:  # Direct script execution from tools/.
 
 try:  # package path
     from tools.matrixark_mcp_core import *  # noqa: F401,F403
+    from tools.matrixark_mcp_temporal_append import slim_persisted_record
 except ImportError:
     from matrixark_mcp_core import *  # noqa: F401,F403
+    from matrixark_mcp_temporal_append import slim_persisted_record
 
 try:  # package path
     from tools.matrixark_temporal_location_codec import (
@@ -814,7 +816,8 @@ class _TemporalDirectBackendMixin:
                     except (TypeError, ValueError):
                         pass
                 record["matrixark_write_debug"] = debug
-                payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                payload = json.dumps(slim_persisted_record(record),
+                                     sort_keys=True, separators=(",", ":"))
                 route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
                 sequence += 1
