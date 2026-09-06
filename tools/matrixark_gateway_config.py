@@ -1041,6 +1041,22 @@ def _get_json(url: str, headers: Dict[str, str], timeout: float) -> Tuple[int, A
             return response.getcode(), None
 
 
+def _configured_extraction_provider() -> str:
+    """The extraction provider a deployment has named, or "" when it has named none.
+
+    The specific name wins over the general one, which is the precedence the provider modules
+    themselves use. Three resolvers in this module each spelled the pair out, so a change to that
+    precedence would have had to be made three times.
+
+    Empty rather than "deterministic" on purpose, and the difference matters here: these callers
+    need to know whether anything is set AT ALL, and a resolver answering "deterministic" for an
+    unset deployment could not tell the two apart.
+    """
+    return os.environ.get(
+        "MATRIXARK_UNDERSTANDING_PROVIDER",
+        os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+
+
 def discover_models(target: str, timeout: float = 8.0) -> Json:
     """Ask the configured endpoint what it serves.
 
@@ -1055,9 +1071,7 @@ def discover_models(target: str, timeout: float = 8.0) -> Json:
         base = (os.environ.get("MATRIXARK_EMBEDDING_API_BASE", "").strip()
                 or os.environ.get("MATRIXARK_EMBED_BASE_URL", "").strip())
         key_env = _env_name(SETTINGS_BY_KEY["embedding.api_key"], values)
-    elif extraction_provider_effect(
-            os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER",
-                           os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))) == "anthropic":
+    elif extraction_provider_effect(_configured_extraction_provider()) == "anthropic":
         # Anthropic reads its own base URL and authenticates with x-api-key. Asking the OpenAI base
         # URL, which this deployment never sets, answered "Set the base URL first" -- pointing at a
         # field that provider does not read, in the one panel that exists to stop a misspelt model
@@ -1113,9 +1127,7 @@ def extraction_model_setting(provider: Optional[str] = None) -> str:
     The Anthropic path reads MATRIXARK_ANTHROPIC_MODEL and ignores MATRIXARK_EXTRACTION_MODEL
     entirely, so writing a pick into `extraction.model` on that deployment changed nothing at all.
     """
-    resolved = provider if provider is not None else os.environ.get(
-        "MATRIXARK_UNDERSTANDING_PROVIDER",
-        os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+    resolved = provider if provider is not None else _configured_extraction_provider()
     if extraction_provider_effect(resolved) == "anthropic":
         return "extraction.anthropic_model"
     return "extraction.model"
@@ -1137,8 +1149,7 @@ def model_catalogue(target: str, provider: Optional[str] = None) -> List[Json]:
             "embedding models come from the gateway's measured encoder_catalog(), not from here")
     entries = [dict(entry) for entry in EXTRACTION_CATALOGUE]
     if provider is None:
-        provider = os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER",
-                                  os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", ""))
+        provider = _configured_extraction_provider()
     effect = extraction_provider_effect(provider)
     if effect == "rules":
         return entries
