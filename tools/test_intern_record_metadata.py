@@ -279,7 +279,12 @@ class InterningCase(_FlagGuard):
             # (expansion is a no-op when nothing is interned).
             A.INTERN_RECORD_METADATA = True
             reloaded = mcp.MatrixArkLocalAdapter(path)._read_raw_records()
-            self.assertEqual(raw, reloaded)
+            # `_read_raw_records` expands interned fields AND unpacks the vector storage form, while
+            # `_raw_disk_records` is the durable bytes and does neither. Those were the same thing
+            # while expansion had one job; with a packed vector the disk record carries
+            # `vector_f32` and the expanded one carries `vector`. Both sides go through the same
+            # unpacking so this stays a test about interning, which is its subject.
+            self.assertEqual(A.unpack_record_vectors(raw), reloaded)
 
     def test_retrieve_delete_get_all_work_with_interning(self):
         """The mem0 surface behaves identically with interning ON: recall, then delete leaves nothing."""

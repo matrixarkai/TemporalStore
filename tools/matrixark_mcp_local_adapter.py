@@ -195,11 +195,17 @@ _SHARD_CODEC_ZLIB = b"\x01"
 #: ACTIVE log can take: a sealed shard is finished and compresses whole, but a log is appended to,
 #: and a stream of self-describing blocks is appendable where a single deflate stream is not.
 _SHARD_CODEC_BLOCKS = b"\x02"
-#: Off by default. This is the only change in this family that alters the DURABLE SOURCE OF TRUTH
-#: rather than something derived from it, and the failure it guards against is a real one: a process
-#: appending plain JSON to a block-framed log corrupts it. The form is taken from the file on disk
-#: rather than from this flag (see _log_append_form), so turning it on affects only logs this build
-#: creates, and turning it off again leaves every existing log readable.
+#: Off, and it stays off -- the hazard is demonstrated rather than argued. Turning it on breaks
+#: `test_a_writer_in_another_process_does_not_corrupt_the_view` and
+#: `test_both_append_paths_write_the_same_tail`: both append raw JSON lines to a log this module
+#: created, which is what a writer that is NOT this module does, and a plain append onto a
+#: block-framed log corrupts it. A store this build creates has to remain appendable by something
+#: that writes plain JSONL, and defaulting this on takes that away.
+#:
+#: Everything else about it is safe and measured -- an existing plain log stays plain because the
+#: form is read from the FILE, and a store written with this on reads byte-identically with it off
+#: (144 records, 82 vectors, same digest). It is a per-deployment choice for anyone who knows their
+#: log has a single writer, not a default.
 LOCAL_JSONL_BLOCK_LOG = os.environ.get(
     "MATRIXARK_LOCAL_JSONL_BLOCK_LOG", "0"
 ).strip().lower() not in ("0", "false", "no", "off")
@@ -1484,11 +1490,16 @@ def _copy_interned_value(value: Any) -> Any:
 #: The packed vector field. A separate key rather than a re-typed ``vector`` so a record is either
 #: one form or the other and a reader can tell which by looking, not by guessing.
 VECTOR_F32_KEY = "vector_f32"
-#: Off by default: a reader from before this change finds no ``vector`` on a packed record and
-#: carries on without one, which is lost recall and no error. Every other switch in this family
-#: degrades to re-deriving from the log; this one degrades to a quietly worse answer.
+#: ON. A 384-dimension vector costs 20.96 bytes a dimension as JSON digits and 5.33 packed, which is
+#: 2.28x after block compression -- and f32 is exact, so there is no recall question to answer.
+#:
+#: It shipped off because a reader from before this change finds no ``vector`` on a packed record and
+#: carries on without one: lost recall, no error. That hazard is a mixed-version deployment rather
+#: than an upgrade. Within a build the round trip is measured byte-identical, unpacking is
+#: unconditional, and a JSON float array already on disk keeps being read beside packed ones, per
+#: record -- so a store crossing this flag is a mixture and reads correctly either way.
 LOCAL_BINARY_VECTORS = os.environ.get(
-    "MATRIXARK_LOCAL_BINARY_VECTORS", "0"
+    "MATRIXARK_LOCAL_BINARY_VECTORS", "1"
 ).strip().lower() not in ("0", "false", "no", "off")
 
 
