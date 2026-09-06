@@ -1797,6 +1797,11 @@ def snapshot(include_catalog: bool = True) -> Json:
             # Offered here, resolved by the policy, and read by nothing in this build. A control
             # that accepts a value and confirms it is indistinguishable from one that works.
             "read_by_nothing": not setting_is_read(_env_name(setting, values)),
+            # Whether the FILE holds a value for this key, which is not the same question as
+            # whether the value differs from the default. The page inferred one from the other
+            # and hid its reset control for every setting stored at the build's own default --
+            # the only control that removes such an entry, missing from every field that has one.
+            "stored": setting.key in values,
             # A variable the portal does NOT offer, winning over this field right now. Without
             # it the page shows a value the deployment is not using and an editable control that
             # changes nothing for the configured provider.
