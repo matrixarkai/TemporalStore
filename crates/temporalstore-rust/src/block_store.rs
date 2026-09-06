@@ -30,7 +30,8 @@ use paths::{
 use record::{
     decode_page_record, default_page_record_compression_enabled,
     default_page_record_compression_level, default_page_record_compression_min_bytes,
-    encode_page_record, inspect_slab, logical_range_from_slab, sha256_hex, summarize_slab,
+    encode_page_record, inspect_slab, logical_range_from_slab, max_page_id_in_slab_file,
+    sha256_hex, summarize_slab,
     PageRecordCompression,
 };
 use self::band_manifest::*;
