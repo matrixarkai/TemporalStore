@@ -87,10 +87,16 @@ class EveryControlItReadsSaysSoTest(unittest.TestCase):
                                   % (setting.key, SERVER))
 
     def test_they_say_it_the_same_way(self) -> None:
-        """One sentence, shared. Two copies is how one of them came to carry it and the other not."""
+        """One sentence, shared. Two copies is how one of them came to carry it and the other not.
+
+        The floor was two controls, which is what the file name still refers to. It is one now:
+        `embedding.model_path` was a second field for the same value -- read only where it OVERRODE
+        the model name -- and the field that absorbed it carries the note. One is not vacuous; zero
+        would be, and that is what this guards.
+        """
         controls = controls_by_variable()
         carrying = [s for v in bound_at_import(SERVER) & set(controls) for s in controls[v]]
-        self.assertGreaterEqual(len(carrying), 2)
+        self.assertGreaterEqual(len(carrying), 1)
         for setting in carrying:
             with self.subTest(setting=setting.key):
                 self.assertIn(cfg.ENCODER_SERVER_NOTE, setting.help or "")

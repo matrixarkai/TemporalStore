@@ -347,12 +347,17 @@ SETTINGS: List[Setting] = [
             "Must end in /v1: the request is built as <base>/embeddings."),
     Setting("embedding.model", "embedding", "MATRIXARK_EMBEDDING_MODEL",
             "Embedding model", "str", "", "live",
-            "Encoder model name, e.g. paraphrase-multilingual-MiniLM-L12-v2."
+            "The encoder to use: a model name like paraphrase-multilingual-MiniLM-L12-v2, or "
+            "a path to one you have downloaded -- an in-process encoder loads either, and a hosted "
+            "provider is sent the name."
             + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
-    Setting("embedding.model_path", "embedding", "MATRIXARK_EMBEDDING_MODEL_PATH",
-            "Embedding model path", "str", "", "live",
-            "Local path to a downloaded encoder; wins over the model name when set."
-            + ENCODER_SERVER_NOTE + ENCODER_CHANGE_NOTE),
+    # MATRIXARK_EMBEDDING_MODEL_PATH was offered here as a second encoder field. It is not a
+    # second choice: the encoder reads `MODEL_PATH or MODEL`, so it only ever overrode the field
+    # above -- and only on the in-process path, because a hosted provider is sent the model NAME and
+    # never looks at the path at all. Two fields for one value, one of which silently won on one
+    # path and did nothing on the other. The variable is still honoured where a launcher sets it,
+    # and `_model_config_snapshot` says so, because a value in force that no screen shows is the
+    # thing this whole panel exists to prevent.
     Setting("embedding.api_key_env", "embedding", "MATRIXARK_EMBEDDING_API_KEY_ENV",
             "Embedding key variable", "str", "", "live",
             "Name of the environment variable holding the encoder key -- the key you enter below is "
