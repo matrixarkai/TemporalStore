@@ -326,17 +326,15 @@ impl ProxyService {
         let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
         for (idx, message) in request.messages.iter().enumerate() {
             let timestamp_ms = message.timestamp_ms.unwrap_or(now);
-            let title = message
-                .title
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| {
-                    if message.role.is_empty() {
-                        "message".to_string()
-                    } else {
-                        message.role.clone()
-                    }
-                });
+            // Borrowed in all three cases. The record this feeds takes `title: &str`, so the owned
+            // title only ever existed to be pointed at: a clone of the caller's title, a clone of
+            // the role, or a fresh allocation of the constant "message" -- one per message, every
+            // message. The other site keeps its `String`, because it hands ownership on.
+            let title: std::borrow::Cow<'_, str> = match message.title.as_deref() {
+                Some(value) if !value.is_empty() => std::borrow::Cow::Borrowed(value),
+                _ if !message.role.is_empty() => std::borrow::Cow::Borrowed(&message.role),
+                _ => std::borrow::Cow::Borrowed("message"),
+            };
             // Orders raw events by (timestamp, call, index within the call), all
             // fixed-width so lexicographic order is arrival order. The call component is
             // what stops two ingests in the same millisecond writing the same field and

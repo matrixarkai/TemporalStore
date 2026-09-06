@@ -5420,6 +5420,132 @@ mod tests {
         );
     }
 
+    /// A raw event's title falls back the way it always did: its own, then the role, then
+    /// "message".
+    ///
+    /// The title is borrowed rather than owned now -- the record it feeds takes `&str`, so the
+    /// `String` only ever existed to be pointed at, and it cost one allocation per message.
+    /// Collapsing three branches into borrows is exactly the change that quietly reorders a
+    /// fallback, so this reads the titles out of the payload the proxy actually forwards.
+    #[test]
+    fn a_raw_events_title_falls_back_as_it_did() {
+        let captured: std::sync::Arc<std::sync::Mutex<Vec<u8>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&captured);
+        let (addr_tx, addr_rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(_) => return,
+            };
+            let bound = match listener.local_addr() {
+                Ok(addr) => addr.to_string(),
+                Err(_) => return,
+            };
+            if addr_tx.send(bound).is_err() {
+                return;
+            }
+            let body = br#"{"status":{"ok":true,"code":"ok","message":""},"responses":[]}"#;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                body.len()
+            );
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut scratch = [0u8; 8192];
+                loop {
+                    use std::io::{Read as _, Write as _};
+                    match stream.read(&mut scratch) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            sink.lock()
+                                .expect("capture lock")
+                                .extend_from_slice(&scratch[..read]);
+                            if stream.write_all(head.as_bytes()).is_err()
+                                || stream.write_all(body).is_err()
+                            {
+                                break;
+                            }
+                            let _ = stream.flush();
+                        }
+                    }
+                }
+            }
+        });
+        let backend = addr_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the capturing backend must report its address");
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        proxy
+            .client()
+            .insert_cached_route_for_test(proxy.context_shard_id(0), backend.clone());
+
+        let body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+            "messages": [
+                {"role": "user", "content": "one", "title": "its own"},
+                {"role": "assistant", "content": "two"},
+                {"role": "", "content": "three"}
+            ]
+        }))
+        .expect("body");
+
+        let (code, answered) = proxy.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/ingest".to_string(),
+            body,
+        });
+        assert_eq!(code, 200, "{}", String::from_utf8_lossy(&answered));
+
+        let forwarded =
+            String::from_utf8_lossy(&captured.lock().expect("capture lock")).to_string();
+        assert!(
+            !forwarded.is_empty(),
+            "nothing was forwarded, so this test read no titles at all"
+        );
+
+        // The record is base64 inside the command's entries, so the titles are decoded rather
+        // than matched as substrings.
+        let body_at = forwarded
+            .find("\r\n\r\n")
+            .map(|at| at + 4)
+            .expect("the forwarded request has a header terminator");
+        let request: serde_json::Value = serde_json::from_str(forwarded[body_at..].trim_end())
+            .expect("the forwarded body is JSON");
+        let entries = request["command"]["entries"]
+            .as_array()
+            .expect("the command carries entries");
+        let mut titles: Vec<String> = Vec::new();
+        for entry in entries {
+            let encoded = entry[1].as_str().expect("the entry value is a string");
+            let decoded = {
+                use base64::Engine as _;
+                base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .expect("the entry value is base64")
+            };
+            let record: serde_json::Value =
+                serde_json::from_slice(&decoded).expect("the record is JSON");
+            titles.push(
+                record["title"]
+                    .as_str()
+                    .expect("the record carries a title")
+                    .to_string(),
+            );
+        }
+
+        assert_eq!(
+            titles,
+            vec![
+                "its own".to_string(),
+                "assistant".to_string(),
+                "message".to_string()
+            ],
+            "the title fallback moved: its own title, then the role, then the constant"
+        );
+    }
+
     #[test]
     fn proxy_write_quota_leaves_read_capacity_free() {
         let proxy = scoped_proxy(ProxyOptions {
