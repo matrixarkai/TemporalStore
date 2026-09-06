@@ -4012,6 +4012,55 @@ mod tests {
             counts.alloc_bytes / ITERS as u64,
         ));
 
+        // The RETRIEVE path -- the one the live hook calls on every request -- against the same
+        // non-allocating backend.
+        let retrieve_body = serde_json::to_vec(&serde_json::json!({
+            "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+            "query": "what did we decide about the schema",
+            "start_time_ms": 0u64,
+            "end_time_ms": 1_800_000_000_000u64,
+            "max_events": 32
+        }))
+        .expect("retrieve body");
+        let retrieving = scoped_proxy(ProxyOptions::default());
+        retrieving
+            .client()
+            .insert_cached_route_for_test(retrieving.context_shard_id(0), quiet.clone());
+        let before = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed);
+        let (code, answered) = retrieving.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/retrieve".to_string(),
+            body: retrieve_body.clone(),
+        });
+        let first: String = String::from_utf8_lossy(&answered).chars().take(60).collect();
+        assert_eq!(code, 200, "{first}");
+        assert!(
+            first.contains("\"ok\":true"),
+            "the retrieve forward must succeed or this row measures the failure path: {first}"
+        );
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = retrieving.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/retrieve".to_string(),
+                body: retrieve_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        let exchanges = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed) - before;
+        assert_eq!(
+            exchanges,
+            ITERS as u64 + 1,
+            "only {exchanges} of {} calls reached the socket, so this row is not a forward",
+            ITERS + 1
+        );
+        rows.push((
+            "POST /context/retrieve, backend allocates NOTHING",
+            counts.allocs / ITERS as u64,
+            counts.alloc_bytes / ITERS as u64,
+        ));
+
 
         // SCRATCH: the layers, against the quiet backend so the numbers are this process only.
         let typed_req = ExecuteRequest {
