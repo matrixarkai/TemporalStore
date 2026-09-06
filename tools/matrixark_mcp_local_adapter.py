@@ -476,7 +476,7 @@ def _snapshot_prefix_fingerprint(record: "Json") -> str:
 # older reader: it would otherwise serve tokenised records with the interned fields missing, so a
 # version it does not recognise has to send it back to the log, which it already does.
 LOCAL_DURABLE_READ_CACHE_SCHEMA_VERSION = 2
-PRE_RETRIEVAL_SUMMARY_REFRESH = os.environ.get("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", "0").strip().lower() in {"1", "true", "yes"}
+PRE_RETRIEVAL_SUMMARY_REFRESH = env_bool("MATRIXARK_PRE_RETRIEVAL_SUMMARY_REFRESH", False)
 
 QUALITY_FIRST_UNDERFILL_DROP_KEYS = {
     "cross_session_budget",
