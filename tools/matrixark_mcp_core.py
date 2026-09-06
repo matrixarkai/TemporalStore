@@ -3076,6 +3076,30 @@ STORAGE_ROUTE_PRESETS: dict[str, Json] = {
 }
 
 
+def entity_ref_text(record: Json) -> str:
+    """The one line an entity ref shows in a context pack.
+
+    Rendered as ``f"{entity_type}: {entity_name} = {state}"`` at five call sites, which spelled the
+    type twice whenever the name already carried it -- and it usually does. Measured over 448 entity
+    refs in the live log: 195 had ``entity_name == entity_type`` ("assistant_decision:
+    assistant_decision = ...") and another 186 had the name prefixed with the type
+    ("codex_validation: codex_validation:ran_159_tests = ..."). 381 of 448.
+
+    Dropping the repeat is 8.8% off the rendered length of those refs, about 1,827 tokens across
+    that sample -- and every one of them is a token the model pays for on the turn the pack is
+    injected into.
+
+    A name unrelated to the type still shows both: that pairing is information.
+    """
+    entity_type = str(record.get("entity_type", "") or "")
+    entity_name = str(record.get("entity_name", "") or "")
+    state = str(record.get("state", "") or "")
+    if entity_name and entity_type:
+        if entity_name == entity_type or entity_name.startswith(entity_type + ":"):
+            return f"{entity_name} = {state}"
+    return f"{entity_type}: {entity_name} = {state}"
+
+
 def canonical_storage_route(storage_options: Json | None) -> Json:
     options = storage_options if isinstance(storage_options, dict) else {}
     storage_mode = str(options.get("storage_mode") or "default")

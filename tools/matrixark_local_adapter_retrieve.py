@@ -2211,7 +2211,7 @@ class _LocalAdapterRetrieveMixin:
                 secondary_index_matched_count += 1
             if not admit_candidate_for_node(record):
                 continue
-            text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+            text = entity_ref_text(record)
             entity_metadata = embedding_metadata_by_ref.get(("entity", record.get("entity_hash")), {})
             source_entity_hashes = record.get("source_entity_hashes", [])
             source_session_ids = record.get("source_session_ids", [])
@@ -2734,7 +2734,7 @@ class _LocalAdapterRetrieveMixin:
                 profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
                 if profile_current_value is False:
                     continue
-                text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                text = entity_ref_text(record)
                 if not text.strip(" :=	"):
                     continue
                 source_entity_hashes = record.get("source_entity_hashes", [])
@@ -2964,7 +2964,7 @@ class _LocalAdapterRetrieveMixin:
                     profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
                     if profile_current_value is False:
                         continue
-                    text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                    text = entity_ref_text(record)
                     if not text.strip(" :=\t"):
                         continue
                     source_entity_hashes = record.get("source_entity_hashes", [])
@@ -3447,7 +3447,7 @@ class _LocalAdapterRetrieveMixin:
                 profile_current_value = first_explicit_bool("profile_entity_current", record, entity_metadata)
                 if profile_current_value is False:
                     continue
-                text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                text = entity_ref_text(record)
                 if not text.strip(" :=	"):
                     continue
                 ref_tokens = max(1, token_count(text))
