@@ -178,7 +178,8 @@ class ThePageSaysSoTest(unittest.TestCase):
         behaviour."""
         bodies = []
         for name in ("setup_portal.html", "build_portal_pages.py"):
-            text = io.open(os.path.join(PORTAL, name), encoding="utf-8").read()
+            with io.open(os.path.join(PORTAL, name), encoding="utf-8") as handle:
+                text = handle.read()
             start = text.find("function probeHtml(r)")
             self.assertGreater(start, 0, name)
             depth = 0

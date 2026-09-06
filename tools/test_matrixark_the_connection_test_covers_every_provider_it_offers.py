@@ -207,8 +207,25 @@ class TheAnthropicProviderIsActuallyTestedTest(ProbeCase):
                                reply={"model": "claude-sonnet-5",
                                       "content": [{"type": "text", "text": "pong"}]},
                                MATRIXARK_UNDERSTANDING_PROVIDER="anthropic", key="k")
-        self.assertEqual({"model": "claude-sonnet-5", "sample": "pong"},
+        self.assertEqual({"model": "claude-sonnet-5", "sample": "pong",
+                          # The summary carries what was ASKED beside what answered, so a call
+                          # that succeeded against a different model is not read as confirmation
+                          # that the endpoint serves the configured one.
+                          "requested_model": "claude-sonnet-5",
+                          "model_matches_request": True},
                          result["results"][0]["response"])
+
+    def test_a_reply_from_another_model_is_not_read_as_agreement(self) -> None:
+        """The Anthropic branch specifically: three branches build a summary, and one left
+        without the comparison would be a whole provider family silently unchecked."""
+        result, _ = self.probe(["extraction"],
+                               reply={"model": "claude-haiku-4-5",
+                                      "content": [{"type": "text", "text": "pong"}]},
+                               MATRIXARK_UNDERSTANDING_PROVIDER="anthropic", key="k")
+        response = result["results"][0]["response"]
+        self.assertEqual("claude-haiku-4-5", response["model"])
+        self.assertEqual("claude-sonnet-5", response["requested_model"])
+        self.assertIs(False, response["model_matches_request"])
 
 
 class TheTestDoesNotPassOnAConfigurationThatMakesNoCallTest(ProbeCase):
