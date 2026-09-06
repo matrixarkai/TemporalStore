@@ -19,12 +19,17 @@ try:
     from tools.matrixark_mcp_identity import stable_hash
     from tools.matrixark_mcp_runtime_config import (
         DEFAULT_BUDGET_FILL_POLICY,
+        DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
         DEFAULT_MAX_CONTEXT_TOKENS,
         DEFAULT_MAX_GLOBAL_CANDIDATES,
         DEFAULT_MAX_SELECTED_REFS,
         DEFAULT_RETRIEVAL_MIN_SCORE,
     )
-    from tools.matrixark_mcp_scoring import tokens
+    from tools.matrixark_mcp_scoring import (
+        near_duplicate_overlap_ratio,
+        normalized_token_set,
+        tokens,
+    )
     from tools.matrixark_mcp_text import clip_context_text, token_count
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_errors import MatrixArkError
@@ -36,12 +41,17 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_identity import stable_hash
     from matrixark_mcp_runtime_config import (
         DEFAULT_BUDGET_FILL_POLICY,
+        DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
         DEFAULT_MAX_CONTEXT_TOKENS,
         DEFAULT_MAX_GLOBAL_CANDIDATES,
         DEFAULT_MAX_SELECTED_REFS,
         DEFAULT_RETRIEVAL_MIN_SCORE,
     )
-    from matrixark_mcp_scoring import tokens
+    from matrixark_mcp_scoring import (
+        near_duplicate_overlap_ratio,
+        normalized_token_set,
+        tokens,
+    )
     from matrixark_mcp_text import clip_context_text, token_count
 
 
@@ -417,6 +427,7 @@ def select_token_budgeted_refs(
     min_score: float = DEFAULT_RETRIEVAL_MIN_SCORE,
     max_global_candidates: int | None = None,
     budget_fill_policy: str = DEFAULT_BUDGET_FILL_POLICY,
+    near_duplicate_overlap_threshold: float = DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD,
     duplicate_text_hashes: set[int] | None = None,
     deadline_exceeded: Callable[[], bool] | None = None,
     deadline_reason: str = "deadline_during_pack",
@@ -436,6 +447,14 @@ def select_token_budgeted_refs(
     )
     min_score = max(0.0, min(1.0, float(min_score)))
     budget_fill_policy = (budget_fill_policy or DEFAULT_BUDGET_FILL_POLICY).strip().lower()
+    try:
+        near_duplicate_overlap_threshold = float(near_duplicate_overlap_threshold)
+    except (TypeError, ValueError):
+        near_duplicate_overlap_threshold = DEFAULT_NEAR_DUPLICATE_OVERLAP_THRESHOLD
+    near_duplicate_overlap_threshold = max(0.0, min(1.0, near_duplicate_overlap_threshold))
+    #: A threshold of 0 turns the suppression off, which is how the setting is disabled.
+    near_duplicate_enabled = near_duplicate_overlap_threshold > 0.0
+    selected_token_sets: list[frozenset[str]] = []
     candidates = merge_ranked_paths(
         primary,
         auxiliary,
@@ -667,6 +686,7 @@ def select_token_budgeted_refs(
     dropped: Json = {
         "over_budget": 0,
         "duplicate": 0,
+        "near_duplicate": 0,
         "low_score": 0,
         "stale": 0,
         "summary": 0,
@@ -687,6 +707,7 @@ def select_token_budgeted_refs(
         "estimated_tokens": {
             "over_budget": 0,
             "duplicate": 0,
+            "near_duplicate": 0,
             "low_score": 0,
             "stale": 0,
             "summary": 0,
@@ -708,6 +729,7 @@ def select_token_budgeted_refs(
         "reason_descriptions": {
             "over_budget": "candidate was relevant but exceeded the remaining remote context token budget",
             "duplicate": "candidate duplicated local context or an already selected ref",
+            "near_duplicate": "candidate text near-duplicated a higher-ranked already selected ref (token overlap above the configured threshold)",
             "low_score": "candidate score was below the minimum packing threshold",
             "stale": "candidate was stale or superseded for the query policy",
             "summary": "summary text was dropped in favor of denser raw/evidence refs",
@@ -795,6 +817,22 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["stale"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="stale", token_estimate=ref_tokens)
             continue
+        # Near-duplicate suppression: drop a candidate whose normalized token set overlaps an
+        # already-selected (strictly higher-ranked, since selection is in ranked order) ref
+        # above the configured threshold, so repetitive refs do not dilute precision or spend
+        # budget on redundant content. The highest-ranked instance is the one already in
+        # `selected`, so it is kept. Same placement as matrixark_mcp_core_ref_selection: before
+        # the budget check, so a near-duplicate is not counted as over_budget instead.
+        if near_duplicate_enabled and selected_token_sets:
+            candidate_token_set = normalized_token_set(candidate.get("text", ""))
+            if candidate_token_set and any(
+                near_duplicate_overlap_ratio(candidate_token_set, selected_tokens) >= near_duplicate_overlap_threshold
+                for selected_tokens in selected_token_sets
+            ):
+                dropped["near_duplicate"] += 1
+                dropped["estimated_tokens"]["near_duplicate"] += ref_tokens
+                record_dropped_candidate(dropped, candidate, reason="near_duplicate", token_estimate=ref_tokens)
+                continue
         if remote_budget <= 0 or (selected and used_tokens + ref_tokens > remote_budget):
             dropped["over_budget"] += 1
             dropped["estimated_tokens"]["over_budget"] += ref_tokens
@@ -975,6 +1013,8 @@ def select_token_budgeted_refs(
             )
             continue
         seen_text_hashes.add(text_hash)
+        if near_duplicate_enabled:
+            selected_token_sets.append(normalized_token_set(candidate.get("text", "")))
         selected.append(
             {
                 **candidate,
