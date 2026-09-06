@@ -1615,7 +1615,7 @@ class _TemporalDirectBackendMixin:
             field = self._latest_context_state_field(record)
             if not field:
                 continue
-            payload_record = dict(record)
+            payload_record = dict(slim_persisted_record(record))
             payload_record.pop("summary_version_hash", None)
             entries.append(
                 {
@@ -1640,7 +1640,7 @@ class _TemporalDirectBackendMixin:
             if not field:
                 append_records_for_log.append(record)
                 continue
-            payload_record = dict(record)
+            payload_record = dict(slim_persisted_record(record))
             payload_record.pop("summary_version_hash", None)
             latest_state_entries.append(
                 {
