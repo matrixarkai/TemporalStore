@@ -571,11 +571,13 @@ SETTINGS: List[Setting] = [
             "length-framed log."),
     Setting("storage_engine.wal_compress_records", "storage_engine",
             "TS_WAL_COMPRESS_RECORDS",
-            "Compress log records", "bool", "0", "restart",
+            "Compress log records", "bool", "1", "restart",
             "On, a log record is zstd-compressed before it is written. Measured on one live "
             "segment -- 151 records averaging 13.5 KB -- this is 8.61x, which on a 698 MB log is "
-            "about 617 MB back. It ships OFF because it spends write CPU to buy disk, and which "
-            "of those is scarce is the deployment's answer, not this file's. Reading never "
+            "about 617 MB back. It ships ON: it spends write CPU to buy disk, and 8.61x is a large "
+            "enough return that a deployment which would rather keep the CPU is the one that "
+            "should have to say so. Turn it off where write latency is the scarce thing. Reading "
+            "never "
             "consults it: a payload says what encoding it is in, so a log written across a change "
             "reads end to end and turning it off again is not a one-way door. Records below 256 "
             "bytes, and any record the codec fails to shrink, are written uncompressed. Each "

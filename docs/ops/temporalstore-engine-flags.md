@@ -177,7 +177,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_BINARY_FRAME` | on | launch, test, portal | 1 | — |
 | `TS_WAL_BINARY_RECORDS` | on | launch, test, portal | 1 | — |
 | `TS_WAL_COMMIT_DELAY_US` | 0 | config | 1 | — |
-| `TS_WAL_COMPRESS_RECORDS` | off | test, portal | 1 | — |
+| `TS_WAL_COMPRESS_RECORDS` | on | config, test, portal | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
 | `TS_WAL_LEGACY_RECOVERY` | off | config, test | 1 | yes |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
