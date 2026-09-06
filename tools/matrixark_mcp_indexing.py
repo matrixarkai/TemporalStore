@@ -55,20 +55,51 @@ SECONDARY_INDEX_PRIORITY_PREFIXES = (
 )
 
 
-def _ordered_unique(values: list[str]) -> list[str]:
-    output: list[str] = []
+def ordered_unique(values: list[str]) -> list[str]:
+    """Unique, order-preserving, trimmed, and WITHOUT the empty string.
+
+    Dropping the empty value is the part that matters here. `context_index_name` returns "" for
+    anything that normalises to nothing, and the term builders below append its result
+    unconditionally, so a copy that kept "" emitted an empty index term: `metadata_index_terms({})`
+    returned `[""]`. An index name of "" is not a name -- every record that produced one would post
+    under the same key.
+
+    Two of the five callers below already worked around this with `if term`, which is the shape of
+    a helper that does not do what its callers need.
+    """
     seen: set[str] = set()
+    output: list[str] = []
     for value in values:
-        if value in seen:
+        value = value.strip()
+        if not value or value in seen:
             continue
         seen.add(value)
         output.append(value)
     return output
 
 
+#: The private spelling this module used before the two copies were reconciled. Kept so the call
+#: sites below read unchanged; it is the same object, not a second implementation.
+_ordered_unique = ordered_unique
+
+
+#: Characters an index value may keep beyond ASCII. Without these the normaliser replaced every
+#: non-ASCII character with "_", and since the result is then stripped of "_" a term written only
+#: in one of these scripts normalised to the EMPTY string -- `context_index_name` returns "" for an
+#: empty value, so the term did not merely change, it disappeared.
+_INDEX_VALUE_CJK = (
+    "\u3400-\u4dbf"  # CJK extension A
+    "\u4e00-\u9fff"  # CJK unified ideographs
+    "\uf900-\ufaff"  # compatibility ideographs
+    "\u3040-\u30ff"  # hiragana + katakana
+    "\uac00-\ud7af"  # hangul syllables
+)
+_INDEX_VALUE_STRIP_RE = re.compile(r"[^a-z0-9_.:/-" + _INDEX_VALUE_CJK + r"]+")
+
+
 def normalized_index_value(value: Any) -> str:
     text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9_.:/-]+", "_", text)
+    text = _INDEX_VALUE_STRIP_RE.sub("_", text)
     return text.strip("_")
 
 

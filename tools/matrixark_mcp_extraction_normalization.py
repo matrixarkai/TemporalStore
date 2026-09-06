@@ -284,8 +284,18 @@ def feature_scope_excludes_outcome_evidence(text: str) -> bool:
     return bool(FEATURE_SCOPE_EXCLUSION_RE.search(str(text or "").lower())) and profile_entity_type_for_memory_text(text) == "memory_feature_profile"
 
 
-def normalized_index_value(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+#: Not an index value -- the one use is the dedup key in `codex_outcome_fact_entities` below. It
+#: had its own definition, and that definition was the strictest of the three copies of this name:
+#: `[^a-z0-9]+` drops `_ . : / -` along with every non-ASCII character. Two distinct facts written
+#: in Chinese therefore normalised to "" alike, shared a key, and the second was dropped as a
+#: duplicate -- the extraction lost it. The shared normaliser keeps CJK, hiragana, katakana, hangul
+#: and accented Latin, so those facts now key apart. It also keeps `_ . : / -`, which makes the key
+#: slightly less folding for ASCII punctuation: "a.b" and "a-b" used to share a key and no longer
+#: do. That is the same direction -- two things that are not the same are no longer called the same.
+try:
+    from tools.matrixark_mcp_indexing import normalized_index_value
+except ImportError:  # Direct script execution from tools/.
+    from matrixark_mcp_indexing import normalized_index_value
 
 
 CODEX_OUTCOME_CHANGE_RE = re.compile(
