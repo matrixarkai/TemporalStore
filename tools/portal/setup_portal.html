@@ -1158,6 +1158,18 @@ function liveStream(options) {
        deployment behaves identically either way. The control is left in place because a
        deployment may already have set one, and a field that vanishes takes its value out of
        view while leaving it in the file. */
+    /* A variable the portal does not offer, winning over this field right now. The value shown
+       here is the fallback -- what this setting would give if nothing else were set -- and on a
+       deployment where the override applies that is not the number in use. Editing the field
+       changes nothing for that provider, so saying which variable decides, and what it says, is
+       the difference between a control and a decoration. */
+    if (f.overridden_by) {
+      badges += '<span class="badge failed" title="' + esc(f.overridden_by.env)
+        + " is set to " + esc(f.overridden_by.value) + " and takes precedence while "
+        + esc(f.overridden_by.when) + '. Change it where it is set; this field is the fallback.">'
+        + esc(f.overridden_by.env) + " = " + esc(f.overridden_by.value)
+        + " wins</span>";
+    }
     if (f.read_by_nothing) {
       badges += '<span class="badge failed" title="This build resolves the value and never reads '
         + 'it, so setting it changes nothing. It is still shown because a value already stored '
