@@ -8415,6 +8415,167 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
+    fn a_mute_that_survived_a_restore_survives_the_restart_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+
+        let snapshot = {
+            // A snapshot taken before the mute, so its flag says "not muted" --
+            // the case that used to clear the operator's lever.
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: "ns".to_string(),
+                })
+                .status
+                .ok);
+            let snapshot = meta.export_snapshot();
+            assert!(!snapshot.meta_change_muted, "the snapshot predates the mute");
+
+            assert!(meta.set_meta_change_muted(true).status.ok);
+            assert!(meta.is_meta_change_muted(), "the operator muted it");
+
+            assert!(meta.install_snapshot(snapshot.clone()).status.ok);
+            assert!(
+                meta.is_meta_change_muted(),
+                "restoring data lifted the operator's mute"
+            );
+            snapshot
+        };
+        let _ = snapshot;
+
+        // Restart: the log is replayed, and replay applies the install through
+        // the same path. The metaserver must come back still muted -- an
+        // incident lever that a restart quietly clears is no lever at all.
+        let restarted = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("the log must replay");
+        assert!(
+            restarted.is_meta_change_muted(),
+            "the mute was lost when the log was replayed"
+        );
+
+        // And it is really in force, not merely reported: a recorded change is
+        // still refused after the restart.
+        let refused = restarted.add_namespace(AddNamespaceRequest {
+            namespace: "after-restart".to_string(),
+        });
+        assert!(
+            !refused.status.ok,
+            "the metaserver reported itself muted but accepted a change anyway"
+        );
+    }
+
+    #[test]
+    fn restoring_a_snapshot_does_not_lift_an_operator_mute() {
+        // A snapshot of a different world, taken while nothing was muted.
+        let source = SingleNodeMeta::default();
+        assert!(source
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "from-the-snapshot".to_string(),
+                first_shard_id: 90,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 1,
+                serving_options: Default::default(),
+            })
+            .status
+            .ok);
+        let unmuted_snapshot = source.export_snapshot();
+        assert!(
+            !unmuted_snapshot.meta_change_muted,
+            "this snapshot is meant to be an unmuted one"
+        );
+
+        let meta = SingleNodeMeta::default();
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "before".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 1,
+                serving_options: Default::default(),
+            })
+            .status
+            .ok);
+        meta.set_meta_change_muted(true);
+
+        assert!(meta.install_snapshot(unmuted_snapshot).status.ok);
+
+        // The data was restored -- an operator asked for that.
+        assert_eq!(
+            meta.list_tables()
+                .tables
+                .into_iter()
+                .map(|table| table.table_name)
+                .collect::<Vec<_>>(),
+            vec!["from-the-snapshot".to_string()],
+            "the snapshot was not installed"
+        );
+        // The mute was not. Nothing asked for the metaserver to start changing
+        // things again, and every background loop reads this.
+        assert!(
+            meta.is_meta_change_muted(),
+            "restoring data lifted the operator's mute"
+        );
+        // ...which means an ordinary write is still refused.
+        assert!(
+            !meta
+                .add_table(AddTableRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "after".to_string(),
+                    first_shard_id: 40,
+                    shard_count: 1,
+                    replica_count: 1,
+                    partition_version: 1,
+                    serving_options: Default::default(),
+                })
+                .status
+                .ok,
+            "a write went through while the metaserver was supposed to be muted"
+        );
+
+        // Lifting it is still one explicit call.
+        meta.set_meta_change_muted(false);
+        assert!(!meta.is_meta_change_muted());
+        assert!(meta
+            .add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "after".to_string(),
+                first_shard_id: 40,
+                shard_count: 1,
+                replica_count: 1,
+                partition_version: 1,
+                serving_options: Default::default(),
+            })
+            .status
+            .ok);
+    }
+
+    #[test]
+    fn a_snapshot_taken_while_muted_carries_the_mute_to_whoever_installs_it() {
+        // The other direction, which is what the flag was carried for: a peer
+        // taking over from a muted leader must not resume changing things.
+        let source = SingleNodeMeta::default();
+        source.set_meta_change_muted(true);
+        let muted_snapshot = source.export_snapshot();
+        assert!(
+            muted_snapshot.meta_change_muted,
+            "the snapshot should record that changes were muted"
+        );
+
+        let peer = SingleNodeMeta::default();
+        assert!(!peer.is_meta_change_muted());
+        assert!(peer.install_snapshot(muted_snapshot).status.ok);
+        assert!(
+            peer.is_meta_change_muted(),
+            "a peer inheriting a muted leader resumed making changes"
+        );
+    }
+
+    #[test]
     fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("safe-mode-mutations.jsonl");

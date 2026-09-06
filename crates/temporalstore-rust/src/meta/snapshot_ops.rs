@@ -69,8 +69,11 @@ impl SingleNodeMeta {
             // Carried across the install so a peer keeps ageing the tombstones
             // it inherits instead of restarting every one of their clocks.
             dropped_since_ms: snapshot.dropped_since_ms,
-            // An operator's mute must survive a snapshot install, or a peer
-            // taking over quietly resumes the change they stopped.
+            // Whether the snapshot was taken while muted. The live mute is
+            // folded in by the caller, which can see both; a mute must survive
+            // an install either way, or a peer taking over -- or an operator
+            // restoring data mid-incident -- quietly resumes the change they
+            // stopped.
             meta_change_muted: snapshot.meta_change_muted,
             frozen_since_ms: snapshot.frozen_since_ms,
             reserved_names: snapshot.reserved_names,
@@ -107,11 +110,20 @@ impl SingleNodeMeta {
         // inside MetaState, so without this a peer that installs a snapshot
         // reports every total starting again from zero.
         let stats = snapshot.stats.clone();
-        let state = match Self::state_from_snapshot(snapshot) {
+        let mut state = match Self::state_from_snapshot(snapshot) {
             Ok(state) => state,
             Err(status) => return AckResponse { status },
         };
-        *self.inner.write().expect("meta lock poisoned") = state;
+        let mut live = self.inner.write().expect("meta lock poisoned");
+        // A mute is a live control on THIS metaserver, not part of the data
+        // being restored, so restoring data does not lift it. Read under the
+        // same lock the install takes, so a mute arriving alongside cannot be
+        // missed. Either side carrying it is enough: the snapshot's flag keeps
+        // a peer that inherits a muted leader muted, and this keeps an
+        // operator's mute from being cleared by a snapshot taken before it.
+        state.meta_change_muted |= live.meta_change_muted;
+        *live = state;
+        drop(live);
         self.counters.install_from(&stats);
         AckResponse {
             status: Status::ok(),
