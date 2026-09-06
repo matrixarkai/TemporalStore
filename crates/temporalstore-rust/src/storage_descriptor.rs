@@ -129,6 +129,16 @@ pub struct SlabHeader {
     pub data_slabs: Vec<SlabInfo>,
     #[prost(uint64, tag = "9")]
     pub start_offset: u64,
+    /// Present in the layout, never computed here. Nothing writes it and nothing reads it.
+    ///
+    /// It exists to chain one block to the one before it, so a block that went missing or arrived
+    /// out of order is caught by the chain rather than by each record separately. This store does
+    /// not do that: a record carries its own CRC32C, which is written and verified on every read,
+    /// and a missing record shows up as a break in the sequence the loader already refuses.
+    ///
+    /// Left in place so the layout stays the shape it is read against. Do not add a check against
+    /// it without computing it first -- it is always zero, so such a check would either pass
+    /// always or fail always, and both look like a working validator.
     #[prost(uint32, tag = "10")]
     pub prev_block_crc32c: u32,
     #[prost(uint64, tag = "11")]
@@ -152,6 +162,10 @@ pub struct BlockFooter {
     pub version: u32,
     #[prost(uint64, tag = "3")]
     pub timestamp_ms: u64,
+    /// Present in the layout, never computed here: the writer passes a literal zero and nothing
+    /// reads it back. Integrity comes from the per-record CRC32C instead, which is verified on
+    /// every read -- see `prev_block_crc32c` for the same note and the same warning about adding
+    /// a check against a field that is always zero.
     #[prost(fixed32, tag = "4")]
     pub block_crc: u32,
     #[prost(uint64, tag = "5")]
