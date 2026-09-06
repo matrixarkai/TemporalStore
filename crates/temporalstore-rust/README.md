@@ -71,10 +71,10 @@ Rust exposes the same public production tuning surface used by benchmark and
 deployment profiles. `StorageTuningConfig::from_env()` reads:
 
 - `TS_CONTEXT_PAGE_TARGET_BYTES`: target bytes for packed context timestamp pages.
-- `TS_BLOCK_SEGMENT_TARGET_BYTES`: target local block segment size before rolling.
+- `TS_BLOCK_SLAB_TARGET_BYTES`: target local block segment size before rolling.
 - `TS_STORAGE_ZONE_SIZE`: storage zone target used by deployment/lifecycle wiring.
 - `TS_STREAM_MAX_BLOB_SIZE`: stream blob cap; the block store rolls at the lower
-  of this value and `TS_BLOCK_SEGMENT_TARGET_BYTES`.
+  of this value and `TS_BLOCK_SLAB_TARGET_BYTES`.
 - `TS_COMPACTION_WATERMARK_BYTES`: compaction scheduling watermark.
 - `TS_COLD_SCAN_NO_CACHE_FILL`: default cold-scan behavior for lifecycle work.
 - `TS_PAGE_INDEX_CACHE_BYTES`: page-index cache budget for serving/range lookups.

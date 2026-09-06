@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 EXPECTED_KNOBS = {
     "TS_CONTEXT_PAGE_TARGET_BYTES",
-    "TS_BLOCK_SEGMENT_TARGET_BYTES",
+    "TS_BLOCK_SLAB_TARGET_BYTES",
     "TS_STORAGE_ZONE_SIZE",
     "TS_STREAM_MAX_BLOB_SIZE",
     "TS_COMPACTION_WATERMARK_BYTES",
@@ -25,7 +25,7 @@ EXPECTED_KNOBS = {
 
 EXPECTED_DEFAULTS = {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
-    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+    "TS_BLOCK_SLAB_TARGET_BYTES": 1073741824,
     # 1 GiB. Was recorded here as 10 MiB, which never matched the engine: DEFAULT_STORAGE_ZONE_SIZE
     # has a single commit in this repository and has been `1 << 30` since it landed. The old figure
     # came from the launcher script this validator used to cross-check, and outlived it.
@@ -69,10 +69,7 @@ def extract_rust_defaults(path: pathlib.Path) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     constant_map = {
         "TS_CONTEXT_PAGE_TARGET_BYTES": "DEFAULT_CONTEXT_PAGE_TARGET_BYTES",
-        # The identifier does not match the variable name for this one: the engine declares
-        # `pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SEGMENT_TARGET_BYTES"`, and its
-        # default constant is named after the identifier, not the variable.
-        "TS_BLOCK_SEGMENT_TARGET_BYTES": "DEFAULT_BLOCK_SLAB_TARGET_BYTES",
+        "TS_BLOCK_SLAB_TARGET_BYTES": "DEFAULT_BLOCK_SLAB_TARGET_BYTES",
         "TS_STORAGE_ZONE_SIZE": "DEFAULT_STORAGE_ZONE_SIZE",
         "TS_STREAM_MAX_BLOB_SIZE": "DEFAULT_STREAM_MAX_BLOB_SIZE",
         "TS_COMPACTION_WATERMARK_BYTES": "DEFAULT_COMPACTION_WATERMARK_BYTES",

@@ -62,7 +62,7 @@ backend = "auto"                       # TS_STORAGE_BACKEND  auto | shared | raf
 # shared_store_dir = ""                # TS_SHARED_STORE_DIR   shared-path backend root directory
 zone_size_bytes = 1073741824           # TS_STORAGE_ZONE_SIZE   device zone seal size (bytes, 1 GiB)
 context_page_target_bytes = 65536      # TS_CONTEXT_PAGE_TARGET_BYTES  target context page size (bytes, 64 KiB)
-block_slab_target_bytes = 1073741824   # TS_BLOCK_SEGMENT_TARGET_BYTES  data-slab seal size (bytes, 1 GiB)
+block_slab_target_bytes = 1073741824   # TS_BLOCK_SLAB_TARGET_BYTES  data-slab seal size (bytes, 1 GiB)
 # stream_max_blob_size = 0             # TS_STREAM_MAX_BLOB_SIZE  max inline blob before streaming tier (0/unset = engine default)
 # compaction_watermark_bytes = 0       # TS_COMPACTION_WATERMARK_BYTES  dead-bytes watermark that triggers compaction
 # page_index_cache_bytes = 0           # TS_PAGE_INDEX_CACHE_BYTES  page-index cache budget (bytes)

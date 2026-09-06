@@ -46,7 +46,7 @@ REQUIRED_OUTPUT_FIELDS = {
     },
     "storage_config_like_public_knobs": {
         "TS_BLOCK_INDEX_CACHE_BYTES",
-        "TS_BLOCK_SEGMENT_TARGET_BYTES",
+        "TS_BLOCK_SLAB_TARGET_BYTES",
         "TS_COLD_SCAN_NO_CACHE_FILL",
         "TS_COMPACTION_WATERMARK_BYTES",
         "TS_CONTEXT_PAGE_TARGET_BYTES",

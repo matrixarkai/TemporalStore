@@ -535,8 +535,8 @@ for rel, text in prod.items():
         # storage_config.rs declares the variable NAME and its DEFAULT as neighbouring consts and
         # reads one with the other, so the default is derivable even though no scan of string
         # literals can see the read. The pairing is on the const IDENTIFIER, not the string:
-        # `TS_BLOCK_SLAB_TARGET_BYTES` names the variable `TS_BLOCK_SEGMENT_TARGET_BYTES`, and
-        # matching on the string would silently drop it.
+        # `TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME` names the variable
+        # `TS_BLOCK_SLAB_TARGET_BYTES`, and matching on the string would silently drop it.
         if not entry["default"] and ident.startswith("TS_"):
             entry["default"] = CONSTS.get("DEFAULT_" + ident[len("TS_"):], "")
 

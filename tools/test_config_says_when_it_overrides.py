@@ -106,8 +106,9 @@ def _engine_numeric_defaults() -> Dict[str, str]:
 
     Two routes, both the builder's own. A number stated in the read, and a number named by a
     const beside the const that names the variable -- the storage_config family, whose reads no
-    scan of string literals can see. The second pairs on the const IDENTIFIER, because
-    `TS_BLOCK_SLAB_TARGET_BYTES` names the variable `TS_BLOCK_SEGMENT_TARGET_BYTES`.
+    scan of string literals can see. The second pairs on the const IDENTIFIER, because a
+    previous-name const such as `TS_BLOCK_SLAB_TARGET_BYTES_PREVIOUS_NAME` names a variable
+    spelled differently from itself.
     """
     ns = _builder()
     flag_read = ns["FLAG_READ"]

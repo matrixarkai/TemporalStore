@@ -70,7 +70,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 # this map and the engine disagree, so it cannot quietly go stale.
 _ENGINE_MINIMUMS: Dict[str, int] = {
     "TS_CONTEXT_PAGE_TARGET_BYTES": 1024,
-    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1024,
+    "TS_BLOCK_SLAB_TARGET_BYTES": 1024,
     "TS_STORAGE_ZONE_SIZE": 1024,
     "TS_STREAM_MAX_BLOB_SIZE": 1024,
 }
@@ -502,7 +502,7 @@ SETTINGS: List[Setting] = [
             "lookup and cost more of them; larger pages amortise better and waste more on a partial "
             "read. Values below 1 KiB are raised to it."),
     Setting("storage_engine.block_slab_target_bytes", "storage_engine",
-            "TS_BLOCK_SEGMENT_TARGET_BYTES",
+            "TS_BLOCK_SLAB_TARGET_BYTES",
             "Target size of a block segment", "int", "1073741824", "live",
             "The unit page-slab reclaim works in. A slab is retained while any loaded shard still "
             "references it, so larger slabs mean fewer, coarser reclaims. Values below 1 KiB are "

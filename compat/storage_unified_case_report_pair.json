@@ -173,7 +173,7 @@
             "name": "storage_config_defaults_env_names_and_parsed_knobs",
             "output": {
               "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
-              "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+              "TS_BLOCK_SLAB_TARGET_BYTES": 1073741824,
               "TS_COLD_SCAN_NO_CACHE_FILL": true,
               "TS_COMPACTION_WATERMARK_BYTES": 268435456,
               "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
@@ -1338,7 +1338,7 @@
             "name": "storage_config_defaults_env_names_and_parsed_knobs",
             "output": {
               "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
-              "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+              "TS_BLOCK_SLAB_TARGET_BYTES": 1073741824,
               "TS_COLD_SCAN_NO_CACHE_FILL": true,
               "TS_COMPACTION_WATERMARK_BYTES": 268435456,
               "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,

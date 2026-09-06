@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 297 of them, read by 95 functions.
+There are 298 of them, read by 95 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 297 |
+| total | 298 |
 | booleans whose default this could read off the source | 34 |
 | numbers whose default this could read off the source | 35 |
 | **defaulting on, and set by nothing** | 2 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 175 |
+| **that nothing in this repository sets** | 176 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -202,7 +202,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (80)
+## capacity (81)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
@@ -229,7 +229,8 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_BLOB_CHUNK_BYTES` | — | config | 1 | — |
 | `TS_BLOB_PEER_FETCH_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_BLOCK_INDEX_CACHE_BYTES` | 67108864 | config, portal | 1 | — |
-| `TS_BLOCK_SEGMENT_TARGET_BYTES` | 1073741824 | config, portal | 1 | — |
+| `TS_BLOCK_SEGMENT_TARGET_BYTES` | — | nothing | 1 | — |
+| `TS_BLOCK_SLAB_TARGET_BYTES` | 1073741824 | config, portal | 1 | — |
 | `TS_CACHE_MEMORY_BYTES` | — | config, launch | 1 | — |
 | `TS_COMPACTION_WATERMARK_BYTES` | 268435456 | config, portal | 1 | — |
 | `TS_CONTEXT_PAGE_TARGET_BYTES` | 65536 | config, portal | 1 | — |

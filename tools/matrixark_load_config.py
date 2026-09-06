@@ -80,7 +80,7 @@ ENV_MAP: Dict[str, str] = {
     "storage.shared_store_dir": "TS_SHARED_STORE_DIR",
     "storage.zone_size_bytes": "TS_STORAGE_ZONE_SIZE",
     "storage.context_page_target_bytes": "TS_CONTEXT_PAGE_TARGET_BYTES",
-    "storage.block_slab_target_bytes": "TS_BLOCK_SEGMENT_TARGET_BYTES",
+    "storage.block_slab_target_bytes": "TS_BLOCK_SLAB_TARGET_BYTES",
     "storage.stream_max_blob_size": "TS_STREAM_MAX_BLOB_SIZE",
     "storage.compaction_watermark_bytes": "TS_COMPACTION_WATERMARK_BYTES",
     "storage.page_index_cache_bytes": "TS_PAGE_INDEX_CACHE_BYTES",
@@ -96,7 +96,7 @@ ENV_MAP: Dict[str, str] = {
     # portal write, which offers exactly that variable. The key keeps its name so deployed
     # files keep working; only the variable it exports moves to the one the engine reads
     # first. (Key and variable already differ elsewhere: block_slab_target_bytes exports
-    # TS_BLOCK_SEGMENT_TARGET_BYTES.)
+    # TS_BLOCK_SLAB_TARGET_BYTES.)
     "storage.index_dump_oplog_gap_bytes": "TS_INDEX_DUMP_WAL_GAP_BYTES",
     # ---- [wal] --------------------------------------------------------------
     "wal.wal_legacy_recovery": "TS_WAL_LEGACY_RECOVERY",
