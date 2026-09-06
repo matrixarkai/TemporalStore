@@ -3331,7 +3331,18 @@ pub(crate) fn execute_on_shard(
             let object_key = context_child_key(tenant_hash, parent_hash);
             let mut refs = load_context_children(cache, page_store, shard_id, shard, &object_key);
             refs.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
-            refs.truncate(context_limit(limit));
+            // Keep the NEWEST `limit`, not the oldest. Sorting ascending and truncating handed back
+            // a parent's first children and hid everything recently added -- five children with
+            // limit 2 answered with the two oldest, and the newest was unreachable by any query.
+            //
+            // The same cut, in the same direction, is what traversal was fixed for: the most
+            // recently ingested were the first to become invisible, which is the opposite of what
+            // a store keyed on time should do. The listing stays in chronological order, which is
+            // what an unlimited query already returned.
+            let keep = context_limit(limit);
+            if refs.len() > keep {
+                refs.drain(..refs.len() - keep);
+            }
             CommandResponse::ContextChildRefs {
                 object_key,
                 refs,
