@@ -2653,6 +2653,40 @@ _OSS_EMBEDDING_PROVIDERS = {"oss", "open_source", "sentence_transformers", "sent
 _DELIBERATE_FALLBACK_PROVIDERS = {"", "deterministic", "rules", "local", "hash"}
 
 
+#: The names `summary_provider()` maps onto the openai-compatible path, and the names it treats as
+#: that path directly. Sets rather than a condition written inline, so the mirror test can compare
+#: them with the writer's own literals instead of restating them.
+_SUMMARY_OSS_ALIASES = {"oss", "open_source", "local_llm", "oss_llm"}
+_SUMMARY_MODEL_PROVIDERS = {"openai", "openai_compatible", "openai_compatible_llm"}
+
+
+def summary_provider_effect(provider: Optional[str], extraction_provider: str = "") -> str:
+    """What the SUMMARY path does with this name: "model" or "rules".
+
+    Mirrors `summary_provider()` in matrixark_mcp_summaries and must keep mirroring it -- the two
+    answer the same question about the same setting, and a screen that disagrees with the writer is
+    worse than one that says nothing.
+
+    ABSENT and EMPTY are different, and the difference is not cosmetic. The writer reads
+    `os.environ.get(NAME, <the extraction chain>)`, so a variable that is not set falls through to
+    the extraction provider, and one that is set to an empty string returns that empty string and
+    lands on the rule-written path. `None` here means not set; `""` means set to nothing. Treating
+    both as "follow extraction" reported a model on a deployment writing its summaries with rules,
+    which is this file's own defect in miniature -- the mirror test caught it.
+
+    Only the openai-compatible family calls a model: `anthropic` returns rule-written summaries and
+    no error, so a deployment doing Anthropic extraction gets deterministic summaries unless it
+    names a provider here. That is in the setting's own help and was reported on no screen.
+    """
+    if provider is None:
+        name = (extraction_provider or "").strip().lower().replace("-", "_")
+    else:
+        name = provider.strip().lower().replace("-", "_")
+    if name in _SUMMARY_OSS_ALIASES:
+        return "model"
+    return "model" if name in _SUMMARY_MODEL_PROVIDERS else "rules"
+
+
 def embedding_provider_effect(provider: str) -> str:
     """What the ENCODER does with this name: "api", "local_model" or "hash".
 

@@ -1982,10 +1982,44 @@ def _model_config_snapshot() -> Json:
             "Extraction key variable or Embedding key variable, then set that key again."
         )
 
+    # ---- summaries -----------------------------------------------------------------------
+    # Blank follows the extraction provider, so both are needed to say what actually writes them.
+    # os.environ.get, not _env: `None` (not set) follows the extraction provider and `""` (set to
+    # nothing) does not, exactly as the writer reads it. _env flattens the two into "".
+    _summary_raw = os.environ.get("MATRIXARK_SUMMARY_PROVIDER")
+    _summary_choice = (_summary_raw or "").strip()
+    _extraction_choice = (_env("MATRIXARK_UNDERSTANDING_PROVIDER")
+                          or _env("MATRIXARK_EXTRACTION_PROVIDER"))
+    _summary_writes = _gwconfig.summary_provider_effect(_summary_raw, _extraction_choice)
+    summary = {
+        "provider": _summary_choice,
+        # Only when the variable is absent. Set-to-empty is a choice of rules, not a deferral.
+        "follows_extraction": _summary_raw is None,
+        "writes": _summary_writes,
+        # The summary call uses the EXTRACTION endpoint and its model: a separate summary model
+        # was removed because it was a second name for the same call.
+        "model": extraction.get("model", "") if _summary_writes == "model" else "",
+    }
+    # Rules where extraction reaches a model is the surprising half. Rules everywhere is already
+    # said by the extraction warning above, and repeating it here would be noise.
+    if _summary_writes == "rules" and _gwconfig.extraction_provider_effect(
+            _extraction_choice) != "rules":
+        warnings.append(
+            "Summaries are written by rules, not by a model, while extraction calls one. Every "
+            "context node gets a summary and retrieval walks them, so this is the model called "
+            "most. Only the openai-compatible family writes them with a model -- an Anthropic "
+            "extraction provider returns rule-written summaries and no error. Set Summary "
+            "provider to openai_compatible to use a model for them."
+        )
+
     return {
         "status": "ok",
         "extraction": extraction,
         "embedding": embedding,
+        # The third model role, and the one called most: extraction runs once per ingest, and every
+        # context node gets a summary. It had no block here at all, so a deployment writing its
+        # summaries with rules looked exactly like one writing them with a model.
+        "summary": summary,
         "skills": skills,
         "warnings": warnings,
         "encoders": encoder_catalog(),
