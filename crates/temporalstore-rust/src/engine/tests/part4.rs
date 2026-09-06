@@ -16856,3 +16856,78 @@ fn an_entity_upsert_does_not_report_its_page_uncovered() {
         "an entity upsert reported its own page uncovered, so every entity write rebuilds the          whole bucket index: {stray:?}"
     );
 }
+
+/// A caller's bucket list reaches the lifecycle planner.
+///
+/// `run_storage_manager_cycle` hardcoded `selected_dump_buckets: Vec::new()`, so nothing outside
+/// the engine could ask for particular buckets to be dumped -- and that list is the only way to
+/// dump a bucket that is not dirty.
+///
+/// It matters because reclaim wants a dump manifest matching each bucket's CURRENT generation, and
+/// a bucket that went clean without ever being dumped at that generation has none. The ordinary
+/// cadence only ever selects DIRTY buckets, so such a bucket is never dumped again and the log can
+/// never be reclaimed past it. Seen on a live store as 3,085 such buckets, unchanged however many
+/// cycles were run, while the log grew ~15 MB/hour and cold start grew with it.
+#[test]
+fn a_requested_bucket_list_reaches_the_lifecycle_planner() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "named".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+
+    // Dump what is dirty, so the store is clean and the ordinary cadence has nothing to select.
+    engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        max_dump_buckets_per_round: 64,
+        warm_cache: false,
+        ..StorageManagerCycleRequest::default()
+    });
+
+    // The control: with nothing dirty and no list, the planner selects nothing. Without this, a
+    // cycle that always dumped everything would satisfy the assertion below and bring back the
+    // write amplification the dirty-only selection exists to avoid.
+    let unnamed = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        max_dump_buckets_per_round: 64,
+        warm_cache: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert!(
+        unnamed.plan.selected_dump_buckets.is_empty(),
+        "a clean store with no requested buckets must select nothing to dump, got {:?}",
+        unnamed.plan.selected_dump_buckets
+    );
+
+    let every_bucket = engine
+        .bucket_storage_summaries(1)
+        .iter()
+        .map(|summary| summary.routing_bucket)
+        .collect::<Vec<u32>>();
+    assert!(
+        !every_bucket.is_empty(),
+        "the fixture must have produced at least one bucket to name"
+    );
+    let named = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: every_bucket.clone(),
+        max_dump_buckets_per_round: 64,
+        warm_cache: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    assert_eq!(
+        named.plan.selected_dump_buckets, every_bucket,
+        "the requested buckets must reach the planner even when none of them is dirty -- \
+         otherwise a bucket that went clean undumped can never be covered and the log stays blocked"
+    );
+}
