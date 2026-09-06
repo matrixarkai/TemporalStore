@@ -9,6 +9,17 @@ export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
 export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}"
 export MATRIXARK_TEMPORALSTORE_NAMESPACE="${MATRIXARK_TEMPORALSTORE_NAMESPACE:-deploy_ns}"
 export MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
+# The default names the codex hook's namespace, which is deliberate for continuity with an
+# existing store -- but this script and tools/matrixark_codex_rust_hook.sh do NOT embed the
+# same way. This one asks for the in-process model (oss, below); the hook asks for token-hash
+# vectors. Vectors made by one encoder are declined by the other as a different model, and
+# retrieval then falls back to lexical and recency for everything the other side wrote.
+#
+# A prefix only collides inside ONE store, and in every documented way of starting this these
+# are separate: cluster mode goes through a metaserver, and the no-metaserver instructions set
+# an explicit MATRIXARK_TEMPORALSTORE_LOCAL_STORE of their own. So this is a trap rather than a
+# fault -- if you ever point this and the hook at the same store, give them distinct prefixes
+# or make the two encoders agree first.
 export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:rust-live-v2}"
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
