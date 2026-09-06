@@ -217,6 +217,69 @@ fn source_from_fields(
     })
 }
 
+/// One chat source, borrowed from the request that already owns every part.
+///
+/// Fields are declared ALPHABETICALLY on purpose. `json!` renders through a `serde_json::Map`,
+/// which is a `BTreeMap` and therefore key-sorted; a serde struct renders in declaration order.
+/// Declaring these out of order would move the bytes on the wire without changing the value, so
+/// `a_chat_source_is_the_same_bytes_either_way` compares the two renderings byte for byte.
+#[derive(serde::Serialize)]
+pub(super) struct ChatSource<'a> {
+    body: &'a str,
+    shard_id: ShardId,
+    source_id: &'a str,
+    source_kind: &'static str,
+    tenant_hash: u64,
+    timestamp_ms: u64,
+    title: &'a str,
+}
+
+/// Builds a borrowed chat source. Mirrors `source_from_fields`, which builds the owned form.
+pub(super) fn chat_source<'a>(
+    shard_id: ShardId,
+    tenant_hash: u64,
+    source_id: &'a str,
+    title: &'a str,
+    body: &'a str,
+    timestamp_ms: u64,
+) -> ChatSource<'a> {
+    ChatSource {
+        body,
+        shard_id,
+        source_id,
+        source_kind: "chat",
+        tenant_hash,
+        timestamp_ms,
+        title,
+    }
+}
+
+/// A source is either one we build from a message, or one the caller supplied as-is.
+///
+/// `untagged` so the `Raw` arm renders the caller's value exactly as it arrived; a tag would
+/// corrupt every pre-shaped source.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(super) enum SourceItem<'a> {
+    Chat(ChatSource<'a>),
+    Raw(&'a Value),
+}
+
+/// The extract request body, borrowed. Alphabetical for the same reason as `ChatSource`.
+#[derive(serde::Serialize)]
+pub(super) struct ExtractPayload<'a> {
+    end_time_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_events: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a Value>,
+    query: &'a str,
+    shard_id: ShardId,
+    sources: &'a [SourceItem<'a>],
+    start_time_ms: u64,
+    tenant_hash: u64,
+}
+
 /// One buffered raw event, as it is stored.
 ///
 /// Field names and order match what `json!` produced here before, and what every reader
@@ -427,38 +490,50 @@ impl ProxyService {
             Err(resp) => return resp,
         };
 
-        let mut sources: Vec<Value> = Vec::new();
+        // Borrowed end to end: the request owns every string, so the only allocations left per
+        // message are the source id and the source slot itself.
+        let ids: Vec<String> = request
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(idx, _)| format!("chat:{tenant_hash}:{session}:{idx}"))
+            .collect();
+        let titles: Vec<&str> = request
+            .messages
+            .iter()
+            .map(|message| {
+                match message.title.as_deref().filter(|value| !value.is_empty()) {
+                    Some(title) => title,
+                    None if message.role.is_empty() => "message",
+                    None => message.role.as_str(),
+                }
+            })
+            .collect();
+
+        // Declared before `sources` so a replayed buffer outlives the slice that borrows it.
+        let replayed: Vec<Value>;
+        let mut sources: Vec<SourceItem<'_>> =
+            Vec::with_capacity(request.messages.len() + request.sources.len() + request.records.len());
         for (idx, message) in request.messages.iter().enumerate() {
-            let timestamp_ms = message.timestamp_ms.unwrap_or(now + idx as u64);
-            let title = message
-                .title
-                .clone()
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| {
-                    if message.role.is_empty() {
-                        "message".to_string()
-                    } else {
-                        message.role.clone()
-                    }
-                });
-            sources.push(source_from_fields(
+            sources.push(SourceItem::Chat(chat_source(
                 shard_id,
                 tenant_hash,
-                format!("chat:{tenant_hash}:{session}:{idx}"),
-                title,
-                message.content.clone(),
-                timestamp_ms,
-            ));
+                &ids[idx],
+                titles[idx],
+                &message.content,
+                message.timestamp_ms.unwrap_or(now + idx as u64),
+            )));
         }
         for extra in request.sources.iter().chain(request.records.iter()) {
-            sources.push(extra.clone());
+            sources.push(SourceItem::Raw(extra));
         }
 
         // Commit with no inline messages: replay the buffered raw events.
         let mut replayed_buffer = false;
         if sources.is_empty() {
-            sources = self.context_replay_rawlog(&server_addr, shard_id, tenant_hash, session);
-            replayed_buffer = !sources.is_empty();
+            replayed = self.context_replay_rawlog(&server_addr, shard_id, tenant_hash, session);
+            replayed_buffer = !replayed.is_empty();
+            sources = replayed.iter().map(SourceItem::Raw).collect();
         }
 
         let end_time_ms = if request.end_time_ms == 0 {
@@ -466,20 +541,16 @@ impl ProxyService {
         } else {
             request.end_time_ms
         };
-        let mut payload = json!({
-            "shard_id": shard_id,
-            "tenant_hash": tenant_hash,
-            "sources": sources,
-            "query": request.query,
-            "start_time_ms": request.start_time_ms,
-            "end_time_ms": end_time_ms,
-        });
-        if let Some(max_events) = request.max_events {
-            payload["max_events"] = json!(max_events);
-        }
-        if let Some(provider) = request.provider {
-            payload["provider"] = provider;
-        }
+        let payload = ExtractPayload {
+            end_time_ms,
+            max_events: request.max_events,
+            provider: request.provider.as_ref(),
+            query: &request.query,
+            shard_id,
+            sources: &sources,
+            start_time_ms: request.start_time_ms,
+            tenant_hash,
+        };
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let response = self.context_forward_to(&server_addr, "/context/ingest_extract", &body);
         // Clear the buffer only after a successful replay-driven extraction.
@@ -741,6 +812,61 @@ mod ingest_key_tests {
         }
     }
 
+    /// A chat source is byte-identical however it is built.
+    ///
+    /// The extract path renders sources straight from borrowed parts; the replay path still
+    /// builds them as `Value`s, because its strings are owned already. Both land in the same
+    /// array, so the two forms have to render identically -- and `json!` sorts its keys while a
+    /// struct renders in declaration order, which is why `ChatSource` is declared alphabetically.
+    ///
+    /// Compares BYTES: a source differing only in field order still parses, so comparing values
+    /// would pass while the wire moved. Verified to discriminate by reordering a field.
+    #[test]
+    fn a_chat_source_is_the_same_bytes_either_way() {
+        let cases: [(&str, &str, &str); 4] = [
+            ("chat:1:s:0", "user", "hello"),
+            ("chat:0:default:9", "message", ""),
+            ("chat:7:s:1", r#"a "quoted" title"#, "line\nbreak"),
+            ("chat:7:s:2", r#"back\slash"#, "tab\tsep"),
+        ];
+        for (source_id, title, body) in cases {
+            let borrowed = serde_json::to_vec(&SourceItem::Chat(chat_source(
+                3, 12_345, source_id, title, body, 1_700_000_000_000,
+            )))
+            .expect("the borrowed source serialises");
+            let owned = serde_json::to_vec(&source_from_fields(
+                3,
+                12_345,
+                source_id.to_string(),
+                title.to_string(),
+                body.to_string(),
+                1_700_000_000_000,
+            ))
+            .expect("the owned source serialises");
+            assert_eq!(
+                String::from_utf8_lossy(&borrowed),
+                String::from_utf8_lossy(&owned),
+                "a chat source moved for id={source_id}"
+            );
+        }
+    }
+
+    /// A source the caller supplied passes through untouched.
+    ///
+    /// `SourceItem` is untagged, so the `Raw` arm must render the value exactly as it arrived.
+    #[test]
+    fn a_callers_source_passes_through_untouched() {
+        let supplied = json!({
+            "source_kind": "resource",
+            "nested": {"a": [1, 2, {"b": null}]},
+            "text": "as given"
+        });
+        assert_eq!(
+            serde_json::to_vec(&SourceItem::Raw(&supplied)).expect("raw serialises"),
+            serde_json::to_vec(&supplied).expect("value serialises"),
+            "the untagged Raw arm changed the source"
+        );
+    }
     #[test]
     fn an_absent_session_reads_as_default() {
         let empty = ProxyContextScope {

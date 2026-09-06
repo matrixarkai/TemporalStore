@@ -4062,6 +4062,51 @@ mod tests {
         ));
 
 
+        // SCRATCH: the EXTRACT path, and how it scales with messages. Sources are borrowed
+        // from the request, so the per-message slope is what to watch here.
+        for msgs in [1usize, 8, 32] {
+            let body = serde_json::to_vec(&serde_json::json!({
+                "scope": {"tenant_id": "t", "account_id": "a", "user_id": "u", "session_id": "s"},
+                "messages": (0..msgs)
+                    .map(|i| serde_json::json!({
+                        "role": "user",
+                        "content": format!("message number {i} with some content"),
+                    }))
+                    .collect::<Vec<_>>(),
+                "query": "summarise"
+            }))
+            .expect("extract body");
+            let ex_proxy = scoped_proxy(ProxyOptions::default());
+            ex_proxy
+                .client()
+                .insert_cached_route_for_test(ex_proxy.context_shard_id(0), quiet.clone());
+            let before = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed);
+            let (code, answered) = ex_proxy.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/extract".to_string(),
+                body: body.clone(),
+            });
+            let first: String = String::from_utf8_lossy(&answered).chars().take(50).collect();
+            let probe = crate::alloc_probe::Probe::start();
+            for _ in 0..ITERS {
+                let out = ex_proxy.handle(crate::proxy::HttpRequest {
+                    method: "POST".to_string(),
+                    path: "/context/extract".to_string(),
+                    body: body.clone(),
+                });
+                std::hint::black_box(&out);
+            }
+            let c = probe.stop();
+            let exchanges = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed) - before;
+            // The exchange count proves the backend was really reached: a refused connection
+            // still answers 200 with the failure in the body, so the code cannot show it.
+            println!(
+                "    EXTRACT msgs={msgs:<3} {:>7.3} allocs/call {:>9.1} bytes  [{exchanges} of {}, code {code}, {first}]",
+                c.allocs as f64 / ITERS as f64,
+                c.alloc_bytes as f64 / ITERS as f64,
+                ITERS + 1
+            );
+        }
         // SCRATCH: the layers, against the quiet backend so the numbers are this process only.
         let typed_req = ExecuteRequest {
             shard_id: 1,
