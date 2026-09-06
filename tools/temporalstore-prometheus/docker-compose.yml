@@ -60,7 +60,12 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Every file `prometheus.yml` names under `rule_files` has to be here. Prometheus fails its
+      # config load on a rule file it cannot read, so a listed-but-unmounted one does not lose one
+      # alert group -- it stops the stack coming up at all. The gateway rules were the one missing,
+      # and they are the ones covering retrieval on hash vectors and extraction making no call.
       - ./temporalstore-alerts.yml:/etc/prometheus/temporalstore-alerts.yml:ro
+      - ./matrixark-gateway-alerts.yml:/etc/prometheus/matrixark-gateway-alerts.yml:ro
       # Mounted under a distinct name: this is the engine rule set from docs/ops, which shares a
       # basename with the local readiness rules above but is a different file covering different
       # series.
