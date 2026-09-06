@@ -4000,16 +4000,12 @@ def _configured_engine_settings() -> list:
     return sorted(set(names))
 
 
-def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
-    """Which storage backend the datanode actually resolved. None => could not determine.
+def _engine_metrics_text(cfg: GatewayConfig) -> Optional[str]:
+    """The datanode's /metrics response, or None if it could not be read.
 
-    Read from the engine instead of re-derived here, because the two can disagree and the engine is
-    the one that is right: `TS_STORAGE_BACKEND=shared` with no directory, or `matrixobject` on a
-    build without the feature, both fall through to auto-detection without erroring, so a
-    deployment routinely runs a backend nobody selected. The engine publishes what it chose as
-    `temporalstore_storage_backend{backend=...}`; the *reason* it chose it exists only in a startup
-    log line, so this reports the outcome and the portal says plainly that the reason is not
-    available over HTTP.
+    Lifted out of the backend probe because the same response answers more than one question and
+    the overview should not ask twice for it. Everything that reads it is a pure parser over this
+    text, so a series the engine does not publish is absent rather than fatal to the others.
     """
     try:
         conn = cfg.blob_connection_factory(cfg)
@@ -4025,7 +4021,146 @@ def _probe_storage_backend(cfg: GatewayConfig) -> Optional[Json]:
         _safe_close(conn)
         if status >= 400:
             return None
-        text = body.decode("utf-8", "replace")
+        return body.decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def _prom_samples(text: str, name: str):
+    """(labels, value) for every sample of one series. A malformed line is skipped, not fatal."""
+    prefix = name + "{"
+    for line in text.splitlines():
+        if not line.startswith(prefix):
+            continue
+        close = line.rfind("}")
+        if close < 0:
+            continue
+        try:
+            value = float(line[close + 1:].strip().split()[0])
+        except (IndexError, ValueError):
+            continue
+        yield _parse_prom_labels(line), value
+
+
+def _engine_footprint(text: Optional[str]) -> Json:
+    """What the engine says it is holding, summed across shards.
+
+    `available` is false when the engine published none of it, which is a fact about the
+    deployment rather than an error -- an older engine, or one that has not served a request yet.
+    Reporting zero for that would be a number, and a wrong one.
+
+    `cache_memory_bytes` is the tier the two cache-size settings actually trade: their help calls
+    it "a direct trade of footprint against lookup latency" and this is the footprint half.
+    Logical and physical store bytes are carried together because the ratio between them is the
+    compression a deployment is really getting, which no single number shows.
+    """
+    if not text:
+        return {"available": False}
+    found = False
+    cache: Json = {}
+    for labels, value in _prom_samples(text, "temporalstore_cache_bytes"):
+        tier = labels.get("tier") or ""
+        if not tier:
+            continue
+        found = True
+        cache[tier] = cache.get(tier, 0.0) + value
+    logical = physical = 0.0
+    for labels, value in _prom_samples(text, "temporalstore_storage_slot_bytes"):
+        kind = labels.get("kind") or ""
+        if kind == "logical":
+            found = True
+            logical += value
+        elif kind == "physical":
+            found = True
+            physical += value
+    if not found:
+        return {"available": False}
+    out: Json = {
+        "available": True,
+        "cache_memory_bytes": int(cache.get("memory", 0.0)),
+        "cache_disk_bytes": int(cache.get("disk", 0.0)),
+        "cache_compression_saved_bytes": int(cache.get("compression_saved", 0.0)),
+        "store_logical_bytes": int(logical),
+        "store_physical_bytes": int(physical),
+    }
+    # Only when both halves are real: a ratio against a zero denominator is not a compression
+    # figure, and 0.0 beside "compression" reads as "none", which is a different claim.
+    if physical > 0 and logical > 0:
+        out["store_compression_ratio"] = round(logical / physical, 2)
+    return out
+
+
+def _worker_resident() -> Json:
+    """This worker's resident memory, and where the number came from.
+
+    The source is reported because the two ways of asking do not agree about units:
+    `ru_maxrss` is kilobytes on Linux and BYTES on macOS, and a panel that picks wrong is out by a
+    factor of 1024 while looking entirely plausible. /proc is unambiguous, so it is preferred and
+    named.
+    """
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            fields: Json = {}
+            for line in handle:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    key, value = line.split(":", 1)
+                    fields[key] = int(value.strip().split()[0]) * 1024
+        if fields.get("VmRSS"):
+            return {"resident_bytes": int(fields["VmRSS"]),
+                    "peak_bytes": int(fields.get("VmHWM") or fields["VmRSS"]),
+                    "source": "/proc/self/status"}
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import resource as _resource
+
+        raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+        peak = int(raw) * (1 if sys.platform == "darwin" else 1024)
+        # Only the peak is available this way. Reporting it as "resident" would overstate a worker
+        # that has since given memory back.
+        return {"resident_bytes": None, "peak_bytes": peak, "source": "ru_maxrss"}
+    except Exception:  # pragma: no cover - a platform with neither
+        return {"resident_bytes": None, "peak_bytes": None, "source": "unavailable"}
+
+
+def _footprint_summary(cfg: GatewayConfig, text: Optional[str] = None) -> Json:
+    """What this deployment is holding, on the page that asks an operator to trade it.
+
+    Six settings ask for that trade in their own words -- the page and block index caches call it
+    "a direct trade of footprint against lookup latency", `generate_embeddings` prices itself at
+    "~13% of resident memory", `share_repeated_values` quotes 761 MB against 1.1 GB -- and the
+    portal showed no footprint at all. A control whose stated unit is invisible on the same page
+    is a decision the customer is asked to make blind.
+
+    The worker figures are ONE worker's and are never summed. Resident sets share pages, so adding
+    four workers together produces a number larger than the machine is using; the worker count is
+    reported beside them so the reader can see there are others without being handed a total that
+    would be wrong.
+    """
+    worker = _worker_resident()
+    worker["workers"] = _worker_count()
+    return {
+        "worker": worker,
+        "engine": _engine_footprint(_engine_metrics_text(cfg) if text is None else text),
+    }
+
+
+def _probe_storage_backend(cfg: GatewayConfig, text: Optional[str] = None) -> Optional[Json]:
+    """Which storage backend the datanode actually resolved. None => could not determine.
+
+    Read from the engine instead of re-derived here, because the two can disagree and the engine is
+    the one that is right: `TS_STORAGE_BACKEND=shared` with no directory, or `matrixobject` on a
+    build without the feature, both fall through to auto-detection without erroring, so a
+    deployment routinely runs a backend nobody selected. The engine publishes what it chose as
+    `temporalstore_storage_backend{backend=...}`; the *reason* it chose it exists only in a startup
+    log line, so this reports the outcome and the portal says plainly that the reason is not
+    available over HTTP.
+    """
+    try:
+        if text is None:
+            text = _engine_metrics_text(cfg)
+        if text is None:
+            return None
         outcome: Json = {}
         reason = ""
         for line in text.splitlines():
@@ -4618,11 +4753,15 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
             imports = _import_progress()
             # Asked once per overview. Best-effort: an unreachable datanode leaves the row
             # saying so rather than failing the page that exists to report on the deployment.
-            live = _probe_storage_backend(cfg)
+            engine_metrics = _engine_metrics_text(cfg)
+            live = _probe_storage_backend(cfg, engine_metrics)
             if live:
                 config_snapshot = dict(config_snapshot)
                 config_snapshot["live_storage_backend"] = live.get("backend")
                 config_snapshot["live_storage_reason"] = live.get("reason") or ""
+            # `or ""` and not `or None`: None means nobody has asked, which would send this to ask
+            # a second time for a response the line above already has.
+            footprint = _footprint_summary(cfg, engine_metrics or "")
             # From the frame's shared cache, so this endpoint adds no probing of its own.
             datanode_state = await _datanode_for_frame(cfg)
             checks = _readiness_checks(config_snapshot, counts, cfg,
@@ -4637,6 +4776,7 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 "ready": all(c["status"] != "todo" for c in checks),
                 "counts": counts,
                 "traffic": traffic,
+                "footprint": footprint,
                 "imports": imports,
                 "config": config_snapshot,
             })
@@ -4892,6 +5032,25 @@ def make_v1_app(server: Any, config: Any = None) -> Callable[..., Awaitable[None
                 config_snapshot = _model_config_snapshot()
             except Exception:
                 config_snapshot = None
+            try:
+                resident = _worker_resident()
+                extra.append("# HELP matrixark_gateway_worker_resident_bytes Resident memory of "
+                             "the worker that served this scrape.")
+                extra.append("# TYPE matrixark_gateway_worker_resident_bytes gauge")
+                # Labelled by source so a scrape taken through the fallback is distinguishable
+                # from one taken through /proc, rather than silently comparable to it.
+                for field, series in (("resident_bytes", "matrixark_gateway_worker_resident_bytes"),
+                                      ("peak_bytes", "matrixark_gateway_worker_peak_bytes")):
+                    value = resident.get(field)
+                    if value is None:
+                        continue
+                    if series.endswith("peak_bytes"):
+                        extra.append("# TYPE matrixark_gateway_worker_peak_bytes gauge")
+                    extra.append('%s{source="%s"} %d'
+                                 % (series, resident.get("source", "unknown"), int(value)))
+                extra.append("matrixark_gateway_workers %d" % _worker_count())
+            except Exception:  # pragma: no cover - the scrape is worth more than this figure
+                pass
             body = _gwmetrics.prometheus_text(config_snapshot, extra)
             return await _text(send, 200, body, content_type="text/plain; version=0.0.4")
 

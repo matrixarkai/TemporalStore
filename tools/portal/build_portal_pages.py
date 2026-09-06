@@ -1096,6 +1096,19 @@ SETUP_BODY = """
       or last Tuesday.</p>
     <div id="failures"><div class="empty">Nothing yet.</div></div>
   </section>
+
+  <section>
+    <h2>Footprint</h2>
+    <p class="hint" style="margin-top:0">What this deployment is holding. Several settings ask you
+      to trade memory against speed &mdash; the page and block index caches call it
+      &ldquo;a direct trade of footprint against lookup latency&rdquo;, and turning embeddings off
+      is priced at about 13%% of resident memory &mdash; and this is the half of that trade the
+      portal could not show you.</p>
+    <p class="hint">The worker figures are <strong>one worker&rsquo;s</strong>. Resident sets share
+      pages, so four workers do not come to four times this, and no total is offered here that
+      would be wrong.</p>
+    <div id="footprint"><div class="empty">Loading&hellip;</div></div>
+  </section>
   </section>
 
   <section class="pane" role="tabpanel" aria-labelledby="tab-deployment" id="pane-deployment" hidden>
@@ -2307,6 +2320,50 @@ SETUP_JS = r"""
     }));
   }
 
+  /* ---------- footprint ---------- */
+  function mib(bytes) {
+    /* A dash, not a zero: "not published" and "holding nothing" are different answers and only
+       one of them is ever true here. */
+    if (bytes === null || bytes === undefined) { return "\u2014"; }
+    var mb = bytes / 1048576;
+    return mb >= 1024 ? (mb / 1024).toFixed(2) + " GB" : mb.toFixed(1) + " MB";
+  }
+
+  function renderFootprint(data) {
+    var w = (data || {}).worker || {};
+    var e = (data || {}).engine || {};
+    var rows = "";
+    function row(label, value, aux) {
+      rows += "<tr><td>" + label + '</td><td class="num">' + value
+            + '</td><td class="aux">' + (aux || "") + "</td></tr>";
+    }
+    row("This worker, resident", mib(w.resident_bytes), w.source || "");
+    row("This worker, peak", mib(w.peak_bytes),
+        w.workers > 1 ? w.workers + " workers &mdash; not summed" : "");
+    if (e.available) {
+      row("Engine cache, in memory", mib(e.cache_memory_bytes),
+          "what the index cache sizes trade");
+      row("Store on disk", mib(e.store_physical_bytes),
+          e.store_compression_ratio
+            ? e.store_compression_ratio + "\u00d7 smaller than its logical size" : "");
+    } else {
+      /* Not zero. An engine that publishes none of this is a fact about the deployment, and a
+         zero here would be a number the operator could act on wrongly. */
+      row("Engine", "\u2014", "this datanode does not publish it");
+    }
+    $("footprint").innerHTML = "<table><tbody>" + rows + "</tbody></table>";
+  }
+
+  function loadFootprint() {
+    fetch("/v1/admin/overview", { headers: auth() })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) { renderFootprint(d.footprint); })
+      .catch(function () {
+        $("footprint").innerHTML =
+          '<div class="msg err">Could not read the footprint.</div>';
+      });
+  }
+
   function loadTraffic() {
     fetch("/v1/metrics?ts=" + Date.now())
       .then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); })
@@ -2850,6 +2907,7 @@ SETUP_JS = r"""
   markDirty();
   load();
   loadTraffic();  /* one read so the table is populated before the first frame arrives */
+  loadFootprint();
 }());
 </script>
 """
