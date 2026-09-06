@@ -185,9 +185,31 @@ fn is_idle_candidate(proxy: &ProxyMetaInfo) -> bool {
 /// the same round — that would attach a proxy the caller has not detached yet.
 /// It becomes available on the next round instead, which keeps each round's
 /// plan independently applicable.
+/// Plan a calibration round from records the caller owns.
+///
+/// Kept so callers holding owned records still have something to call; it
+/// borrows from them rather than copying them again. The metaserver itself uses
+/// [`plan_proxy_calibration_borrowed`], which never makes the owned copies at
+/// all.
 pub fn plan_proxy_calibration(
     groups: &[ProxyGroupInfo],
     proxies: &[ProxyMetaInfo],
+    options: ProxyCalibrationOptions,
+) -> ProxyCalibrationPlan {
+    let groups = groups.iter().collect::<Vec<_>>();
+    let proxies = proxies.iter().collect::<Vec<_>>();
+    plan_proxy_calibration_borrowed(&groups, &proxies, options)
+}
+
+/// Plan a calibration round without owning anything.
+///
+/// A round reads four fields of a proxy's fifteen -- its address, its group,
+/// its location and its state -- so copying the record to read them copies ten
+/// fields nobody looks at, two of them Strings, for every proxy in the cluster,
+/// every round.
+pub fn plan_proxy_calibration_borrowed(
+    groups: &[&ProxyGroupInfo],
+    proxies: &[&ProxyMetaInfo],
     options: ProxyCalibrationOptions,
 ) -> ProxyCalibrationPlan {
     let mut plan = ProxyCalibrationPlan::default();
@@ -478,9 +500,12 @@ impl SingleNodeMeta {
         options: ProxyCalibrationOptions,
     ) -> ProxyCalibrationPlan {
         let state = self.inner.read().expect("meta lock poisoned");
-        let groups = state.proxy_groups.values().cloned().collect::<Vec<_>>();
-        let proxies = state.proxies.values().cloned().collect::<Vec<_>>();
-        plan_proxy_calibration(&groups, &proxies, options)
+        // Pointers, not records: the plan is computed while this lock is held
+        // and applied after it is dropped, so the planner can read the metadata
+        // where it already is.
+        let groups = state.proxy_groups.values().collect::<Vec<_>>();
+        let proxies = state.proxies.values().collect::<Vec<_>>();
+        plan_proxy_calibration_borrowed(&groups, &proxies, options)
     }
 
     /// Run one calibration round: fill every group to its target from the idle

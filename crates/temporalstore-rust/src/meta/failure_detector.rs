@@ -653,9 +653,28 @@ impl MetaFailureDetector {
     ///
     /// A proxy carries no boot-time anchor, so it is never convicted for a
     /// restart -- only for silence.
+    /// Plan a proxy round from records the caller owns.
+    ///
+    /// Kept for callers that already hold owned records; it borrows from them
+    /// rather than copying them again. The metaserver uses
+    /// [`Self::plan_proxy_round_borrowed`], which never makes the copies.
     pub fn plan_proxy_round(
         &mut self,
         proxies: &[ProxyMetaInfo],
+        now_ms: u64,
+        policy: ConvictionPolicy,
+    ) -> ConvictionPlan {
+        self.plan_proxy_round_borrowed(&proxies.iter().collect::<Vec<_>>(), now_ms, policy)
+    }
+
+    /// Plan a proxy round without owning the proxies.
+    ///
+    /// A subject under judgement already borrows -- it holds `&str` into the
+    /// record rather than a copy of it -- so lifting the whole proxy set out of
+    /// the metadata first bought nothing.
+    pub fn plan_proxy_round_borrowed(
+        &mut self,
+        proxies: &[&ProxyMetaInfo],
         now_ms: u64,
         policy: ConvictionPolicy,
     ) -> ConvictionPlan {
@@ -666,10 +685,10 @@ impl MetaFailureDetector {
                 convict_enabled: false,
                 ..policy
             };
-            let subjects = proxy_subjects(proxies);
+            let subjects = proxy_subjects(proxies.iter().copied());
             return self.plan_subject_round(&subjects, now_ms, policy);
         }
-        let subjects = proxy_subjects(proxies);
+        let subjects = proxy_subjects(proxies.iter().copied());
         self.plan_subject_round(&subjects, now_ms, policy)
     }
 
@@ -725,9 +744,12 @@ struct ConvictionSubject<'a> {
     serving_shards: Vec<ShardId>,
 }
 
-fn proxy_subjects(proxies: &[ProxyMetaInfo]) -> Vec<ConvictionSubject<'_>> {
+fn proxy_subjects<'a, I>(proxies: I) -> Vec<ConvictionSubject<'a>>
+where
+    I: IntoIterator<Item = &'a ProxyMetaInfo>,
+{
     proxies
-        .iter()
+        .into_iter()
         .map(|proxy| ConvictionSubject {
             addr: proxy.proxy_addr.as_str(),
             location: proxy.location.as_str(),
@@ -865,11 +887,14 @@ impl SingleNodeMeta {
         safe_mode: SafeModePolicy,
     ) -> AdaptiveConvictionReport {
         let now = now_ms();
-        let proxies = {
+        // Held across the round: the subjects borrow from the metadata rather
+        // than from a copy of it, so the read lock stays for the planning and
+        // the freezing below happens after it is dropped.
+        let plan = {
             let state = self.inner.read().expect("meta lock poisoned");
-            state.proxies.values().cloned().collect::<Vec<_>>()
+            let proxies = state.proxies.values().collect::<Vec<_>>();
+            detector.plan_proxy_round_borrowed(&proxies, now, policy)
         };
-        let plan = detector.plan_proxy_round(&proxies, now, policy);
         let detector_paused = !detector.is_active(now);
 
         let mut frozen_proxies = Vec::new();
