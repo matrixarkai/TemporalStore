@@ -308,6 +308,17 @@ fn append_timestamped_kv_pages_inner(
 }
 
 pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<FeaturePoint>> {
+    // One point is always exactly one page, so measuring it is wasted work. The split below fires
+    // only when `current` is non-empty, which a lone point never is, so its encoded length is
+    // computed and never read -- and computing it is a FULL `serde_json` serialisation of the
+    // point, the same work `encode_feature_page` is about to do again on the way to the page.
+    //
+    // A page carries its value as a `Vec<u8>`, which serde_json writes as an array of decimal
+    // numbers, so that measurement costs several times the value it measures. Every context write
+    // path -- summary, event, index, audit, child, compression -- passes exactly one point.
+    if points.len() == 1 {
+        return vec![points];
+    }
     let mut chunks = Vec::new();
     let mut current = Vec::new();
     let empty_page_len = empty_feature_page_encoded_len();
@@ -440,5 +451,45 @@ pub(super) fn read_feature_point_cached(
             packed_page_cache.insert(address.clone(), None);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod single_point_chunking_tests {
+    use super::*;
+    use crate::types::FeaturePoint;
+
+    fn point(ts: u64, len: usize) -> FeaturePoint {
+        FeaturePoint { timestamp_ms: ts, value: vec![b'v'; len] }
+    }
+
+    #[test]
+    fn a_lone_point_chunks_exactly_as_the_general_path_would() {
+        // The short circuit above returns early for one point. It is only correct because the
+        // split fires solely when `current` is non-empty, which a lone point never is -- so this
+        // pins the three cases that would catch it being wrong.
+
+        // 1. One point -> one chunk holding it, however large. A page target cannot split a point.
+        for len in [0usize, 8, 64_000] {
+            let chunks = chunk_timestamped_kv_points(vec![point(1, len)]);
+            assert_eq!(chunks.len(), 1, "one point must make one chunk (len {len})");
+            assert_eq!(chunks[0].len(), 1, "the chunk must hold the point (len {len})");
+            assert_eq!(chunks[0][0].timestamp_ms, 1, "and it must be THAT point (len {len})");
+            assert_eq!(chunks[0][0].value.len(), len, "with its value intact (len {len})");
+        }
+
+        // 2. Two small points still share one page -- so the early return is not what produced
+        //    the single chunk above, and this test can tell the two apart.
+        let together = chunk_timestamped_kv_points(vec![point(1, 8), point(2, 8)]);
+        assert_eq!(together.len(), 1, "two small points share a page");
+        assert_eq!(together[0].len(), 2, "and both are in it");
+
+        // 3. Two points too big to share DO split, which is the behaviour the short circuit must
+        //    not have disabled for the multi-point path.
+        let target = context_page_target_bytes();
+        let split = chunk_timestamped_kv_points(vec![point(1, target), point(2, target)]);
+        assert_eq!(split.len(), 2, "two oversized points must not share a page");
+        assert_eq!(split[0][0].timestamp_ms, 1, "order is preserved across the split");
+        assert_eq!(split[1][0].timestamp_ms, 2, "order is preserved across the split");
     }
 }
