@@ -1096,9 +1096,29 @@ pub(super) fn sync_context_pages_for_object(
         ("context_compression", &shard.context_compressions),
     ] {
         if let Some(points) = series.get(object_key) {
-            let live = unique_timestamped_kv_page_addresses(points);
-            if !live.is_empty() {
-                groups.push((kind, object_key.to_string(), live));
+            // Only the NEWEST page is filed. The loop below pops the last address and drops the
+            // rest -- these kinds carry no component, so the index holds one ref per object -- so
+            // finding the maximum is all this needs.
+            //
+            // Collecting every address the series ever held, into a HashSet and then a sorted Vec,
+            // made a write carry the node's whole history: 8,322 bytes to add a summary to a node
+            // holding 20, and 78,626 to add one to a node holding 320 -- 90.7% of the write, and
+            // still climbing. The same defect was already fixed one level down, in the loop that
+            // files these groups; the list it stopped filing was still being built here.
+            //
+            // The maximum of the series equals the last element of the deduplicated, sorted list,
+            // so this is the same address by the same ordering, without the set or the sort.
+            if let Some(newest) = points
+                .values()
+                .max_by(|left, right| {
+                    left.page_slab_id
+                        .cmp(&right.page_slab_id)
+                        .then(left.offset.cmp(&right.offset))
+                        .then(left.length.cmp(&right.length))
+                })
+                .cloned()
+            {
+                groups.push((kind, object_key.to_string(), vec![newest]));
             }
         }
     }
