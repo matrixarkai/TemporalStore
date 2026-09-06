@@ -3368,6 +3368,70 @@ class MatrixArkRustCdylibClient:
     def shutdown(self) -> None:
         self.close()
 
+
+#: The allowance added to a budget for connect and framing rather than for work. Both the transport
+#: budget and the capped one carry it, so capping cannot make a call fail during the handshake.
+SOCKET_OVERHEAD_S = 2.0
+
+#: Floor under the TRANSPORT ceiling, so a misconfigured `--request-timeout-ms` of 0 does not
+#: produce a budget of zero. The capped budget does not need it: that one adds SOCKET_OVERHEAD_S,
+#: so it cannot fall below the allowance however small the caller's deadline is.
+#:
+#: Distinct from `MatrixArkRustProxyClient.SOCKET_CONNECT_TIMEOUT_CEILING_S`, which happens to hold
+#: the same number but bounds the CONNECT rather than the whole call.
+SOCKET_MINIMUM_BUDGET_S = 2.0
+
+
+def _socket_budget_seconds(request_timeout_ms: int, caller_deadline_ms: int = 0) -> float:
+    """How long to wait on the daemon socket for one call.
+
+    The transport timeout is a CEILING on any single call to the store. The caller's deadline is
+    what THIS call was given. Waiting the ceiling when the caller named a smaller number is how a
+    5s hook retrieve came to wait 62s on the live box -- measured, four times in a hundred traced
+    calls, each one twelve times its own budget, and each one reported as
+    `exit1_retriever_raised ... after 62.0s`.
+
+    A caller deadline of 0 means no deadline, which is what the setting documents, so it leaves the
+    ceiling alone. And the cap only ever REDUCES: a caller asking for longer than the transport
+    allows still gets the transport ceiling, because that is the promise the transport makes.
+    """
+    ceiling_s = max(SOCKET_MINIMUM_BUDGET_S, request_timeout_ms / 1000.0 + SOCKET_OVERHEAD_S)
+    if caller_deadline_ms <= 0:
+        return ceiling_s
+    # The allowance is added, not subtracted, so the capped budget cannot fall below it however
+    # small the caller's deadline is. That is what keeps this cap from recreating the constant it
+    # replaced -- not a floor, which would be unreachable here and would only read as one.
+    asked_s = caller_deadline_ms / 1000.0 + SOCKET_OVERHEAD_S
+    return min(ceiling_s, asked_s)
+
+
+def _caller_deadline_ms(kwargs: Json) -> int:
+    """The deadline the CALLER set for this call, in milliseconds, or 0 for none.
+
+    Looked for at the top level, inside `request`, and inside `ranking`, because callers build the
+    call differently: the retrieve path puts it in the request body (matrixark_local_adapter_retrieve
+    builds it there, which is the one that mattered here) while others pass it directly. The first
+    of those that carries a usable value wins.
+
+    0 is the documented "no deadline" value and is returned unchanged, so a call that asked for no
+    deadline keeps the transport budget. Anything unparseable is treated the same way: a deadline
+    nobody can read must not silently shorten a call.
+    """
+    for source in (kwargs, kwargs.get("request"), kwargs.get("ranking")):
+        if not isinstance(source, dict):
+            continue
+        raw = source.get("deadline_ms")
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
+
+
 class MatrixArkRustProxyClient:
     """Persistent Rust proxy boundary around the Rust TemporalStore SDK.
 
@@ -3692,7 +3756,8 @@ class MatrixArkRustProxyClient:
         started = time.perf_counter()
         if self._proxy_socket:
             try:
-                response = self._call_socket_json(op, payload)
+                response = self._call_socket_json(
+                    op, payload, caller_deadline_ms=_caller_deadline_ms(kwargs))
             except Exception:
                 elapsed_ms = (time.perf_counter() - started) * 1000.0
                 self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane="daemon", wait_ms=0.0)
@@ -3766,14 +3831,14 @@ class MatrixArkRustProxyClient:
     # whole budget. Reads are a different question -- see `_call_socket_json`.
     SOCKET_CONNECT_TIMEOUT_CEILING_S = 2.0
 
-    def _call_socket_json(self, op: str, payload: str) -> Json:
+    def _call_socket_json(self, op: str, payload: str, *, caller_deadline_ms: int = 0) -> Json:
         # The read timeout tracks what is LEFT of the deadline. It used to be a constant
         # `min(2.0, ...)`, which no `--request-timeout-ms` could raise, so any response
         # slower than two seconds became a timeout -- and since `_call_json` re-raises
         # instead of falling back to the lane path, the call simply failed. A ContextPack
         # over a large store takes longer than that, so hook retrieval failed open with
         # no context and nothing in the logs but "TimeoutError: timed out".
-        budget_s = max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        budget_s = _socket_budget_seconds(self.request_timeout_ms, caller_deadline_ms)
         deadline = time.monotonic() + budget_s
         connect_timeout_s = min(
             self.SOCKET_CONNECT_TIMEOUT_CEILING_S,
