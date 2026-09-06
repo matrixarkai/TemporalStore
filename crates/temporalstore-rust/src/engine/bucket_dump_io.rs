@@ -200,12 +200,36 @@ pub(super) fn bucket_dump_manifest_chain_issues(
 /// Anything older is now prunable unless a follower cursor or raft snapshot ref pins it, which
 /// is exactly what those cursors are for.
 pub(super) fn retained_bucket_dump_manifest_ids(manifests: &[BucketDumpManifest]) -> BTreeSet<String> {
-    manifests
-        .iter()
-        .max_by_key(|manifest| (manifest.index_log_sequence, manifest.created_unix_ms))
-        .map(|manifest| manifest.manifest_id.clone())
-        .into_iter()
-        .collect()
+    // The newest manifest, PLUS any older one that is still the only dump covering some bucket.
+    //
+    // Reclaim advances its frontier only for buckets that have a manifest matching their current
+    // generation. Keeping just the newest meant an ordinary cycle -- which dumps only the few
+    // DIRTY buckets -- deleted the manifest covering everything else, and coverage collapsed to
+    // those few. Seen on a live store: a round covering all 3,190 buckets let reclaim apply and the
+    // log fall 806 -> 478 MB, then an ordinary cycle within the hour left `covered_slot_count: 0`
+    // and a durable frontier of 0, so the log grew back and every cold start paid for it.
+    //
+    // Self-limiting: walking newest first, once a manifest covers everything, older ones add no
+    // coverage and are pruned exactly as before.
+    let mut ordered = manifests.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|manifest| {
+        std::cmp::Reverse((manifest.index_log_sequence, manifest.created_unix_ms))
+    });
+    let mut retained = BTreeSet::new();
+    let mut covered = BTreeSet::<u32>::new();
+    for manifest in ordered {
+        let adds_coverage = manifest
+            .bucket_ids
+            .iter()
+            .any(|bucket| !covered.contains(bucket));
+        // `retained.is_empty()` keeps the newest even when it covers nothing new, so the previous
+        // guarantee -- there is always a most recent dump to anchor on -- is unchanged.
+        if retained.is_empty() || adds_coverage {
+            retained.insert(manifest.manifest_id.clone());
+            covered.extend(manifest.bucket_ids.iter().copied());
+        }
+    }
+    retained
 }
 
 /// A cursor older than every manifest we kept: nothing retained can serve it. Named because the
