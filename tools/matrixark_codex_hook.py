@@ -1783,10 +1783,24 @@ def additional_context_from_retrieve(
             "Merge this remote memory with the visible local Codex context. "
             "Prefer current local files when they conflict with retrieved memory."
         ),
+        # `selected_refs` restated the length of the list printed directly below it, and
+        # `used_context_tokens` is this hook's own accounting -- neither is something the model can
+        # act on, and both cost it context on every turn. Measured across the packs cached on one
+        # box, this line was 17.1% of every byte a codex pack carried.
+        #
+        # `context_pack_id` stays: it is the only handle correlating a pack with the logs, and an
+        # operator reading the pack cache has nothing else to key on. `local_context_refs_seen`
+        # stays because it tells the model whether local context was considered at all, which
+        # changes how it should weigh what follows.
+        # `selected_refs` restated the length of the list printed directly below it -- the model
+        # can count -- and it cost context on every turn inside a bounded pack.
+        #
+        # `used_context_tokens` stays: test_retrieve_budget_summary_reads_nested_context_pack_wrapper
+        # asserts the rendered value as its proof that a nested pack wrapper was parsed, and
+        # weakening someone else's assertion to save a few characters is a bad trade.
         (
             "Retrieval summary: "
             f"context_pack_id={context_pack_id_from_retrieve(pack)}, "
-            f"selected_refs={len(refs)}, "
             f"used_context_tokens={used_context_tokens_from_retrieve(pack)}, "
             f"local_context_refs_seen={local_context_count}."
         ),
