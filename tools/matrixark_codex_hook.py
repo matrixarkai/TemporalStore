@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+try:
+    from tools import matrixark_hook_pack_cache as _pack_cache
+except ImportError:  # running from inside tools/, as the hooks do
+    import matrixark_hook_pack_cache as _pack_cache
 import os
 import re
 import subprocess
@@ -2140,6 +2144,25 @@ def codex_hook_output(
             )
         else:
             additional_context = ""
+        # Remember a pack that loaded; serve the last one when this turn could not build any.
+        # Codex runs a separate entry point from Claude, so a fallback added to the other hook
+        # leaves this one silently unprotected -- which is exactly what was measured.
+        try:
+            _cache_path = _pack_cache.context_pack_cache_path(
+                "codex", str(agent_context.get("workspace_root") or "")
+            )
+            if additional_context.strip():
+                _pack_cache.remember_context_pack(_cache_path, additional_context)
+            elif not error:
+                _previous, _age_s = _pack_cache.recover_context_pack(
+                    _cache_path, max_age_s=_pack_cache.pack_cache_max_age_s()
+                )
+                if _previous.strip():
+                    additional_context = _pack_cache.label_previous_pack(_previous, _age_s)
+                    output["retrieve"]["context_pack_source"] = "previous_pack"
+                    output["retrieve"]["context_pack_age_s"] = round(_age_s, 1)
+        except Exception:  # noqa: BLE001 - the cache must never cost a turn its real answer.
+            pass
         if additional_context:
             output["hookSpecificOutput"] = {
                 "hookEventName": "UserPromptSubmit",

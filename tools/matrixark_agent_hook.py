@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
+try:
+    from tools import matrixark_hook_pack_cache as _pack_cache
+except ImportError:  # running from inside tools/, as the hooks do
+    import matrixark_hook_pack_cache as _pack_cache
 import os
 import subprocess
 import sys
@@ -1138,7 +1142,37 @@ def call_write_tool(
         return {}
 
 
+def call_retrieve_tool(
+    server: Any,
+    tool: str,
+    tool_args: Json,
+    *,
+    failures: list[Json],
+) -> Json:
+    """Call the retrieve tool, recording a failure instead of ending the turn.
+
+    A raise here used to kill main() before the last-good-pack fallback below could run, so a
+    retrieval that failed LOUDLY and one that failed silently both ended as `{}`. Returning {} lets
+    the fallback serve the previous pack while `retrieve_error` says what actually went wrong --
+    which matters most when the failure is a policy error (native ContextPack required but not
+    produced), because that is precisely what an operator needs told rather than left to infer.
+    """
+    try:
+        return call_tool(server, tool, tool_args)
+    except Exception as retrieve_error:  # noqa: BLE001 - the turn must survive to serve a pack.
+        failures.append(
+            {
+                "tool": tool,
+                "error": f"{retrieve_error.__class__.__name__}: {retrieve_error}"[:500],
+            }
+        )
+        return {}
+
+
 def main() -> int:
+    # Declared before the FIRST retrieve: main() calls retrieve twice, hundreds of lines
+    # apart, and the earlier call precedes every other collector in this function.
+    retrieve_failures: list[Json] = []
     args = parse_args()
     validate_hook_backend_policy(args.backend)
     payload = read_stdin_payload()
@@ -1191,7 +1225,9 @@ def main() -> int:
             retrieve_metadata=retrieve_metadata,
             local_context=local_context if isinstance(local_context, list) else [],
         )
-        retrieve = call_tool(server, "matrixark_retrieve", retrieve_args)
+        retrieve = call_retrieve_tool(
+            server, "matrixark_retrieve", retrieve_args, failures=retrieve_failures
+        )
     base_metadata: Json = {
         "source": f"{args.agent}_hook",
         "agent": args.agent,
@@ -1275,7 +1311,9 @@ def main() -> int:
             retrieve_metadata=retrieve_metadata,
             local_context=local_context if isinstance(local_context, list) else [],
         )
-        retrieve = call_tool(server, "matrixark_retrieve", retrieve_args)
+        retrieve = call_retrieve_tool(
+            server, "matrixark_retrieve", retrieve_args, failures=retrieve_failures
+        )
 
     commit: Json = {}
     if should_commit(args.event):
@@ -1349,6 +1387,7 @@ def main() -> int:
         "retrieved": retrieved_summary,
         "committed": session_commit_summary(commit),
         "write_failures": write_failures,
+        "retrieve_error": retrieve_failures,
     }
     # Emit the Claude Code hook contract so retrieved memory actually reaches the
     # model. The wrapper (matrixark_claude_hook.sh) passes through
@@ -1356,11 +1395,29 @@ def main() -> int:
     # pack is retrieved but never injected.
     if should_retrieve(args.event) or args.query:
         additional_context = additional_context_from_retrieve(retrieve)
+        cache_path = _pack_cache.context_pack_cache_path(
+            args.agent, str(agent_context.get("workspace_root") or "")
+        )
         if additional_context.strip():
+            _pack_cache.remember_context_pack(cache_path, additional_context)
             output["hookSpecificOutput"] = {
                 "hookEventName": args.event,
                 "additionalContext": additional_context,
             }
+        else:
+            # The store could not answer. Emitting `{}` tells the agent it has NO history, which is
+            # both wrong and silent; the previous pack is stale by a turn or two, which is a much
+            # smaller error. Labelled in band so nothing is passed off as fresh.
+            previous, age_s = _pack_cache.recover_context_pack(
+                cache_path, max_age_s=_pack_cache.pack_cache_max_age_s()
+            )
+            if previous.strip():
+                output["hookSpecificOutput"] = {
+                    "hookEventName": args.event,
+                    "additionalContext": _pack_cache.label_previous_pack(previous, age_s),
+                }
+                output["context_pack_source"] = "previous_pack"
+                output["context_pack_age_s"] = round(age_s, 1)
     require_retrieval_coverage = args.require_retrieval_memory_coverage or require_retrieval_memory_coverage(
         os.environ.get("MATRIXARK_REQUIRE_RETRIEVAL_MEMORY_COVERAGE")
     )
