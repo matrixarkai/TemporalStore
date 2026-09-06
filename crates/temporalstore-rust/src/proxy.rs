@@ -5035,6 +5035,67 @@ mod tests {
         );
     }
 
+    /// Every route the operational surface report claims is covered is one the proxy answers.
+    ///
+    /// Each entry carries `covered: true`, and the helper that builds them sets that literal --
+    /// nothing checks it. So the report asserts coverage of ten surfaces and twenty route names on
+    /// the strength of a hardcoded `true`, which is the same shape as the published spec claiming
+    /// five routes that answered 404.
+    ///
+    /// This makes the claim mean something: the report is read from the running proxy, and every
+    /// route it names is put to the dispatcher.
+    #[test]
+    fn the_operational_surface_only_claims_routes_the_proxy_serves() {
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let (code, body) = proxy.handle(crate::proxy::HttpRequest {
+            method: "GET".to_string(),
+            path: "/proxy/operational_surface".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200, "the report must answer, or this test checks nothing");
+        let report: ProxyOperationalSurfaceReport =
+            parse_json(&body).expect("the operational surface report parses");
+
+        assert!(
+            report.entries.len() >= 5,
+            "the report listed {} entries; with fewer than five this test would be checking              almost nothing",
+            report.entries.len()
+        );
+
+        let mut unserved: Vec<String> = Vec::new();
+        for entry in &report.entries {
+            for route in [entry.rust_native_route.as_str(), entry.rust_alias.as_str()] {
+                if route.is_empty() || !route.starts_with('/') {
+                    continue;
+                }
+                // A route the dispatcher knows answers something other than 404 to one of these.
+                let get = proxy
+                    .handle(crate::proxy::HttpRequest {
+                        method: "GET".to_string(),
+                        path: route.to_string(),
+                        body: Vec::new(),
+                    })
+                    .0;
+                let post = proxy
+                    .handle(crate::proxy::HttpRequest {
+                        method: "POST".to_string(),
+                        path: route.to_string(),
+                        body: b"{}".to_vec(),
+                    })
+                    .0;
+                if get == 404 && post == 404 {
+                    unserved.push(format!("{} -> {route}", entry.native_surface));
+                }
+            }
+        }
+
+        assert!(
+            unserved.is_empty(),
+            "the operational surface reports covered: true for {} route(s) the proxy answers 404              for: {unserved:#?}",
+            unserved.len()
+        );
+    }
+
     /// Every route the published proxy API documents is one the proxy actually answers.
     ///
     /// `sdk/proxy/openapi.yaml` is the contract an outside user builds against -- it ships in the
