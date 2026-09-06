@@ -4623,7 +4623,26 @@ def compact_and_apply_tombstones(records: list[Json]) -> list[Json]:
     except ImportError:  # Direct script execution from tools/.
         from matrixark_pipeline_task_slim import bound_pipeline_task_footprint
     records = bound_pipeline_task_footprint(records)
-    return compact_latest_context_state_records(apply_memory_tombstones(compact_latest_value_records(records)))
+    served = compact_latest_context_state_records(
+        apply_memory_tombstones(compact_latest_value_records(records)))
+    # Secondary-index growth bounding runs LAST, and for the same reason the footprint bound above
+    # runs first: it was written for this pipeline and was reachable from nowhere. Its module
+    # documents a four-lever ladder, registers two levers as operator knobs with measured recall
+    # floors, and states "the bounds run on EVERY serving recompute" -- and nothing called any of
+    # them. A cap sweep from 128 down to 8 changed nothing; calling it by hand works.
+    #
+    # LAST, because compact_latest_context_state_records rebuilds context_index postings: bounding
+    # before it would count a set that is about to be replaced.
+    #
+    # Safe at this position for the reason the footprint bound is safe at its own: it touches only
+    # context_index records, never memory records, and it returns `records` itself when nothing is
+    # over budget -- so a store below the cap is byte-identical to today and the default keeps its
+    # measured floor of 128 per session.
+    try:
+        from tools.matrixark_index_growth_bound import enforce_secondary_index_bounds
+    except ImportError:  # Direct script execution from tools/.
+        from matrixark_index_growth_bound import enforce_secondary_index_bounds
+    return enforce_secondary_index_bounds(served)
 
 
 # --------------------------------------------------------------------------------------------- #
