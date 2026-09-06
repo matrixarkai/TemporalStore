@@ -2002,20 +2002,30 @@ def update(patch: Json, actor: Optional[str] = None) -> Json:
 
     history = document.get("history")
     history = history if isinstance(history, list) else []
-    # An entry with no changes in it is the same noise one level up.
-    if changes:
-        history.append({
-            "at": time.time(),
-            "by": actor or "portal",
-            "changes": changes,
-            "restart_required": sorted({e["key"] for e in applied if not e["in_effect"]}),
-        })
+    # No guard on this append, deliberately. A write with nothing in `changes` does not reach
+    # `_store` below, so the entry is built and dropped with the document -- and a second check
+    # here would be one no test could make fail.
+    history.append({
+        "at": time.time(),
+        "by": actor or "portal",
+        "changes": changes,
+        "restart_required": sorted({e["key"] for e in applied if not e["in_effect"]}),
+    })
     document["history"] = history[-HISTORY_LIMIT:]
 
     document["values"] = values
-    document["updated_at"] = time.time()
-    document["updated_by"] = actor or "portal"
-    _store(document)
+    if changes:
+        document["updated_at"] = time.time()
+        document["updated_by"] = actor or "portal"
+        _store(document)
+    # Nothing moved, so the file is left exactly as it was -- including `updated_at`.
+    #
+    # That timestamp is not decoration: the live frame carries it, and the Setup page reads a
+    # change in it as "somebody else changed this configuration", which it tells anyone with
+    # unsaved edits rather than discarding their work. A caller re-sending the values it already
+    # holds raised that notice on every open page, every few minutes, about nothing. The
+    # environment is still applied below, because that is what `update()` promises whatever the
+    # file already said.
 
     # Only now. _store is the half that can fail; assignment into the environment is the half that
     # cannot be undone, and it has been checked for the one input that would make it raise.

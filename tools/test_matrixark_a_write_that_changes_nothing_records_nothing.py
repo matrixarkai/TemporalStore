@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 TOOLS = os.path.dirname(os.path.abspath(__file__))
@@ -157,6 +158,47 @@ class ASecretIsAlwaysRecordedTest(Case):
         key = self._secret()
         cfg.update({key: "sk-do-not-log-me"}, actor="test")
         self.assertNotIn("sk-do-not-log-me", json.dumps(self.entries()))
+
+
+class ItDoesNotAnnounceAChangeEitherTest(Case):
+    """`updated_at` is not decoration.
+
+    The live frame carries it, and the Setup page reads a change in it as "somebody else changed
+    this configuration" -- which it tells anyone holding unsaved edits rather than discarding
+    their work. A caller re-sending what it already stored raised that notice on every open page,
+    every few minutes, about nothing.
+    """
+
+    def test_a_no_op_does_not_move_the_timestamp(self) -> None:
+        cfg.update({KEY: "0.44"}, actor="test")
+        before = cfg.load()["updated_at"]
+        cfg.update({KEY: "0.44"}, actor="test")
+        self.assertEqual(before, cfg.load()["updated_at"])
+
+    def test_nor_rewrite_the_file(self) -> None:
+        cfg.update({KEY: "0.44"}, actor="test")
+        before = os.path.getmtime(cfg.config_path())
+        time.sleep(0.02)
+        cfg.update({KEY: "0.44"}, actor="test")
+        self.assertEqual(before, os.path.getmtime(cfg.config_path()))
+
+    def test_a_real_change_still_moves_it(self) -> None:
+        """The floor. Never moving the timestamp would pass both tests above and break the
+        notice this is protecting."""
+        cfg.update({KEY: "0.44"}, actor="test")
+        before = cfg.load()["updated_at"]
+        time.sleep(0.02)
+        cfg.update({KEY: "0.55"}, actor="test")
+        self.assertNotEqual(before, cfg.load()["updated_at"])
+
+    def test_the_environment_is_applied_even_by_a_no_op(self) -> None:
+        """`update()` promises to apply to the live process environment whatever the file already
+        said, and skipping the file write must not quietly drop that half."""
+        cfg.update({KEY: "0.44"}, actor="test")
+        variable = cfg.SETTINGS_BY_KEY[KEY].env
+        os.environ.pop(variable, None)
+        cfg.update({KEY: "0.44"}, actor="test")
+        self.assertEqual("0.44", os.environ.get(variable))
 
 
 if __name__ == "__main__":
