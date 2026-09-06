@@ -1135,6 +1135,16 @@ function liveStream(options) {
         ' setting wins where one exists — set those under Retrieval settings.">' +
         esc((f.overridable_by || []).join("/")) + " can override</span>";
     }
+    /* Offered, stored, resolved -- and read by nothing in this build. Without saying so the
+       field is indistinguishable from one that works: it accepts a value, confirms it, and the
+       deployment behaves identically either way. The control is left in place because a
+       deployment may already have set one, and a field that vanishes takes its value out of
+       view while leaving it in the file. */
+    if (f.read_by_nothing) {
+      badges += '<span class="badge failed" title="This build resolves the value and never reads '
+        + 'it, so setting it changes nothing. It is still shown because a value already stored '
+        + 'here would otherwise be invisible.">not read by this build</span>';
+    }
     if (f.source && f.source !== "default") {
       badges += '<span class="badge ' + esc(f.source) + '">' + esc(f.source) + "</span>";
     }

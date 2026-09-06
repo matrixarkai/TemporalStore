@@ -35,6 +35,7 @@ import unittest
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 
+import matrixark_gateway_config as _cfg  # noqa: E402
 import matrixark_tenant_policy as tp  # noqa: E402
 
 GROWTH_BOUND = "matrixark_index_growth_bound.py"
@@ -42,23 +43,15 @@ GROWTH_BOUND = "matrixark_index_growth_bound.py"
 # Where a knob is DECLARED rather than used. A mention here is not a consumer.
 DECLARING = {GROWTH_BOUND, "matrixark_tenant_policy.py", "matrixark_gateway_config.py"}
 
-# Offered by the portal, resolved by the policy, read by nothing. Measured 2026-09-06.
-OFFERED_AND_UNREAD = frozenset({
-    "embed_node_path_prefix",
-    "generate_l1_summaries",
-    "max_event_text_chars",
-    "max_summary_text_chars",
-    "recall_reinforcement",
-    "return_all_candidate_threshold",
-    "return_all_candidates",
-    "skill_description_always",
-    "summarize_aggregation_only_nodes",
-    "summary_levels",
-    # This one appears EXACTLY ONCE in the repository -- the line that declares it. It defaults
-    # to on, so an operator turning secondary index writes off to hold down index growth gets a
-    # stored value, a confirmation, and the same number of records as before.
-    "write_secondary_index",
-})
+# The registry's own list, not a second copy of it. The portal badges a field with this set, so
+# a list here that drifted from it would fail the deployment's screen while passing its tests --
+# and a test holding its own copy of the answer is not checking the answer.
+#
+# Measured 2026-09-06. `write_secondary_index` is the one worth reading twice: it appears EXACTLY
+# ONCE in the repository, the line that declares it, and defaults to on, so an operator turning
+# secondary index writes off to hold down index growth gets a stored value, a confirmation, and
+# the same number of records as before.
+OFFERED_AND_UNREAD = _cfg.KNOBS_READ_BY_NOTHING
 
 
 _SOURCES_CACHE = {}
@@ -223,6 +216,51 @@ class TheDetectorWorks(unittest.TestCase):
         self.assertGreater(len(reachable), 5, sorted(reachable))
         self.assertNotIn("summary_levels", reachable)
         self.assertNotIn("node_summary_plan", reachable)
+
+
+class TheScreenSaysSoTest(unittest.TestCase):
+    """A test that only reports the number in CI leaves the operator looking at eleven controls
+    that accept a value, confirm it, and do nothing. The field carries the answer now."""
+
+    @staticmethod
+    def _fields() -> list:
+        snapshot = _cfg.snapshot()
+        groups = snapshot["groups"]
+        if isinstance(groups, list):
+            return [field for group in groups for field in group["fields"]]
+        return [field for fields in groups.values() for field in fields]
+
+    def test_every_unread_knob_is_marked(self) -> None:
+        marked = {f["key"] for f in self._fields() if f.get("read_by_nothing")}
+        self.assertEqual(len(_cfg.KNOBS_READ_BY_NOTHING), len(marked),
+                         "%d knobs, %d marked: %s" % (len(_cfg.KNOBS_READ_BY_NOTHING),
+                                                      len(marked), sorted(marked)))
+
+    def test_the_match_is_by_variable_not_by_key_prefix(self) -> None:
+        """The discriminator. Ten of the eleven surface as `behaviour.<knob>`; this one does not,
+        and a prefix rule marked ten and left it looking like a working control."""
+        marked = {f["key"] for f in self._fields() if f.get("read_by_nothing")}
+        self.assertIn("skills.description_always", marked)
+        self.assertNotIn("behaviour.skill_description_always",
+                         {f["key"] for f in self._fields()})
+
+    def test_nothing_else_is_marked(self) -> None:
+        """A badge on every field is a badge on none."""
+        fields = self._fields()
+        marked = [f["key"] for f in fields if f.get("read_by_nothing")]
+        self.assertGreater(len(fields), len(marked) * 5, len(fields))
+        for field in fields:
+            self.assertIn("read_by_nothing", field, field["key"])
+
+    def test_the_control_is_still_offered(self) -> None:
+        """Not hidden. A deployment may already have one set, and a field that vanishes takes its
+        value out of view while leaving it in the file."""
+        keys = {f["key"] for f in self._fields()}
+        for name in _cfg.KNOBS_READ_BY_NOTHING:
+            self.assertTrue(
+                any(f.get("env") and f["env"].endswith(name.upper()) for f in self._fields())
+                or ("behaviour." + name) in keys,
+                "%s is no longer offered at all" % name)
 
 
 if __name__ == "__main__":

@@ -75,5 +75,23 @@ html = fieldHtml(field({ applies: "live", pending_restart: true }));
 ok("the renderer shows what it is given, so the flag is the thing to get right",
    status.test(html), html.slice(0, 200));
 
+/* Offered, stored, resolved -- and read by nothing in this build. Without the badge the field is
+   indistinguishable from one that works: it takes a value, confirms it, and the deployment
+   behaves the same either way. */
+const unread = /not read by this build/;
+
+html = fieldHtml(field({ key: "behaviour.summary_levels", env: "MATRIXARK_SUMMARY_LEVELS",
+                         applies: "live", read_by_nothing: true }));
+ok("a control nothing reads says so", unread.test(html), html.slice(0, 300));
+ok("and it is styled as something to look at", /badge failed/.test(html), html.slice(0, 300));
+ok("and the field is still drawn, so a stored value stays visible",
+   /MATRIXARK_SUMMARY_LEVELS/.test(html), html.slice(0, 300));
+
+/* The floor. Every other field must NOT carry it, or the badge says nothing. */
+ok("FLOOR: an ordinary setting does not carry it", !unread.test(fieldHtml(field({}))));
+ok("FLOOR: nor does a live one", !unread.test(fieldHtml(field({ applies: "live" }))));
+ok("FLOOR: nor one merely pending a restart",
+   !unread.test(fieldHtml(field({ pending_restart: true }))));
+
 console.log(failures === 0 ? "PASS" : "FAILED " + failures);
 process.exit(failures === 0 ? 0 : 1);
