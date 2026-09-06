@@ -15018,6 +15018,135 @@ fn the_cache_namespaces_a_record_can_actually_use() {
     }
 }
 
+/// A wide parent keeps its NEWEST children for scoring, not its oldest.
+///
+/// Traversal cuts a parent's children down to a cap BEFORE scoring any of them, so whatever the
+/// cut drops is unreachable by any query however well it matches. The sort was ascending on
+/// `updated_at_ms`, so the cut kept the OLDEST children and the most recently ingested were the
+/// first to become invisible -- the opposite of what a store keyed on time should do.
+///
+/// This is not a claim that selection is now relevance-based. It is not: scoring a child costs a
+/// page read, so a cap has to stay and a wide enough parent still hides children. What this holds
+/// is that recent writes are reachable, and that the drop is counted rather than silent.
+#[test]
+fn a_wide_parent_keeps_its_newest_children_for_scoring() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    const TENANT: u64 = 77;
+    const PARENT: u64 = 1;
+    const CHILDREN: u64 = 16;
+    const CAP: usize = 4;
+
+    // Each child carries a vector that points along its own axis, so a query can name exactly one
+    // of them and no other child scores against it.
+    let axis = |n: u64| -> Vec<f32> {
+        let mut vector = vec![0.0f32; CHILDREN as usize + 2];
+        vector[n as usize] = 1.0;
+        vector
+    };
+
+    let upsert = |node_hash: u64, vector: Vec<f32>| Command::ContextUpsertNode {
+        tenant_hash: TENANT,
+        node: Box::new(crate::types::ContextNode {
+            node_hash,
+            parent_hash: 0,
+            kind: 1,
+            canonical_name: format!("node-{node_hash}"),
+            status: 1,
+            last_event_time_ms: 1_700_000_000_000 + node_hash,
+            raw_metadata_ref: String::new(),
+            l0: String::new(),
+            l1_ref: String::new(),
+            vector,
+            embedding_model_hash: 0,
+            embedding_updated_at_ms: 0,
+            summary_vector: Vec::new(),
+            summary_vector_valid_from_ms: 0,
+            summary_vector_model_hash: 0,
+        }),
+    };
+
+    let out = engine.execute(ExecuteRequest { shard_id: 1, command: upsert(PARENT, axis(0)) });
+    assert!(out.status.ok, "{:?}", out.status);
+
+    // Children 2..=17, each newer than the last.
+    for index in 0..CHILDREN {
+        let child_hash = index + 2;
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: upsert(child_hash, axis(child_hash - 1)),
+        });
+        assert!(out.status.ok, "{:?}", out.status);
+        let out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertChildRef {
+                tenant_hash: TENANT,
+                child_ref: crate::types::ContextChildRef {
+                    parent_hash: PARENT,
+                    child_hash,
+                    // Ascending: the last child written is the newest.
+                    updated_at_ms: 1_700_000_000_000 + index,
+                },
+            },
+        });
+        assert!(out.status.ok, "{:?}", out.status);
+    }
+
+    let newest = CHILDREN + 1;
+    let oldest = 2u64;
+
+    let traverse = |target: u64| -> Vec<u64> {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let shard = shards.get(&1).expect("shard 1 loaded");
+        crate::engine::context::traverse_context_tree(
+            &engine.cache,
+            &engine.page_store,
+            1,
+            shard,
+            TENANT,
+            PARENT,
+            &axis(target - 1),
+            Some(1),
+            Some(CHILDREN as usize),
+            Some(CAP),
+            Some(CHILDREN as usize),
+            false,
+        )
+        .into_iter()
+        .map(|node| node.node_hash)
+        .collect()
+    };
+
+    crate::engine::context::reset_context_children_dropped_before_scoring();
+    let found_newest = traverse(newest);
+    let dropped = crate::engine::context::context_children_dropped_before_scoring();
+
+    assert!(
+        found_newest.contains(&newest),
+        "the newest child was not reachable: a cap of {CAP} over {CHILDREN} children scored          {found_newest:?}, so the most recently written content is invisible to retrieval"
+    );
+    assert_eq!(
+        dropped,
+        CHILDREN as u64 - CAP as u64,
+        "the children the cut dropped before scoring must be counted, or the limit is invisible"
+    );
+
+    // The other half of the same fact, and the control on the assertion above: with the cap
+    // binding, the OLDEST child is the one now out of reach. If both ends were reachable the cap
+    // would not be binding and the test would prove nothing about which end is kept.
+    assert!(
+        !traverse(oldest).contains(&oldest),
+        "both the newest and oldest children were reachable, so the cap did not bind and this          test says nothing about which end the cut keeps"
+    );
+}
+
 /// A context write leaves nothing in the `hash`, `set` or `feature` cache namespaces.
 ///
 /// This is the premise `invalidate_context_record` rests on. `invalidate_record_all` sweeps those
