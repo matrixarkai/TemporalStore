@@ -1457,11 +1457,26 @@ SETUP_JS = r"""
         + 'it, so setting it changes nothing. It is still shown because a value already stored '
         + 'here would otherwise be invisible.">not read by this build</span>';
     }
+    /* Reset DROPS the stored entry -- it does not write the default as a value. So it is worth
+       offering whenever the file holds one, including when that entry happens to equal the
+       build's default: those are the entries that silently stop following a later build, and
+       hiding the control for exactly them left no way to clear one from this page. */
+    var pinned = f.stored && (f.value || "") === (f.default == null ? "" : String(f.default));
+    var resettable = f.kind !== "secret" &&
+      (f.stored || (f.value || "") !== (f.default == null ? "" : String(f.default)));
     if (f.source && f.source !== "default") {
       badges += '<span class="badge ' + esc(f.source) + '">' + esc(f.source) + "</span>";
     }
-    var resettable = f.kind !== "secret" &&
-      ((f.value || "") !== (f.default == null ? "" : String(f.default)));
+    /* Stored, and the same as what this build would use anyway. It reads as a decision and is
+       not one -- and it is the half that stops following the build when a later release changes
+       that default. */
+    if (pinned) {
+      badges += '<span class="badge queued" title="This is stored in the configuration file and '
+        + 'is the same value this build uses by default, so it changes nothing today. It will '
+        + 'keep this value if a later build changes that default. Reset removes the entry.">'
+        + "same as the default</span>";
+    }
+
     var reset = resettable
       ? '<button type="button" class="link reset" data-reset="' + esc(f.key) + '">reset</button>' : "";
     var help = esc(f.help) + (f.env ? ' <span class="env">' + esc(f.env) + "</span>" : "") +
