@@ -179,7 +179,7 @@ What is written, when it is flushed, and what is reclaimed. The escape hatches h
 | `TS_WAL_COMMIT_DELAY_US` | 0 | config | 1 | — |
 | `TS_WAL_COMPRESS_RECORDS` | off | test, portal | 1 | — |
 | `TS_WAL_DATA_ONLY` | on | launch, test | 1 | — |
-| `TS_WAL_LEGACY_RECOVERY` | off | config, harness, script | 1 | yes |
+| `TS_WAL_LEGACY_RECOVERY` | off | config, test | 1 | yes |
 | `TS_WAL_OUTCOME_ITEMS` | on | launch, test | 1 | — |
 | `TS_WAL_PREALLOCATE` | on | launch, test | 1 | yes |
 | `TS_WAL_PREALLOCATE_CHUNK` | — | nothing | 1 | — |
@@ -200,7 +200,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_NODE_SUMMARY_VECTOR` | on | test, portal | 1 | — |
 | `TS_PROXY_BINARY_VERSION` | — | nothing | 1 | — |
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
-| `TS_VECTOR_SCALED` | on | launch, script, test, portal | 1 | — |
+| `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
 ## capacity (80)
 
@@ -309,10 +309,10 @@ The memory pipeline: what gets extracted, embedded, drained and packed. The surf
 | `MATRIXARK_CONTEXT_EVENT_SCAN_CAP` | 64 | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES` | off | nothing | 1 | — |
 | `MATRIXARK_CONTEXT_SECONDARY_INDEX` | off | test | 1 | — |
-| `MATRIXARK_EMBEDDING_MODEL` | — | config, script, portal | 1 | — |
+| `MATRIXARK_EMBEDDING_MODEL` | — | config, script, test, portal | 1 | — |
 | `MATRIXARK_EMBED_API_KEY_ENV` | — | nothing | 1 | — |
 | `MATRIXARK_EMBED_BASE_URL` | — | config, script | 1 | — |
-| `MATRIXARK_EMBED_DRAINER` | off | config, launch, portal | 1 | — |
+| `MATRIXARK_EMBED_DRAINER` | off | config, launch, test, portal | 1 | — |
 | `MATRIXARK_EMBED_DRAINER_BATCH` | — | config, portal | 1 | — |
 | `MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT` | 40000 | launch | 1 | — |
 | `MATRIXARK_REQUIRE_MODEL_EMBEDDINGS` | off | config, portal | 1 | — |
@@ -330,7 +330,7 @@ Who the caller is, not what the engine does. Supplied per request or per process
 | `MATRIXARK_ACCOUNT_ID` | — | launch | 2 | — |
 | `MATRIXARK_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_TENANT_ID` | — | launch | 2 | — |
-| `MATRIXARK_USER_ID` | — | launch, script | 2 | — |
+| `MATRIXARK_USER_ID` | — | launch, test | 2 | — |
 | `TEMPORALSTORE_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_SESSION_ID` | — | nothing | 1 | — |
 
