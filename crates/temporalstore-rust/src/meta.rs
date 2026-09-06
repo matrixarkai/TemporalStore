@@ -8415,6 +8415,57 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
     }
 
     #[test]
+    fn a_mute_that_survived_a_restore_survives_the_restart_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta.log");
+
+        let snapshot = {
+            // A snapshot taken before the mute, so its flag says "not muted" --
+            // the case that used to clear the operator's lever.
+            let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+            assert!(meta
+                .add_namespace(AddNamespaceRequest {
+                    namespace: "ns".to_string(),
+                })
+                .status
+                .ok);
+            let snapshot = meta.export_snapshot();
+            assert!(!snapshot.meta_change_muted, "the snapshot predates the mute");
+
+            assert!(meta.set_meta_change_muted(true).status.ok);
+            assert!(meta.is_meta_change_muted(), "the operator muted it");
+
+            assert!(meta.install_snapshot(snapshot.clone()).status.ok);
+            assert!(
+                meta.is_meta_change_muted(),
+                "restoring data lifted the operator's mute"
+            );
+            snapshot
+        };
+        let _ = snapshot;
+
+        // Restart: the log is replayed, and replay applies the install through
+        // the same path. The metaserver must come back still muted -- an
+        // incident lever that a restart quietly clears is no lever at all.
+        let restarted = SingleNodeMeta::with_mutation_log(&log_path)
+            .expect("the log must replay");
+        assert!(
+            restarted.is_meta_change_muted(),
+            "the mute was lost when the log was replayed"
+        );
+
+        // And it is really in force, not merely reported: a recorded change is
+        // still refused after the restart.
+        let refused = restarted.add_namespace(AddNamespaceRequest {
+            namespace: "after-restart".to_string(),
+        });
+        assert!(
+            !refused.status.ok,
+            "the metaserver reported itself muted but accepted a change anyway"
+        );
+    }
+
+    #[test]
     fn restoring_a_snapshot_does_not_lift_an_operator_mute() {
         // A snapshot of a different world, taken while nothing was muted.
         let source = SingleNodeMeta::default();
