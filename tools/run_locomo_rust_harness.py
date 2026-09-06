@@ -83,7 +83,10 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             f"{converted.stderr.strip() or converted.stdout.strip()}"
         )
     source_limit_applied = int(args.rust_temporalstore_source_limit) > 0
-    rust_source_order_ranking = source_limit_applied or int(args.rust_temporalstore_source_limit) == 0
+    # A source limit is non-negative by contract -- 0 means "all sources" -- so this is on for
+    # every value the argument accepts. The harness default off is what a caller that sets no
+    # benchmark environment gets.
+    rust_source_order_ranking = int(args.rust_temporalstore_source_limit) >= 0
     if source_limit_applied:
         limit_rust_temporalstore_sources(jsonl_path, int(args.rust_temporalstore_source_limit), args.max_events)
     source_pack_size = int(getattr(args, "rust_temporalstore_source_pack_size", 0) or 0)
@@ -103,14 +106,12 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     env.update(
         {
             "TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY": "1",
-            "TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY": "1",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL": str(jsonl_path),
             "TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS": str(args.max_events),
             "TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY": "1"
             if args.require_full_rust_temporalstore_replay and int(args.rust_temporalstore_source_limit) == 0
             else "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "0",
-            "TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY": "1",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING": "1"
             if rust_source_order_ranking
             else "0",

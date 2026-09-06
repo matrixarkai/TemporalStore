@@ -620,10 +620,6 @@ fn main() {
         && benchmark_sweep.threshold_violations.is_empty();
     let external_benchmark = run_external_context_benchmark(&engine);
     let resource_skill_scale = run_resource_skill_conversation_scale(&engine);
-    let external_benchmark_report_only =
-        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(false);
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
@@ -636,7 +632,7 @@ fn main() {
         && resource_skill_scale.ready
         && benchmark_ready
         && benchmark_sweep_ready
-        && (external_benchmark.ready || external_benchmark_report_only);
+        && external_benchmark.ready;
     assert!(
         context_pipeline_ready,
         "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} resource_skill_scale={} benchmark={} sweep={} external_benchmark={} retrieve_events={} retrieve_blocks={} sweep_status={} sweep_message={} sweep_min_hit_at_k={} sweep_min_mrr={} sweep_min_evidence_retention={} sweep_min_token_reduction={} sweep_max_selected_tokens={} sweep_violations={:?}",
@@ -1212,11 +1208,6 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(128);
-    let ingest_chunk_size = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_INGEST_CHUNK_SIZE")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(64);
     let direct_source_scoring =
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -1225,10 +1216,6 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SOURCE_ORDER_RANKING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
-    let compact_source_replay =
-        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-            .unwrap_or(true);
     let mut ingested_source_sets = BTreeMap::<u64, Vec<u64>>::new();
     let mut retrieved_source_sets = BTreeMap::<u64, Vec<temporalstore_rust::ContextBlock>>::new();
     for (_index, case) in cases.iter().enumerate() {
@@ -1293,34 +1280,9 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         .collect::<Vec<_>>();
                     let mut node_hashes = Vec::new();
                     let mut ingest_ok = true;
-                    if all_source_replay || compact_source_replay {
-                        let started = Instant::now();
-                        match ingest_external_benchmark_sources(engine, tenant_hash, &sources) {
-                            Some(hashes) => node_hashes = hashes,
-                            None => ingest_ok = false,
-                        }
-                    } else {
-                        for chunk in sources.chunks(ingest_chunk_size) {
-                            let started = Instant::now();
-                            let ingest = ingest_extract_context(
-                                engine,
-                                ContextIngestExtractRequest {
-                                    shard_id: 1,
-                                    tenant_hash,
-                                    sources: chunk.to_vec(),
-                                    query: case.query.clone(),
-                                    start_time_ms: 0,
-                                    end_time_ms: 10_000,
-                                    max_events: case_max_events,
-                                    provider: ContextModelProviderConfig::default(),
-                                },
-                            );
-                            if !ingest.status.ok {
-                                ingest_ok = false;
-                                break;
-                            }
-                            node_hashes.extend(ingest.node_hashes);
-                        }
+                    match ingest_external_benchmark_sources(engine, tenant_hash, &sources) {
+                        Some(hashes) => node_hashes = hashes,
+                        None => ingest_ok = false,
                     }
                     if !ingest_ok {
                         Vec::new()

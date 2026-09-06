@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 292 of them, read by 90 functions.
+There are 289 of them, read by 90 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -46,12 +46,12 @@ Anything else is blank, and a blank means go and look.
 
 | flags | count |
 |---|---|
-| total | 292 |
-| booleans whose default this could read off the source | 28 |
-| numbers whose default this could read off the source | 35 |
-| **defaulting on, and set by nothing** | 1 |
+| total | 289 |
+| booleans whose default this could read off the source | 26 |
+| numbers whose default this could read off the source | 34 |
+| **defaulting on, and set by nothing** | 0 |
 | offered on the portal | 26 |
-| **that nothing in this repository sets** | 172 |
+| **that nothing in this repository sets** | 169 |
 | documented as keeping an older path alive | 5 |
 | reaching more than two files | 15 |
 | whose doc comment is really about another flag | 43 |
@@ -202,7 +202,7 @@ The shape of what is written. Readers generally accept both shapes, which is wha
 | `TS_VECTOR_INT8` | off | test, portal | 1 | — |
 | `TS_VECTOR_SCALED` | on | launch, test, portal | 1 | — |
 
-## capacity (81)
+## capacity (80)
 
 Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 
@@ -224,7 +224,6 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES` | 256 | test | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_CONNECT_TIMEOUT_MS` | — | nothing | 1 | — |
 | `MATRIXARK_TEMPORALSTORE_PROXY_IO_TIMEOUT_MS` | 30000 | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_INGEST_CHUNK_SIZE` | 64 | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | nothing | 1 | — |
 | `TS_BLOB_CHUNK_BYTES` | — | config | 1 | — |
 | `TS_BLOB_PEER_FETCH_TIMEOUT_MS` | — | nothing | 1 | — |
@@ -333,24 +332,22 @@ Who the caller is, not what the engine does. Supplied per request or per process
 | `TEMPORALSTORE_AGENT_NAME` | — | launch | 2 | — |
 | `MATRIXARK_SESSION_ID` | — | nothing | 1 | — |
 
-## diagnostic (3)
+## diagnostic (2)
 
 Extra evidence for someone investigating. Off by default.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG` | off | script | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY` | off | nothing | 1 | — |
 | `TS_SCALE_STORAGE_ROOT` | — | nothing | 1 | — |
 
-## benchmark (7)
+## benchmark (6)
 
 Read only by the benchmark harnesses. Never consulted on a serving path.
 
 | flag | default | set by | files | keeps an older path |
 |---|---|---|---|---|
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY` | off | nothing | 1 | — |
-| `TEMPORALSTORE_CONTEXT_BENCHMARK_COMPACT_SOURCE_REPLAY` | on | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY` | off | nothing | 1 | — |
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL` | — | script | 1 | — |
