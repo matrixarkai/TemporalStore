@@ -2962,16 +2962,27 @@ def _grafana_asset(name: str) -> Tuple[Optional[bytes], str]:
     return data, content_type
 
 
-# Said in full wherever a customer is one click from changing the encoder. The trap is not the
-# obvious one: a width change at least has a width to notice. Two encoders of the SAME width mix
-# two unrelated vector spaces with nothing anywhere to raise an error.
+# Said in full wherever a customer is one click from changing the encoder.
+#
+# It used to end "nothing in the stack sees a mismatch to complain about", which describes the
+# world before the model-name guard. It is not this deployment's behaviour: conflicts are decided
+# on the RECORDED MODEL NAME, not on width -- `context_embedding_model_conflicts` in the engine and
+# its mirror in matrixark_mcp_core both say so in as many words -- so a same-width swap is caught
+# exactly like any other, the vectors are declined rather than mixed, and the retrieve path reports
+# the count in its quality warnings.
+#
+# The distinction matters to the person reading this. "Nothing will notice" and "those memories
+# stop being searched, and you will be told how many" are different failures with different
+# remedies, and only one of them is what happens here.
 _EMBEDDING_CHANGE_WARNING = (
     "Changing the embedding model does not re-encode what is already stored. Every existing vector "
     "stays in the old model's space, and vectors from two models cannot be compared -- so those "
-    "memories stop matching queries. Note that two encoders are often the SAME WIDTH "
-    "(all-MiniLM-L6-v2 and BGE-M3 truncated to 384 are both 384), in which case nothing in the "
-    "stack sees a mismatch to complain about. Re-encode the store after changing this, or accept "
-    "that everything ingested before the change is no longer semantically searchable."
+    "memories stop matching queries until a backfill re-encodes them. They are DECLINED rather "
+    "than mixed in: conflicts are decided on the recorded model name, not on vector width, so a "
+    "swap between two encoders of the same width (all-MiniLM-L6-v2 and BGE-M3 truncated to 384 are "
+    "both 384) is caught like any other. Retrieval falls back to lexical and recency for them and "
+    "reports how many were not searched. Re-encode the store after changing this, or accept that "
+    "everything ingested before the change is answered without its meaning."
 )
 
 
