@@ -5,7 +5,7 @@
  * line reads as "no traffic" rather than "not watching long enough". None of that is visible in a
  * diff, so the page is run and the SVG is read.
  *
- * Usage: node trend_panel_harness.js <setup_portal.html> [full|short|absent|gaps]
+ * Usage: node trend_panel_harness.js <setup_portal.html> [full|short|absent|gaps|noresident]
  */
 "use strict";
 const fs = require("fs");
@@ -30,6 +30,11 @@ function points(n) {
       /* An interval in which nothing completed has no mean. Drawing it as 0 would show a latency
          dip that never happened. */
       mean_ms: (mode === "gaps" && i % 2 === 1) ? null : 12 + i,
+      /* A LEVEL, not a rate. 100 MiB climbing by 1 MiB an interval: if anyone differences it the
+         peak reads about 1 instead of about 107, which is the whole difference between plotting
+         a footprint and plotting its change. `noresident` is the platform that cannot report a
+         size -- every point null, and the chart must be absent rather than drawn along zero. */
+      resident_bytes: mode === "noresident" ? null : (100 + i) * 1048576,
     });
   }
   return out;
@@ -134,12 +139,29 @@ setTimeout(function () {
        /needs two intervals/.test(html), html.slice(0, 300));
     ok("it does not read as an idle deployment", !/no traffic/i.test(html), html.slice(0, 300));
   } else {
-    ok("three charts were drawn", (html.match(/<svg/g) || []).length === 3, html.slice(0, 400));
+    const wanted = mode === "noresident" ? 3 : 4;
+    ok(wanted + " charts were drawn", (html.match(/<svg/g) || []).length === wanted,
+       html.slice(0, 400));
     ok("each is a polyline with points",
-       (html.match(/<polyline[^>]*points="[^"]+"/g) || []).length === 3, html.slice(0, 400));
+       (html.match(/<polyline[^>]*points="[^"]+"/g) || []).length === wanted, html.slice(0, 400));
     ok("requests, errors and latency are all labelled",
        /Requests/.test(html) && /Errors/.test(html) && /Mean latency/.test(html),
        html.slice(0, 400));
+
+    if (mode === "noresident") {
+      /* A worker whose platform cannot report a size must not get a chart along the floor: an
+         empty chart reads as a worker holding no memory, which is not what "unavailable" means. */
+      ok("no footprint chart where no size can be read",
+         !/Worker resident/.test(html), html.slice(0, 600));
+    } else {
+      ok("the footprint is plotted too", /Worker resident/.test(html), html.slice(0, 600));
+      const peak = /Worker resident <span class="aux">peak ([\d.]+) MiB/.exec(html);
+      ok("in MiB, and stated as a peak", !!peak, html.slice(0, 600));
+      /* The discriminator. Levels 100..107 MiB: a peak near 107 is the level, a peak near 1 is
+         the level differenced into a rate, and both draw a perfectly plausible rising line. */
+      ok("as a LEVEL, not differenced into a rate",
+         peak && Number(peak[1]) > 100 && Number(peak[1]) < 110, peak && peak[1]);
+    }
     ok("the peak of each series is stated", /peak /.test(html), html.slice(0, 400));
     ok("the window is described", /intervals of 15s/.test(html), html.slice(0, 900));
     ok("and it says whose traffic this is", /This worker only/.test(html), html.slice(0, 900));
