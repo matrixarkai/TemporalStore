@@ -1197,6 +1197,107 @@ fn a_read_only_batch_reaches_the_replica_and_a_write_batch_the_primary() {
     );
 }
 
+/// A single-shard table's batch gets one answer per command, or it is refused.
+///
+/// `batch_execute_grouped_by_shard` has always refused a short answer. This path -- the one a
+/// single-shard table takes, and the one the proxy's namespaced batch goes through -- did not, so
+/// the caller got `ok` with a shorter array than it sent and no way to tell which command each
+/// answer belonged to.
+#[test]
+fn a_single_shard_batch_answer_must_cover_every_command() {
+    fn backend_answering(answers: usize) -> String {
+        let body = serde_json::to_vec(&BatchExecuteResponse {
+            status: Status::ok(),
+            responses: (0..answers)
+                .map(|_| ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Empty,
+                })
+                .collect(),
+        })
+        .expect("canned batch response");
+        let mut canned = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+            body.len()
+        )
+        .into_bytes();
+        canned.extend_from_slice(&body);
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(_) => return,
+            };
+            let bound = match listener.local_addr() {
+                Ok(addr) => addr.to_string(),
+                Err(_) => return,
+            };
+            if tx.send(bound).is_err() {
+                return;
+            }
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut scratch = [0u8; 16384];
+                loop {
+                    use std::io::{Read as _, Write as _};
+                    match stream.read(&mut scratch) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {
+                            if stream.write_all(&canned).is_err() {
+                                break;
+                            }
+                            let _ = stream.flush();
+                        }
+                    }
+                }
+            }
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("the backend must report its address")
+    }
+
+    let send_five = |addr: &str| -> BatchExecuteResponse {
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:1".to_string(),
+            // Routed path, with the route already cached, so the dead meta address is never used.
+            meta_addr: Some("127.0.0.1:1".to_string()),
+            route_cache_ttl_ms: 60_000,
+            ..ClientOptions::default()
+        });
+        client.insert_cached_route_for_test(1, addr.to_string());
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                first_shard_id: 1,
+                shard_count: 1,
+                ..TableOptions::default()
+            },
+        );
+        table
+            .batch_execute(
+                (0..5)
+                    .map(|i| Command::StringGet { key: format!("k{i}") })
+                    .collect(),
+            )
+            .expect("the batch answers")
+    };
+
+    // Positive control: a backend answering every command must still succeed, or a check that
+    // refused everything would pass this test just as well.
+    let complete = send_five(&backend_answering(5));
+    assert!(complete.status.ok, "{:?}", complete.status);
+    assert_eq!(complete.responses.len(), 5);
+
+    let short = send_five(&backend_answering(2));
+    assert!(
+        !short.status.ok,
+        "a batch answered 2 of 5 came back ok with {} responses",
+        short.responses.len()
+    );
+    assert_eq!(short.status.code, "bad_response");
+}
+
 #[test]
 fn client_router_matches_crc64_bucket_formula() {
     assert_eq!(crc64_jones(b"123456789"), 0xe9c6d914c4b8d9ca);
