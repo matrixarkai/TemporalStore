@@ -142,6 +142,26 @@ fn scope_session(scope: &ProxyContextScope) -> &str {
     }
 }
 
+/// The retrieve request as it goes on the wire, borrowed from the caller's own request.
+///
+/// ALPHABETICAL, and that is load-bearing. `json!` renders through a `serde_json::Map`, which is a
+/// `BTreeMap`, so its output is key-sorted; a serde struct renders in DECLARATION order. Declaring
+/// these out of order changes the bytes this proxy sends. The optional two are skipped when absent,
+/// which is what `json!` did by only inserting them when present.
+#[derive(serde::Serialize)]
+struct RetrievePayload<'a> {
+    end_time_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_events: Option<usize>,
+    node_hashes: &'a [u64],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a Value>,
+    query: &'a str,
+    shard_id: ShardId,
+    start_time_ms: u64,
+    tenant_hash: u64,
+}
+
 /// Buffer key holding the per-scope `raw_event` records awaiting extraction.
 fn rawlog_key(tenant_hash: u64, session: &str) -> String {
     // Sized up front rather than left to `format!`, which grows into its buffer. A u64 is at
@@ -486,20 +506,20 @@ impl ProxyService {
         } else {
             request.end_time_ms
         };
-        let mut payload = json!({
-            "shard_id": shard_id,
-            "tenant_hash": tenant_hash,
-            "query": request.query,
-            "node_hashes": request.node_hashes,
-            "start_time_ms": request.start_time_ms,
-            "end_time_ms": end_time_ms,
-        });
-        if let Some(max_events) = request.max_events {
-            payload["max_events"] = json!(max_events);
-        }
-        if let Some(provider) = request.provider {
-            payload["provider"] = provider;
-        }
+        // Serialised from a borrowed view rather than through `json!`, which builds a whole
+        // `Value` first -- a map, a `String` for every key, a `Value::String` copy of the query and
+        // a `Value::Array` of the node hashes -- only to render it and drop it. This is the path
+        // the live hook calls on every retrieve.
+        let payload = RetrievePayload {
+            end_time_ms,
+            max_events: request.max_events,
+            node_hashes: &request.node_hashes,
+            provider: request.provider.as_ref(),
+            query: &request.query,
+            shard_id,
+            start_time_ms: request.start_time_ms,
+            tenant_hash,
+        };
         let body = serde_json::to_vec(&payload).unwrap_or_default();
         let server_addr = match self.context_shard_addr(shard_id) {
             Ok(addr) => addr,
@@ -658,6 +678,69 @@ mod ingest_key_tests {
     /// `&str`, so the allocation existed only to be pointed at. The fallback is the part a change
     /// like that can quietly invert, and the session lands in the buffer KEY: getting it wrong
     /// files a scope's records under someone else's key.
+    /// The retrieve body is byte-identical to the `json!` it replaced.
+    ///
+    /// `json!` renders through a `serde_json::Map`, which is a `BTreeMap`, so its output is
+    /// key-sorted; a serde struct renders in DECLARATION order. That is why `RetrievePayload` is
+    /// declared alphabetically, and why this compares BYTES rather than parsed values: a body that
+    /// differs only in field order still parses, so a value comparison would pass while the wire
+    /// changed underneath.
+    ///
+    /// Covers both optional fields present and absent, because `skip_serializing_if` has to match
+    /// `json!` only inserting them when they were there.
+    #[test]
+    fn the_retrieve_body_is_what_json_produced() {
+        let provider = serde_json::json!({"name": "openai", "model": "x"});
+        let cases: [(Option<usize>, Option<&Value>, &[u64], &str); 4] = [
+            (None, None, &[], ""),
+            (Some(32), None, &[7, 9], "what did we decide"),
+            (None, Some(&provider), &[], "a query"),
+            (Some(1), Some(&provider), &[1, 2, 3], r#"quotes " and \ backslash"#),
+        ];
+
+        for (max_events, prov, node_hashes, query) in cases {
+            let shard_id: ShardId = 3;
+            let tenant_hash: u64 = 12_345;
+            let start_time_ms: u64 = 111;
+            let end_time_ms: u64 = 222;
+
+            let mut expected = serde_json::json!({
+                "shard_id": shard_id,
+                "tenant_hash": tenant_hash,
+                "query": query,
+                "node_hashes": node_hashes,
+                "start_time_ms": start_time_ms,
+                "end_time_ms": end_time_ms,
+            });
+            if let Some(max_events) = max_events {
+                expected["max_events"] = serde_json::json!(max_events);
+            }
+            if let Some(prov) = prov {
+                expected["provider"] = prov.clone();
+            }
+            let through_value = serde_json::to_vec(&expected).expect("the json! form serialises");
+
+            let borrowed = serde_json::to_vec(&RetrievePayload {
+                end_time_ms,
+                max_events,
+                node_hashes,
+                provider: prov,
+                query,
+                shard_id,
+                start_time_ms,
+                tenant_hash,
+            })
+            .expect("the borrowed form serialises");
+
+            assert_eq!(
+                String::from_utf8_lossy(&borrowed),
+                String::from_utf8_lossy(&through_value),
+                "the retrieve body moved for max_events={max_events:?} provider={} query={query:?}",
+                prov.is_some()
+            );
+        }
+    }
+
     #[test]
     fn an_absent_session_reads_as_default() {
         let empty = ProxyContextScope {
