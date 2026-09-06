@@ -3341,6 +3341,24 @@ def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
     return ""
 
 
+# A payload made only of these is the hook telling us WHICH turn happened, not WHAT was said. When
+# every key is one of them, `payload_text` returns "" and no memory is written -- otherwise the
+# whole envelope is stored as the turn's own text.
+#
+# The five added below were missing, so a Claude Code `SessionStart` payload -- `cwd`,
+# `hook_event_name`, `session_id`, `session_title`, `source`, `transcript_path` -- failed the check
+# on its last three keys and was stored verbatim as a 313-character "user" message. Retrieval then
+# surfaced those as memory: measured on a live injected pack, 16 of 18 items were `SessionStart`
+# envelopes and they filled 92% of an 8,000-character context budget with `cwd`, `session_id` and
+# `transcript_path`, crowding out the turns a reader actually wanted.
+#
+# Nothing is lost by not storing it: the same payload is already kept verbatim on the record as
+# `metadata.raw_hook_payload`. This stops it being a RETRIEVABLE TURN, not from being recorded.
+#
+# `source` and `session_title` are the two whose names could plausibly hold prose elsewhere. They
+# are listed because a key only suppresses a payload when EVERY other key is also an envelope key,
+# so a payload carrying any content field still passes through -- and the set already takes this
+# posture with `params`, `metadata`, `turn` and `run`.
 IDENTITY_ONLY_PAYLOAD_KEYS = {
     "account_id",
     "api_key",
@@ -3355,16 +3373,21 @@ IDENTITY_ONLY_PAYLOAD_KEYS = {
     "id",
     "message_id",
     "metadata",
+    "model",
     "params",
+    "prompt_id",
     "request_id",
     "run",
     "session_id",
+    "session_title",
     "sessionId",
+    "source",
     "tenant_id",
     "thread_id",
     "threadId",
     "transcript_id",
     "transcriptId",
+    "transcript_path",
     "turn",
     "turn_id",
     "turnId",
