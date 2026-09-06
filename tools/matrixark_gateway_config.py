@@ -1446,6 +1446,51 @@ def config_path() -> str:
     return os.path.join(home, DEFAULT_CONFIG_FILENAME)
 
 
+#: Variables that WIN over a setting's own, and are offered nowhere themselves.
+#:
+#: `matrixark_mcp_core` reads MATRIXARK_ANTHROPIC_TIMEOUT_SEC first and falls back to
+#: MATRIXARK_EXTRACTION_TIMEOUT_SEC, so on an Anthropic deployment the field the portal shows is
+#: not what decides. With the override set the page displayed the fallback -- 30 where the
+#: extraction path was using 5 -- with no badge, and editing the field changed nothing.
+#:
+#: Written here because the portal needs it per request and deriving it means parsing the tree.
+#: `test_matrixark_a_variable_the_portal_does_not_offer` derives the same set from the source and
+#: fails in either direction, so this cannot drift from what the code does.
+#:
+#: key -> (overriding variable, the setting whose value decides, values that make it apply)
+_UNOFFERED_OVERRIDES: Dict[str, Tuple[str, str, Tuple[str, ...]]] = {
+    "extraction.timeout_sec": ("MATRIXARK_ANTHROPIC_TIMEOUT_SEC", "extraction.provider",
+                               ("anthropic",)),
+    "extraction.max_tokens": ("MATRIXARK_ANTHROPIC_MAX_TOKENS", "extraction.provider",
+                              ("anthropic",)),
+}
+
+
+def unoffered_override(key: str, values: Dict[str, str]) -> Optional[Json]:
+    """The variable currently overriding `key`, or None.
+
+    None unless BOTH hold: the variable is set, and the setting it depends on has a value that
+    makes the override apply. A variable that is set on a deployment the override does not reach
+    is not overriding anything, and saying it is would be the same false alarm as reporting every
+    healthy plan as a substitution.
+    """
+    entry = _UNOFFERED_OVERRIDES.get(key)
+    if entry is None:
+        return None
+    variable, depends_on, applies_when = entry
+    raw = os.environ.get(variable)
+    if raw is None or not str(raw).strip():
+        return None
+    setting = SETTINGS_BY_KEY.get(depends_on)
+    if setting is None:
+        return None
+    current, _source = _effective(setting, values)
+    if str(current).strip().lower() not in applies_when:
+        return None
+    return {"env": variable, "value": str(raw).strip(), "depends_on": depends_on,
+            "when": "%s is %s" % (depends_on, " or ".join(applies_when))}
+
+
 def config_file_status() -> Json:
     """Whether the stored configuration is being applied, and when it is not, why.
 
@@ -1738,6 +1783,10 @@ def snapshot(include_catalog: bool = True) -> Json:
             # Offered here, resolved by the policy, and read by nothing in this build. A control
             # that accepts a value and confirms it is indistinguishable from one that works.
             "read_by_nothing": not setting_is_read(_env_name(setting, values)),
+            # A variable the portal does NOT offer, winning over this field right now. Without
+            # it the page shows a value the deployment is not using and an editable control that
+            # changes nothing for the configured provider.
+            "overridden_by": unoffered_override(setting.key, values),
         }
         if setting.secret:
             entry["configured"] = bool(value)
