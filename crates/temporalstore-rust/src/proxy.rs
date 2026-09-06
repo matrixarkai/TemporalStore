@@ -4961,6 +4961,80 @@ mod tests {
         }
     }
 
+    /// Every proxy route the shipped Python SDK calls is one the proxy answers.
+    ///
+    /// `sdk/python/` is not a document, it is code people run. A method that posts to a path the
+    /// dispatcher does not know fails at the user, and nothing in this repo compiles the SDK, so
+    /// only a check like this one can see it.
+    ///
+    /// `ingest_client.py` is excluded on purpose: its `/api/*` paths belong to a different
+    /// service, not to this proxy. The two files named here are the ones that talk to the proxy.
+    #[test]
+    fn every_proxy_route_the_python_sdk_calls_is_served() {
+        let sdk = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/python/temporalstore");
+        let mut routes: Vec<String> = Vec::new();
+        for file in ["proxy_client.py", "features.py"] {
+            let text = std::fs::read_to_string(sdk.join(file))
+                .unwrap_or_else(|err| panic!("the shipped SDK file {file} must be readable: {err}"));
+            // Every "/..." literal in the file.
+            let bytes: Vec<char> = text.chars().collect();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == '"' {
+                    if let Some(end) = bytes[i + 1..].iter().position(|c| *c == '"') {
+                        let literal: String = bytes[i + 1..i + 1 + end].iter().collect();
+                        if literal.starts_with('/')
+                            && literal.len() > 1
+                            && literal.chars().all(|c| c.is_ascii_alphanumeric() || "/_".contains(c))
+                        {
+                            routes.push(literal);
+                        }
+                        i += end + 2;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+        routes.sort();
+        routes.dedup();
+
+        assert!(
+            routes.len() >= 15,
+            "found only {} route literals in the shipped SDK, so this test would be checking              almost nothing: {routes:?}",
+            routes.len()
+        );
+
+        let proxy = scoped_proxy(ProxyOptions::default());
+        let mut unserved: Vec<String> = Vec::new();
+        for route in &routes {
+            // A route the proxy knows answers something other than 404 to one of these.
+            let post = proxy
+                .handle(crate::proxy::HttpRequest {
+                    method: "POST".to_string(),
+                    path: route.clone(),
+                    body: b"{}".to_vec(),
+                })
+                .0;
+            let get = proxy
+                .handle(crate::proxy::HttpRequest {
+                    method: "GET".to_string(),
+                    path: route.clone(),
+                    body: Vec::new(),
+                })
+                .0;
+            if post == 404 && get == 404 {
+                unserved.push(route.clone());
+            }
+        }
+
+        assert!(
+            unserved.is_empty(),
+            "the shipped Python SDK posts to {} path(s) the proxy answers 404 for, so those SDK              methods cannot work: {unserved:?}",
+            unserved.len()
+        );
+    }
+
     /// Every route the published proxy API documents is one the proxy actually answers.
     ///
     /// `sdk/proxy/openapi.yaml` is the contract an outside user builds against -- it ships in the
