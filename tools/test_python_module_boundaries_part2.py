@@ -673,7 +673,6 @@ class _ModuleBoundaryPart2:
         local_budget, local_mode = local_mod.pre_retrieval_summary_refresh_memory_layer_budget_tokens(
             remote_budget_tokens=100,
             question_type="profile_memory",
-            outcome_query=False,
             args=args,
             ranking=ranking,
         )
