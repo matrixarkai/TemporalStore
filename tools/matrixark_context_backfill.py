@@ -2457,8 +2457,12 @@ def run_verify_manifest(args: argparse.Namespace) -> Json:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Backfill MatrixArk context records from MatrixArk raw ingestion logs.')
     parser.add_argument('--metaserver', default=os.environ.get('MATRIXARK_METASERVER', '127.0.0.1:65000'))
-    parser.add_argument('--namespace', default=os.environ.get('MATRIXARK_NAMESPACE', 'matrixark'))
-    parser.add_argument('--table', default=os.environ.get('MATRIXARK_TABLE', 'context'))
+    # The namespace and table the shipped config declares for these two variables, which is also
+    # what the running processes carry. These defaulted to 'matrixark' and 'context', and nothing
+    # else in the repository names either -- so a backfill run without --namespace addressed a
+    # store the deployment does not read, and reported having done so.
+    parser.add_argument('--namespace', default=os.environ.get('MATRIXARK_NAMESPACE', 'deploy_ns'))
+    parser.add_argument('--table', default=os.environ.get('MATRIXARK_TABLE', 'deploy_table'))
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument(
