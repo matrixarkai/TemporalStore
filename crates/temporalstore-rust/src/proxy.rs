@@ -3969,6 +3969,49 @@ mod tests {
             counts.alloc_bytes / ITERS as u64,
         ));
 
+        // The context forward against the same non-allocating backend. The stub-backed context row
+        // above has the problem #1066 found on the execute path: it counts the backend's own
+        // allocations, because the probe reads global atomics while that thread parses and
+        // serialises. This is the proxy's own cost for a context ingest.
+        let ctx_quiet = scoped_proxy(ProxyOptions::default());
+        ctx_quiet
+            .client()
+            .insert_cached_route_for_test(ctx_quiet.context_shard_id(0), quiet.clone());
+        let before = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed);
+        let (code, answered) = ctx_quiet.handle(crate::proxy::HttpRequest {
+            method: "POST".to_string(),
+            path: "/context/ingest".to_string(),
+            body: ingest_body.clone(),
+        });
+        let first: String = String::from_utf8_lossy(&answered).chars().take(60).collect();
+        assert_eq!(code, 200, "{first}");
+        assert!(
+            first.contains("\"ok\":true"),
+            "the context forward must succeed or this row measures the failure path: {first}"
+        );
+        let probe = crate::alloc_probe::Probe::start();
+        for _ in 0..ITERS {
+            let out = ctx_quiet.handle(crate::proxy::HttpRequest {
+                method: "POST".to_string(),
+                path: "/context/ingest".to_string(),
+                body: ingest_body.clone(),
+            });
+            std::hint::black_box(&out);
+        }
+        let counts = probe.stop();
+        let exchanges = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed) - before;
+        assert_eq!(
+            exchanges,
+            ITERS as u64 + 1,
+            "only {exchanges} of {} calls reached the socket, so this row is not measuring a              forward",
+            ITERS + 1
+        );
+        rows.push((
+            "POST /context/ingest, backend allocates NOTHING",
+            counts.allocs / ITERS as u64,
+            counts.alloc_bytes / ITERS as u64,
+        ));
+
 
         // SCRATCH: the layers, against the quiet backend so the numbers are this process only.
         let typed_req = ExecuteRequest {
