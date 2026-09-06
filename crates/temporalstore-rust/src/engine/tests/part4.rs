@@ -16777,3 +16777,82 @@ fn what_the_string_family_costs_against_the_store() {
     assert!(scaling > 3.0, "the scaling control reported {scaling:.2}x -- probe cannot see growth");
     println!("  A string is one page per key, so declaring or not should not matter here.");
 }
+
+#[test]
+fn an_entity_upsert_does_not_report_its_page_uncovered() {
+    // An entity write reports the PERSISTED per-entity key `ctx:entity:{t}:{n}:{e}`, but the index
+    // groups entities under the node's COLLECTION key `ctx:entity:{t}:{n}`. Maintenance looked the
+    // per-entity key up directly, always missed, and reported the object uncovered -- which sends
+    // the caller into a FULL bucket-index rebuild plus a full flag refresh on EVERY upsert.
+    // Measured at 4,270,101 allocated bytes per upsert into a 3,200-entity store -- 99.8% of the
+    // write, and rising with the store -- against 9,599 and flat once the key resolves.
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let entity_at = |i: u64| -> crate::types::ContextEntity {
+        crate::types::ContextEntity {
+            entity_hash: 7_000 + i,
+            node_hash: 42,
+            entity_type: 1,
+            name: format!("entity_{i:06}"),
+            value: "approved".to_string(),
+            updated_at_ms: 1_000 + i,
+            valid_from_ms: 1_000,
+            confidence: 0.97,
+            source_event_hashes: vec![5],
+            vector: Vec::new(),
+        }
+    };
+    // The first write creates the node's collection; the second is the one under test.
+    let first = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertEntity { tenant_hash: 1, entity: entity_at(0) },
+    });
+    assert!(first.status.ok, "seed upsert refused: {:?}", first.status);
+
+    crate::engine::uncovered_maintenance::reset();
+    let second = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextUpsertEntity { tenant_hash: 1, entity: entity_at(1) },
+    });
+    assert!(second.status.ok, "upsert refused: {:?}", second.status);
+    let after_upsert = crate::engine::uncovered_maintenance::snapshot();
+
+    // Positive control, in THIS test: a key the shard holds nothing for must report uncovered.
+    // Without it, a tally that silently stopped recording would let the assertion below pass
+    // while the defect it guards was fully present.
+    let absent_key = "ctx:node:1:999999".to_string();
+    {
+        let mut shards = engine.shards.write().expect("shards lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+        let covered = crate::engine::storage_bucket_internals::sync_context_pages_for_object(
+            shard,
+            1,
+            &absent_key,
+        );
+        assert!(
+            !covered,
+            "a key the shard holds nothing for must report UNCOVERED, or the tally proves nothing"
+        );
+    }
+    assert!(
+        crate::engine::uncovered_maintenance::snapshot()
+            .iter()
+            .any(|key| key == &absent_key),
+        "the uncovered tally is not recording, so the entity assertion below would pass vacuously"
+    );
+
+    let stray: Vec<&String> = after_upsert
+        .iter()
+        .filter(|key| key.starts_with("ctx:entity:"))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "an entity upsert reported its own page uncovered, so every entity write rebuilds the          whole bucket index: {stray:?}"
+    );
+}

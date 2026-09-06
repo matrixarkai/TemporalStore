@@ -1111,6 +1111,27 @@ pub(super) fn sync_context_pages_for_object(
                 vec![address.clone()],
             ));
         }
+    } else if let Some((collection_key, entity_hash)) = split_context_entity_key(object_key) {
+        // A PERSISTED per-entity key names one entity inside a node's collection, and that is
+        // what an entity write reports as its object key. The index groups entities under the
+        // COLLECTION key, so the lookup above finds nothing, the object reports as uncovered,
+        // and the caller rebuilds the whole bucket index -- on every entity upsert. Measured at
+        // 4.27 MB per upsert into a 3,200-entity store, 99.8% of the write, all of it the
+        // rebuild and its flag refresh.
+        //
+        // File the ONE page this key names. The composed key above is
+        // `{collection_key}:{entity_hash}`, which IS this key, so both paths file the same shape.
+        if let Some(address) = shard
+            .context_entities
+            .get(&collection_key)
+            .and_then(|series| series.get(&entity_hash))
+        {
+            groups.push((
+                "context_entity",
+                object_key.to_string(),
+                vec![address.clone()],
+            ));
+        }
     }
 
     // A context node's page lives in `shard.hashes` under a single field, so the rebuild derives
