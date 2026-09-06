@@ -258,9 +258,40 @@ def is_resource_or_skill_candidate(candidate: Json) -> bool:
     return ref_type in {"resource_chunk", "skill_section"} or context_class in {"resource_fact", "resource_entity_fact"}
 
 
+#: Carried only when the candidate has them, because they answer a question the always-fields
+#: cannot: WHICH budget or floor removed this ref.
+#:
+#: They were on the copy in matrixark_mcp_core_ref_selection, which delegated to this one on the
+#: grounds that the survivor took "the wider rule and the richer record". It took the wider rule.
+#: The record was twenty fields poorer, and every reader asking why a ref was dropped got a
+#: KeyError instead of a reason.
+_EXPLANATORY_FIELDS = (
+    "budget_memory_layer",
+    "budget_memory_selection_policies",
+    "budget_source_role_counts",
+    "budget_source_roles",
+    "classification",
+    "event_type",
+    "extraction_mode",
+    "extraction_phase",
+    "extraction_status",
+    "memory_layer_budget_capped_layer",
+    "memory_layer_floor_reserved_layer",
+    "memory_selection_policy_budget_capped_policies",
+    "source_codex_event_counts",
+    "source_codex_events",
+    "source_hook_type_counts",
+    "source_hook_types",
+    "source_role",
+    "source_role_budget_capped_roles",
+    "source_role_counts",
+    "source_roles",
+)
+
+
 def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
     metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
-    return {
+    audit_ref = {
         "ref_type": candidate.get("ref_type", ""),
         "ref_hash": candidate.get("ref_hash"),
         "context_class": candidate.get("context_class") or candidate.get("ref_type", ""),
@@ -290,6 +321,13 @@ def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate:
         "node_hash": candidate.get("node_hash"),
         "node_path": candidate.get("node_path", []),
     }
+    # Absent rather than empty: a reader distinguishes "this budget did not act" from "this budget
+    # capped nothing", and a key present with "" says the second when the first is true.
+    for field in _EXPLANATORY_FIELDS:
+        value = candidate.get(field)
+        if value not in (None, "", [], {}):
+            audit_ref[field] = value
+    return audit_ref
 
 
 #: A candidate whose drop is worth explaining. Taken from
