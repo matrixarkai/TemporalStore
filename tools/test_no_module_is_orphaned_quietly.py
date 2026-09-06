@@ -14,7 +14,7 @@ So the set is asserted exactly. A NEW orphan fails here rather than accumulating
 being an orphan -- because somebody wired it up or deleted it -- fails too, because a list allowed to
 go stale describes a tree that no longer exists.
 
-The entries below are NOT an endorsement. They are 18 modules that were already here, triaged by
+The entries below are NOT an endorsement. They are 15 modules that were already here, triaged by
 whether their definitions still match the live ones. Two of the original 34 are gone: both were
 copies whose every function was the live one word for word, so removing them could not lose
 anything.
@@ -63,13 +63,6 @@ REPO = os.path.dirname(TOOLS)
 
 #: module stem -> what it is, so removing it is a reading task and not a guess.
 KNOWN_ORPHANS: Dict[str, str] = {
-    "matrixark_mcp_local_backend":
-        "all three have diverged -- backend_metrics, ensure_backend_ready, observe_model_latency",
-    "matrixark_mcp_registry":
-        "list_skills, list_resources, update_skill and latest_skill_controls have all diverged "
-        "from matrixark_local_adapter_dashboard",
-    "matrixark_mcp_retrieve_fallback":
-        "deadline_fallback_pack has diverged from matrixark_mcp_deadline_pack",
     "matrixark_mcp_local_cache":
         "11 KB, eight read-cache and latest-entity helpers; named by nothing at all",
     "matrixark_mcp_native_pack":
@@ -99,10 +92,6 @@ EXPECTED_MODULE_FLOOR = 250
 #: broken rather than reporting news. Without a positive control an emptied scan reads as a clean
 #: tree.
 POSITIVE_CONTROL = "matrixark_mcp_local_adapter"
-
-#: The other control. A module this tree really does not import, asserted to STAY found, so a scan
-#: that quietly stops matching fails instead of reporting that all is well.
-NEGATIVE_CONTROL = "matrixark_mcp_registry"
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 
@@ -201,23 +190,28 @@ class NoModuleIsOrphanedQuietlyTest(unittest.TestCase):
             "%s is imported all over this tree and the scan called it unreachable, so the scan is "
             "broken and the list below means nothing" % POSITIVE_CONTROL)
 
-    def test_a_module_nothing_imports_is_still_found(self) -> None:
-        """Catches the opposite, which the control above cannot see.
+    def test_the_scan_can_tell_a_used_name_from_an_unused_one(self) -> None:
+        """Catches the opposite of the control above, which it cannot see.
 
-        A scan that finds NOTHING passes every assertion here: the new-orphan list is empty and the
-        control module is not in it. That is how this file broke itself -- committing it made it a
-        tracked file, its dict keys read as references to all 34, and it reported a clean tree.
+        A scan that matches NOTHING passes every other assertion here: the new-orphan list is empty
+        and the module everything imports is not in it. That is how this file broke itself once --
+        committing it made it a tracked file, its own dict keys read as uses of all 34 names, and it
+        reported a clean tree.
 
-        So one known orphan is asserted to still be found. It fails if the scan goes blind, whatever
-        made it blind.
+        This asks the mechanism directly instead of naming a module that is only an orphan until
+        somebody removes it: a name this tree really does use must be seen, and a name it cannot
+        possibly use must not be. Both halves fail if the matching goes blind in either direction,
+        and neither depends on the list above having anything in it.
         """
-        found = _orphans()
-        self.assertTrue(found, "the scan found no orphans at all, which this tree is not")
+        named = _named_anywhere(_modules())
         self.assertIn(
-            NEGATIVE_CONTROL, found,
-            "%s is imported by nothing and the scan no longer says so. Either it was wired up -- in "
-            "which case strike it off the list -- or the scan has stopped seeing, and every "
-            "assertion here now passes for the wrong reason" % NEGATIVE_CONTROL)
+            "matrixark_mcp_core", named,
+            "the scan cannot see that matrixark_mcp_core is used, though this tree imports it "
+            "everywhere -- so it would call live modules unreachable")
+        self.assertNotIn(
+            "zz_no_module_is_called_this", named,
+            "the scan reports a name nothing could contain as used, so it would call every orphan "
+            "reachable and report a clean tree whatever the truth")
 
     def test_no_new_module_is_orphaned(self) -> None:
         new = sorted(_orphans() - set(KNOWN_ORPHANS))
