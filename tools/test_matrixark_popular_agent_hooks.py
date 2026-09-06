@@ -1002,5 +1002,45 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         self.assertIn("Outcome: pushed commit abc1234 to origin/main", messages[0]["content"])
 
 
+
+class GeneratedConfigDoesNotLowerAServerDeadline(unittest.TestCase):
+    """A config this generates must not tighten a deadline the server chose for itself.
+
+    `stdio_server()` used to write MATRIXARK_RETRIEVAL_TIMEOUT_MS=5000 into the environment of
+    every agent it configures. 5000 is the exact ceiling `matrixark_mcp_server` raised itself
+    off: a cold-start proxy scans the whole serving-record set before scoring, routinely passed
+    it, and the server then discarded the real ContextPack for an empty fallback -- refs computed
+    and dropped, which is a silent recall loss rather than an error. The launcher preserves an
+    inherited value (`${VAR:-20000}`), so the number written here reached the server intact.
+
+    The value is not asserted, only the floor: a deployment is free to raise it, and a future
+    change is free to set it explicitly. What it may not do is hand the server less than the
+    server's own reasoned default without anyone noticing.
+    """
+
+    #: Read off the server rather than restated, so raising the server's default moves the floor
+    #: with it and this cannot go stale in the quiet direction.
+    def _server_retrieve_deadline_ms(self) -> int:
+        import matrixark_mcp_server
+
+        deadlines = matrixark_mcp_server.MatrixArkMcpServer.DEFAULT_REQUEST_DEADLINES_MS
+        value = int(deadlines["matrixark_retrieve"])
+        self.assertGreater(value, 0, "the server has no retrieve deadline, so there is no floor "
+                                     "to compare against and this test asserts nothing")
+        return value
+
+    def test_the_generated_env_does_not_undercut_the_retrieve_deadline(self) -> None:
+        env = matrixark_agent_config.stdio_server("/repo", "launcher.sh")["env"]
+        self.assertIsInstance(env, dict)
+        self.assertTrue(env, "the generated environment is empty, so this would pass vacuously")
+        written = env.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS")
+        if written is None:
+            return
+        self.assertGreaterEqual(
+            int(written), self._server_retrieve_deadline_ms(),
+            "the generated config hands the MCP server a retrieve budget below its own default, "
+            "which is how 5000 came back once: the server aborts an in-flight retrieve and serves "
+            "an empty pack instead, with the refs already computed")
+
 if __name__ == "__main__":
     unittest.main()

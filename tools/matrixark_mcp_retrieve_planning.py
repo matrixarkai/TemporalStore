@@ -161,6 +161,15 @@ def retrieval_audit_policy(args: Json, default: str = "telemetry_only") -> tuple
 
 
 def retrieval_deadline_ms(args: Json, ranking: Json) -> int:
+    """The deadline THIS request was given, or 0 for none.
+
+    The 0 is a sentinel, not a competing default. It is the answer to "did anyone budget this
+    request", and `default_stage_budgets` below reads it that way: at 0 no stage budgets are
+    computed and the retrieve runs to completion. The MCP server's own 30000 is a different
+    layer -- how long it waits for the tool call before abandoning it -- so the two numbers are
+    not two opinions about one value, and a reader that resolved this to 30000 would silently
+    turn stage budgeting on for every unbudgeted request.
+    """
     raw_deadline_ms = args.get(
         "deadline_ms",
         ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)),

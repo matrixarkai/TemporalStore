@@ -156,7 +156,12 @@ def stdio_server(repo_root: str, launcher: str) -> dict[str, object]:
         "env": {
             "MATRIXARK_LOCAL_MODE": "no-metaserver",
             "MATRIXARK_MCP_BACKEND": "temporalstore-rust",
-            "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000",
+            # No MATRIXARK_RETRIEVAL_TIMEOUT_MS here. It used to write "5000", which is the
+            # exact ceiling matrixark_mcp_server.py raised itself off: a cold-start proxy
+            # scans the whole serving-record set before scoring, routinely passed 5000 ms,
+            # and the server then discarded the real ContextPack for an empty fallback --
+            # refs computed and dropped. Writing it back here put that ceiling into every
+            # config this generates. The launcher supplies the budget for this path.
             "MATRIXARK_RUST_PROXY_ASYNC_STORAGE": "true",
         },
     }

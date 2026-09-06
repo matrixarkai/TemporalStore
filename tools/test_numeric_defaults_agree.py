@@ -22,6 +22,16 @@ this file does not pretend otherwise: it exists so the next one has to be looked
 joining them quietly. Strike an entry when its difference is either justified in the code or
 removed.
 
+An entry is struck when the numbers are made to AGREE. One that has been examined and found
+justified stays listed -- the literals still differ, and this scan cannot tell a sentinel from a
+default -- but its note says so and begins JUSTIFIED, so the two kinds are not confused.
+
+`MATRIXARK_RETRIEVAL_TIMEOUT_MS` is the first of those. Its 0 is a sentinel: `retrieval_deadline_ms`
+answers "what deadline was THIS request given", 0 means none was, and `default_stage_budgets` reads
+it that way and computes no budgets. The MCP server's 30000 is a different layer -- how long it
+waits for the tool call before abandoning it. Resolving the sentinel to 30000 would silently turn
+stage budgeting on for every unbudgeted request, so these must not be made to agree.
+
 The two TemporalStore SDK timeouts are struck. They were not a client/server difference: one option
 with one meaning, declared by three parsers, defaulting to 20000 in the backend resolver and 60000
 in both agent hooks. Every launcher supplies 60000 -- the three installers, the codex hook wrapper,
@@ -53,7 +63,9 @@ KNOWN_DISAGREEMENTS: Dict[str, str] = {
     "MATRIXARK_READER_MAX_TOKENS":
         "two reader paths in one benchmark script, 160 and 64",
     "MATRIXARK_RETRIEVAL_TIMEOUT_MS":
-        "the retrieve paths use 0 (no deadline), the MCP server 30000",
+        "JUSTIFIED: the 0 is a sentinel, not a default -- no deadline was supplied for this "
+        "request -- and the MCP server's 30000 is a different layer, how long it waits for the "
+        "tool call. Said in the code at retrieval_deadline_ms.",
 }
 
 # 196 when this was written.
